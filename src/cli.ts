@@ -8,7 +8,7 @@ import { mermaidStats, toMermaid } from './render/mermaid.ts';
 import { evaluateAll } from './invariants/engine.ts';
 import { loadInvariants } from './invariants/load.ts';
 import { buildStack } from './focus/stack.ts';
-import { ClaimStore } from './store/claims.ts';
+import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive } from './swarm/driver.ts';
 import { evaluate } from './invariants/engine.ts';
 
@@ -31,7 +31,12 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const [command, target, ...rest] = argv;
+  const [command, ...tail] = argv;
+  // Commands like `query` take no positional target, so a leading flag must not be
+  // swallowed as one — that silently pointed `--out` at the default directory.
+  const hasTarget = tail.length > 0 && !tail[0].startsWith('--');
+  const target = hasTarget ? tail[0] : undefined;
+  const rest = hasTarget ? tail.slice(1) : tail;
   const flags = new Map<string, string>();
   for (let i = 0; i < rest.length; i++) {
     if (!rest[i].startsWith('--')) continue;
@@ -309,6 +314,76 @@ async function runAgent(args: Args): Promise<void> {
   console.log(`defences  ${d('defences')}`);
 }
 
+/**
+ * JSON-emitting commands for the GUI. Electron shells out to these rather than
+ * importing the store directly — one implementation, and no dependence on whether
+ * Electron's bundled Node can strip TypeScript.
+ */
+function runQuery(args: Args): void {
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  const out: Record<string, unknown> = { stats: store.stats() };
+
+  const beliefs = [];
+  const seen = new Set<string>();
+  for (const { subject, predicate } of store.allSubjects()) {
+    const canonical = canonicalise(predicate, undefined).predicate;
+    const key = `${subject}\u0000${canonical}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    beliefs.push(store.belief(subject, predicate));
+  }
+  out.beliefs = beliefs;
+  out.contradictions = store.contradictions();
+  out.clusters = store.clusters();
+  out.elisions = store.elisions();
+  out.defences = store.defences();
+
+  const events = path.join(args.out, 'events.jsonl');
+  out.events = fs.existsSync(events)
+    ? fs.readFileSync(events, 'utf8').split('\n').filter(Boolean).slice(-500).map((l) => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean)
+    : [];
+
+  store.close();
+  process.stdout.write(JSON.stringify(out));
+}
+
+/** Human arbitration: a CONFIRMED claim, which outranks every agent. */
+function runArbitrate(args: Args, argv: string[]): void {
+  const get = (k: string) => {
+    const i = argv.indexOf(`--${k}`);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const subject = get('subject');
+  const predicate = get('predicate');
+  const raw = get('value');
+  const note = get('note') ?? 'human arbitration';
+  if (!subject || !predicate || raw === undefined) {
+    console.error('arbitrate needs --subject --predicate --value [--note]');
+    process.exit(2);
+  }
+
+  let value: unknown = raw;
+  if (raw === 'true') value = true;
+  else if (raw === 'false') value = false;
+
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  try {
+    store.submit({
+      subject, predicate, value,
+      source: { kind: 'human' },
+      confidence: 1,
+      evidence: [{ file: subject.split('#')[0], note }],
+    });
+    process.stdout.write(JSON.stringify({ ok: true, belief: store.belief(subject, predicate) }));
+  } catch (err) {
+    process.stdout.write(JSON.stringify({ ok: false, error: (err as Error).message }));
+  } finally {
+    store.close();
+  }
+}
+
 const args = parseArgs(process.argv.slice(2));
 
 switch (args.command) {
@@ -323,6 +398,12 @@ switch (args.command) {
     break;
   case 'map':
     runMap(args);
+    break;
+  case 'query':
+    runQuery(args);
+    break;
+  case 'arbitrate':
+    runArbitrate(args, process.argv.slice(2));
     break;
   case 'agent':
     await runAgent(args);

@@ -16,8 +16,14 @@ Requires Node ≥22.18 (native TypeScript type-stripping; there is no build step
 
 ```bash
 pnpm install
+pnpm gui                 # the app: pick a repo, map it, run agents, arbitrate
+```
+
+Or headless:
+
+```bash
 pnpm map <repo>          # extract + invariants + focus in one parse → ./out
-pnpm view                # the festooned tree (reads ./out)
+pnpm view                # just the festooned tree (reads ./out)
 ```
 
 Then let agents decorate and focus the map:
@@ -51,7 +57,9 @@ one in wrecks every downstream number — a single copy of three.js contributed 
 | `pnpm invariants <repo>` | compile invariants to L0 queries and run them |
 | `pnpm focus <repo>` | rebuild the L1→L2→L3 stack from the claim store |
 | `pnpm agent <repo>` | drive an agent CLI; `--tools`, `--mode`, `--batch`, `--model`, `--timeout`, `--dry-run` |
-| `pnpm view` | Electron + three.js viewer |
+| `pnpm gui` | build the UI and launch the full app |
+| `pnpm gui:dev` | Vite dev server; run `VITE_DEV_SERVER_URL=http://127.0.0.1:5273 pnpm view` beside it |
+| `pnpm view` | Electron app against an already-built UI |
 | `pnpm shot` | render headlessly to `./out/view.png` instead of opening a window |
 | `pnpm smoke ./out` | claim semantics + MCP boundary tests — costs no agent turns |
 | `pnpm typecheck` | `tsc --noEmit` |
@@ -153,6 +161,26 @@ src/
   detect/duplication.ts  D1-D3, patterns, families
   render/mermaid.ts      L1 render
 ```
+
+## The app
+
+Five panels plus the scene, all driving the same store:
+
+- **Map** — the focus stack, how much of it is actually focused, and any elisions that were
+  rejected. The coverage meter is deliberately blunt: an unfocused map is path grouping, which
+  is how the code is filed, not what it is for.
+- **Findings** — duplication families, D1 pairs with both name and typed scores, and patterns.
+- **Review** — the arbitration surface. Contradictions first; pick which claim is right and it
+  becomes CONFIRMED, outranking every agent. Evidence citations are clickable.
+- **Agents** — jobs with live output, and a stream of every MCP tool call as it lands. That
+  stream comes from the MCP server's own event log rather than from parsing four different CLI
+  output formats — every agent writes through that one boundary, whichever CLI it is.
+- **Invariants** — green/red with the violating spans, or an explanation of why an empty state
+  is normal here.
+
+The renderer displays agent-authored text, which is untrusted: `contextIsolation` on,
+`nodeIntegration` off, a narrow named-operation preload surface, no navigation, no remote content,
+and the renderer served from a contained `app://` scheme.
 
 ## Known limitations
 

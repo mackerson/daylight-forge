@@ -58,6 +58,33 @@ export function createServer(opts: ServerOptions) {
   );
 
   const server = new McpServer({ name: 'visual-desloppify', version: '0.1.0' });
+
+  /**
+   * Every tool call is appended to events.jsonl.
+   *
+   * The GUI tails this rather than parsing each CLI's own output format: the four
+   * adapters stream differently (and two cannot be pointed at us per-invocation at
+   * all), but they all come through this boundary. One log, every agent.
+   */
+  const eventLog = path.join(opts.dir, 'events.jsonl');
+  const emit = (tool: string, detail: Record<string, unknown>) => {
+    try {
+      fs.appendFileSync(
+        eventLog,
+        JSON.stringify({
+          at: Date.now(),
+          session: opts.session,
+          agent: opts.agentTool,
+          model: opts.model ?? null,
+          tool,
+          ...detail,
+        }) + '\n',
+      );
+    } catch {
+      // A failed event write must never break the agent's actual work.
+    }
+  };
+
   const ok = (data: unknown) => ({
     content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
   });
@@ -77,6 +104,7 @@ export function createServer(opts: ServerOptions) {
       inputSchema: {},
     },
     async () => {
+      emit('get_overview', {});
       const stack = buildStack(graph, store, undefined);
       return ok({
         root: graph.root,
@@ -103,6 +131,7 @@ export function createServer(opts: ServerOptions) {
       },
     },
     async ({ node, hops }) => {
+      emit('get_slice', { node, hops });
       if (!nodesById.has(node)) return fail(`unknown node: ${node}`);
       const seen = new Set([node]);
       let edge_ = [...graph.edges];
@@ -138,7 +167,10 @@ export function createServer(opts: ServerOptions) {
         'uncertainty x centrality. Work these rather than picking your own targets.',
       inputSchema: { limit: z.number().min(1).max(50).default(10) },
     },
-    async ({ limit }) => ok(frontier(graph, store, findings).slice(0, limit)),
+    async ({ limit }) => {
+      emit('get_open_questions', { limit });
+      return ok(frontier(graph, store, findings).slice(0, limit));
+    },
   );
 
   server.registerTool(
@@ -188,9 +220,16 @@ export function createServer(opts: ServerOptions) {
           confidence: a.confidence, evidence: a.evidence, source,
           observedHash: nodesById.get(a.subject)?.contentHash,
         });
+        emit('submit_claim', {
+          ok: true, subject: a.subject, predicate: a.predicate,
+          confidence: a.confidence, evidence: a.evidence.length,
+        });
         return ok({ accepted: true, id: claim.id });
       } catch (err) {
-        if (err instanceof EvidenceRequired) return fail(err.message);
+        if (err instanceof EvidenceRequired) {
+          emit('submit_claim', { ok: false, subject: a.subject, predicate: a.predicate, error: err.message });
+          return fail(err.message);
+        }
         throw err;
       }
     },
@@ -216,9 +255,13 @@ export function createServer(opts: ServerOptions) {
           subject: a.subject, predicate: a.predicate, value: a.value,
           confidence: a.confidence, evidence: a.evidence, source,
         });
+        emit('flag_contradiction', { ok: true, subject: a.subject, predicate: a.predicate });
         return ok({ accepted: true, belief: store.belief(a.subject, a.predicate) });
       } catch (err) {
-        if (err instanceof EvidenceRequired) return fail(err.message);
+        if (err instanceof EvidenceRequired) {
+          emit('flag_contradiction', { ok: false, subject: a.subject, error: err.message });
+          return fail(err.message);
+        }
         throw err;
       }
     },
@@ -243,6 +286,7 @@ export function createServer(opts: ServerOptions) {
         level: 2, name: a.name, purpose: a.purpose, members: a.members,
         source, evidence: a.evidence,
       });
+      emit('propose_cluster', { ok: true, name: a.name, members: a.members.length, id });
       return ok({ accepted: true, id });
     },
   );
@@ -264,6 +308,7 @@ export function createServer(opts: ServerOptions) {
       const id = store.putElision({
         level: a.level, members: a.members, into: a.into, reason: a.reason, source,
       });
+      emit('propose_elision', { ok: true, into: a.into, members: a.members.length, id });
       return ok({ accepted: true, id });
     },
   );
@@ -276,7 +321,11 @@ export function createServer(opts: ServerOptions) {
         'counterweight to elision — over-collapse and under-collapse are both failures.',
       inputSchema: { node: z.string(), reason: z.string() },
     },
-    async (a) => ok({ accepted: true, id: store.putDefence({ node: a.node, reason: a.reason, source }) }),
+    async (a) => {
+      const id = store.putDefence({ node: a.node, reason: a.reason, source });
+      emit('defend_node', { ok: true, node: a.node, id });
+      return ok({ accepted: true, id });
+    },
   );
 
   server.registerTool(
