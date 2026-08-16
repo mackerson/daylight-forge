@@ -123,6 +123,10 @@ export interface LoadPayload {
   repo: string | null;
   dir: string;
   stack: FocusStack | null;
+  /** Aggregated file→file edges; the hierarchy view's leaves are files. */
+  fileEdges: Array<{ from: string; to: string; weight: number }>;
+  /** Lets a headless screenshot open straight into a given layout. */
+  initialMode?: 'graph' | 'tree';
   findings: Findings;
   invariants: { results: InvariantResult[] } | null;
   defended: string[];

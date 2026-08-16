@@ -166,6 +166,10 @@ src/
 
 Five panels plus the scene, all driving the same store:
 
+- **Scene** — two layouts on one selection. **graph** is the festooned focus stack (what depends
+  on what); **tree** is a cone hierarchy over the real path tree, files as leaves, with edges
+  hierarchically bundled through their common ancestors (where does this live). `VDS_MODE=tree`
+  opens straight into the tree, which is also how the headless screenshots are taken.
 - **Map** — the focus stack, how much of it is actually focused, and any elisions that were
   rejected. The coverage meter is deliberately blunt: an unfocused map is path grouping, which
   is how the code is filed, not what it is for.

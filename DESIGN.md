@@ -53,6 +53,41 @@ Consequences that shape everything below:
 - **Cluster names and purposes come from agents**, not from directory names. A folder name is a
   filing decision; a purpose is an intent claim and needs evidence like any other.
 
+### The referent rule
+
+> **Nothing is shown unless it resolves to members. No node, edge, level or status may
+> exist on screen without a path back to spans in files.**
+
+This has been violated three times, in three different layers, and each time it produced
+something that looked like a finding and wasn't:
+
+| Incident | What was asserted | What backed it |
+| --- | --- | --- |
+| Phantom subsystems | an elision named `AgentTurnService.ts` sat in the architecture view as a peer of *Plugin Sandbox* | nothing — an unresolved elision target invented a bucket |
+| Fixture invariants | five RED invariants on every repo analysed | nothing — they were claims about *enclave*, compiled into the tool |
+| The fake trunk and phantom strata | a nexus every subsystem converged on, and three levels of depth | nothing — a hardcoded vertex at `(0,-30,0)`, and one partition drawn three times |
+
+The failure mode is always the same and it is specific to this product: a tool whose
+output is a *picture of what is true* fails silently, because a confident-looking artifact
+is indistinguishable from a real one until someone asks "what is that?" No exception
+throws. No test goes red. The map just quietly lies.
+
+So the rule is enforced structurally rather than by review:
+
+- Every renderable node carries a non-optional `members` array. A node that cannot
+  enumerate its members cannot be constructed.
+- Decoration that implies data is forbidden. If the tree wants a trunk, the trunk is the
+  repo root — labelled, clickable, with every file as its members — not a vertex chosen to
+  make the layout look settled.
+- Derived structure must be *derived*. Levels are compared by their partition signature;
+  identical partitions are one map rendered once, not three altitudes implying depth the
+  data does not have.
+- Anything refused is reported, never dropped: rejected elisions, skipped vendored
+  bundles, legacy claims that no longer pass. Silence reads as "nothing to see".
+
+The same instinct drives the evidence requirement on claims and the `UNPROVEN` status for
+a repo with no invariants. **Absence must look like absence.**
+
 ## The focus stack
 
 Not one map — a stack of maps, each valid and defensible at its own altitude.
@@ -411,6 +446,22 @@ cluster name as the label. Flying in expands an elision back to its members. One
 both the fly-around-and-spot-tangles goal and the focus-until-correct method, and it means the user
 is never looking at a view that isn't a defensible map at some altitude. Invariant state renders in
 the scene: a red invariant lights up the specific violating edge at whatever altitude you're at.
+
+**Two layouts, one scene.** The festooned graph answers *what depends on what*; it groups by
+the focus stack, which is intent. The **cone tree** answers *where does this live*; it reads the
+real path tree at arbitrary depth, files as leaves, which is how people actually hold a codebase
+in their head. Both are the same data and the same selection — spot a tangle in one, toggle, see
+where it lives in the other.
+
+The focus stack alone cannot serve the second question: it flattens to three levels of buckets,
+so `src/main/services/sandbox/PluginWorker.ts` and `src/main/services/ai.ts` land together with no
+memory that one is nested deeper. The tree view exists because that shape was being discarded.
+
+In the tree, cross-edges are **hierarchically bundled** — routed up to the lowest common ancestor
+and back down, then relaxed toward the straight line (β ≈ 0.82) so ropes stay distinguishable.
+That routing is what makes "this limb's dependencies all leave the subtree" visible, rather than a
+haze beneath the leaves. Camera distance maps to tree depth here, the same way it maps to focus
+altitude in the graph view.
 
 **Caveat on labels.** 3D gives room but doesn't solve labels by itself — perspective scaling makes
 distant text unreadable and depth-sorted billboards overlap just as happily as 2D ones. Needs an

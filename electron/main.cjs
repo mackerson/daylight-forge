@@ -208,13 +208,37 @@ ipcMain.handle('vds:state', () => ({
 
 ipcMain.handle('vds:load', () => {
   const stack = readJson('focus.json', null);
+  const graph = readJson('graph.json', null);
+
+  // File-to-file edges, aggregated. The focus stack only carries bucket-level edges,
+  // but the hierarchy view's leaves are files, so it needs the finer pairs.
+  const fileEdges = [];
+  if (graph?.edges) {
+    const acc = new Map();
+    const fileOf = (id) => (id.includes('#') ? id.slice(0, id.indexOf('#')) : id);
+    for (const e of graph.edges) {
+      if (e.external || e.kind === 'contains') continue;
+      const from = fileOf(e.from);
+      const to = fileOf(e.to);
+      if (from === to) continue;
+      const k = `${from}\u0000${to}`;
+      acc.set(k, (acc.get(k) ?? 0) + 1);
+    }
+    for (const [k, weight] of acc) {
+      const [from, to] = k.split('\u0000');
+      fileEdges.push({ from, to, weight });
+    }
+  }
+
   return {
     ...state,
     stack,
+    fileEdges,
+    initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
     findings: readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] }),
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),
-    graphStats: readJson('graph.json', { stats: null })?.stats ?? null,
+    graphStats: graph?.stats ?? null,
   };
 });
 

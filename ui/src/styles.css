@@ -168,7 +168,8 @@ code, .mono { font-family: inherit; }
 .scene-empty { display: grid; place-items: center; height: 100%; color: var(--dim); }
 .scene-hud { position: absolute; inset: 10px 10px auto 10px; pointer-events: none; }
 .scene-hud > * { pointer-events: auto; }
-.lod { display: flex; gap: 6px; align-items: center; }
+.lod { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
 .scene-inspect {
   margin-top: 10px; max-width: 340px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);

@@ -150,7 +150,26 @@ export function layout(stack: any, rootLabel = 'repo'): any {
     }
   }
 
-  return { nodes, spine, festoons };
+  // Levels partitioning the files identically are one map, not several: before any
+  // focusing L1 = L2 = L3, and giving each a band invents depth the data lacks.
+  const signature = (lvl: number) =>
+    (stack.levels.find((l: any) => l.level === lvl)?.nodes ?? [])
+      .map((n: any) => n.id).sort().join('\u0000');
+  const distinct: number[] = [];
+  for (const lvl of [3, 2, 1]) {
+    if (!distinct.length || signature(lvl) !== signature(distinct[distinct.length - 1])) {
+      distinct.push(lvl);
+    }
+  }
+  const allBands = [
+    { level: 3, minDistance: 250 },
+    { level: 2, minDistance: 135 },
+    { level: 1, minDistance: 0 },
+  ];
+  const bands = allBands.filter((b) => distinct.includes(b.level));
+  if (bands.length) bands[bands.length - 1] = { ...bands[bands.length - 1], minDistance: 0 };
+
+  return { nodes, spine, festoons, bands, mode: 'graph' as const };
 }
 
 export const key = (level: number, id: string) => `${level}:${id}`;

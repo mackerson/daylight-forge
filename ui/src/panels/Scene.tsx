@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { key, layout, LEVEL_Y } from '../scene/layout.ts';
+import { layout } from '../scene/layout.ts';
+import { layoutTree } from '../scene/tree.ts';
 import type { LoadPayload } from '../types.ts';
 
 /**
@@ -20,18 +21,25 @@ const COLORS = {
   hover: new THREE.Color('#6ea8fe'),
 };
 
-const LOD_BANDS = [
-  { level: 3, minDistance: 250 },
-  { level: 2, minDistance: 135 },
-  { level: 1, minDistance: 0 },
-];
-
 export function Scene({ data }: { data: LoadPayload | null }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<any>(null);
   const [level, setLevel] = useState(3);
   const [levels, setLevels] = useState<number[]>([3, 2, 1]);
+  const [mode, setMode] = useState<'graph' | 'tree'>('graph');
+  const seededMode = useRef(false);
   const apiRef = useRef<{ setLevel: (n: number) => void } | null>(null);
+  // Selection survives a layout switch: spot a tangle in the graph, then see where it
+  // lives in the tree without hunting for it again.
+  const keepId = useRef<string | null>(null);
+
+  // `data` is null on first render, so an initial mode from the host has to be applied
+  // when it actually arrives — once, so it never fights the user's own toggle.
+  useEffect(() => {
+    if (seededMode.current || !data?.initialMode) return;
+    seededMode.current = true;
+    if (data.initialMode !== 'graph') setMode(data.initialMode);
+  }, [data?.initialMode]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -59,43 +67,38 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     scene.add(dir);
 
     const repoName = (data.repo ?? 'repo').split('/').filter(Boolean).pop() ?? 'repo';
-    const laid = layout(data.stack, repoName);
-
-    /**
-     * Levels that partition the files identically are the SAME map, not three maps.
-     * Before any focusing happens L1 = L2 = L3, and rendering all three stacks
-     * indistinguishable copies at different heights — inventing strata the data does
-     * not have. Only distinct levels get a band.
-     */
-    const signature = (lvl: number) =>
-      (data.stack!.levels.find((l) => l.level === lvl)?.nodes ?? [])
-        .map((n) => n.id).sort().join('\u0000');
-    const distinct: number[] = [];
-    for (const lvl of [3, 2, 1]) {
-      if (!distinct.length || signature(lvl) !== signature(distinct[distinct.length - 1])) {
-        distinct.push(lvl);
-      }
-    }
-    const bands = LOD_BANDS.filter((b) => distinct.includes(b.level));
-    if (bands.length) bands[bands.length - 1] = { ...bands[bands.length - 1], minDistance: 0 };
+    const laid = mode === 'tree' ? layoutTree(data, repoName) : layout(data.stack, repoName);
+    const bands = laid.bands;
+    const distinct = bands.map((b: any) => b.level);
     setLevels(distinct);
     const defended = new Set((data.defended ?? []).map(String));
 
-    const byLevel = new Map<number, any[]>([[1, []], [2, []], [3, []]]);
-    for (const node of laid.nodes.values()) byLevel.get(node.level)!.push(node);
+    const byLevel = new Map<number, any[]>();
+    for (const lvl of distinct) byLevel.set(lvl, []);
+    for (const node of laid.nodes.values()) {
+      // The root sits above the shallowest band, so it rides along with that one.
+      // Everything else must belong to a real band — funnelling non-distinct levels
+      // here is what redrew the same partition three times over.
+      if (byLevel.has(node.level)) byLevel.get(node.level)!.push(node);
+      else if (node.isRoot) byLevel.get(distinct[0])!.push(node);
+    }
 
     const meshes = new Map<number, THREE.InstancedMesh>();
     const geo = new THREE.SphereGeometry(1, 20, 14);
 
     for (const [lvl, nodes] of byLevel) {
-      if (!nodes.length || !distinct.includes(lvl)) continue;
+      if (!nodes.length) continue;
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05 });
       const mesh = new THREE.InstancedMesh(geo, mat, nodes.length);
       const m = new THREE.Matrix4();
       nodes.forEach((node: any, i: number) => {
         // Compressed so a 200-file bucket does not render a 3-file one invisible.
         // The root holds every file, so size it as a marker rather than by mass.
-        const s = node.isRoot ? 5 : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
+        const s = node.isRoot
+          ? 5
+          : node.isFile
+            ? 2.2
+            : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
         m.makeScale(s, s, s);
         m.setPosition(node.x, node.y, node.z);
         mesh.setMatrixAt(i, m);
@@ -151,14 +154,34 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         const a = laid.nodes.get(f.from);
         const b = laid.nodes.get(f.to);
         if (!a || !b) continue;
-        const mid = new THREE.Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
-        const span = Math.hypot(a.x - b.x, a.z - b.z);
-        mid.x *= 0.34;
-        mid.z *= 0.34;
-        mid.y -= Math.min(span * 0.16, 26);
-        const pts = new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(a.x, a.y, a.z), mid, new THREE.Vector3(b.x, b.y, b.z),
-        ).getPoints(14);
+
+        let pts: THREE.Vector3[];
+        if (f.via && f.via.length > 2) {
+          // Bundled: follow the route through the tree, then relax it toward the straight
+          // line so ropes stay distinguishable instead of collapsing onto the spine.
+          const route = f.via
+            .map((k: string) => laid.nodes.get(k))
+            .filter(Boolean)
+            .map((n: any) => new THREE.Vector3(n.x, n.y, n.z));
+          const beta = 0.82;
+          const start = route[0];
+          const end = route[route.length - 1];
+          const relaxed = route.map((p: THREE.Vector3, i: number) => {
+            const t = i / (route.length - 1);
+            const straight = start.clone().lerp(end, t);
+            return p.clone().lerp(straight, 1 - beta);
+          });
+          pts = new THREE.CatmullRomCurve3(relaxed).getPoints(Math.min(48, route.length * 8));
+        } else {
+          const mid = new THREE.Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+          const span = Math.hypot(a.x - b.x, a.z - b.z);
+          mid.x *= 0.34;
+          mid.z *= 0.34;
+          mid.y -= Math.min(span * 0.16, 26);
+          pts = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(a.x, a.y, a.z), mid, new THREE.Vector3(b.x, b.y, b.z),
+          ).getPoints(14);
+        }
         const c = f.weight > 12 ? heavy : base;
         for (let i = 0; i < pts.length - 1; i++) {
           positions.push(pts[i].x, pts[i].y, pts[i].z, pts[i + 1].x, pts[i + 1].y, pts[i + 1].z);
@@ -176,7 +199,19 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     }
     scene.add(festoonGroup);
 
-    const orbit = { theta: 0.7, phi: 1.15, distance: 300, target: new THREE.Vector3(0, 0, 0) };
+    const extent = Math.max(
+      40,
+      ...[...laid.nodes.values()].map((n: any) => Math.hypot(n.x, n.z)),
+    );
+    const depthSpan = Math.abs(
+      Math.min(...[...laid.nodes.values()].map((n: any) => n.y)),
+    );
+    const orbit = {
+      theta: 0.7,
+      phi: laid.mode === 'tree' ? 1.35 : 1.15,
+      distance: laid.mode === 'tree' ? Math.max(220, extent * 2.6, depthSpan * 2.2) : 300,
+      target: new THREE.Vector3(0, laid.mode === 'tree' ? -depthSpan / 2 : 0, 0),
+    };
     let active = 3;
 
     const applyLevel = (lvl: number) => {
@@ -185,23 +220,43 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       // Cumulative rather than exclusive: L3 is the trunk and stays, dropping altitude
       // reveals the branches under it.
       for (const [l, mesh] of meshes) {
-        mesh.visible = distinct.includes(l) && l >= lvl;
+        // Graph mode counts DOWN toward detail (L3→L1); tree mode counts UP by depth.
+        // Either way "cumulative" means: keep everything shallower than the active band.
+        const shallower = laid.mode === 'tree' ? l <= lvl : l >= lvl;
+        mesh.visible = shallower;
         const mat = mesh.material as THREE.MeshStandardMaterial;
         mat.transparent = l !== lvl;
         mat.opacity = l === lvl ? 1 : 0.32;
         mat.depthWrite = l === lvl;
       }
-      for (const lines of festoonGroup.children) lines.visible = lines.userData.level === lvl;
-      for (const line of spineGroup.children) line.visible = line.userData.level >= lvl;
-      orbit.target.y = lvl === 3 ? LEVEL_Y[3] : (LEVEL_Y[3] + LEVEL_Y[lvl]) / 2;
+      for (const lines of festoonGroup.children) {
+        lines.visible = laid.mode === 'tree' ? true : lines.userData.level === lvl;
+      }
+      for (const line of spineGroup.children) {
+        line.visible = laid.mode === 'tree'
+          ? line.userData.level <= lvl
+          : line.userData.level >= lvl;
+      }
+      const ys = [...byLevel.values()].flat().map((n: any) => n.y);
+      orbit.target.y = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
     };
     apiRef.current = {
       setLevel: (n) => {
         applyLevel(n);
-        orbit.distance = (bands.find((b) => b.level === n)?.minDistance || 90) + 60;
+        orbit.distance = (bands.find((b: any) => b.level === n)?.minDistance || 90) + 60;
       },
     };
-    applyLevel(3);
+    applyLevel(distinct[0]);
+
+    // Re-select the same node after a layout switch, if this layout has it.
+    if (keepId.current) {
+      for (const n of laid.nodes.values()) {
+        if (n.id === keepId.current) {
+          setSelected({ ...n });
+          break;
+        }
+      }
+    }
 
     // ---- input ---------------------------------------------------------------
     const pointer = new THREE.Vector2(-2, -2);
@@ -229,7 +284,10 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       e.preventDefault();
       orbit.distance = Math.max(45, Math.min(1200, orbit.distance * (1 + Math.sign(e.deltaY) * 0.09)));
     };
-    const onClick = () => setSelected(hovered ? { ...hovered } : null);
+    const onClick = () => {
+      keepId.current = hovered ? hovered.id : null;
+      setSelected(hovered ? { ...hovered } : null);
+    };
 
     canvas.addEventListener('pointerdown', onDown);
     addEventListener('pointerup', onUp);
@@ -258,7 +316,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       );
       camera.lookAt(target);
 
-      const band = bands.find((b) => distance >= b.minDistance) ?? bands[bands.length - 1];
+      const band = bands.find((b: any) => distance >= b.minDistance) ?? bands[bands.length - 1];
       if (band.level !== active) applyLevel(band.level);
 
       const mesh = meshes.get(active);
@@ -337,7 +395,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       canvas.remove();
       labelLayer.remove();
     };
-  }, [data?.stack, data?.defended, data?.repo]);
+  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;
@@ -348,19 +406,36 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       <div className="scene-canvas" ref={mountRef} />
       <div className="scene-hud">
         <div className="lod">
+          <button
+            className={mode === 'graph' ? 'chip active' : 'chip'}
+            onClick={() => setMode('graph')}
+            title="focus stack — weighted graph"
+          >
+            graph
+          </button>
+          <button
+            className={mode === 'tree' ? 'chip active' : 'chip'}
+            onClick={() => setMode('tree')}
+            title="file tree — cone hierarchy"
+          >
+            tree
+          </button>
+          <span className="sep" />
           {levels.map((n) => (
             <button
               key={n}
               className={n === level ? 'chip active' : 'chip'}
               onClick={() => apiRef.current?.setLevel(n)}
             >
-              L{n}
+              {mode === 'tree' ? `d${n}` : `L${n}`}
             </button>
           ))}
           <span className="dim">
-            {levels.length === 1
-              ? 'one level — nothing focused yet, so L1/L2/L3 are the same map'
-              : 'camera distance = altitude'}
+            {mode === 'tree'
+              ? 'camera distance = tree depth'
+              : levels.length === 1
+                ? 'one level — nothing focused yet, so L1/L2/L3 are the same map'
+                : 'camera distance = focus altitude'}
           </span>
         </div>
         {selected && (
