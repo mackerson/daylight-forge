@@ -23,7 +23,7 @@ function hashAngle(id: string): number {
 export const LEVEL_Y: Record<number, number> = { 3: 0, 2: 34, 1: 68 };
 const LEVEL_RADIUS: Record<number, number> = { 3: 86, 2: 150, 1: 215 };
 
-export function layout(stack: any): any {
+export function layout(stack: any, rootLabel = 'repo'): any {
   const byLevel = new Map<number, any>(stack.levels.map((l: any) => [l.level, l]));
   const nodes = new Map<string, any>();
   const spine: any[] = [];
@@ -117,6 +117,21 @@ export function layout(stack: any): any {
       }
     }
   }
+
+  // ---- root: a real node, not a decorative anchor -----------------------------
+  // The trunk used to converge on a hardcoded point with no referent. Everything on
+  // screen has to expand back to files, so the root is now an actual node: the repo.
+  const allMembers = new Set<string>();
+  for (const n of l3.nodes as any[]) for (const m of n.members as string[]) allMembers.add(m);
+
+  const rootKey = key(3, '(root)');
+  nodes.set(rootKey, {
+    key: rootKey, level: 3, id: '(root)', label: rootLabel,
+    purpose: undefined, fileCount: allMembers.size, symbolCount: 0,
+    origin: 'path', members: [...allMembers].sort(), isRoot: true,
+    x: 0, y: LEVEL_Y[3] - 34, z: 0,
+  });
+  for (const n of l3Sorted) spine.push({ from: rootKey, to: key(3, n.id) });
 
   // ---- festoons: every cross-edge at each level --------------------------------
   const festoons: any[] = [];

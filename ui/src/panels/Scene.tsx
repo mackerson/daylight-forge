@@ -30,6 +30,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<any>(null);
   const [level, setLevel] = useState(3);
+  const [levels, setLevels] = useState<number[]>([3, 2, 1]);
   const apiRef = useRef<{ setLevel: (n: number) => void } | null>(null);
 
   useEffect(() => {
@@ -57,7 +58,27 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     dir.position.set(120, 220, 140);
     scene.add(dir);
 
-    const laid = layout(data.stack);
+    const repoName = (data.repo ?? 'repo').split('/').filter(Boolean).pop() ?? 'repo';
+    const laid = layout(data.stack, repoName);
+
+    /**
+     * Levels that partition the files identically are the SAME map, not three maps.
+     * Before any focusing happens L1 = L2 = L3, and rendering all three stacks
+     * indistinguishable copies at different heights — inventing strata the data does
+     * not have. Only distinct levels get a band.
+     */
+    const signature = (lvl: number) =>
+      (data.stack!.levels.find((l) => l.level === lvl)?.nodes ?? [])
+        .map((n) => n.id).sort().join('\u0000');
+    const distinct: number[] = [];
+    for (const lvl of [3, 2, 1]) {
+      if (!distinct.length || signature(lvl) !== signature(distinct[distinct.length - 1])) {
+        distinct.push(lvl);
+      }
+    }
+    const bands = LOD_BANDS.filter((b) => distinct.includes(b.level));
+    if (bands.length) bands[bands.length - 1] = { ...bands[bands.length - 1], minDistance: 0 };
+    setLevels(distinct);
     const defended = new Set((data.defended ?? []).map(String));
 
     const byLevel = new Map<number, any[]>([[1, []], [2, []], [3, []]]);
@@ -67,17 +88,21 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const geo = new THREE.SphereGeometry(1, 20, 14);
 
     for (const [lvl, nodes] of byLevel) {
-      if (!nodes.length) continue;
+      if (!nodes.length || !distinct.includes(lvl)) continue;
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05 });
       const mesh = new THREE.InstancedMesh(geo, mat, nodes.length);
       const m = new THREE.Matrix4();
       nodes.forEach((node: any, i: number) => {
         // Compressed so a 200-file bucket does not render a 3-file one invisible.
-        const s = 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
+        // The root holds every file, so size it as a marker rather than by mass.
+        const s = node.isRoot ? 5 : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
         m.makeScale(s, s, s);
         m.setPosition(node.x, node.y, node.z);
         mesh.setMatrixAt(i, m);
-        node.defended = node.members.some((mm: string) => defended.has(mm)) || defended.has(node.id);
+        // The root holds every file, so a membership test would always mark it defended.
+        node.defended =
+          !node.isRoot &&
+          (node.members.some((mm: string) => defended.has(mm)) || defended.has(node.id));
         mesh.setColorAt(i, node.defended ? COLORS.defended : node.purpose ? COLORS.named : COLORS.path);
         node.index = i;
         node.radius = s;
@@ -97,10 +122,6 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       if (!perChild.has(b.level)) perChild.set(b.level, []);
       perChild.get(b.level)!.push(a.x, a.y, a.z, b.x, b.y, b.z);
     }
-    const trunk: number[] = [];
-    for (const n of byLevel.get(3)!) trunk.push(0, LEVEL_Y[3] - 30, 0, n.x, n.y, n.z);
-    perChild.set(3, trunk);
-
     const spineGroup = new THREE.Group();
     for (const [childLevel, pts] of perChild) {
       const g = new THREE.BufferGeometry();
@@ -164,7 +185,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       // Cumulative rather than exclusive: L3 is the trunk and stays, dropping altitude
       // reveals the branches under it.
       for (const [l, mesh] of meshes) {
-        mesh.visible = l >= lvl;
+        mesh.visible = distinct.includes(l) && l >= lvl;
         const mat = mesh.material as THREE.MeshStandardMaterial;
         mat.transparent = l !== lvl;
         mat.opacity = l === lvl ? 1 : 0.32;
@@ -177,7 +198,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     apiRef.current = {
       setLevel: (n) => {
         applyLevel(n);
-        orbit.distance = (LOD_BANDS.find((b) => b.level === n)?.minDistance || 90) + 60;
+        orbit.distance = (bands.find((b) => b.level === n)?.minDistance || 90) + 60;
       },
     };
     applyLevel(3);
@@ -237,7 +258,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       );
       camera.lookAt(target);
 
-      const band = LOD_BANDS.find((b) => distance >= b.minDistance) ?? LOD_BANDS[LOD_BANDS.length - 1];
+      const band = bands.find((b) => distance >= b.minDistance) ?? bands[bands.length - 1];
       if (band.level !== active) applyLevel(band.level);
 
       const mesh = meshes.get(active);
@@ -316,7 +337,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       canvas.remove();
       labelLayer.remove();
     };
-  }, [data?.stack, data?.defended]);
+  }, [data?.stack, data?.defended, data?.repo]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;
@@ -327,7 +348,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       <div className="scene-canvas" ref={mountRef} />
       <div className="scene-hud">
         <div className="lod">
-          {[3, 2, 1].map((n) => (
+          {levels.map((n) => (
             <button
               key={n}
               className={n === level ? 'chip active' : 'chip'}
@@ -336,7 +357,11 @@ export function Scene({ data }: { data: LoadPayload | null }) {
               L{n}
             </button>
           ))}
-          <span className="dim">camera distance = altitude</span>
+          <span className="dim">
+            {levels.length === 1
+              ? 'one level — nothing focused yet, so L1/L2/L3 are the same map'
+              : 'camera distance = altitude'}
+          </span>
         </div>
         {selected && (
           <div className="scene-inspect">
