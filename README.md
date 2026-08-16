@@ -30,6 +30,20 @@ pnpm focus <repo>                             # rebuild the stack with what they
 
 Everything defaults to `./out`; pass `--out <dir>` to put it elsewhere (then `VDS_DIR=<dir> pnpm view`).
 
+**Invariants belong to the repo being analysed**, not to this tool — they are claims about a specific
+architecture, so a fixed built-in set would mark every other codebase stale against facts that were
+never about it. Put them in `vds.invariants.json` at the repo root (or pass `--invariants-file`). With
+none defined, L3 reports `UNPROVEN` rather than failing. The worked example from the calibration
+fixture is in `fixtures/enclave.invariants.json`:
+
+```bash
+pnpm invariants <enclave> --invariants-file fixtures/enclave.invariants.json
+```
+
+**Vendored bundles are skipped** (>200KB, or smaller but minified) and the count is reported. Letting
+one in wrecks every downstream number — a single copy of three.js contributed ~7900 symbols to a
+24-file repo and buried the real findings.
+
 | Script | Does |
 | --- | --- |
 | `pnpm map <repo>` | extract + invariants + focus, single parse — the usual entry point |

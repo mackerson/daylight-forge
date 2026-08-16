@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +14,8 @@ const IGNORED_DIRS = new Set([
 
 export interface ExtractOptions {
   root: string;
+  /** Skip vendored bundles. On by default; they are not authored code. */
+  includeVendored?: boolean;
   /** Skip `.d.ts` — ambient declarations inflate D1 with types nobody wrote by hand. */
   includeDeclarations?: boolean;
   /** Skip test files, which legitimately duplicate shapes and names. */
@@ -24,7 +27,42 @@ const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)
 /** Bundler-handled non-code imports. Not edges, and not resolution failures either. */
 const ASSET_RE = /\.(css|scss|sass|less|styl|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|mp[34]|webm|wasm|txt|md|ya?ml|graphql|gql)(\?.*)?$/i;
 
+/**
+ * A vendored bundle is not authored code, and letting one in wrecks every downstream
+ * number — a single copy of three.js contributed ~8000 symbols to a 25-file repo and
+ * buried the real findings. Detected by shape rather than by name so it generalises:
+ * bundles are large and have very long lines.
+ */
+export function looksVendored(source: string): boolean {
+  // Size alone is decisive with room to spare: in this repo the largest authored
+  // source file is ~17KB and the vendored three.js builds are 650KB and 1.4MB.
+  if (source.length > 200_000) return true;
+  // Minified bundles can be smaller but give themselves away by line length.
+  if (source.length < 50_000) return false;
+  const newlines = source.split('\n').length;
+  return source.length / Math.max(newlines, 1) > 200;
+}
+
+/** Files git already ignores are not ours to analyse. Falls back to a walk. */
+function gitTracked(root: string): string[] | null {
+  try {
+    const out = execFileSync('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard'], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const files = out.split('\n').filter(Boolean);
+    return files.length ? files : null;
+  } catch {
+    return null;
+  }
+}
+
 export function walk(root: string): string[] {
+  const tracked = gitTracked(root);
+  if (tracked) {
+    return tracked.filter((f) => !f.split('/').some((seg) => IGNORED_DIRS.has(seg))).sort();
+  }
+
   const out: string[] = [];
   const stack = [''];
 
@@ -51,7 +89,7 @@ export function walk(root: string): string[] {
 }
 
 export function extract(options: ExtractOptions): Graph {
-  const { root, includeDeclarations = false, includeTests = false } = options;
+  const { root, includeDeclarations = false, includeTests = false, includeVendored = false } = options;
   const parser = new TypeScriptParser();
 
   const allFiles = walk(root);
@@ -77,7 +115,7 @@ export function extract(options: ExtractOptions): Graph {
     diagnostics: [],
     stats: {
       files: 0, symbols: 0, imports: 0, unresolvedImports: 0, externalImports: 0,
-      assetImports: 0, calls: 0, resolvedCalls: 0, literals: 0,
+      assetImports: 0, calls: 0, resolvedCalls: 0, literals: 0, vendoredSkipped: 0,
     },
   };
 
@@ -93,6 +131,11 @@ export function extract(options: ExtractOptions): Graph {
       source = fs.readFileSync(path.join(root, rel), 'utf8');
     } catch (err) {
       graph.diagnostics.push({ file: rel, message: `unreadable: ${(err as Error).message}` });
+      continue;
+    }
+
+    if (!includeVendored && looksVendored(source)) {
+      graph.stats.vendoredSkipped++;
       continue;
     }
 

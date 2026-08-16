@@ -228,6 +228,16 @@ Three, all found by running it rather than by reading it:
    will otherwise send `duplicates` with the value `"false — these are NOT duplicates"` — verdict
    predicates must carry a **boolean** at the boundary, with the reasoning in evidence.
 
+4. **Invariants were baked into the tool** (found by running it on itself). Shipping the fixture's
+   invariants as code meant every other repo was measured against claims about *enclave* — five false
+   REDs and an L3 wrongly marked STALE. They now load from `<repo>/vds.invariants.json`, and a repo
+   with none defined reports `UNPROVEN` rather than failing. Invariants describe a specific
+   architecture, so they live with the code they constrain.
+5. **Vendored bundles were being analysed** (same run). A committed copy of three.js contributed
+   ~7900 of 8800 symbols in a 24-file repo, inflating D2 groups 4→20 and inventing 3 patterns. Files
+   over 200KB (or smaller but minified) are now skipped and counted. The walk also respects
+   `.gitignore` via `git ls-files` where available.
+
 The third is the one worth remembering: it means the contradiction queue, which the design calls the
 highest-value screen in the product, was showing noise and hiding signal until it was exercised with
 two real models.

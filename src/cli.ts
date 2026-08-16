@@ -6,7 +6,7 @@ import { extract } from './extract/index.ts';
 import type { Graph } from './graph/types.ts';
 import { mermaidStats, toMermaid } from './render/mermaid.ts';
 import { evaluateAll } from './invariants/engine.ts';
-import { ENCLAVE_INVARIANTS } from './invariants/enclave.ts';
+import { loadInvariants } from './invariants/load.ts';
 import { buildStack } from './focus/stack.ts';
 import { ClaimStore } from './store/claims.ts';
 import { drive } from './swarm/driver.ts';
@@ -21,6 +21,7 @@ interface Args {
   includeTests: boolean;
   top: number;
   tools: string[];
+  invariantsFile?: string;
   batch: number;
   dryRun: boolean;
   repo?: string;
@@ -48,7 +49,8 @@ function parseArgs(argv: string[]): Args {
   return {
     command: command ?? 'help',
     root,
-    out: path.resolve(flags.get('out') ?? path.join(root, '.codemap')),
+    // Default matches what `pnpm view` reads, so map→view needs no env fiddling.
+    out: path.resolve(flags.get('out') ?? 'out'),
     depth: Number(flags.get('depth') ?? 3),
     commit: flags.get('commit'),
     includeTests: flags.get('include-tests') === 'true',
@@ -58,6 +60,7 @@ function parseArgs(argv: string[]): Args {
     dryRun: flags.get('dry-run') === 'true',
     repo: flags.get('repo'),
     model: flags.get('model'),
+    invariantsFile: flags.get('invariants-file'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
     timeoutMs: flags.get('timeout') ? Number(flags.get('timeout')) * 1000 : undefined,
   };
@@ -92,7 +95,7 @@ function emitExtract(args: Args, graph: Graph): void {
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   const s = graph.stats;
 
-  console.log(`\nvisual-desloppify M0 — ${args.root}`);
+  console.log(`\nvisual-desloppify — ${args.root}`);
   if (graph.commit) console.log(`commit ${graph.commit}`);
   console.log('─'.repeat(64));
   console.log(`L0   ${s.files} files · ${s.symbols} symbols · ${graph.edges.length} edges`);
@@ -100,6 +103,9 @@ function emitExtract(args: Args, graph: Graph): void {
     `     imports ${s.imports} → internal ${s.imports - s.externalImports - s.unresolvedImports}` +
       ` · external ${s.externalImports} · unresolved ${s.unresolvedImports} (${pct(s.unresolvedImports, s.imports)}) · assets ${s.assetImports} skipped`,
   );
+  if (s.vendoredSkipped) {
+    console.log(`     ${s.vendoredSkipped} vendored bundle(s) skipped (large, long-line files)`);
+  }
   console.log(`L1   ${mstats.groups} groups at depth ${args.depth} (from ${mstats.files} files)`);
   console.log(`     shapes ${graph.shapes.length} · callables ${graph.functions.length}`);
   if (graph.diagnostics.length) {
@@ -138,7 +144,22 @@ function emitExtract(args: Args, graph: Graph): void {
 
 function runInvariants(args: Args): void {
   const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
-  emitInvariants(args, graph, evaluateAll(graph, ENCLAVE_INVARIANTS));
+  const loaded = loadInvariants(args.root, args.invariantsFile);
+  reportInvariantSource(args, loaded);
+  emitInvariants(args, graph, evaluateAll(graph, loaded.invariants));
+}
+
+function reportInvariantSource(args: Args, loaded: ReturnType<typeof loadInvariants>): void {
+  for (const e of loaded.errors) console.log(`invariants: ${e}`);
+  if (!loaded.source) {
+    console.log(
+      `\ninvariants — none defined for ${args.root}\n` +
+        '─'.repeat(78) +
+        '\nInvariants describe THIS codebase, so they live with it. Create ' +
+        'vds.invariants.json\nin the repo root (or pass --invariants-file), or let an agent ' +
+        'propose them:\n  pnpm agent <repo> --tools claude\n',
+    );
+  }
 }
 
 function emitInvariants(
@@ -180,8 +201,10 @@ function runMap(args: Args): void {
   if (args.commit) graph.commit = args.commit;
   emitExtract(args, graph);
 
-  const invariants = ENCLAVE_INVARIANTS.map((inv) => evaluate(graph, inv));
-  emitInvariants(args, graph, invariants);
+  const loaded = loadInvariants(args.root, args.invariantsFile);
+  reportInvariantSource(args, loaded);
+  const invariants = loaded.invariants.map((inv) => evaluate(graph, inv));
+  if (invariants.length) emitInvariants(args, graph, invariants);
 
   const store = new ClaimStore(path.join(args.out, 'claims.db'));
   emitFocus(args, graph, store, invariants);
@@ -191,7 +214,8 @@ function runMap(args: Args): void {
 function runFocus(args: Args): void {
   const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
   const store = new ClaimStore(path.join(args.out, 'claims.db'));
-  const invariants = ENCLAVE_INVARIANTS.map((inv) => evaluate(graph, inv));
+  const loaded = loadInvariants(args.root, args.invariantsFile);
+  const invariants = loaded.invariants.map((inv) => evaluate(graph, inv));
   emitFocus(args, graph, store, invariants);
   store.close();
 }
@@ -220,6 +244,12 @@ function emitFocus(
   }
   const named = stack.levels[1].nodes.filter((n) => n.purpose);
   console.log(`\nL2 named clusters: ${named.length}/${stack.levels[1].nodes.length}`);
+  if (named.length === 0) {
+    console.log(
+      '  nothing has been focused yet — L2/L3 mirror L1 (path grouping, i.e. filing, not intent).\n' +
+        '  next:  pnpm agent <repo> --tools claude --mode focus',
+    );
+  }
   console.log(`L3 status: ${stack.l3Status}` +
     (stack.l3Status === 'STALE'
       ? ` — ${invariants.filter((i) => i.status === 'red').map((i) => i.id).join(', ')}`
@@ -308,7 +338,8 @@ usage:
   node src/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
 
 options:
-  --out <dir>        output directory (default: <path>/.codemap)
+  --out <dir>            output directory (default: ./out)
+  --invariants-file <f>  invariant definitions (default: <repo>/vds.invariants.json)
   --depth <n>        L1 grouping depth (default: 3)
   --commit <sha>     record the commit this tree came from
   --include-tests    include test files (excluded by default)

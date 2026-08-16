@@ -117,5 +117,7 @@ export interface Graph {
     calls: number;
     resolvedCalls: number;
     literals: number;
+    /** Vendored bundles skipped. Reported, never silently dropped. */
+    vendoredSkipped: number;
   };
 }
