@@ -188,6 +188,14 @@ function createWindow() {
     win.webContents.once('did-finish-load', () => {
       // VDS_SHOT_KEYS drives real key events before capture, so camera controls can be
       // verified headlessly instead of assumed.
+      // VDS_SHOT_HOVER="x,y" parks the cursor so hover states can be captured headlessly.
+      if (process.env.VDS_SHOT_HOVER) {
+        const [x, y] = process.env.VDS_SHOT_HOVER.split(',').map(Number);
+        setTimeout(() => {
+          win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+          setTimeout(() => win.webContents.sendInputEvent({ type: 'mouseMove', x, y }), 250);
+        }, 2200);
+      }
       if (process.env.VDS_SHOT_KEYS) {
         const keys = process.env.VDS_SHOT_KEYS.split(',');
         const holdMs = Number(process.env.VDS_SHOT_KEY_MS || 900);

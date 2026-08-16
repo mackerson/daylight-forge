@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "gui": "vite build && electron electron/main.cjs",
     "gui:dev": "vite --host 127.0.0.1",
-    "ui:build": "vite build"
+    "ui:build": "vite build",
+    "test": "node src/test/smoke.ts ./out && node src/test/scene.ts ./out"
   },
   "engines": {
     "node": ">=22.18"

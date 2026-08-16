@@ -61,6 +61,7 @@ one in wrecks every downstream number — a single copy of three.js contributed 
 | `pnpm gui:dev` | Vite dev server; run `VITE_DEV_SERVER_URL=http://127.0.0.1:5273 pnpm view` beside it |
 | `pnpm view` | Electron app against an already-built UI |
 | `pnpm shot` | render headlessly to `./out/view.png` instead of opening a window |
+| `pnpm test` | smoke + scene-layout tests against `./out` |
 | `pnpm smoke ./out` | claim semantics + MCP boundary tests — costs no agent turns |
 | `pnpm typecheck` | `tsc --noEmit` |
 
@@ -170,6 +171,11 @@ Five panels plus the scene, all driving the same store:
   on what); **tree** is a cone hierarchy over the real path tree, files as leaves, with edges
   hierarchically bundled through their common ancestors (where does this live). `VDS_MODE=tree`
   opens straight into the tree, which is also how the headless screenshots are taken.
+
+  Hover highlights: a node lights up with its label forced visible, its whole subtree's
+  dependencies turn amber, and everything else dims. Hovering a rope highlights just that
+  connection and names both ends. Tracing an edge by eye stops working the moment two cross,
+  so the view does it.
 
   Camera: drag orbits, right/middle-drag pans, scroll changes altitude (graph) or depth (tree),
   `WASD` pans, `Q`/`E` moves vertically, `shift` accelerates, `0` recentres. WASD moves the orbit

@@ -164,6 +164,24 @@ code, .mono { font-family: inherit; }
   text-shadow: 0 0 6px var(--bg), 0 0 3px var(--bg);
 }
 .label.dim { color: var(--dim); font-size: 10px; }
+.label.lit {
+  color: #ffd479; font-size: 12px; font-weight: 600;
+  text-shadow: 0 0 8px var(--bg), 0 0 4px var(--bg);
+}
+
+.scene-tip {
+  position: absolute; z-index: 5; pointer-events: none;
+  max-width: 260px; padding: 7px 10px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  border: 1px solid var(--line); border-radius: 6px;
+  font-size: 11px; line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .55);
+}
+.scene-tip strong { color: var(--text); }
+.scene-tip .arrow { color: #ffd479; }
+.scene-tip .tip-path { color: var(--dim); word-break: break-all; }
+.scene-tip .tip-meta { color: var(--dim); margin-top: 2px; }
+.scene-tip .tip-purpose { color: var(--text); margin-top: 5px; font-style: italic; }
 
 .scene-empty { display: grid; place-items: center; height: 100%; color: var(--dim); }
 .scene-hud { position: absolute; inset: 10px 10px auto 10px; pointer-events: none; }

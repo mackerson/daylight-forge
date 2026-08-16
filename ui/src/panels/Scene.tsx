@@ -53,6 +53,11 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     labelLayer.className = 'labels';
     mount.appendChild(labelLayer);
 
+    const tip = document.createElement('div');
+    tip.className = 'scene-tip';
+    tip.style.display = 'none';
+    mount.appendChild(tip);
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#0a0c10');
     scene.fog = new THREE.Fog('#0a0c10', 320, 900);
@@ -112,6 +117,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       });
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.userData.level = lvl;
       meshes.set(lvl, mesh);
       scene.add(mesh);
     }
@@ -139,17 +145,30 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     scene.add(spineGroup);
 
     // Festoons dip toward the axis so co-travelling cross-edges read as one rope.
+    //
+    // Each rope records its vertex range so hovering can recolour just that span, and a
+    // vertex→edge lookup makes the lines pickable: tracing a connection by eye stops
+    // working the moment two of them cross.
     const festoonGroup = new THREE.Group();
+    const ropes: Array<{
+      from: string; to: string; weight: number; via?: string[];
+      mesh: THREE.LineSegments; start: number; count: number;
+    }> = [];
+
     const perLevel = new Map<number, any[]>();
     for (const f of laid.festoons) {
       if (!perLevel.has(f.level)) perLevel.set(f.level, []);
       perLevel.get(f.level)!.push(f);
     }
+
+    const BASE_EDGE = new THREE.Color('#8a5cf6');
+    const HEAVY_EDGE = new THREE.Color('#c07ef0');
+
     for (const [lvl, list] of perLevel) {
       const positions: number[] = [];
       const colors: number[] = [];
-      const base = new THREE.Color('#8a5cf6');
-      const heavy = new THREE.Color('#c07ef0');
+      const vertexToRope: number[] = [];
+
       for (const f of list) {
         const a = laid.nodes.get(f.from);
         const b = laid.nodes.get(f.to);
@@ -157,8 +176,6 @@ export function Scene({ data }: { data: LoadPayload | null }) {
 
         let pts: THREE.Vector3[];
         if (f.via && f.via.length > 2) {
-          // Bundled: follow the route through the tree, then relax it toward the straight
-          // line so ropes stay distinguishable instead of collapsing onto the spine.
           const route = f.via
             .map((k: string) => laid.nodes.get(k))
             .filter(Boolean)
@@ -166,10 +183,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           const beta = 0.82;
           const start = route[0];
           const end = route[route.length - 1];
-          const relaxed = route.map((p: THREE.Vector3, i: number) => {
+          const relaxed = route.map((pt: THREE.Vector3, i: number) => {
             const t = i / (route.length - 1);
-            const straight = start.clone().lerp(end, t);
-            return p.clone().lerp(straight, 1 - beta);
+            return pt.clone().lerp(start.clone().lerp(end, t), 1 - beta);
           });
           pts = new THREE.CatmullRomCurve3(relaxed).getPoints(Math.min(48, route.length * 8));
         } else {
@@ -182,12 +198,21 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             new THREE.Vector3(a.x, a.y, a.z), mid, new THREE.Vector3(b.x, b.y, b.z),
           ).getPoints(14);
         }
-        const c = f.weight > 12 ? heavy : base;
+
+        const c = f.weight > 12 ? HEAVY_EDGE : BASE_EDGE;
+        const startVertex = positions.length / 3;
+        const ropeIndex = ropes.length;
         for (let i = 0; i < pts.length - 1; i++) {
           positions.push(pts[i].x, pts[i].y, pts[i].z, pts[i + 1].x, pts[i + 1].y, pts[i + 1].z);
           colors.push(c.r, c.g, c.b, c.r, c.g, c.b);
+          vertexToRope.push(ropeIndex, ropeIndex);
         }
+        ropes.push({
+          from: f.from, to: f.to, weight: f.weight, via: f.via,
+          mesh: null as any, start: startVertex, count: (pts.length - 1) * 2,
+        });
       }
+
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
@@ -195,6 +220,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.34 }),
       );
       lines.userData.level = lvl;
+      lines.userData.vertexToRope = vertexToRope;
+      lines.userData.baseColors = Float32Array.from(colors);
+      for (const r of ropes) if (!r.mesh) r.mesh = lines;
       festoonGroup.add(lines);
     }
     scene.add(festoonGroup);
@@ -267,6 +295,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
 
     // ---- input ---------------------------------------------------------------
     const pointer = new THREE.Vector2(-2, -2);
+    const lastPointer = { x: 0, y: 0 };
     const raycaster = new THREE.Raycaster();
     let dragging = false;
     let last = { x: 0, y: 0 };
@@ -300,6 +329,8 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       }
       pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       pointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+      lastPointer.x = e.clientX;
+      lastPointer.y = e.clientY;
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -374,6 +405,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     canvas.addEventListener('pointerdown', onDown);
     addEventListener('pointerup', onUp);
     canvas.addEventListener('pointermove', onMove);
+    // Synthetic input (Electron's sendInputEvent, used for headless verification) emits
+    // mouse events rather than pointer events, so track both.
+    canvas.addEventListener('mousemove', onMove as unknown as EventListener);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     canvas.addEventListener('click', onClick);
     canvas.addEventListener('contextmenu', onContextMenu);
@@ -387,6 +421,79 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const ro = new ResizeObserver(resize);
     ro.observe(mount);
     resize();
+
+    /**
+     * Hover highlighting.
+     *
+     * Ropes are recoloured in place over their own vertex range rather than rebuilt, and
+     * everything not incident to the hovered thing is dimmed — following one connection
+     * by eye stops working the moment two of them cross, so the view has to do it.
+     */
+    const HL_NODE = new THREE.Color('#6ea8fe');
+    const HL_EDGE = new THREE.Color('#ffd479');
+    const ropesByNode = new Map<string, number[]>();
+    ropes.forEach((r, i) => {
+      // Register against the endpoints AND every ancestor on the route, so hovering a
+      // directory lights every dependency entering or leaving its subtree — which is the
+      // whole "this limb's edges all go elsewhere" reading. The root is skipped: it
+      // contains everything, so highlighting from it would light the entire scene.
+      const keys = new Set<string>([r.from, r.to, ...((r as any).via ?? [])]);
+      for (const k of keys) {
+        if (laid.nodes.get(k)?.isRoot) continue;
+        const list = ropesByNode.get(k);
+        if (list) list.push(i);
+        else ropesByNode.set(k, [i]);
+      }
+    });
+
+    let highlighted: number[] = [];
+
+    const paintRope = (index: number, color: THREE.Color | null) => {
+      const rope = ropes[index];
+      if (!rope?.mesh) return;
+      const attr = rope.mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
+      const base = rope.mesh.userData.baseColors as Float32Array;
+      for (let v = rope.start; v < rope.start + rope.count; v++) {
+        if (color) attr.setXYZ(v, color.r, color.g, color.b);
+        else attr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+      }
+      attr.needsUpdate = true;
+    };
+
+    const clearHighlight = () => {
+      for (const i of highlighted) paintRope(i, null);
+      highlighted = [];
+      for (const lines of festoonGroup.children) {
+        (lines as THREE.LineSegments).material as THREE.LineBasicMaterial;
+        ((lines as any).material as THREE.LineBasicMaterial).opacity = 0.34;
+      }
+    };
+
+    const setHighlight = (indices: number[]) => {
+      clearHighlight();
+      if (!indices.length) return;
+      // Dim the field so the highlighted rope reads as the only lit thing.
+      for (const lines of festoonGroup.children) {
+        ((lines as any).material as THREE.LineBasicMaterial).opacity = 0.08;
+      }
+      for (const i of indices) paintRope(i, HL_EDGE);
+      highlighted = indices;
+    };
+
+    const showTip = (html: string, x: number, y: number) => {
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      const r = mount!.getBoundingClientRect();
+      tip.style.left = `${Math.min(Math.max(x - r.left + 14, 8), r.width - 260)}px`;
+      tip.style.top = `${Math.min(Math.max(y - r.top + 14, 8), r.height - 70)}px`;
+    };
+    const hideTip = () => (tip.style.display = 'none');
+
+    const esc = (t: string) =>
+      t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
+    const shortId = (k: string) => esc(k.replace(/^t:/, '').split('/').slice(-2).join('/'));
+
+    let hoveredRope: number | null = null;
 
     let raf = 0;
     let lastFrame = 0;
@@ -407,19 +514,82 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       const band = bands.find((b: any) => distance >= b.minDistance) ?? bands[bands.length - 1];
       if (band.level !== active) applyLevel(band.level);
 
-      const mesh = meshes.get(active);
-      if (mesh) {
+      {
         raycaster.setFromCamera(pointer, camera);
-        const hits = raycaster.intersectObject(mesh, false);
-        const hit = hits.length && hits[0].instanceId != null ? byLevel.get(active)![hits[0].instanceId] : null;
+
+        // Pick across every VISIBLE mesh, not just the active band. Cumulative rendering
+        // draws shallower levels too, so testing only the active one left nodes you could
+        // see but not hover.
+        const pickable = [...meshes.values()].filter((m) => m.visible);
+        const hits = raycaster.intersectObjects(pickable, false);
+        const first = hits.find((h) => h.instanceId != null);
+        const hitLevel = first ? (first.object as any).userData.level : null;
+        const hit = first && hitLevel != null
+          ? byLevel.get(hitLevel)![first.instanceId!]
+          : null;
+
+        const restore = (n: any) => {
+          const m = meshes.get(n.level);
+          if (!m) return;
+          m.setColorAt(n.index, n.defended ? COLORS.defended : n.purpose ? COLORS.named : COLORS.path);
+          if (m.instanceColor) m.instanceColor.needsUpdate = true;
+        };
+
         if (hit !== hovered) {
-          if (hovered && hovered.level === active) {
-            mesh.setColorAt(hovered.index, hovered.defended ? COLORS.defended : hovered.purpose ? COLORS.named : COLORS.path);
+          if (hovered) restore(hovered);
+          if (hit) {
+            const m = meshes.get(hit.level)!;
+            m.setColorAt(hit.index, HL_NODE);
+            if (m.instanceColor) m.instanceColor.needsUpdate = true;
           }
-          if (hit) mesh.setColorAt(hit.index, COLORS.hover);
-          if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
           hovered = hit;
           canvas.style.cursor = hit ? 'pointer' : 'default';
+
+          if (hit) {
+            hoveredRope = null;
+            setHighlight(ropesByNode.get(hit.key) ?? []);
+          } else {
+            clearHighlight();
+            hideTip();
+          }
+        }
+
+        if (hit) {
+          const degree = (ropesByNode.get(hit.key) ?? []).length;
+          showTip(
+            `<strong>${esc(hit.label)}</strong>` +
+              `<div class="tip-path">${esc(hit.id)}</div>` +
+              `<div class="tip-meta">${hit.fileCount} file${hit.fileCount === 1 ? '' : 's'}` +
+              (hit.symbolCount ? ` · ${hit.symbolCount} symbols` : '') +
+              ` · ${degree} connection${degree === 1 ? '' : 's'}</div>` +
+              (hit.purpose ? `<div class="tip-purpose">${esc(hit.purpose)}</div>` : ''),
+            lastPointer.x, lastPointer.y,
+          );
+        } else {
+          // No node under the cursor — try the ropes, so a connection is traceable too.
+          raycaster.params.Line = { threshold: Math.max(1.2, orbit.distance * 0.006) };
+          const lineHits = raycaster.intersectObjects(
+            festoonGroup.children.filter((c) => c.visible), false,
+          );
+          const first = lineHits[0];
+          const map = first ? (first.object.userData.vertexToRope as number[]) : null;
+          const idx = map && first?.index != null ? map[first.index] : null;
+
+          if (idx !== hoveredRope) {
+            hoveredRope = idx ?? null;
+            setHighlight(idx != null ? [idx] : []);
+            canvas.style.cursor = idx != null ? 'crosshair' : 'default';
+          }
+          if (idx != null) {
+            const r = ropes[idx];
+            showTip(
+              `<strong>${shortId(r.from)} <span class="arrow">→</span> ${shortId(r.to)}</strong>` +
+                `<div class="tip-meta">${r.weight} reference${r.weight === 1 ? '' : 's'}</div>`,
+              lastPointer.x, lastPointer.y,
+            );
+          } else {
+            hideTip();
+          }
         }
       }
       drawLabels();
@@ -433,10 +603,22 @@ export function Scene({ data }: { data: LoadPayload | null }) {
      */
     const projected = new THREE.Vector3();
     function drawLabels() {
-      const nodes = byLevel.get(active) ?? [];
+      const nodes: any[] = [];
+      for (const [lvl, mesh] of meshes) {
+        if (mesh.visible) nodes.push(...(byLevel.get(lvl) ?? []));
+      }
       const rect = mount!.getBoundingClientRect();
       const placed: Array<{ l: number; r: number; t: number; b: number }> = [];
       const frag = document.createDocumentFragment();
+
+      // Whatever is hovered gets its label unconditionally — declutter must never hide
+      // the one thing the cursor is pointing at, nor the endpoints of a traced rope.
+      const forced = new Set<string>();
+      if (hovered) forced.add(hovered.key);
+      if (hoveredRope != null) {
+        forced.add(ropes[hoveredRope].from);
+        forced.add(ropes[hoveredRope].to);
+      }
 
       const candidates = nodes
         .map((node: any) => {
@@ -449,17 +631,26 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           };
         })
         .filter(Boolean)
-        .sort((a: any, b: any) => b.node.fileCount - a.node.fileCount);
+        .sort((a: any, b: any) => {
+          const af = forced.has(a.node.key) ? 1 : 0;
+          const bf = forced.has(b.node.key) ? 1 : 0;
+          return bf - af || b.node.fileCount - a.node.fileCount;
+        });
 
       for (const c of candidates as any[]) {
+        const isForced = forced.has(c.node.key);
         const w = c.node.label.length * 6 + 10;
         const box = { l: c.x - w / 2, r: c.x + w / 2, t: c.y - 8, b: c.y + 8 };
-        if (box.l < 0 || box.r > rect.width || box.t < 0 || box.b > rect.height) continue;
-        if (placed.some((p) => box.l < p.r && box.r > p.l && box.t < p.b && box.b > p.t)) continue;
+        if (!isForced) {
+          if (box.l < 0 || box.r > rect.width || box.t < 0 || box.b > rect.height) continue;
+          if (placed.some((p) => box.l < p.r && box.r > p.l && box.t < p.b && box.b > p.t)) continue;
+        }
         placed.push(box);
 
         const el = document.createElement('div');
-        el.className = c.node.purpose ? 'label' : 'label dim';
+        el.className = isForced
+          ? 'label lit'
+          : c.node.purpose ? 'label' : 'label dim';
         el.style.left = `${c.x}px`;
         el.style.top = `${c.y - c.node.radius - 9}px`;
         el.textContent = c.node.label;
@@ -476,6 +667,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       canvas.removeEventListener('pointerdown', onDown);
       removeEventListener('pointerup', onUp);
       canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('mousemove', onMove as unknown as EventListener);
       canvas.removeEventListener('wheel', onWheel);
       canvas.removeEventListener('click', onClick);
       canvas.removeEventListener('contextmenu', onContextMenu);
@@ -486,6 +678,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       geo.dispose();
       canvas.remove();
       labelLayer.remove();
+      tip.remove();
     };
   }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode]);
 
