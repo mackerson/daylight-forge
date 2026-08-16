@@ -186,6 +186,22 @@ function createWindow() {
 
   if (process.env.VDS_SHOT) {
     win.webContents.once('did-finish-load', () => {
+      // VDS_SHOT_KEYS drives real key events before capture, so camera controls can be
+      // verified headlessly instead of assumed.
+      if (process.env.VDS_SHOT_KEYS) {
+        const keys = process.env.VDS_SHOT_KEYS.split(',');
+        const holdMs = Number(process.env.VDS_SHOT_KEY_MS || 900);
+        setTimeout(() => {
+          for (const k of keys) {
+            win.webContents.sendInputEvent({ type: 'keyDown', keyCode: k });
+          }
+          setTimeout(() => {
+            for (const k of keys) {
+              win.webContents.sendInputEvent({ type: 'keyUp', keyCode: k });
+            }
+          }, holdMs);
+        }, 2000);
+      }
       setTimeout(async () => {
         try {
           fs.writeFileSync(process.env.VDS_SHOT, (await win.webContents.capturePage()).toPNG());

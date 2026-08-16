@@ -212,6 +212,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       distance: laid.mode === 'tree' ? Math.max(220, extent * 2.6, depthSpan * 2.2) : 300,
       target: new THREE.Vector3(0, laid.mode === 'tree' ? -depthSpan / 2 : 0, 0),
     };
+    // Framing to return to, so panning is always recoverable with one key.
+    const home = {
+      theta: orbit.theta,
+      phi: orbit.phi,
+      distance: orbit.distance,
+      target: orbit.target.clone(),
+    };
     let active = 3;
 
     const applyLevel = (lvl: number) => {
@@ -265,14 +272,28 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     let last = { x: 0, y: 0 };
     let hovered: any = null;
 
+    let panning = false;
     const onDown = (e: PointerEvent) => {
-      dragging = true;
+      // Middle or right drag pans, matching what every other 3D tool does.
+      panning = e.button === 1 || e.button === 2;
+      dragging = !panning;
       last = { x: e.clientX, y: e.clientY };
     };
-    const onUp = () => (dragging = false);
+    const onUp = () => {
+      dragging = false;
+      panning = false;
+    };
+    const onContextMenu = (e: Event) => e.preventDefault();
     const onMove = (e: PointerEvent) => {
       const r = canvas.getBoundingClientRect();
-      if (dragging) {
+      if (panning) {
+        const speed = orbit.distance * 0.0022;
+        const t = orbit.theta;
+        const right = new THREE.Vector3(Math.sin(t), 0, -Math.cos(t));
+        orbit.target.addScaledVector(right, -(e.clientX - last.x) * speed);
+        orbit.target.y += (e.clientY - last.y) * speed;
+        last = { x: e.clientX, y: e.clientY };
+      } else if (dragging) {
         orbit.theta -= (e.clientX - last.x) * 0.005;
         orbit.phi = Math.max(0.08, Math.min(Math.PI - 0.08, orbit.phi - (e.clientY - last.y) * 0.005));
         last = { x: e.clientX, y: e.clientY };
@@ -284,6 +305,67 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       e.preventDefault();
       orbit.distance = Math.max(45, Math.min(1200, orbit.distance * (1 + Math.sign(e.deltaY) * 0.09)));
     };
+
+    /**
+     * WASD pans the orbit TARGET, it does not fly the camera.
+     *
+     * Camera distance is semantic in both layouts — focus altitude in the graph, tree
+     * depth in the hierarchy — so moving the camera along its view axis would silently
+     * change which level you are looking at as a side effect of moving sideways. Panning
+     * the target keeps distance fixed, so the altitude you chose is the altitude you keep.
+     */
+    const held = new Set<string>();
+    const PAN_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e']);
+
+    const typing = () => {
+      const el = document.activeElement;
+      return !!el && /^(input|textarea|select)$/i.test(el.tagName);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (e.shiftKey) held.add('shift');
+      if (PAN_KEYS.has(k)) {
+        held.add(k);
+        e.preventDefault();
+        return;
+      }
+      if (k === '0' || k === 'home') {
+        orbit.target.copy(home.target);
+        orbit.distance = home.distance;
+        orbit.theta = home.theta;
+        orbit.phi = home.phi;
+        e.preventDefault();
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      held.delete(e.key.toLowerCase());
+      if (!e.shiftKey) held.delete('shift');
+    };
+    const onBlur = () => held.clear();
+
+    addEventListener('keydown', onKeyDown);
+    addEventListener('keyup', onKeyUp);
+    addEventListener('blur', onBlur);
+
+    function applyPan(dt: number) {
+      if (!held.size) return;
+      // Per SECOND, not per frame — otherwise pan speed tracks refresh rate and the
+      // same keypress travels 2.4x further on a 144Hz display than on a 60Hz one.
+      // Scaled by distance so it feels the same at architecture altitude and among files.
+      const speed = orbit.distance * 0.45 * dt * (held.has('shift') ? 2.5 : 1);
+      const t = orbit.theta;
+      const forward = new THREE.Vector3(-Math.cos(t), 0, -Math.sin(t));
+      const right = new THREE.Vector3(Math.sin(t), 0, -Math.cos(t));
+
+      if (held.has('w')) orbit.target.addScaledVector(forward, speed);
+      if (held.has('s')) orbit.target.addScaledVector(forward, -speed);
+      if (held.has('d')) orbit.target.addScaledVector(right, speed);
+      if (held.has('a')) orbit.target.addScaledVector(right, -speed);
+      if (held.has('e')) orbit.target.y += speed;
+      if (held.has('q')) orbit.target.y -= speed;
+    }
     const onClick = () => {
       keepId.current = hovered ? hovered.id : null;
       setSelected(hovered ? { ...hovered } : null);
@@ -294,6 +376,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     canvas.addEventListener('click', onClick);
+    canvas.addEventListener('contextmenu', onContextMenu);
 
     const resize = () => {
       const r = mount.getBoundingClientRect();
@@ -306,8 +389,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     resize();
 
     let raf = 0;
-    const tick = () => {
+    let lastFrame = 0;
+    const tick = (now = 0) => {
       raf = requestAnimationFrame(tick);
+      // Clamp so a backgrounded window does not resume with one enormous step.
+      const dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 0;
+      lastFrame = now;
+      applyPan(dt);
       const { theta, phi, distance, target } = orbit;
       camera.position.set(
         target.x + distance * Math.sin(phi) * Math.cos(theta),
@@ -390,6 +478,10 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('wheel', onWheel);
       canvas.removeEventListener('click', onClick);
+      canvas.removeEventListener('contextmenu', onContextMenu);
+      removeEventListener('keydown', onKeyDown);
+      removeEventListener('keyup', onKeyUp);
+      removeEventListener('blur', onBlur);
       renderer.dispose();
       geo.dispose();
       canvas.remove();
@@ -437,6 +529,12 @@ export function Scene({ data }: { data: LoadPayload | null }) {
                 ? 'one level — nothing focused yet, so L1/L2/L3 are the same map'
                 : 'camera distance = focus altitude'}
           </span>
+        </div>
+        <div className="scene-keys">
+          <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> pan ·
+          <kbd>Q</kbd><kbd>E</kbd> up/down · <kbd>shift</kbd> faster ·
+          <kbd>0</kbd> recentre · drag orbit · right-drag pan · scroll{' '}
+          {mode === 'tree' ? 'depth' : 'altitude'}
         </div>
         {selected && (
           <div className="scene-inspect">

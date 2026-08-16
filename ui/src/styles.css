@@ -170,6 +170,15 @@ code, .mono { font-family: inherit; }
 .scene-hud > * { pointer-events: auto; }
 .lod { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
+.scene-keys {
+  margin-top: 8px; font-size: 11px; color: var(--dim);
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+}
+.scene-keys kbd {
+  background: var(--line); border-radius: 3px; padding: 0 5px;
+  font: inherit; color: var(--text);
+}
+
 .scene-inspect {
   margin-top: 10px; max-width: 340px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
