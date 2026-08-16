@@ -167,6 +167,9 @@ src/
 
 Five panels plus the scene, all driving the same store:
 
+The scene is the primary surface; the info pane sits on the right, drag the splitter to resize
+it (double-click resets), and click the active tab again to collapse it entirely.
+
 - **Scene** — two layouts on one selection. **graph** is the festooned focus stack (what depends
   on what); **tree** is a cone hierarchy over the real path tree, files as leaves, with edges
   hierarchically bundled through their common ancestors (where does this live). `VDS_MODE=tree`

@@ -26,6 +26,16 @@ export function App() {
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The scene is the point of the app, so it takes the space and the info pane is sized
+  // to taste. Persisted, because re-dragging it every launch would be its own annoyance.
+  const [infoWidth, setInfoWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('vds.infoWidth'));
+    return Number.isFinite(saved) && saved >= 280 ? saved : 460;
+  });
+  const [infoOpen, setInfoOpen] = useState(
+    () => localStorage.getItem('vds.infoOpen') !== 'false',
+  );
+  const dragRef = useRef<{ active: boolean }>({ active: false });
 
   const refresh = useCallback(async () => {
     try {
@@ -66,6 +76,9 @@ export function App() {
   }, [refresh]);
 
   const running = jobs.filter((j) => j.status === 'running');
+  // Data can exist without a repo path (launched against an output dir directly), so the
+  // panels key off whether a map was produced, not off the repo setting.
+  const mapped = !!data?.stack;
   const contradictions = query?.contradictions ?? [];
 
   const act = async (fn: () => Promise<{ error?: string } | unknown>) => {
@@ -76,6 +89,27 @@ export function App() {
     setBusy(false);
     await refresh();
   };
+
+  const startResize = (e: React.PointerEvent) => {
+    dragRef.current.active = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const onResize = (e: React.PointerEvent) => {
+    if (!dragRef.current.active) return;
+    const next = Math.min(Math.max(window.innerWidth - e.clientX, 280), window.innerWidth - 480);
+    setInfoWidth(next);
+  };
+  const endResize = (e: React.PointerEvent) => {
+    if (!dragRef.current.active) return;
+    dragRef.current.active = false;
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    localStorage.setItem('vds.infoWidth', String(infoWidth));
+  };
+
+  useEffect(() => {
+    localStorage.setItem('vds.infoOpen', String(infoOpen));
+  }, [infoOpen]);
 
   const counts = useMemo(
     () => ({
@@ -136,8 +170,15 @@ export function App() {
           {TABS.map((t) => (
             <button
               key={t.id}
-              className={t.id === tab ? 'tab active' : 'tab'}
-              onClick={() => setTab(t.id)}
+              className={t.id === tab && infoOpen ? 'tab active' : 'tab'}
+              onClick={() => {
+                if (tab === t.id && infoOpen) setInfoOpen(false);
+                else {
+                  setTab(t.id);
+                  setInfoOpen(true);
+                }
+              }}
+              title={tab === t.id && infoOpen ? 'click again to collapse the panel' : undefined}
             >
               <span>{t.label}</span>
               <Badge tab={t.id} counts={counts} />
@@ -157,18 +198,30 @@ export function App() {
           </div>
         </nav>
 
-        <main className="panel">
-          {!data?.repo && <Empty />}
-          {data?.repo && tab === 'overview' && <Overview data={data} query={query} />}
-          {data?.repo && tab === 'findings' && <Findings data={data} query={query} onRefresh={refresh} />}
-          {data?.repo && tab === 'review' && <Review query={query} onRefresh={refresh} />}
-          {data?.repo && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} />}
-          {data?.repo && tab === 'invariants' && <Invariants data={data} />}
+        <main className="scene">
+          <Scene data={data} />
         </main>
 
-        <aside className="scene">
-          <Scene data={data} />
-        </aside>
+        {infoOpen && (
+          <>
+            <div
+              className="splitter"
+              onPointerDown={startResize}
+              onPointerMove={onResize}
+              onPointerUp={endResize}
+              onDoubleClick={() => setInfoWidth(460)}
+              title="drag to resize · double-click to reset"
+            />
+            <aside className="info" style={{ width: infoWidth }}>
+              {!mapped && <Empty hasRepo={!!data?.repo} />}
+              {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
+              {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} />}
+              {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} />}
+              {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} />}
+              {mapped && tab === 'invariants' && <Invariants data={data!} />}
+            </aside>
+          </>
+        )}
       </div>
     </div>
   );
@@ -181,10 +234,10 @@ function Badge({ tab, counts }: { tab: Tab; counts: Record<string, number> }) {
   return <span className={warn ? 'badge warn' : 'badge'}>{n}</span>;
 }
 
-function Empty() {
+function Empty({ hasRepo }: { hasRepo: boolean }) {
   return (
     <div className="empty">
-      <h2>No repository selected</h2>
+      <h2>{hasRepo ? 'Not mapped yet' : 'No repository selected'}</h2>
       <p>
         Choose a repo, then <strong>Map</strong> it. That gives the exhaustive L0 graph and the
         deterministic duplication findings — no agents involved, nothing spent.

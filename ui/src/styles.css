@@ -63,10 +63,25 @@ code, .mono { font-family: inherit; }
 .tabs-foot { margin-top: auto; padding: 10px 14px; }
 .running { color: var(--warn); font-size: 11px; display: flex; flex-direction: column; gap: 4px; }
 
-.panel { flex: 1; min-width: 0; overflow: auto; padding: 16px; }
-.scene { width: 46%; min-width: 380px; border-left: 1px solid var(--line); position: relative; }
+/* The scene is the product, so it takes whatever space is left. */
+.scene { flex: 1; min-width: 480px; position: relative; }
+
+.info {
+  flex: none; min-width: 280px; overflow: auto; padding: 16px;
+  background: var(--bg); border-left: 1px solid var(--line);
+}
+
+.splitter {
+  flex: none; width: 6px; cursor: col-resize; background: var(--line);
+  position: relative; touch-action: none;
+}
+.splitter::after {
+  content: ''; position: absolute; inset: 0 -4px;
+}
+.splitter:hover { background: var(--accent); }
 
 /* ---- cards ---- */
+.panel { padding: 16px; }
 .stack { display: flex; flex-direction: column; gap: 14px; }
 .card {
   background: var(--panel); border: 1px solid var(--line);
