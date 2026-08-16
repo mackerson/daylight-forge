@@ -173,9 +173,8 @@ export function extract(options: ExtractOptions): Graph {
     graph.shapes.push(...parsed.shapes);
     graph.functions.push(...parsed.functions);
     graph.literals.push(...parsed.literals);
-    for (const c of parsed.calls) {
-      graph.calls.push({ from: c.from, file: rel, callee: c.callee, member: c.member, line: c.line });
-    }
+    // `base` is a resolution detail, not graph data — keep it out of graph.json.
+    for (const { base: _base, ...record } of parsed.calls) graph.calls.push(record);
     pendingHeritage.push(...parsed.heritage);
     graph.stats.literals += parsed.literals.length;
     graph.stats.calls += parsed.calls.length;

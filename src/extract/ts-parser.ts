@@ -1,6 +1,6 @@
 import ts from 'typescript';
-import type { FunctionRecord, GraphNode, NodeKind, ShapeRecord } from '../graph/types.ts';
-import type { CallSite, ImportBinding, LiteralUse, ParsedFile, Parser } from './parser.ts';
+import type { FunctionRecord, GraphNode, LiteralRecord, NodeKind, ShapeRecord } from '../graph/types.ts';
+import type { CallSite, ImportBinding, ParsedFile, Parser } from './parser.ts';
 
 const SCRIPT_KINDS: Record<string, ts.ScriptKind> = {
   '.ts': ts.ScriptKind.TS,
@@ -58,7 +58,7 @@ export class TypeScriptParser implements Parser {
     const shapes: ShapeRecord[] = [];
     const functions: FunctionRecord[] = [];
     const calls: CallSite[] = [];
-    const literals: LiteralUse[] = [];
+    const literals: LiteralRecord[] = [];
 
     const lineOf = (n: ts.Node): number =>
       sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
@@ -124,7 +124,7 @@ export class TypeScriptParser implements Parser {
             ? node.expression.name.text
             : undefined;
           const line = lineOf(node);
-          calls.push({ from: here(), callee, base: leftmost(node.expression), member, line });
+          calls.push({ from: here(), file: relPath, callee, base: leftmost(node.expression), member, line });
 
           for (const arg of node.arguments) {
             if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {

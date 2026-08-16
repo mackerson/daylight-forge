@@ -58,13 +58,8 @@ export interface CallRecord {
   line: number;
 }
 
-export interface LiteralRecord {
-  from: string;
-  file: string;
-  callee: string;
-  member?: string;
+export interface LiteralRecord extends CallRecord {
   value: string;
-  line: number;
 }
 
 /** A structure's shape, for D1 (near-duplicate structures). */

@@ -1,4 +1,10 @@
-import type { FunctionRecord, GraphNode, ShapeRecord } from '../graph/types.ts';
+import type {
+  CallRecord,
+  FunctionRecord,
+  GraphNode,
+  LiteralRecord,
+  ShapeRecord,
+} from '../graph/types.ts';
 
 /** `import { a as b } from 'x'` → { local: 'b', imported: 'a', spec: 'x' }. */
 export interface ImportBinding {
@@ -8,30 +14,13 @@ export interface ImportBinding {
   spec: string;
 }
 
-/** A call site, attributed to the symbol that encloses it. */
-export interface CallSite {
-  /** Enclosing symbol id, or the file id at top level. */
-  from: string;
-  /** Full callee text, e.g. `eventBus.emitEvent`. */
-  callee: string;
+/**
+ * A call site as the parser sees it: the graph's `CallRecord` plus the one field that
+ * only matters during resolution and never reaches the graph.
+ */
+export interface CallSite extends CallRecord {
   /** Leftmost identifier, for matching against import bindings. */
   base?: string;
-  /** Final property name, when the callee is a member access. */
-  member?: string;
-  line: number;
-}
-
-/**
- * A string literal passed to a call. Channel names, event names and IPC keys are
- * the real coupling in an Electron app, and they are invisible to import graphs.
- */
-export interface LiteralUse {
-  from: string;
-  file: string;
-  callee: string;
-  member?: string;
-  value: string;
-  line: number;
 }
 
 /**
@@ -48,7 +37,7 @@ export interface ParsedFile {
   shapes: ShapeRecord[];
   functions: FunctionRecord[];
   calls: CallSite[];
-  literals: LiteralUse[];
+  literals: LiteralRecord[];
 }
 
 export interface Parser {
