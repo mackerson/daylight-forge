@@ -1,0 +1,144 @@
+# visual-desloppify
+
+> Get all the data, then focus it down.
+
+Static extraction plus an agent swarm that focuses a codebase down to a small map that is actually
+true — and keeps checking it stays true. See [DESIGN.md](DESIGN.md) for the architecture and the
+decisions behind it.
+
+**Status: P0–P5 built.** Extraction, invariants, the claim store + MCP server, the focus stack, the
+agent adapters, and the Electron/three.js viewer. P1, P2 and P5 passed their gate tests; P3 and P4
+did not fully — see DESIGN.md → "What the runs actually showed". P6 not started.
+
+## Run it
+
+Requires Node ≥22.18 (native TypeScript type-stripping; there is no build step).
+
+```bash
+pnpm install
+
+node src/cli.ts extract    <repo> --out ./out   # L0 graph + D1-D3 findings + L1 mermaid
+node src/cli.ts invariants <repo> --out ./out   # compile invariants as L0 queries, run them
+node src/cli.ts focus      <repo> --out ./out   # build the L1→L2→L3 focus stack
+node src/cli.ts agent      <repo> --out ./out --tools claude [--mode focus]
+VDS_DIR=./out pnpm run view                     # the festooned tree
+
+node src/test/smoke.ts ./out                    # claim semantics + MCP boundary (no agent cost)
+```
+
+Options:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--out <dir>` | `<path>/.codemap` | output directory |
+| `--depth <n>` | `3` | L1 grouping depth for the Mermaid render |
+| `--commit <sha>` | — | record the commit the tree came from |
+| `--include-tests` | off | include test files (they duplicate shapes legitimately) |
+| `--top <n>` | `15` | rows per console table |
+
+Outputs `graph.json` (L0), `findings.json` (D1–D3, patterns, families) and `map.mmd` (L1 Mermaid).
+
+## What P0 does
+
+**Extract (L0).** Files, symbols, imports, heritage, structure shapes and callable signatures.
+Resolution is syntactic: relative specifiers plus `tsconfig` path aliases, everything else marked
+external. Asset imports (css, images, fonts) are counted and skipped rather than counted as failures.
+Heritage edges are only drawn when the target name is unambiguous — a guess there would be a
+fabricated edge, which the design forbids.
+
+**Detect duplication (D1–D3).** All deterministic; no LLM finds anything here.
+
+- **D1 — structure shape.** Jaccard over `(fieldName, type)` sets across interfaces, type aliases and
+  classes. Candidates come from an inverted index on field name, so there is no N² matrix.
+- **D2 — duplicate function names**, across at least two files.
+- **D3 — duplicate signatures**, name-agnostic, informative types only. Without inference an
+  un-annotated function is `(any) => any`; that is absence of information, not evidence, so it's
+  dropped.
+
+**Families.** Detector links clustered so we adjudicate once per family rather than once per pair. A
+link qualifies only if D1 is present, or D2 **and** D3 both are — see DESIGN.md for why unioning on
+any single weak link welds the codebase into one blob.
+
+**Patterns.** Oversized D2/D3 groups (`getById` across 19 repositories) are the repository pattern,
+not copy-paste. Reclassified as patterns and kept — they are evidence of a shared *role*, and become
+input to L2 clustering.
+
+## Parser note
+
+P0 parses with the **TypeScript compiler API**, not tree-sitter, behind the `Parser` interface in
+`src/extract/parser.ts`. For a TS/TSX-only milestone it is strictly better: exact JSX handling, no
+native or WASM grammar build, and it parses broken files fine. tree-sitter's value is polyglot, which
+is explicitly deferred. Swapping it in is a provider add, not a rewrite.
+
+## P0 results on the calibration fixture
+
+Fixture: `enclave` (Electron, ~400 source files, ~127k LOC), three labelled points. Full context in
+DESIGN.md → Calibration fixture.
+
+| Fixture | files | symbols | edges | D1 | D2 | D3 | patterns | families |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| pre-collapse `2a1645e` | 326 | 6718 | 8346 | 75 | 80 | 73 | 21 | 47 |
+| pre-remediation `e946f57` | 395 | 8695 | 10657 | 79 | 85 | 90 | 29 | 47 |
+| HEAD `27baaf2` | 404 | 8812 | 10778 | 79 | 85 | 90 | 29 | 47 |
+
+Runs in ~0.3s per fixture. Import resolution 100%, zero diagnostics.
+
+**D1 reproduced the manual swarm's headline finding** on pre-collapse — "several data structures that
+were all the same but for a few fields":
+
+```
+1.00  row-types.ts#ChannelParticipantRow   ≈  row-types.ts#ChatParticipantRow
+1.00  ipc/chatHelpers.ts#PendingApprovalInfo ≈ services/ChatService.ts#CapturedApproval
+1.00  repositories/EventRepository.ts#EventTableRow ≈ repositories/row-types.ts#EventRow
+1.00  services/BackupService.ts#Snapshot   ≈  shared/types.ts#BackupSnapshot
+1.00  sync/DiscoveryService.ts#DiscoveredDevice ≈ shared/ipc-types.ts#SyncDiscoveredDevice
+      … plus five renderer-local *NodeData types each duplicating shared/types.ts
+0.67  row-types.ts#ChannelRow              ≈  row-types.ts#ChatRow
+```
+
+### Two corrections P0 forced on the design
+
+1. **Family clustering.** Unioning on any detector link took transitive closure through common
+   signatures and welded 107 unrelated symbols into one "family". Qualification is now D1-alone or
+   D2+D3-together. An over-merged family is worse than no family — it hides the real one inside it.
+2. **The negative-control criterion.** "Detectors go quiet at HEAD" was wrong. Aggregate counts don't
+   move because the tree *grew* 326 → 404 files, and HEAD is only clean of what was actually
+   remediated. Of three chat/channel pairs surviving at HEAD, two are documented as deliberate
+   ("compat surface", "intentional UX skins") and one — `ChatParticipantRow`, byte-identical to
+   `ChannelParticipantRow` and referenced only by its own declaration — is dead residual left behind
+   when the `chat_*` tables went away. **It survived both manual sweeps.** The criterion is now
+   per-finding triage to documented-deliberate or genuine-residual, never merely unexplained.
+
+## Layout
+
+```
+src/
+  cli.ts                 entry point
+  graph/types.ts         L0 schema — language-neutral on purpose
+  extract/
+    parser.ts            provider contract
+    ts-parser.ts         TypeScript compiler API provider
+    resolve.ts           import resolution + tsconfig path aliases
+    index.ts             walk, parse, assemble
+  detect/duplication.ts  D1-D3, patterns, families
+  render/mermaid.ts      L1 render
+```
+
+## Known limitations
+
+- **`codex` cannot be driven headlessly against the MCP server.** It discovers the tools and then
+  auto-denies every call (`user cancelled MCP tool call`). `approval_policy="never"` and
+  `"on-failure"` do not change it; the only bypass also removes the read-only sandbox, so the
+  adapter is left as-is rather than weakened.
+- **`grok` and `opencode` register MCP servers persistently.** The driver prints the exact
+  `mcp add` command for you to run; it will not mutate your agent config itself.
+- **L3 has not converged** to the 8–12 nodes a person can hold — currently 21, of which 7 are
+  unfocused path residue.
+- Verdict claims collected before the boolean-value rule landed are rejected on re-merge by design;
+  they need re-collecting rather than coercing.
+
+## Next
+
+**P6 — target architecture and the plan.** Author the target tree, diff current against it, and emit
+the ordered refactor plan plus per-step task packets. The fixture gives a direct test: generate the
+collapse plan for `2a1645e` and compare it against the real `collapse-plan.md`.

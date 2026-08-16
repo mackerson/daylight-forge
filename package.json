@@ -1,0 +1,29 @@
+{
+  "name": "visual-desloppify",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Get all the data, then focus it down.",
+  "bin": {
+    "vds": "src/cli.ts"
+  },
+  "scripts": {
+    "extract": "node src/cli.ts extract",
+    "typecheck": "tsc --noEmit",
+    "view": "electron electron/main.cjs"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "three": "^0.185.1",
+    "typescript": "^5.9.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/three": "^0.185.4",
+    "electron": "^43.4.0"
+  }
+}

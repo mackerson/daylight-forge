@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';"
+    />
+    <title>visual-desloppify</title>
+    <style>
+      :root {
+        --bg: #0a0c10;
+        --panel: #11151c;
+        --line: #1e2530;
+        --text: #d8dee9;
+        --dim: #7c8798;
+        --accent: #6ea8fe;
+        --named: #7ee0a8;
+        --path: #5a6675;
+        --warn: #f0a868;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+      body {
+        font: 13px/1.5 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+        color: var(--text);
+      }
+      #scene { position: absolute; inset: 0; }
+
+      .panel {
+        position: absolute;
+        background: color-mix(in srgb, var(--panel) 92%, transparent);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 14px;
+        backdrop-filter: blur(8px);
+      }
+      #hud { top: 14px; left: 14px; min-width: 260px; }
+      #hud h1 { margin: 0 0 8px; font-size: 13px; letter-spacing: .04em; }
+      #hud .sub { color: var(--dim); font-size: 11px; margin-bottom: 10px; }
+      .row { display: flex; justify-content: space-between; gap: 16px; padding: 1px 0; }
+      .row span:last-child { color: var(--dim); }
+      .lvl { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+      .lvl.active { color: var(--accent); }
+
+      #legend { bottom: 14px; left: 14px; font-size: 11px; color: var(--dim); }
+      .key { display: flex; align-items: center; gap: 7px; padding: 1px 0; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+
+      #inspect { top: 14px; right: 14px; width: 330px; max-height: 78vh; overflow: auto; display: none; }
+      #inspect h2 { margin: 0 0 4px; font-size: 13px; color: var(--accent); }
+      #inspect .purpose { color: var(--text); margin: 8px 0; font-style: italic; }
+      #inspect .none { color: var(--dim); font-style: italic; }
+      #inspect ul { margin: 6px 0 0; padding-left: 16px; color: var(--dim); font-size: 11px; }
+
+      #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+      .label {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        white-space: nowrap;
+        font-size: 11px;
+        color: var(--text);
+        text-shadow: 0 0 6px var(--bg), 0 0 3px var(--bg);
+        pointer-events: none;
+      }
+      .label.dim { color: var(--dim); font-size: 10px; }
+
+      #help { bottom: 14px; right: 14px; font-size: 11px; color: var(--dim); text-align: right; }
+      kbd {
+        background: var(--line); border-radius: 3px; padding: 1px 5px;
+        font: inherit; color: var(--text);
+      }
+      #error { top: 50%; left: 50%; transform: translate(-50%,-50%); display: none; max-width: 560px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="labels"></div>
+
+    <div class="panel" id="hud">
+      <h1>visual&#8209;desloppify</h1>
+      <div class="sub" id="dir"></div>
+      <div class="row"><span>L0 files</span><span id="s-files">—</span></div>
+      <div class="row"><span>L0 symbols</span><span id="s-symbols">—</span></div>
+      <div class="row"><span>L0 edges</span><span id="s-edges">—</span></div>
+      <div class="lvl" id="lvl-3"><div class="row"><span>L3 architecture</span><span id="s-l3">—</span></div></div>
+      <div class="row" id="lvl-2"><span>L2 subsystem</span><span id="s-l2">—</span></div>
+      <div class="row" id="lvl-1"><span>L1 module</span><span id="s-l1">—</span></div>
+      <div class="lvl"><div class="row"><span>L3 status</span><span id="s-status">—</span></div></div>
+    </div>
+
+    <div class="panel" id="legend">
+      <div class="key"><i class="dot" style="background:#7ee0a8"></i> agent&#8209;named cluster (intent)</div>
+      <div class="key"><i class="dot" style="background:#5a6675"></i> path group (filing, not intent)</div>
+      <div class="key"><i class="dot" style="background:#f0a868"></i> defended &mdash; must survive focus</div>
+      <div class="key"><span style="color:#6ea8fe">&mdash;&mdash;</span> spine (hierarchy)</div>
+      <div class="key"><span style="color:#8a5cf6">&#8271;&#8271;&#8271;</span> festoon (cross&#8209;edge)</div>
+    </div>
+
+    <div class="panel" id="inspect">
+      <h2 id="i-name"></h2>
+      <div class="sub" id="i-meta"></div>
+      <div id="i-purpose"></div>
+      <div id="i-members"></div>
+    </div>
+
+    <div class="panel" id="help">
+      drag orbit &middot; scroll zoom <em>(= altitude)</em> &middot; click inspect<br />
+      <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> jump to level &middot; <kbd>a</kbd> auto&#8209;LOD &middot; <kbd>f</kbd> festoons
+    </div>
+
+    <div class="panel" id="error"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
