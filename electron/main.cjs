@@ -259,6 +259,8 @@ ipcMain.handle('vds:load', () => {
     stack,
     fileEdges,
     initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
+    perf: !!process.env.VDS_PERF,
+    lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
     findings: readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] }),
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),

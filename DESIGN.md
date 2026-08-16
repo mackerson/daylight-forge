@@ -463,6 +463,16 @@ That routing is what makes "this limb's dependencies all leave the subtree" visi
 haze beneath the leaves. Camera distance maps to tree depth here, the same way it maps to focus
 altitude in the graph view.
 
+**LOD is legibility, not performance — measured.** On the 449-node / 855-rope fixture the
+distance-driven LOD renders 7 nodes at 0.14ms/frame; showing all 449 costs 0.28ms. Against a
+16.7ms budget that is a saving of under 1% of a frame, because nodes are instanced (one draw
+call per level whether it holds 7 or 449) and label layout and picking are bounded by screen
+area rather than by tree size. So semantic zoom has to justify itself on *meaning* alone, and
+on a small tree it does not: the popping costs more attention than the decluttering returns.
+All levels are shown by default; LOD engages above ~2500 nodes, where the cost curve starts to
+bite. Label count is hard-capped regardless, since it is the only per-frame cost that scales
+with the graph.
+
 **Caveat on labels.** 3D gives room but doesn't solve labels by itself — perspective scaling makes
 distant text unreadable and depth-sorted billboards overlap just as happily as 2D ones. Needs an
 explicit declutter policy: LOD tiers by camera distance, labels on approach and on hover, aggregate

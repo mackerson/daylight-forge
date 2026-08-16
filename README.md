@@ -172,6 +172,13 @@ Five panels plus the scene, all driving the same store:
   hierarchically bundled through their common ancestors (where does this live). `VDS_MODE=tree`
   opens straight into the tree, which is also how the headless screenshots are taken.
 
+  **all levels** is the default: every node visible at once, no popping. LOD was never a
+  performance mechanism here — measured on the 449-node fixture it saves 0.14ms against a
+  16.7ms frame budget, under 1%, because nodes are instanced (one draw call per level
+  regardless of count) and the per-frame CPU work is bounded by screen area rather than tree
+  size. Switch to **auto detail** to get distance-driven levels back; it engages automatically
+  above 2500 nodes, where the numbers start to matter.
+
   Hover highlights: a node lights up with its label forced visible, its whole subtree's
   dependencies turn amber, and everything else dims. Hovering a rope highlights just that
   connection and names both ends. Tracing an edge by eye stops working the moment two cross,

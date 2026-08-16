@@ -127,6 +127,8 @@ export interface LoadPayload {
   fileEdges: Array<{ from: string; to: string; weight: number }>;
   /** Lets a headless screenshot open straight into a given layout. */
   initialMode?: 'graph' | 'tree';
+  /** Enables the frame-time probe; set from VDS_PERF. */
+  perf?: boolean;
   findings: Findings;
   invariants: { results: InvariantResult[] } | null;
   defended: string[];
