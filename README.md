@@ -16,15 +16,31 @@ Requires Node ≥22.18 (native TypeScript type-stripping; there is no build step
 
 ```bash
 pnpm install
-
-node src/cli.ts extract    <repo> --out ./out   # L0 graph + D1-D3 findings + L1 mermaid
-node src/cli.ts invariants <repo> --out ./out   # compile invariants as L0 queries, run them
-node src/cli.ts focus      <repo> --out ./out   # build the L1→L2→L3 focus stack
-node src/cli.ts agent      <repo> --out ./out --tools claude [--mode focus]
-VDS_DIR=./out pnpm run view                     # the festooned tree
-
-node src/test/smoke.ts ./out                    # claim semantics + MCP boundary (no agent cost)
+pnpm map <repo>          # extract + invariants + focus in one parse → ./out
+pnpm view                # the festooned tree (reads ./out)
 ```
+
+Then let agents decorate and focus the map:
+
+```bash
+pnpm agent <repo> --tools claude              # answer frontier questions
+pnpm agent <repo> --tools claude --mode focus # propose clusters / elisions / defences
+pnpm focus <repo>                             # rebuild the stack with what they found
+```
+
+Everything defaults to `./out`; pass `--out <dir>` to put it elsewhere (then `VDS_DIR=<dir> pnpm view`).
+
+| Script | Does |
+| --- | --- |
+| `pnpm map <repo>` | extract + invariants + focus, single parse — the usual entry point |
+| `pnpm extract <repo>` | L0 graph + D1–D3 findings + L1 mermaid only |
+| `pnpm invariants <repo>` | compile invariants to L0 queries and run them |
+| `pnpm focus <repo>` | rebuild the L1→L2→L3 stack from the claim store |
+| `pnpm agent <repo>` | drive an agent CLI; `--tools`, `--mode`, `--batch`, `--model`, `--timeout`, `--dry-run` |
+| `pnpm view` | Electron + three.js viewer |
+| `pnpm shot` | render headlessly to `./out/view.png` instead of opening a window |
+| `pnpm smoke ./out` | claim semantics + MCP boundary tests — costs no agent turns |
+| `pnpm typecheck` | `tsc --noEmit` |
 
 Options:
 

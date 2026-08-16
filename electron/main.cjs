@@ -10,7 +10,8 @@ const path = require('node:path');
  * a narrow preload surface, and no remote content ever loaded.
  */
 
-const DIR = process.env.VDS_DIR || process.cwd();
+// Defaults to ./out so `pnpm view` works with no env fiddling.
+const DIR = process.env.VDS_DIR || path.resolve('out');
 const RENDERER = path.join(__dirname, 'renderer');
 
 // ES modules cannot load over file:// — the origin is `null` and CORS blocks them. Rather

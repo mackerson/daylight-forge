@@ -8,9 +8,15 @@
     "vds": "src/cli.ts"
   },
   "scripts": {
+    "map": "node src/cli.ts map",
     "extract": "node src/cli.ts extract",
-    "typecheck": "tsc --noEmit",
-    "view": "electron electron/main.cjs"
+    "invariants": "node src/cli.ts invariants",
+    "focus": "node src/cli.ts focus",
+    "agent": "node src/cli.ts agent",
+    "view": "electron electron/main.cjs",
+    "shot": "VDS_SHOT=${VDS_SHOT:-./out/view.png} electron electron/main.cjs",
+    "smoke": "node src/test/smoke.ts",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=22.18"

@@ -72,11 +72,14 @@ function short(id: string): string {
 }
 
 function runExtract(args: Args): void {
-  const started = Date.now();
   const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
   graph.generatedAt = new Date().toISOString();
   if (args.commit) graph.commit = args.commit;
+  emitExtract(args, graph);
+}
 
+function emitExtract(args: Args, graph: Graph): void {
+  const started = Date.now();
   const dup = detectDuplication(graph);
   const mermaid = toMermaid(graph, { depth: args.depth });
   const mstats = mermaidStats(graph, { depth: args.depth });
@@ -135,7 +138,14 @@ function runExtract(args: Args): void {
 
 function runInvariants(args: Args): void {
   const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
-  const results = evaluateAll(graph, ENCLAVE_INVARIANTS);
+  emitInvariants(args, graph, evaluateAll(graph, ENCLAVE_INVARIANTS));
+}
+
+function emitInvariants(
+  args: Args,
+  graph: Graph,
+  results: ReturnType<typeof evaluateAll>,
+): void {
 
   console.log(`\ninvariants — ${args.root}`);
   if (args.commit) console.log(`commit ${args.commit}`);
@@ -163,10 +173,35 @@ function runInvariants(args: Args): void {
   }
 }
 
+/** extract + invariants + focus from ONE parse. The individual commands re-parse. */
+function runMap(args: Args): void {
+  const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
+  graph.generatedAt = new Date().toISOString();
+  if (args.commit) graph.commit = args.commit;
+  emitExtract(args, graph);
+
+  const invariants = ENCLAVE_INVARIANTS.map((inv) => evaluate(graph, inv));
+  emitInvariants(args, graph, invariants);
+
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  emitFocus(args, graph, store, invariants);
+  store.close();
+}
+
 function runFocus(args: Args): void {
   const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
   const store = new ClaimStore(path.join(args.out, 'claims.db'));
   const invariants = ENCLAVE_INVARIANTS.map((inv) => evaluate(graph, inv));
+  emitFocus(args, graph, store, invariants);
+  store.close();
+}
+
+function emitFocus(
+  args: Args,
+  graph: Graph,
+  store: ClaimStore,
+  invariants: ReturnType<typeof evaluate>[],
+): void {
   const stack = buildStack(graph, store, invariants, { depth: args.depth });
 
   console.log(`\nfocus stack — ${args.root}`);
@@ -192,8 +227,12 @@ function runFocus(args: Args): void {
 
   fs.mkdirSync(args.out, { recursive: true });
   fs.writeFileSync(path.join(args.out, 'focus.json'), JSON.stringify(stack, null, 2));
+  // The viewer highlights defended nodes; export them alongside the stack.
+  fs.writeFileSync(
+    path.join(args.out, 'defended.json'),
+    JSON.stringify(store.defences().map((d) => d.node), null, 2),
+  );
   console.log(`\nwrote ${args.out}/focus.json`);
-  store.close();
 }
 
 async function runAgent(args: Args): Promise<void> {
@@ -252,6 +291,9 @@ switch (args.command) {
   case 'focus':
     runFocus(args);
     break;
+  case 'map':
+    runMap(args);
+    break;
   case 'agent':
     await runAgent(args);
     break;
@@ -259,6 +301,7 @@ switch (args.command) {
     console.log(`visual-desloppify — get all the data, then focus it down.
 
 usage:
+  node src/cli.ts map        <path> [options]   # extract + invariants + focus, one pass
   node src/cli.ts extract    <path> [options]
   node src/cli.ts invariants <path> [options]
   node src/cli.ts focus      <path> [options]
