@@ -19,6 +19,54 @@ Those two findings are the target output. They are not dependency-graph findings
 What the manual run lacked: persistence, provenance, incrementality, and a view that scales past what
 Mermaid can lay out. That's what this is.
 
+### Stigmergy, and why the form has to be visible
+
+Agent swarms coordinate **stigmergically**: they do not talk to each other, they modify a
+shared environment and read back what others left. The codebase is that environment. So is
+our claim store — an agent deposits an evidenced claim and the next one reads the
+accumulated state, exactly like a pheromone trail.
+
+Stigmergy is only as good as the read-back loop, and that is where drift comes from at speed
+or scale. Each agent acts on a stale picture of the whole, makes a locally sensible edit, and
+the sum of locally sensible edits is globally shapeless. Add more agents, or let them edit
+faster, and drift accelerates — not because any one of them is wrong, but because none of
+them can see the form. That is the actual failure this tool addresses: **shorten the loop
+between "the codebase changed" and "everyone can see the new shape."** The 50,000ft view is
+the stigmergic signal made legible.
+
+Two consequences fall straight out of that framing:
+
+- **Contradictions are the highest-value signal**, not an inconvenience. In a stigmergic
+  system, conflicting deposits mark precisely where the shared picture has diverged. That is
+  why they are preserved and surfaced rather than auto-resolved.
+- **The map is the medium, so it must be cheap to read.** A map that takes an hour to
+  interpret does not shorten anyone's loop. Hence focusing, and hence the insistence that a
+  small true map beats a complete one.
+
+## Related work
+
+Prior art is dense here, and most of it is good. Worth being specific so we do not
+re-derive things:
+
+| Tool | What it already does |
+| --- | --- |
+| [desloppify](https://github.com/peteromallet/desloppify) | The direct ancestor: an agent harness on a `scan → score → review → triage → execute → rescan` cycle, mechanical detectors plus LLM review of naming/abstractions/module boundaries, state in `.desloppify/`, 29 languages |
+| CodeCharta, CodeScene, Sourcetrail (archived 2021) | The visualisation genre — city metaphor, circular packing, interactive dependency graphs |
+| ArchUnit, Sonargraph, NDepend, Structure101 (now in Sonar) | In-repo, CI-enforced architecture rules and drift detection. Our invariants are a lightweight ArchUnit for TypeScript with prose attached |
+| Thoughtworks Radar: *architecture drift reduction with LLMs* | Deterministic analysis combined with LLM evaluation for structural **and** semantic violations — named as an industry technique |
+
+**Against desloppify specifically.** It produces a prioritised *queue*; this produces a
+*form*. A ranked list of issues, however good, never tells you the shape of the application —
+which is the gap that motivated this project. They are complementary rather than competing:
+desloppify's findings could feed this frontier, and its 29-language coverage dwarfs our
+TS/JS-only extraction. It also *executes* fixes, where we are deliberately read-only.
+
+**One lesson worth stealing.** desloppify's score deliberately widens the gap when an issue
+is marked `wontfix`, so the metric resists gaming. We have no equivalent: an agent can clear
+frontier items cheaply by ruling things out, and nothing currently costs it anything to do
+so. Evidence enforcement and contradiction preservation make a *false* claim expensive, but a
+*dismissive* one is still free. Open problem.
+
 ### Focusing is the target activity
 
 The hand-authored artifact that came out of the manual run closes with a line aimed squarely at this
@@ -602,6 +650,11 @@ the fixture repo.**
    quiet at HEAD. Precision matters more than recall here — a noisy map is ignored.
 3. **Cross-agent session cost.** Four CLIs × repeated frontier passes gets expensive fast. Budget
    ceilings need to be real, visible, and enforced in the driver.
+4. **Dismissal is free.** Evidence enforcement makes a false claim expensive; it does nothing about
+   an agent clearing frontier items by ruling them out cheaply. desloppify solves the analogous
+   problem by widening its score gap on `wontfix`. We need something equivalent — perhaps a
+   negative claim requires strictly more evidence than a positive one, or dismissals decay back onto
+   the frontier unless corroborated.
 4. **Grok MCP configuration** — unverified. Confirm before building that adapter.
 
 ## Phases
