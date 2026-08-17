@@ -31,6 +31,7 @@ interface Args {
   mode: 'explore' | 'focus';
   timeoutMs?: number;
   model?: string;
+  session?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -68,6 +69,7 @@ function parseArgs(argv: string[]): Args {
     dryRun: flags.get('dry-run') === 'true',
     repo: flags.get('repo'),
     model: flags.get('model'),
+    session: flags.get('session'),
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
@@ -323,7 +325,7 @@ async function runAgent(args: Args): Promise<void> {
   const repo = args.repo ?? args.root;
   const report = await drive({
     dir: args.out, repo, tools: args.tools, batch: args.batch, dryRun: args.dryRun,
-    mode: args.mode, timeoutMs: args.timeoutMs, model: args.model,
+    mode: args.mode, timeoutMs: args.timeoutMs, model: args.model, session: args.session,
   });
 
   console.log(`\nmode: ${args.mode} — ${report.assigned.length} frontier item(s)`);

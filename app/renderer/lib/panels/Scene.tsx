@@ -78,6 +78,70 @@ function channelColor(node: any, channel: Channel, maxHeat: number): THREE.Color
   return node.defended ? COLORS.defended : node.purpose ? COLORS.named : COLORS.path;
 }
 
+/**
+ * The legend has to follow the channel. A fixed key would describe one colouring while the
+ * scene showed another, which is worse than no key at all — the viewer would trust it.
+ */
+function Legend({ channel, agents, mode }: { channel: Channel; agents: string[]; mode: string }) {
+  const [open, setOpen] = useState(true);
+  const swatch = (c: THREE.Color | string, label: string, note?: string) => (
+    <div className="key" key={label}>
+      <i className="dot" style={{ background: typeof c === 'string' ? c : `#${c.getHexString()}` }} />
+      <span>{label}</span>
+      {note && <em>{note}</em>}
+    </div>
+  );
+
+  return (
+    <div className={open ? 'legend' : 'legend closed'}>
+      <button className="legend-head" onClick={() => setOpen(!open)}>
+        {channel} key {open ? '▾' : '▸'}
+      </button>
+      {open && (
+        <div className="legend-body">
+          {channel === 'structure' && (
+            <>
+              {swatch(COLORS.named, 'agent-named cluster', 'intent')}
+              {swatch(COLORS.path, 'path group', 'filing, not intent')}
+              {swatch(COLORS.defended, 'defended', 'must survive focusing')}
+            </>
+          )}
+          {channel === 'belief' && (
+            <>
+              {swatch(BELIEF.UNKNOWN, 'unknown', 'never examined')}
+              {swatch(BELIEF.INFERRED, 'inferred', 'one source')}
+              {swatch(BELIEF.CORROBORATED, 'corroborated', 'two or more agree')}
+              {swatch(BELIEF.CONFIRMED, 'confirmed', 'human-arbitrated')}
+              {swatch(BELIEF.CONTRADICTED, 'contradicted', 'sources disagree')}
+              {swatch(BELIEF.STALE, 'stale', 'file changed since')}
+              <p className="legend-note">Brightness tracks how many members carry a claim.</p>
+            </>
+          )}
+          {channel === 'frontier' && (
+            <>
+              {swatch(COLD, 'cold', 'settled or unimportant')}
+              {swatch(HOT, 'hot', 'next, by uncertainty x centrality')}
+            </>
+          )}
+          {channel === 'agent' && (
+            <>
+              {agents.length
+                ? agents.map((a) => swatch(agentColor(a), a))
+                : <p className="legend-note">No agent has claimed anything here yet.</p>}
+              {swatch(BELIEF.UNKNOWN, 'untouched')}
+            </>
+          )}
+
+          <div className="legend-sep" />
+          {swatch('#6ea8fe', 'spine', mode === 'tree' ? 'containment' : 'hierarchy')}
+          {swatch('#8a5cf6', 'festoon', mode === 'tree' ? 'bundled via ancestors' : 'cross-edge')}
+          {swatch('#ffd479', 'highlighted', 'hovered, and its subtree')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Scene({ data }: { data: LoadPayload | null }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<any>(null);
@@ -99,6 +163,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   const [lod, setLod] = useState<'auto' | 'all'>('all');
   const [nodeCount, setNodeCount] = useState(0);
   const [channel, setChannel] = useState<Channel>('structure');
+  const [agents, setAgents] = useState<string[]>([]);
   const [pulses, setPulses] = useState(true);
   const pulsesRef = useRef(true);
   pulsesRef.current = pulses;
@@ -163,6 +228,11 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     setLevels(distinct);
     // Count what is drawn, not what exists: with identical partitions the duplicate
     // levels never render, and reporting them inflated the number by 3x.
+    setAgents([
+      ...new Set(
+        [...laid.nodes.values()].flatMap((n: any) => n.belief?.agents ?? []),
+      ),
+    ].sort() as string[]);
     setNodeCount(
       [...laid.nodes.values()].filter((n: any) => distinct.includes(n.level) || n.isRoot).length,
     );
@@ -1118,6 +1188,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           </div>
         )}
       </div>
+      <Legend channel={channel} agents={agents} mode={mode} />
     </div>
   );
 }

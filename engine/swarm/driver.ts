@@ -25,6 +25,8 @@ export interface DriveOptions {
   model?: string;
   dryRun?: boolean;
   mode?: DriveMode;
+  /** Ties every event this run emits back to the job that started it. */
+  session?: string;
 }
 
 const SYSTEM_RULES = `
@@ -141,7 +143,7 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
 
   const cmd = serverCommand();
   const cfgPath = path.join(dir, 'mcp.json');
-  fs.writeFileSync(cfgPath, JSON.stringify(mcpConfig(cmd, dir, 'multi', model), null, 2));
+  fs.writeFileSync(cfgPath, JSON.stringify(mcpConfig(cmd, dir, 'multi', model, options.session), null, 2));
 
   const results: AgentResult[] = [];
   const unavailable: string[] = [];
@@ -166,7 +168,7 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
     results.push(
       await run(adapter, {
         prompt, cwd: repo, mcpConfigPath: cfgPath,
-        session: `vds-${name}-${claimsBefore}`,
+        session: options.session ? `${options.session}:${name}` : `vds-${name}-${claimsBefore}`,
         model, timeoutMs, maxTurns: 40,
       }),
     );

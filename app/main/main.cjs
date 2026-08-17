@@ -423,7 +423,13 @@ ipcMain.handle('vds:refocus', () => {
 
 ipcMain.handle('vds:agent', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };
-  const argv = ['agent', state.repo, '--out', state.dir, '--tools', opts.tools || 'claude'];
+  // Reserve the job id up front so the agent's events carry it and the UI can tie the
+  // two together — without that, several concurrent runs are one undifferentiated stream.
+  const jobId = `job${jobSeq + 1}`;
+  const argv = [
+    'agent', state.repo, '--out', state.dir,
+    '--tools', opts.tools || 'claude', '--session', jobId,
+  ];
   if (opts.mode === 'focus') argv.push('--mode', 'focus');
   if (opts.batch) argv.push('--batch', String(opts.batch));
   if (opts.model) argv.push('--model', opts.model);

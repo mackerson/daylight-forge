@@ -38,6 +38,7 @@ export function App() {
   );
   const dragRef = useRef<{ active: boolean }>({ active: false });
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedJob, setSelectedJob] = useState<string | null>(null);
   // Snapshot of the store before a job, so completion can report the delta rather than
   // making you read a log to find out what happened.
   const statsRef = useRef<QueryPayload['stats'] | null>(null);
@@ -121,8 +122,15 @@ export function App() {
   const act = async (fn: () => Promise<{ error?: string } | unknown>) => {
     setBusy(true);
     setError(null);
-    const res = (await fn()) as { error?: string } | undefined;
+    const res = (await fn()) as { error?: string; id?: string } | undefined;
     if (res?.error) setError(res.error);
+    // Starting a job takes you to it. A run you cannot see is a run you cannot judge,
+    // and the panel it belongs in is one click away that nobody makes.
+    if (res?.id) {
+      setSelectedJob(res.id);
+      setTab('agents');
+      setInfoOpen(true);
+    }
     setBusy(false);
     await refresh();
   };
@@ -268,7 +276,8 @@ export function App() {
               {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
               {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} />}
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} />}
-              {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend} />}
+              {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend}
+                  selected={selectedJob} onSelect={setSelectedJob} />}
               {mapped && tab === 'invariants' && <Invariants data={data!} />}
             </aside>
           </>

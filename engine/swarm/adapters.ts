@@ -197,7 +197,9 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
 }
 
 /** The MCP config claude/codex accept, pointing at our stdio server. */
-export function mcpConfig(serverCmd: string[], dir: string, agentTool: string, model?: string) {
+export function mcpConfig(
+  serverCmd: string[], dir: string, agentTool: string, model?: string, session?: string,
+) {
   return {
     mcpServers: {
       vds: {
@@ -205,7 +207,11 @@ export function mcpConfig(serverCmd: string[], dir: string, agentTool: string, m
         args: serverCmd.slice(1),
         // The model matters for provenance: two runs of the same CLI on different models
         // are independent sources for the belief calculus, and must be distinguishable.
-        env: { VDS_DIR: dir, VDS_AGENT: agentTool, ...(model ? { VDS_MODEL: model } : {}) },
+        env: {
+          VDS_DIR: dir, VDS_AGENT: agentTool,
+          ...(model ? { VDS_MODEL: model } : {}),
+          ...(session ? { VDS_SESSION: session } : {}),
+        },
       },
     },
   };

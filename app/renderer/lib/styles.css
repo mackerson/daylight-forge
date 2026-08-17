@@ -196,6 +196,31 @@ code, .mono { font-family: inherit; }
   text-shadow: 0 0 8px var(--bg), 0 0 4px var(--bg);
 }
 
+.legend {
+  position: absolute; left: 10px; bottom: 10px; z-index: 4;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line); border-radius: 8px;
+  font-size: 11px; max-width: 260px;
+}
+.legend-head {
+  background: none; border: 0; width: 100%; text-align: left; cursor: pointer;
+  padding: 6px 10px; color: var(--dim); font: inherit;
+}
+.legend-body { padding: 0 10px 8px; }
+.legend .key { display: flex; align-items: baseline; gap: 7px; padding: 1px 0; }
+.legend .key em { color: var(--dim); font-style: normal; }
+.legend .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; align-self: center; }
+.legend-sep { height: 1px; background: var(--line); margin: 6px 0; }
+.legend-note { color: var(--dim); margin: 5px 0 0; }
+
+.job-row {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.job-row:hover { background: var(--panel-2); }
+.job-row.selected { border-color: var(--accent); background: var(--panel-2); }
+
 .scene-tip {
   position: absolute; z-index: 5; pointer-events: none;
   max-width: 260px; padding: 7px 10px;
