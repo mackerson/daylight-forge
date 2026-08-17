@@ -11,6 +11,7 @@ import { collapseCandidates, detectCommunities } from './detect/communities.ts';
 import { extract } from './extract/index.ts';
 import type { Graph } from './graph/types.ts';
 import { mermaidStats, toMermaid } from './render/mermaid.ts';
+import { loadParsers } from './extract/registry.ts';
 import { loadInvariants } from './invariants/load.ts';
 import { saveInvariant } from './invariants/save.ts';
 import type { Invariant } from './invariants/engine.ts';
@@ -1047,6 +1048,11 @@ function runCheck(args: Args): void {
 }
 
 const args = parseArgs(process.argv.slice(2));
+
+// Opted-in language providers, before anything reads a file. Loading one runs its code, so
+// this only ever happens because VDS_PARSERS named it; see extract/registry.ts.
+const registry = await loadParsers();
+for (const f of registry.failures) console.log(`parser '${f.spec}' not loaded: ${f.reason}`);
 
 switch (args.command) {
   case 'extract':

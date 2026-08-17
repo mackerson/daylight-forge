@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Graph, GraphNode } from '../graph/types.ts';
-import type { CallSite, ImportBinding, ParsedFile } from './parser.ts';
+import type { CallSite, ImportBinding, ParsedFile, Parser } from './parser.ts';
 import { aliasesFromTsconfig, Resolver } from './resolve.ts';
-import { TypeScriptParser } from './ts-parser.ts';
+import { activeParsers, parserFor } from './registry.ts';
 
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'out', 'coverage', 'release',
@@ -13,6 +13,11 @@ const IGNORED_DIRS = new Set([
 ]);
 
 export interface ExtractOptions {
+  /**
+   * Language providers to use. Defaults to the built-ins; `loadParsers()` adds any the user
+   * has opted into. Passed in rather than resolved here so a test can drive the seam.
+   */
+  parsers?: Parser[];
   root: string;
   /**
    * Where to keep the parse cache. Parsing is the expensive half and it is per-file and
@@ -135,14 +140,14 @@ function saveCache(dir: string | undefined, cache: ParseCache, live: Set<string>
 
 export function extract(options: ExtractOptions): Graph {
   const { root, includeDeclarations = false, includeTests = false, includeVendored = false } = options;
-  const parser = new TypeScriptParser();
-  const cache = loadCache(options.cacheDir, parser.name);
+  // Several providers may be in play; each file goes to whichever claims its extension.
+  const parsers = options.parsers?.length ? options.parsers : activeParsers();
+  const cache = loadCache(options.cacheDir, parsers.map((p) => p.name).sort().join('+'));
   const liveHashes = new Set<string>();
 
   const allFiles = walk(root);
   const parseable = allFiles.filter((f) => {
-    const ext = f.slice(f.lastIndexOf('.'));
-    if (!parser.extensions.includes(ext)) return false;
+    if (!parserFor(parsers, f)) return false;
     if (!includeDeclarations && f.endsWith('.d.ts')) return false;
     return true;
   });
@@ -205,7 +210,10 @@ export function extract(options: ExtractOptions): Graph {
 
     // Cache key includes the path: the same content at a different path produces different
     // node ids, so content alone would hand back records pointing at the wrong file.
-    const cacheKey = `${contentHash}:${rel}`;
+    // Keyed by provider as well: two providers producing different records for the same
+    // bytes must not hand each other's output back.
+    const fileParser = parserFor(parsers, rel)!;
+    const cacheKey = `${fileParser.name}:${contentHash}:${rel}`;
     liveHashes.add(cacheKey);
 
     let parsed: ParsedFile;
@@ -215,7 +223,7 @@ export function extract(options: ExtractOptions): Graph {
       graph.stats.reusedFiles++;
     } else {
       try {
-        parsed = parser.parse(rel, source, contentHash);
+        parsed = fileParser.parse(rel, source, contentHash);
         cache.entries[cacheKey] = parsed;
       } catch (err) {
         graph.diagnostics.push({ file: rel, message: `parse failed: ${(err as Error).message}` });
@@ -313,7 +321,10 @@ export function extract(options: ExtractOptions): Graph {
     if (!includeVendored && looksVendored(source)) continue;
 
     const contentHash = createHash('sha256').update(source).digest('hex').slice(0, 12);
-    const cacheKey = `${contentHash}:${rel}`;
+    // Keyed by provider as well: two providers producing different records for the same
+    // bytes must not hand each other's output back.
+    const fileParser = parserFor(parsers, rel)!;
+    const cacheKey = `${fileParser.name}:${contentHash}:${rel}`;
     liveHashes.add(cacheKey);
 
     let parsed: ParsedFile;
@@ -323,7 +334,7 @@ export function extract(options: ExtractOptions): Graph {
       graph.stats.reusedFiles++;
     } else {
       try {
-        parsed = parser.parse(rel, source, contentHash);
+        parsed = fileParser.parse(rel, source, contentHash);
         cache.entries[cacheKey] = parsed;
       } catch {
         continue;

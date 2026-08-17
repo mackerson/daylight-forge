@@ -171,8 +171,22 @@ Ordered loosely by value, not scheduled.
       must not look like it. Splits and merges are reported as ambiguous and left alone —
       guessing would attach a human's confirmed knowledge to a file they never examined.
       **Test:** `engine/test/identity.ts` (33), leaning on what must be *refused*.
-- [ ] Polyglot. Either a tree-sitter provider behind the existing `Parser` interface, or
-      consume desloppify's 29-language findings instead of re-deriving them.
+- [x] **The polyglot seam is real and tested. A second grammar still needs your call on a
+      dependency.** The schema was always language-neutral, but `extract()` constructed a
+      `TypeScriptParser` directly, so the interface had one implementation and was therefore a
+      guess about what a second would need. Files now dispatch to whichever provider claims
+      their extension, several coexist, and the parse cache is keyed per provider so two
+      cannot hand each other's records back. `engine/test/registry.ts` drives a deliberately
+      non-TypeScript provider through to edges, cross-language imports and detector findings.
+      Writing it immediately found two places the "language-neutral" schema was not:
+      `GraphNode.endLine` and `LiteralRecord.callee` were required, which only a full-fidelity
+      AST can supply. Both are optional now.
+      `VDS_PARSERS` loads additional providers. **Loading one runs its code** — it is a plugin
+      surface by construction, so it is opt-in, it names what it loaded, a failure is reported
+      rather than swallowed, and a provider may not take over an extension another already
+      claims. What remains is picking the grammar: tree-sitter is a dependency, and consuming
+      desloppify's 29 languages makes us a consumer of their tool. **Both are your call.**
+      **Test:** `engine/test/registry.ts` (20).
 - [x] Symbol-level depth in the tree, expand-on-demand. **alt**-click a file and it opens to
       show what it declares; alt-click again and it shuts. On the modifier rather than a plain
       click because selecting a file is the common act, and relaying out the tree under the

@@ -23,10 +23,18 @@ export interface GraphNode {
   /** Repo-relative, posix separators. */
   file: string;
   line: number;
-  endLine: number;
+  /**
+   * Last line of the declaration, where the provider can say.
+   *
+   * Optional because the seam said so: writing a second, non-TypeScript provider made it
+   * obvious that a required end line is a demand only a full-fidelity AST can meet. A
+   * provider that knows where a symbol starts and not where it ends should be able to say
+   * that, rather than inventing a number.
+   */
+  endLine?: number;
   exported: boolean;
-  /** Invalidation key: hash of the containing file's bytes. */
-  contentHash: string;
+  /** Invalidation key: hash of the containing file's bytes. Files always carry one. */
+  contentHash?: string;
 }
 
 export type EdgeKind = 'imports' | 'contains' | 'extends' | 'implements' | 'calls' | 'references';
@@ -58,8 +66,17 @@ export interface CallRecord {
   line: number;
 }
 
-export interface LiteralRecord extends CallRecord {
+/**
+ * A string literal worth knowing about.
+ *
+ * `from` and `callee` describe the call it was passed to, which is how `literal-fanin`
+ * invariants work — but a literal does not have to be an argument to anything, and a provider
+ * for a language without that notion should still be able to report one.
+ */
+export interface LiteralRecord extends Partial<CallRecord> {
   value: string;
+  file: string;
+  line: number;
 }
 
 /** A structure's shape, for D1 (near-duplicate structures). */

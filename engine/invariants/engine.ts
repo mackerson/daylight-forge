@@ -142,7 +142,10 @@ export function evaluate(graph: Graph, inv: Invariant): InvariantResult {
       const uses = graph.literals.filter(
         (l) =>
           l.value === p.value &&
-          (!calleeRe || calleeRe.test(l.callee)) &&
+          // A literal need not be an argument to anything — a provider for a language
+          // without that notion still reports it. Requiring a callee here would silently
+          // drop those, so an invariant asking about one only matches literals that have one.
+          (!calleeRe || (l.callee !== undefined && calleeRe.test(l.callee))) &&
           fileMatches(l.file, p.within),
       );
       const files = new Set(uses.map((u) => u.file));
