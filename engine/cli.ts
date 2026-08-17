@@ -367,6 +367,12 @@ async function runAgent(args: Args): Promise<void> {
   }
   for (const u of report.unavailable) console.log(`skipped: ${u}`);
   for (const b of report.budgetStops) console.log(`budget: ${b}`);
+  if (report.converged) {
+    console.log(
+      'converged: nothing left scores above the floor — further runs would be paying to ' +
+        'answer questions nobody needs answered.',
+    );
+  }
 
   if (args.dryRun) {
     console.log(`\n(dry run — no agent spawned)`);

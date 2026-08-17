@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Graph } from '../graph/types.ts';
@@ -14,13 +15,40 @@ import type { Graph } from '../graph/types.ts';
  */
 
 export type {
-  Tier, DeadCandidate, Cycle, Limb, GodNode, StructureReport,
+  Tier, DeadCandidate, Cycle, Limb, GodNode, Divergence, StructureReport,
 } from './structure-types.ts';
 import type {
-  Cycle, DeadCandidate, GodNode, Limb, StructureReport, Tier,
+  Cycle, DeadCandidate, Divergence, GodNode, Limb, StructureReport, Tier,
 } from './structure-types.ts';
 
 const fileOf = (id: string) => (id.includes('#') ? id.slice(0, id.indexOf('#')) : id);
+const dirOf = (f: string) => f.slice(0, f.lastIndexOf('/')) || '(root)';
+
+/**
+ * Commits touching each file.
+ *
+ * A file everything depends on is not automatically a problem — a logger legitimately has
+ * high fan-in. What hurts is a file that is *both* depended upon and constantly changing,
+ * because every change ripples. Without history this is unavailable, and the finding
+ * degrades to fan-in alone rather than pretending.
+ */
+function churnByFile(root: string, commits = 400): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const log = execFileSync(
+      'git',
+      ['-C', root, 'log', `-n${commits}`, '--format=', '--name-only'],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    for (const line of log.split('\n')) {
+      const f = line.trim();
+      if (f) out.set(f, (out.get(f) ?? 0) + 1);
+    }
+  } catch {
+    // No history, a shallow clone, or not a repo — all fine, all mean no churn signal.
+  }
+  return out;
+}
 
 /**
  * Entrypoints are declared, not guessed where possible: package.json is the only place a
@@ -266,18 +294,44 @@ export function detectStructure(graph: Graph): StructureReport {
     if (n.kind === 'file') continue;
     symbolsPerFile.set(n.file, (symbolsPerFile.get(n.file) ?? 0) + 1);
   }
+  const churn = churnByFile(graph.root);
   const fanIns = [...files].map((f) => incoming.get(f)?.size ?? 0).sort((a, b) => a - b);
   // Relative, not absolute: "a lot of dependents" only means anything for this codebase.
   const p90 = fanIns[Math.floor(fanIns.length * 0.9)] ?? 0;
   const gods: GodNode[] = [...files]
-    .map((f) => ({
-      id: f,
-      fanIn: incoming.get(f)?.size ?? 0,
-      fanOut: outgoing.get(f)?.size ?? 0,
-      symbols: symbolsPerFile.get(f) ?? 0,
-    }))
+    .map((f) => {
+      const fanIn = incoming.get(f)?.size ?? 0;
+      const c = churn.get(f);
+      return {
+        id: f,
+        fanIn,
+        fanOut: outgoing.get(f)?.size ?? 0,
+        symbols: symbolsPerFile.get(f) ?? 0,
+        ...(c !== undefined ? { churn: c, pain: fanIn * c } : {}),
+      };
+    })
     .filter((g) => g.fanIn > Math.max(3, p90))
-    .sort((a, b) => b.fanIn - a.fanIn);
+    // Rank by pain where history exists, by fan-in where it does not.
+    .sort((a, b) => (b.pain ?? b.fanIn) - (a.pain ?? a.fanIn));
+
+  // ---- tree divergence -------------------------------------------------------
+  // Where the authored tree and the dependency tree disagree, per file.
+  const divergences: Divergence[] = [];
+  for (const f of files) {
+    const neighbours = [...(outgoing.get(f) ?? []), ...(incoming.get(f) ?? [])];
+    if (neighbours.length < 4) continue;
+    const home = dirOf(f);
+    const byDir = new Map<string, number>();
+    for (const n of neighbours) byDir.set(dirOf(n), (byDir.get(dirOf(n)) ?? 0) + 1);
+
+    const [pull, count] = [...byDir].sort((a, b) => b[1] - a[1])[0]!;
+    const share = count / neighbours.length;
+    // Two thirds of its connections somewhere else is filing, not architecture.
+    if (pull !== home && share >= 0.66) {
+      divergences.push({ file: f, home, pull, share, neighbours: neighbours.length });
+    }
+  }
+  divergences.sort((a, b) => b.share - a.share || b.neighbours - a.neighbours);
 
   // ---- orphan clusters -------------------------------------------------------
   const orphans: string[][] = [];
@@ -331,6 +385,7 @@ export function detectStructure(graph: Graph): StructureReport {
     cycles,
     limbs,
     gods,
+    divergences,
     orphans,
     stats: { reachable: reachable.size, unreachable: files.size - reachable.size, files: files.size },
   };

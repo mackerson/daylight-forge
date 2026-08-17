@@ -53,6 +53,7 @@ const POLARITY: Record<string, [string, boolean]> = {
   cycle_verdict: ['cycle_verdict', true],
   limb_verdict: ['limb_verdict', true],
   god_verdict: ['god_verdict', true],
+  divergence_verdict: ['divergence_verdict', true],
 };
 
 export function isNarrative(predicate: string): boolean {

@@ -154,12 +154,38 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
             </section>
           )}
 
+          {st.divergences.length > 0 && (
+            <section className="card">
+              <h3>Filed apart from what they use <span className="dim">{st.divergences.length}</span></h3>
+              <p className="dim">
+                The gap between how the code is filed and how it is wired, per file.
+              </p>
+              <ul className="rows">
+                {st.divergences.slice(0, 12).map((d) => (
+                  <li key={d.file}>
+                    <code>{d.file}</code>
+                    <div className="dim">
+                      in <code>{d.home}</code>, but {(d.share * 100).toFixed(0)}% wired to{' '}
+                      <code>{d.pull}</code>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {st.gods.length > 0 && (
             <section className="card">
               <h3>Most depended upon <span className="dim">{st.gods.length}</span></h3>
               <ul className="rows">
                 {st.gods.slice(0, 12).map((g) => (
-                  <li key={g.id}><code>{g.id}</code> <span className="dim">fan-in {g.fanIn} · fan-out {g.fanOut}</span></li>
+                  <li key={g.id}>
+                    <code>{g.id}</code>{' '}
+                    <span className="dim">
+                      fan-in {g.fanIn} · fan-out {g.fanOut}
+                      {g.churn !== undefined ? ` · ${g.churn} commits · pain ${g.pain}` : ''}
+                    </span>
+                  </li>
                 ))}
               </ul>
             </section>

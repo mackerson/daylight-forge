@@ -14,7 +14,7 @@ import type { ClaimStore } from '../store/claims.ts';
 
 export interface FrontierItem {
   subject: string;
-  kind: 'file' | 'family' | 'contradiction' | 'dead' | 'cycle' | 'limb' | 'god';
+  kind: 'file' | 'family' | 'contradiction' | 'dead' | 'cycle' | 'limb' | 'god' | 'divergence';
   question: string;
   score: number;
   uncertainty: number;
@@ -48,7 +48,8 @@ export interface Structure {
   dead?: Array<{ kind: string; id: string; tier: string; why: string }>;
   cycles?: Array<{ members: string[]; internalEdges: number }>;
   limbs?: Array<{ dir: string; files: number; leakage: number }>;
-  gods?: Array<{ id: string; fanIn: number; fanOut: number; symbols: number }>;
+  gods?: Array<{ id: string; fanIn: number; fanOut: number; symbols: number; pain?: number }>;
+  divergences?: Array<{ file: string; home: string; pull: string; share: number }>;
   warning?: string;
 }
 
@@ -224,6 +225,24 @@ export function frontier(
     });
   }
 
+  for (const d of structure.divergences ?? []) {
+    const { u, why } = uncertaintyOf(d.file, 'divergence_verdict');
+    if (u === 0) continue;
+    const c = cent.get(d.file) ?? 0.05;
+    items.push({
+      subject: d.file,
+      kind: 'divergence',
+      question:
+        `${d.file} lives in ${d.home} but ${(d.share * 100).toFixed(0)}% of what it connects ` +
+        `to is in ${d.pull}. Should it move there, or is it filed correctly and the coupling ` +
+        'is the thing to fix? Answer with divergence_verdict — true if it should move.',
+      score: u * c * d.share,
+      uncertainty: u,
+      centrality: c,
+      why,
+    });
+  }
+
   for (const b of store.contradictions()) {
     const c = cent.get(b.subject.split('#')[0]) ?? 0.5;
     items.push({
@@ -238,4 +257,16 @@ export function frontier(
   }
 
   return items.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Has the map converged?
+ *
+ * The design called for stopping when the top score falls below a floor — "the natural
+ * 'the map has converged' signal, rather than an arbitrary iteration count" — and runs
+ * stopped on batch size or timeout instead. A floor rather than an empty queue, because
+ * the tail of a frontier is always populated with things nobody should pay to answer.
+ */
+export function converged(items: FrontierItem[], floor = 0.05): boolean {
+  return items.length === 0 || items[0].score < floor;
 }

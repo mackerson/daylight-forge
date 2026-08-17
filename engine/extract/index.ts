@@ -56,6 +56,9 @@ function gitTracked(root: string): string[] | null {
     const out = execFileSync('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard'], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      // Not being a git repo is an expected, handled case — git saying so on stderr is
+      // noise printed over every run on a plain directory.
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     const files = out.split('\n').filter(Boolean);
     return files.length ? files : null;

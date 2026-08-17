@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaimStore } from '../store/claims.ts';
 import { ADAPTERS, available, mcpConfig, run, type Adapter, type AgentResult } from './adapters.ts';
-import { frontier, type FrontierItem } from './frontier.ts';
+import { converged, frontier, type FrontierItem } from './frontier.ts';
 import { buildStack } from '../focus/stack.ts';
 import type { Graph } from '../graph/types.ts';
 
@@ -135,6 +135,8 @@ export interface DriveReport {
   registrationHints: string[];
   /** Frontier items skipped because another live session holds them. */
   skippedLeased: number;
+  /** True when nothing left is worth an agent's time. */
+  converged: boolean;
   /** Adapters not launched because the run had spent its ceiling. */
   budgetStops: string[];
 }
@@ -258,5 +260,6 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
     statsBefore, statsAfter, unavailable, registrationHints,
     skippedLeased: taken.size,
     budgetStops,
+    converged: options.mode !== 'focus' && converged(assigned),
   };
 }

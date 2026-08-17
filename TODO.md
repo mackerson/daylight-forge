@@ -146,16 +146,20 @@ Ordered loosely by value, not scheduled.
       expansion path first).
 - [ ] Watch mode: `derive` re-runs on claim changes, but a code change still needs a manual
       Map. The parse cache makes this cheap now.
-- [ ] `vite.config.ts` is owned by no layer in our own target.
+- [x] `vite.config.ts` belongs to the renderer, which owns its own build config. The target
+      is now `strict` and every file is claimed.
 
 ### Findings
 - [ ] **D4** — copy-paste bodies via token MinHash/winnowing. Specified in the taxonomy, never
       built. `jscpd` is the obvious wrap.
 - [ ] **D5** — near-duplicate module purpose via embeddings. Deferred deliberately.
 - [ ] Community detection (Louvain/Leiden) for collapse candidates. Specified, never built.
-- [ ] Tree divergence — authored directory tree versus actual dependency tree. Listed in the
-      taxonomy; the data exists in the two spine modes but nothing computes the gap.
-- [ ] God nodes use fan-in only; the design says fan-in × *churn*, which needs git history.
+- [x] Tree divergence — per-file gap between where a file is filed and where it is wired,
+      with the directory it actually belongs to. Distinct from a weird limb, which is a whole
+      subtree. Found `App.tsx`: filed in `lib`, 78% wired to `lib/panels`.
+- [x] God nodes rank by fan-in × churn where git history exists, degrading to fan-in where it
+      does not rather than pretending. Puts `claims.ts` (10 × 5) above `graph/types.ts`
+      (15 × 1), which is right — types barely change, so depending on them costs nothing.
 - [ ] Calibrate similarity thresholds against the fixture rather than the current guesses.
       (DESIGN open problem 2.)
 - [ ] Wrap `knip` / `dependency-cruiser` as optional providers to cross-check our native
@@ -164,11 +168,12 @@ Ordered loosely by value, not scheduled.
 ### Agents and claims
 - [ ] Legacy verdict claims collected before the boolean rule are rejected on re-merge and
       need re-collecting, not coercing.
-- [ ] `get_focus_state` emits no event, so it is invisible in the live feed unlike every other
-      read tool.
-- [ ] Elision `into` resolves by cluster *name*; two clusters sharing a name would collide.
-- [ ] Frontier convergence signal — stop when the top score falls below a floor. Designed,
-      not implemented; runs currently stop on batch size or timeout.
+- [x] `get_focus_state` now emits, so no read tool is invisible in the live feed.
+- [x] Two clusters sharing a name now resolve to neither, rather than an elision silently
+      landing in whichever was registered last.
+- [x] Frontier convergence: `converged()` reports when nothing scores above a floor, and the
+      driver says so — "further runs would be paying to answer questions nobody needs
+      answered". A floor rather than an empty queue, because the tail is always populated.
 
 ### Interface
 - [ ] Scene framing does not refit when the panel is resized; `0` recentres manually.
@@ -178,8 +183,10 @@ Ordered loosely by value, not scheduled.
 
 ### Operations
 - [ ] Packaging. `pnpm gui` needs the repo checked out; there is no distributable build.
-- [ ] Test coverage is thin outside the store and scene: no direct tests for `extract`,
-      `resolve`, or the invariant engine, all of which have already shipped real bugs.
+- [x] `engine/test/extract.ts` (38) and `engine/test/structure.ts` (15) close the gap.
+      Both shipped bugs have a named regression case: the tsconfig `/*` that disabled every
+      path alias, and the missing `NewExpression` that hid every instantiation.
+      Suite is now 142 assertions across 8 files, all run by `pnpm test:all`.
 - [ ] `--include-tests` is off by default, so test files never appear in any map.
 
 ---

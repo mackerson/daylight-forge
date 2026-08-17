@@ -207,6 +207,7 @@ export function createServer(opts: ServerOptions) {
       inputSchema: {},
     },
     async () => {
+      emit('get_focus_state', {});
       const stack = buildStack(graph, store, undefined);
       return ok({
         l3Status: stack.l3Status,
