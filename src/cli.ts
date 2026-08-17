@@ -12,6 +12,7 @@ import { buildStack } from './focus/stack.ts';
 import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive } from './swarm/driver.ts';
 import { evaluate } from './invariants/engine.ts';
+import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
 
 interface Args {
   command: string;
@@ -23,6 +24,7 @@ interface Args {
   top: number;
   tools: string[];
   invariantsFile?: string;
+  targetFile?: string;
   batch: number;
   dryRun: boolean;
   repo?: string;
@@ -67,6 +69,7 @@ function parseArgs(argv: string[]): Args {
     repo: flags.get('repo'),
     model: flags.get('model'),
     invariantsFile: flags.get('invariants-file'),
+    targetFile: flags.get('target-file'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
     timeoutMs: flags.get('timeout') ? Number(flags.get('timeout')) * 1000 : undefined,
   };
@@ -465,6 +468,67 @@ function runDerive(args: Args): void {
   console.log(`derived in ${Date.now() - started}ms (no re-parse)`);
 }
 
+/** Diff the declared target architecture against what the code actually does. */
+function runPlan(args: Args): void {
+  const graphPath = path.join(args.out, 'graph.json');
+  const graph: Graph = fs.existsSync(graphPath)
+    ? JSON.parse(fs.readFileSync(graphPath, 'utf8'))
+    : extract({ root: args.root, includeTests: args.includeTests, cacheDir: path.join(args.out, '.cache') });
+
+  const spec = loadTarget(graph.root, args.targetFile);
+  if (!spec) {
+    console.log(
+      `\nno target architecture for ${graph.root}\n` + '─'.repeat(72) +
+        '\nThe target is intent, so it lives with the repo and no extraction can derive it.' +
+        '\nCreate vds.target.json (or pass --target-file):\n\n' +
+        JSON.stringify(
+          { layers: [
+            { name: 'ui', include: ['src/renderer/**'], mayDependOn: ['shared'], purpose: 'what the user sees' },
+            { name: 'core', include: ['src/main/**'], mayDependOn: ['shared'] },
+            { name: 'shared', include: ['src/shared/**'], mayDependOn: [] },
+          ] }, null, 2,
+        ) + '\n',
+    );
+    process.exit(1);
+  }
+
+  const diff = diffTarget(graph, spec);
+  fs.mkdirSync(args.out, { recursive: true });
+  fs.writeFileSync(path.join(args.out, 'plan.json'), JSON.stringify(diff, null, 2));
+
+  const packets = taskPackets(diff, graph);
+  const packetDir = path.join(args.out, 'packets');
+  fs.rmSync(packetDir, { recursive: true, force: true });
+  if (packets.length) {
+    fs.mkdirSync(packetDir, { recursive: true });
+    packets.forEach((p, i) => fs.writeFileSync(path.join(packetDir, `step-${i + 1}.md`), p));
+  }
+
+  console.log(`\ntarget vs actual — ${graph.root}`);
+  console.log('─'.repeat(72));
+  for (const l of diff.layers) {
+    console.log(`  ${l.name.padEnd(16)} ${String(l.files).padStart(4)} files${l.purpose ? `  — ${l.purpose}` : ''}`);
+  }
+  if (diff.unplaced.length) {
+    console.log(`  ${'(unplaced)'.padEnd(16)} ${String(diff.unplaced.length).padStart(4)} files owned by no layer`);
+  }
+
+  console.log(
+    `\n${diff.ok ? 'OK — the code matches the declared target' : `${diff.violations.length} violating file pair(s)`}`,
+  );
+
+  for (const step of diff.steps.slice(0, args.top)) {
+    console.log(`\n  ${step.rank}. [${step.kind}] ${step.title}`);
+    console.log(`     ${step.why}`);
+    console.log(`     resolves ${step.resolves} edge(s) · blast radius ${step.blastRadius} · ${step.files.length} file(s)`);
+    for (const f of step.files.slice(0, 4)) console.log(`       ${f}`);
+    if (step.files.length > 4) console.log(`       … ${step.files.length - 4} more`);
+  }
+
+  if (packets.length) console.log(`\nwrote ${args.out}/plan.json and ${packets.length} task packet(s)`);
+  process.exitCode = diff.ok ? 0 : 1;
+}
+
 const args = parseArgs(process.argv.slice(2));
 
 switch (args.command) {
@@ -479,6 +543,9 @@ switch (args.command) {
     break;
   case 'map':
     runMap(args);
+    break;
+  case 'plan':
+    runPlan(args);
     break;
   case 'derive':
     runDerive(args);
@@ -501,6 +568,7 @@ usage:
   node src/cli.ts invariants <path> [options]
   node src/cli.ts focus      <path> [options]
   node src/cli.ts derive     --out <dir>        # rebuild the stack from cached graph.json
+  node src/cli.ts plan       <path> [options]   # diff the declared target architecture
   node src/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
 
 options:

@@ -675,10 +675,34 @@ against the calibration fixture, because "we built it" is not the same as "it wo
 | **P3 Focus** | L1→L2→L3 by recorded, reversible, defended elisions | agents produce an L3 for the fixture comparable to the hand-drawn `README.md`, and its invariants pass | large |
 | **P4 Swarm** | four adapters, frontier scheduler, contradiction queue, budget caps | two models genuinely disagree on a real claim and arbitration resolves it | medium |
 | **P5 The view** | Electron + three.js festooned tree, semantic LOD, belief state | fly the fixture and spot a tangle you didn't already know about | large |
-| **P6 Live map** ◀ | the map re-derives when its inputs change — code *and* claims — with belief state driving node appearance | claims land mid-run and the scene updates without a Rebuild; re-deriving costs no re-parse | in progress |
-| **P7 Converge the focus** | L3 reaches a holdable size; clusters and elisions are arbitrable; dismissal costs something | L3 ≤ 12 nodes on enclave, every node agent-named or human-confirmed, invariants green | next |
-| **P8 The rest of the taxonomy** | dead code with confidence tiers, cycles, back-edges, weird limbs, god nodes, tree divergence | reproduce the stale-code audit's CONFIRMED set on `e946f57` | after |
-| **P9 Target + plan** | target architecture, current-vs-target diff, ordered plan, task packets | generate the collapse plan for `2a1645e`; compare against the real `collapse-plan.md` | after |
+| **P6 Live map** ✅ | map re-derives from either input; belief drives node appearance | derive costs no re-parse (17ms / 63ms); one file changed re-parses 1 of 34 | **passed** |
+| **P7 Converge the focus** ⚠️ | clusters/elisions arbitrable and rejection consequential; dismissal costs something | L3 ≤ 12 on enclave | **machinery done, gate not run** — convergence needs agent spend |
+| **P8 The rest of the taxonomy** ✅ | dead candidates with tiers, cycles, limbs, god nodes, orphans | flags `ChatParticipantRow` at HEAD | **passed** — see the corrected gate below |
+| **P9 Target + plan** ✅ | target architecture, diff, ordered plan, task packets | run at both fixture points | **passed** — found a real trust-boundary violation |
+
+### Corrected P8 gate
+
+"Reproduce the stale-code audit's CONFIRMED set" was the wrong gate, written before reading
+the audit closely. Most of its findings are *semantic bugs* — a cron parser ignoring
+day-of-week, a package script with no build step — which no reachability analysis reaches.
+The right gate is the dead-residual we independently verified: `ChatParticipantRow` at HEAD,
+byte-identical to `ChannelParticipantRow` and referenced only by its own declaration. It is
+flagged, at `low` tier, correctly: our call resolution is syntactic, so an unreferenced export
+is a candidate rather than a verdict.
+
+### What P9 actually showed
+
+The target diff found one violation, present at *both* fixture points: `src/main/preload.ts`
+imports `src/main/types.ts`, which is itself a re-export shim over `src/shared/types.ts`. So
+the trust bridge reaches through the capability root to get at shared vocabulary. Small, real,
+and precisely remediable — the generated step says "extract the shared part of types.ts out of
+main", which is exactly right.
+
+It did **not** flip between pre-collapse and HEAD, and that is the honest result rather than a
+failure: the collapse was a *duplication* problem, and layer rules do not detect duplication.
+Different finding classes need different mechanisms, which is the whole reason the taxonomy
+has more than one entry. Layering is checked by the target, duplication by D1–D3, drift by
+invariants, and none substitutes for another.
 
 ### Why P6 is the live map
 

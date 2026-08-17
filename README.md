@@ -6,6 +6,9 @@ Static extraction plus an agent swarm that focuses a codebase down to a small ma
 true — and keeps checking it stays true. See [DESIGN.md](DESIGN.md) for the architecture and the
 decisions behind it.
 
+**Status: P0–P9 built.** P6 live map, P8 structural findings and P9 target/plan passed their
+gates; P7's convergence gate needs agent spend and has not been run. Original status below.
+
 **Status: P0–P5 built.** Extraction, invariants, the claim store + MCP server, the focus stack, the
 agent adapters, and the Electron/three.js viewer. P1, P2 and P5 passed their gate tests; P3 and P4
 did not fully — see DESIGN.md → "What the runs actually showed". P6 not started.
@@ -61,6 +64,7 @@ one in wrecks every downstream number — a single copy of three.js contributed 
 | `pnpm gui:dev` | Vite dev server; run `VITE_DEV_SERVER_URL=http://127.0.0.1:5273 pnpm view` beside it |
 | `pnpm view` | Electron app against an already-built UI |
 | `pnpm shot` | render headlessly to `./out/view.png` instead of opening a window |
+| `pnpm plan <repo>` | diff the declared target architecture; writes `plan.json` + task packets |
 | `pnpm test` | smoke + scene-layout tests against `./out` |
 | `pnpm smoke ./out` | claim semantics + MCP boundary tests — costs no agent turns |
 | `pnpm typecheck` | `tsc --noEmit` |

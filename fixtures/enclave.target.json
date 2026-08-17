@@ -1,0 +1,29 @@
+{
+  "strict": false,
+  "layers": [
+    {
+      "name": "preload",
+      "include": ["src/main/preload.ts"],
+      "mayDependOn": ["shared"],
+      "purpose": "the sole bridge between the untrusted renderer and the capability root"
+    },
+    {
+      "name": "renderer",
+      "include": ["src/renderer/**"],
+      "mayDependOn": ["shared"],
+      "purpose": "untrusted UI; reaches the main process only through preload"
+    },
+    {
+      "name": "main",
+      "include": ["src/main/**"],
+      "mayDependOn": ["shared"],
+      "purpose": "capability root — fs, net, PTY, SQLite, provider keys"
+    },
+    {
+      "name": "shared",
+      "include": ["src/shared/**"],
+      "mayDependOn": [],
+      "purpose": "cross-process vocabulary; depends on nothing"
+    }
+  ]
+}
