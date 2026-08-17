@@ -14,6 +14,9 @@ export type {
 } from '../../../engine/store/types.ts';
 export type { InvariantResult } from '../../../engine/invariants/engine.ts';
 export type {
+  StructureReport, DeadCandidate, Cycle, Limb, GodNode, Tier,
+} from '../../../engine/detect/structure-types.ts';
+export type {
   D1Pair, Family, D2Group, D3Group, Pattern,
   // The renderer had its own `Findings`: the same five fields with the discriminants
   // dropped and `patterns` widened to plain string. The tool caught it on this repo, so
@@ -25,6 +28,7 @@ import type { DuplicationReport } from '../../../engine/detect/duplication.ts';
 import type { FocusStack } from '../../../engine/focus/types.ts';
 import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
 import type { InvariantResult } from '../../../engine/invariants/engine.ts';
+import type { StructureReport } from '../../../engine/detect/structure-types.ts';
 
 export interface VdsEvent {
   at: number;
@@ -65,6 +69,7 @@ export interface LoadPayload {
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
   findings: DuplicationReport;
+  structure: StructureReport | null;
   invariants: { results: InvariantResult[] } | null;
   defended: string[];
   graphStats: Record<string, number> | null;

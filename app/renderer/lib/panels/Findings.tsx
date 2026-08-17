@@ -6,8 +6,16 @@ import type { LoadPayload, QueryPayload } from '../types.ts';
  * (or an agent) adjudicates once per family rather than once per pair.
  */
 export function Findings({ data, query }: { data: LoadPayload; query: QueryPayload | null; onRefresh: () => void }) {
-  const [view, setView] = useState<'families' | 'pairs' | 'patterns'>('families');
+  const [view, setView] = useState<'families' | 'pairs' | 'patterns' | 'structure'>('families');
   const f = data.findings;
+  const st = data.structure;
+
+  // Verdicts on structural findings, so an adjudicated candidate stops looking unexamined.
+  const structureVerdicts = new Map(
+    (query?.beliefs ?? [])
+      .filter((b) => /_verdict$/.test(b.predicate) && !b.predicate.startsWith('duplication'))
+      .map((b) => [b.subject, b] as const),
+  );
 
   const verdicts = new Map(
     (query?.beliefs ?? [])
@@ -28,6 +36,9 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
         </button>
         <button className={view === 'patterns' ? 'chip active' : 'chip'} onClick={() => setView('patterns')}>
           Patterns ({f.patterns.length})
+        </button>
+        <button className={view === 'structure' ? 'chip active' : 'chip'} onClick={() => setView('structure')}>
+          Structure ({st ? st.dead.length + st.cycles.length + st.limbs.length + st.gods.length : 0})
         </button>
       </div>
 
@@ -82,6 +93,78 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
             </tbody>
           </table>
         </section>
+      )}
+
+      {view === 'structure' && st && (
+        <>
+          {st.warning && <p className="hint">{st.warning}</p>}
+          <section className="card">
+            <h3>Reachability</h3>
+            <p className="dim">
+              {st.stats.reachable} of {st.stats.files} files reachable from{' '}
+              {st.entrypoints.length} entrypoint(s).
+            </p>
+          </section>
+
+          <section className="card">
+            <h3>Dead candidates <span className="dim">{st.dead.length}</span></h3>
+            <p className="dim">
+              Candidates, not verdicts — static reachability misses dynamic dispatch, DI,
+              registries and framework conventions. The tier says how much to trust it.
+            </p>
+            <ul className="rows">
+              {st.dead.filter((d) => d.tier !== 'low').slice(0, 40).map((d) => {
+                const v = structureVerdicts.get(d.id);
+                return (
+                  <li key={d.id}>
+                    <span className={`pill ${d.tier === 'high' ? 'bad' : 'running'}`}>{d.tier}</span>{' '}
+                    <button className="link mono" onClick={() => window.vds.reveal({ file: d.id.split('#')[0] })}>
+                      {d.id}
+                    </button>
+                    {v && <span className={`pill ${v.status.toLowerCase()}`}>{v.status}</span>}
+                    <div className="dim">{d.why}</div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+
+          {st.cycles.length > 0 && (
+            <section className="card">
+              <h3>Cycles <span className="dim">{st.cycles.length}</span></h3>
+              <ul className="rows mono">
+                {st.cycles.map((c, i) => (
+                  <li key={i}>{c.members.length} files · {c.internalEdges} internal edges — {c.members.slice(0, 3).join(' → ')}…</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {st.limbs.length > 0 && (
+            <section className="card">
+              <h3>Weird limbs <span className="dim">{st.limbs.length}</span></h3>
+              <p className="dim">Subtrees whose edges mostly leave them — folders rather than modules.</p>
+              <ul className="rows">
+                {st.limbs.map((l) => (
+                  <li key={l.dir}>
+                    <code>{l.dir}</code> — {(l.leakage * 100).toFixed(0)}% of edges leave ({l.files} files)
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {st.gods.length > 0 && (
+            <section className="card">
+              <h3>Most depended upon <span className="dim">{st.gods.length}</span></h3>
+              <ul className="rows">
+                {st.gods.slice(0, 12).map((g) => (
+                  <li key={g.id}><code>{g.id}</code> <span className="dim">fan-in {g.fanIn} · fan-out {g.fanOut}</span></li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
       )}
 
       {view === 'patterns' && (

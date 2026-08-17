@@ -51,11 +51,17 @@ export function createServer(opts: ServerOptions) {
   };
 
   const nodesById = new Map(graph.nodes.map((n) => [n.id, n]));
-  const findings = JSON.parse(
-    fs.existsSync(path.join(opts.dir, 'findings.json'))
-      ? fs.readFileSync(path.join(opts.dir, 'findings.json'), 'utf8')
-      : '{"families":[],"d1":[],"d2":[],"d3":[],"patterns":[]}',
-  );
+  const readJson = (name: string, fallback: unknown) => {
+    const file = path.join(opts.dir, name);
+    if (!fs.existsSync(file)) return fallback;
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return fallback;
+    }
+  };
+  const findings = readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] });
+  const structure = readJson('structure.json', {});
 
   const server = new McpServer({ name: 'visual-desloppify', version: '0.1.0' });
 
@@ -173,7 +179,7 @@ export function createServer(opts: ServerOptions) {
       // Skip whatever another live session already holds, then lease what we hand back so
       // the next agent to ask gets different work.
       const taken = store.leasedElsewhere(opts.session);
-      const mine = frontier(graph, store, findings)
+      const mine = frontier(graph, store, findings, structure)
         .filter((item) => !taken.has(item.subject))
         .slice(0, limit);
       store.lease(mine.map((i) => i.subject), opts.session);
@@ -349,15 +355,35 @@ export function createServer(opts: ServerOptions) {
       inputSchema: {
         id: z.string(),
         prose: z.string(),
-        predicate: z.any().describe('an engine Predicate object'),
+        predicate: z
+          .any()
+          .describe(
+            'an engine Predicate object, e.g. ' +
+              '{"type":"forbidden-callee","within":{"file":"^src/"},"callee":"^Math\\.random$"}. ' +
+              'Valid types: absent, count, literal-fanin, forbidden-call, forbidden-callee, ' +
+              'required-callee, ordering.',
+          ),
         evidence: EvidenceSchema,
       },
     },
     async (a) => {
+      // Agents routinely send nested JSON as a string. Parsing it here beats rejecting a
+      // well-reasoned invariant over its envelope.
+      let predicate = a.predicate;
+      if (typeof predicate === 'string') {
+        try {
+          predicate = JSON.parse(predicate);
+        } catch {
+          return fail('predicate must be an object, or a JSON string that parses to one');
+        }
+      }
+      if (!predicate || typeof predicate !== 'object' || !('type' in predicate)) {
+        return fail('predicate needs a `type` — see the tool description for the valid set');
+      }
       try {
         store.submit({
           subject: `invariant:${a.id}`, predicate: 'invariant',
-          value: { prose: a.prose, predicate: a.predicate },
+          value: { prose: a.prose, predicate },
           confidence: 0.7, evidence: a.evidence, source,
         });
         return ok({ accepted: true, id: a.id });

@@ -14,7 +14,7 @@ import type { ClaimStore } from '../store/claims.ts';
 
 export interface FrontierItem {
   subject: string;
-  kind: 'file' | 'family' | 'contradiction';
+  kind: 'file' | 'family' | 'contradiction' | 'dead' | 'cycle' | 'limb' | 'god';
   question: string;
   score: number;
   uncertainty: number;
@@ -43,7 +43,35 @@ export interface Findings {
   families?: Array<{ id: string; members: string[]; detectors: string[]; topScore?: number }>;
 }
 
-export function frontier(graph: Graph, store: ClaimStore, findings: Findings = {}): FrontierItem[] {
+/** The structural half of the taxonomy, as written by `detectStructure`. */
+export interface Structure {
+  dead?: Array<{ kind: string; id: string; tier: string; why: string }>;
+  cycles?: Array<{ members: string[]; internalEdges: number }>;
+  limbs?: Array<{ dir: string; files: number; leakage: number }>;
+  gods?: Array<{ id: string; fanIn: number; fanOut: number; symbols: number }>;
+  warning?: string;
+}
+
+/**
+ * The traps, stated in the question itself.
+ *
+ * Static reachability is wrong in specific, well-known ways, and an agent that is not told
+ * which ways will confidently confirm a false positive. Naming them is the difference
+ * between "is this dead?" and a question that can actually be answered.
+ */
+const DEAD_TRAPS =
+  'Before agreeing, rule out every way this could be reached without an import: dynamic ' +
+  'import or require, a plugin or route registry keyed by string, dependency injection, ' +
+  'decorators, a framework convention (file-based routing, lifecycle hooks), reflection, ' +
+  'a build or config file naming it, test-only use, and public API surface consumers ' +
+  'depend on. Ruling it out needs more evidence than confirming it.';
+
+export function frontier(
+  graph: Graph,
+  store: ClaimStore,
+  findings: Findings = {},
+  structure: Structure = {},
+): FrontierItem[] {
   const cent = centrality(graph);
   const items: FrontierItem[] = [];
 
@@ -103,6 +131,93 @@ export function frontier(graph: Graph, store: ClaimStore, findings: Findings = {
       kind: 'file',
       question: `What is ${node.id} FOR? One sentence of intent, not a file listing.`,
       score: u * Math.max(c, 0.01),
+      uncertainty: u,
+      centrality: c,
+      why,
+    });
+  }
+
+  /**
+   * Structural findings. These were computed and then read by nobody: the frontier only
+   * knew about purposes and duplication families, so the largest finding class — and the
+   * one most likely to be wrong — was never adjudicated by anything.
+   */
+  const TIER_WEIGHT: Record<string, number> = { high: 1, medium: 0.7, low: 0.25 };
+
+  for (const d of structure.dead ?? []) {
+    const { u, why } = uncertaintyOf(d.id, 'liveness_verdict');
+    if (u === 0) continue;
+    const file = d.id.split('#')[0];
+    const c = cent.get(file) ?? 0.02;
+    items.push({
+      subject: d.id,
+      kind: 'dead',
+      question:
+        `Is ${d.id} actually dead? The detector says: ${d.why}. ${DEAD_TRAPS} ` +
+        'Answer with liveness_verdict — true if genuinely unreachable, false if it is reached.',
+      // A confident candidate in a heavily-depended-on file is worth far more than a
+      // low-tier guess at a leaf, so the tier multiplies rather than merely sorts.
+      score: u * Math.max(c, 0.02) * (TIER_WEIGHT[d.tier] ?? 0.25) * 2,
+      uncertainty: u,
+      centrality: c,
+      why: `${why}; ${d.tier}-confidence dead candidate`,
+    });
+  }
+
+  for (const cyc of structure.cycles ?? []) {
+    const id = `cycle:${cyc.members[0]}`;
+    const { u, why } = uncertaintyOf(id, 'cycle_verdict');
+    if (u === 0) continue;
+    const c = Math.max(...cyc.members.map((m) => cent.get(m) ?? 0), 0.05);
+    items.push({
+      subject: id,
+      kind: 'cycle',
+      question:
+        `These ${cyc.members.length} files form an import cycle (${cyc.internalEdges} edges ` +
+        `inside it): ${cyc.members.slice(0, 6).join(', ')}. Which single edge should be cut, ` +
+        'and what breaks if it is? Answer with cycle_verdict — true if the cycle is real and ' +
+        'worth breaking, false if it is a type-only or otherwise harmless cycle.',
+      score: u * c * 1.5,
+      uncertainty: u,
+      centrality: c,
+      why,
+    });
+  }
+
+  for (const limb of structure.limbs ?? []) {
+    const id = `limb:${limb.dir}`;
+    const { u, why } = uncertaintyOf(id, 'limb_verdict');
+    if (u === 0) continue;
+    const c = Math.max(...[...cent].filter(([f]) => f.startsWith(limb.dir + '/')).map(([, v]) => v), 0.05);
+    items.push({
+      subject: id,
+      kind: 'limb',
+      question:
+        `${(limb.leakage * 100).toFixed(0)}% of ${limb.dir}'s edges leave the subtree ` +
+        `(${limb.files} files), so it is a folder rather than a module. Is it a genuine ` +
+        'grouping with a shared purpose, or filing? Answer with limb_verdict — true if it ' +
+        'should be regrouped, false if the leakage is expected for what it is (a utils or ' +
+        'types directory legitimately leaks).',
+      score: u * c,
+      uncertainty: u,
+      centrality: c,
+      why,
+    });
+  }
+
+  for (const god of structure.gods ?? []) {
+    const { u, why } = uncertaintyOf(god.id, 'god_verdict');
+    if (u === 0) continue;
+    const c = cent.get(god.id) ?? 0.5;
+    items.push({
+      subject: god.id,
+      kind: 'god',
+      question:
+        `${god.id} has ${god.fanIn} dependents. Is it one thing that many modules ` +
+        'legitimately need (a logger, a shared type module), or several things that should ' +
+        'be split? Answer with god_verdict — true if it should be split, false if the ' +
+        'fan-in is appropriate.',
+      score: u * c * 0.8,
       uncertainty: u,
       centrality: c,
       why,

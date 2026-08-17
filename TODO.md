@@ -34,23 +34,32 @@ a target violation fails on its own with no invariants present.
 
 *P8 produces dead-code candidates and nothing routes them to anyone. Wire the loop.*
 
-- [ ] Feed `structure.json` findings into the frontier: dead candidates, cycles, weird limbs,
-      god nodes. Currently `frontier()` only knows about file purposes and duplication
-      families, so the largest and most error-prone finding class is never adjudicated.
-- [ ] Score them properly — a `high`-tier dead candidate in a high-centrality file should
-      outrank an unexamined leaf's purpose.
-- [ ] Frontier questions per finding kind, each stating the trap: dead code asks about
-      dynamic dispatch, DI, file-based routing, decorators, plugin registries, string-keyed
-      lookups, test-only use and public API surface.
-- [ ] Predicate vocabulary for the verdicts, all boolean, all in the polarity table.
-- [ ] Surface adjudicated structural findings in the Findings panel next to duplication.
-- [ ] `patterns` (oversized D2/D3 groups) are documented as "input to L2 clustering" and
-      nothing consumes them. Either feed them to the clustering prompt or stop claiming they
-      are input to it.
-- [ ] `propose_invariant` stores a claim and nothing ever compiles it into a runnable
-      invariant. Either land the authoring flow or remove the tool.
+- [x] `structure.json` findings feed the frontier: dead candidates, cycles, limbs, god nodes.
+      Threaded through every caller (MCP, driver, focus-stack heat), not just one.
+- [x] Tier *multiplies* the score rather than merely sorting, so a confident candidate in a
+      depended-on file outranks a low-tier guess at a leaf.
+- [x] Each question states its traps — the dead-code one names dynamic import, registries,
+      DI, decorators, framework conventions, reflection, test-only use and public API.
+- [x] `liveness_verdict`, `cycle_verdict`, `limb_verdict`, `god_verdict` — all boolean, all
+      in the polarity table, so none of them routes around the evidence economics.
+- [x] Findings panel has a Structure tab: reachability, tiered dead candidates with their
+      caveat, cycles, limbs, most-depended-upon, and any adjudicated verdict.
+- [x] `patterns` now feed the clustering prompt as shared-role hints, which is what they
+      were always documented to be.
+- [x] `propose_invariant` leads somewhere: `vds adopt` reviews proposals, refuses any that
+      is already red, and writes the rest to the repo's invariant file. Deliberately a
+      human-run step — an agent does not get to add to your build gate unattended.
+- [x] **Test:** `engine/test/frontier.ts` — 12 assertions covering routing, ranking, the
+      boolean requirement per predicate, and that an arbitrated finding leaves the queue.
 
-**Gate:** an agent tiers a real `high` candidate with evidence, and refutes a false one.
+**Gate:** ✅ closed live — an agent's proposed invariant (*"nothing under `engine/scene/`
+calls a randomness source"*) was adopted after verification and is now in the build gate,
+6/6 green.
+
+Fixed along the way: `evaluate()` had no default case, so an unrecognised predicate returned
+`undefined` and crashed every caller — including `check`. Malformed invariants are expected
+input when agents can propose them, so it now fails loudly and says which types are valid.
+The MCP tool also accepts a stringified predicate, which is what agents actually send.
 
 ---
 

@@ -76,9 +76,26 @@ Rules:
 - Prefer fewer nodes. Constants and file counts belong nowhere near a cluster name.
 `.trim();
 
-export function buildFocusPrompt(groups: Array<{ id: string; files: number }>): string {
+export function buildFocusPrompt(
+  groups: Array<{ id: string; files: number }>,
+  patterns: Array<{ key: string; members: string[] }> = [],
+): string {
   const lines = [FOCUS_RULES, '', 'Current L1 path groups (these are what you are focusing):', ''];
   for (const g of groups) lines.push(`  ${g.id}  (${g.files} files)`);
+
+  if (patterns.length) {
+    // Oversized detector groups are evidence of a shared *role* rather than copy-paste —
+    // which is precisely a hint about what belongs together. They were computed and
+    // documented as input to clustering, and nothing consumed them until now.
+    lines.push('', 'Shared roles detected across files (a hint at what belongs together —');
+    lines.push('these repeat because they play the same part, not because anyone copy-pasted):');
+    lines.push('');
+    for (const p of patterns.slice(0, 12)) {
+      const where = [...new Set(p.members.map((m) => m.split('#')[0]))];
+      lines.push(`  ${p.key} — ${p.members.length} across ${where.length} file(s)`);
+    }
+  }
+
   lines.push('');
   lines.push(
     'Propose the L2 subsystems and the L3 elisions. Aim for an architecture level a person ' +
@@ -123,10 +140,17 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   const { dir, repo, tools, batch = 5, timeoutMs = defaultTimeout, model, dryRun } = options;
 
   const graph = JSON.parse(fs.readFileSync(path.join(dir, 'graph.json'), 'utf8')) as Graph;
-  const findingsPath = path.join(dir, 'findings.json');
-  const findings = fs.existsSync(findingsPath)
-    ? JSON.parse(fs.readFileSync(findingsPath, 'utf8'))
-    : {};
+  const readJson = (name: string) => {
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) return {};
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return {};
+    }
+  };
+  const findings = readJson('findings.json');
+  const structure = readJson('structure.json');
 
   const store = new ClaimStore(path.join(dir, 'claims.db'));
   const statsBefore = store.stats();
@@ -138,7 +162,7 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   const assigned =
     options.mode === 'focus'
       ? []
-      : frontier(graph, store, findings)
+      : frontier(graph, store, findings, structure)
           .filter((item) => !taken.has(item.subject))
           .slice(0, batch);
   if (assigned.length) store.lease(assigned.map((a) => a.subject), session);
@@ -148,6 +172,7 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
     const stack = buildStack(graph, store, undefined);
     prompt = buildFocusPrompt(
       stack.levels[0].nodes.map((n) => ({ id: n.id, files: n.fileCount })),
+      (findings as { patterns?: Array<{ key: string; members: string[] }> }).patterns ?? [],
     );
   } else {
     prompt = buildPrompt(assigned);

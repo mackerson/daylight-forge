@@ -8,6 +8,7 @@ import type { Graph } from './graph/types.ts';
 import { mermaidStats, toMermaid } from './render/mermaid.ts';
 import { evaluateAll } from './invariants/engine.ts';
 import { loadInvariants } from './invariants/load.ts';
+import type { Invariant } from './invariants/engine.ts';
 import { buildStack } from './focus/stack.ts';
 import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive } from './swarm/driver.ts';
@@ -282,11 +283,20 @@ function emitFocus(
   store: ClaimStore,
   invariants: ReturnType<typeof evaluate>[],
 ): void {
-  const findingsPath = path.join(args.out, 'findings.json');
-  const findings = fs.existsSync(findingsPath)
-    ? JSON.parse(fs.readFileSync(findingsPath, 'utf8'))
-    : undefined;
-  const stack = buildStack(graph, store, invariants, { depth: args.depth, findings });
+  const readOut = (name: string) => {
+    const file = path.join(args.out, name);
+    if (!fs.existsSync(file)) return undefined;
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return undefined;
+    }
+  };
+  const stack = buildStack(graph, store, invariants, {
+    depth: args.depth,
+    findings: readOut('findings.json'),
+    structure: readOut('structure.json'),
+  });
 
   console.log(`\nfocus stack — ${args.root}`);
   console.log('─'.repeat(72));
@@ -549,6 +559,94 @@ function runPlan(args: Args): void {
  * `--warn-only` exists because a check that fails builds needs its invariants to be right,
  * and a young set of hand-written assertions should not gate anyone's merge on day one.
  */
+/**
+ * Adopt agent-proposed invariants into the repo's invariant file.
+ *
+ * `propose_invariant` stored a claim and nothing ever turned it into something runnable, so
+ * the tool silently did nothing — worse than not having it. Adoption is deliberately a
+ * separate, human-run step: an invariant is a claim about what must always hold, and that
+ * is not a thing an agent gets to add to your build gate unattended.
+ */
+function runAdopt(args: Args): void {
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  const proposals = store
+    .allSubjects()
+    .filter((s) => s.subject.startsWith('invariant:') && s.predicate === 'invariant')
+    .map(({ subject, predicate }) => ({ subject, belief: store.belief(subject, predicate) }));
+  store.close();
+
+  if (!proposals.length) {
+    console.log(
+      '\nno proposed invariants.\nAgents propose them with the propose_invariant MCP tool; ' +
+        'this command reviews and adopts them.',
+    );
+    return;
+  }
+
+  const targetFile = args.invariantsFile
+    ? path.resolve(args.invariantsFile)
+    : path.join(args.root, 'vds.invariants.json');
+  const existing: Invariant[] = fs.existsSync(targetFile)
+    ? JSON.parse(fs.readFileSync(targetFile, 'utf8'))
+    : [];
+  const byId = new Map(existing.map((i) => [i.id, i]));
+
+  const graphPath = path.join(args.out, 'graph.json');
+  const graph: Graph | null = fs.existsSync(graphPath)
+    ? JSON.parse(fs.readFileSync(graphPath, 'utf8'))
+    : null;
+
+  const adopted: Invariant[] = [];
+  console.log(`\n${proposals.length} proposed invariant(s) — ${args.dryRun ? 'dry run' : 'adopting'}`);
+  console.log('─'.repeat(72));
+
+  for (const { subject, belief } of proposals) {
+    const value = belief.value as { prose?: string; predicate?: unknown } | undefined;
+    const id = subject.slice('invariant:'.length);
+    if (!value?.prose || !value?.predicate) {
+      console.log(`  SKIP  ${id} — missing prose or predicate`);
+      continue;
+    }
+    let predicate = value.predicate;
+    if (typeof predicate === 'string') {
+      try {
+        predicate = JSON.parse(predicate);
+      } catch {
+        console.log(`  SKIP  ${id} — predicate is a string that does not parse as JSON`);
+        continue;
+      }
+    }
+    const inv = { id, prose: value.prose, predicate } as Invariant;
+
+    // Never adopt a proposal that is already red: an invariant states what holds, so one
+    // that does not hold is either a wrong claim or a real defect, and both want a human.
+    if (graph) {
+      const result = evaluate(graph, inv);
+      if (result.status === 'red') {
+        console.log(`  RED   ${id} — does not hold today (${result.measured}); not adopted`);
+        continue;
+      }
+    }
+    if (byId.has(id)) {
+      console.log(`  HAVE  ${id} — already present`);
+      continue;
+    }
+    console.log(`  ADD   ${id} — ${value.prose.slice(0, 70)}`);
+    adopted.push(inv);
+  }
+
+  if (!adopted.length) {
+    console.log('\nnothing to adopt.');
+    return;
+  }
+  if (args.dryRun) {
+    console.log(`\n${adopted.length} would be adopted; re-run without --dry-run.`);
+    return;
+  }
+  fs.writeFileSync(targetFile, JSON.stringify([...existing, ...adopted], null, 2) + '\n');
+  console.log(`\nwrote ${adopted.length} new invariant(s) to ${targetFile}`);
+}
+
 function runCheck(args: Args): void {
   const graphPath = path.join(args.out, 'graph.json');
   const graph: Graph = fs.existsSync(graphPath) && !args.commit
@@ -642,6 +740,9 @@ switch (args.command) {
     break;
   case 'map':
     runMap(args);
+    break;
+  case 'adopt':
+    runAdopt(args);
     break;
   case 'check':
     runCheck(args);

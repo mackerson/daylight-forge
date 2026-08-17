@@ -91,6 +91,22 @@ export function evaluate(graph: Graph, inv: Invariant): InvariantResult {
   const p = inv.predicate;
   const base = { id: inv.id, prose: inv.prose };
 
+  // An unrecognised predicate must fail loudly rather than returning undefined. Invariants
+  // can be hand-written or agent-proposed, so a malformed one is expected input — and the
+  // old behaviour crashed every caller with `Cannot read properties of undefined`.
+  const KNOWN = [
+    'absent', 'count', 'literal-fanin', 'forbidden-call',
+    'forbidden-callee', 'required-callee', 'ordering',
+  ];
+  if (!p || typeof p !== 'object' || !KNOWN.includes((p as { type?: string }).type ?? '')) {
+    return {
+      ...base,
+      status: 'red',
+      measured: `unknown predicate type '${(p as { type?: string })?.type ?? typeof p}' — expected one of ${KNOWN.join(', ')}`,
+      violations: [{ where: inv.id, detail: 'the invariant itself is malformed, not the code' }],
+    };
+  }
+
   switch (p.type) {
     case 'absent': {
       const hits = graph.nodes.filter((n) => matches(n, p.select));

@@ -13,49 +13,12 @@ import type { Graph } from '../graph/types.ts';
  * confident dead-code report is worse than none, because it gets acted on.
  */
 
-export type Tier = 'high' | 'medium' | 'low';
-
-export interface DeadCandidate {
-  kind: 'file' | 'symbol';
-  id: string;
-  tier: Tier;
-  /** Why this tier and not a higher one — the caveat travels with the finding. */
-  why: string;
-}
-
-export interface Cycle {
-  members: string[];
-  /** Total edge weight inside the cycle: how tangled, not just how large. */
-  internalEdges: number;
-}
-
-export interface Limb {
-  dir: string;
-  files: number;
-  inside: number;
-  outside: number;
-  /** Fraction of this subtree's edges that leave it. Cohesion is a lie above ~0.8. */
-  leakage: number;
-}
-
-export interface GodNode {
-  id: string;
-  fanIn: number;
-  fanOut: number;
-  symbols: number;
-}
-
-export interface StructureReport {
-  entrypoints: string[];
-  /** Set when reachability is too low to trust — see the coverage guard. */
-  warning?: string;
-  dead: DeadCandidate[];
-  cycles: Cycle[];
-  limbs: Limb[];
-  gods: GodNode[];
-  orphans: string[][];
-  stats: { reachable: number; unreachable: number; files: number };
-}
+export type {
+  Tier, DeadCandidate, Cycle, Limb, GodNode, StructureReport,
+} from './structure-types.ts';
+import type {
+  Cycle, DeadCandidate, GodNode, Limb, StructureReport, Tier,
+} from './structure-types.ts';
 
 const fileOf = (id: string) => (id.includes('#') ? id.slice(0, id.indexOf('#')) : id);
 

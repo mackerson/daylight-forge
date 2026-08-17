@@ -367,6 +367,7 @@ ipcMain.handle('vds:load', () => {
     channelDefault: process.env.VDS_CHANNEL || 'structure',
     autoArbitrate: !!process.env.VDS_ARBITRATE,
     findings: readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] }),
+    structure: readJson('structure.json', null),
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),
     graphStats: graph?.stats ?? null,
