@@ -112,6 +112,8 @@ declare global {
         subject: string; predicate: string; value: unknown; note?: string;
       }): Promise<{ ok: boolean; error?: string }>;
       reveal(p: { file: string; line?: number }): Promise<{ ok: boolean }>;
+      watch(on: boolean): Promise<{ watching: boolean }>;
+      onWatch(fn: (p: { reason: string }) => void): () => void;
       snippet(p: { file: string; line?: number; context?: number }): Promise<{
         file?: string; start?: number; line?: number; lines?: string[]; error?: string;
       }>;

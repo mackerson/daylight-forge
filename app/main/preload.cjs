@@ -23,6 +23,12 @@ contextBridge.exposeInMainWorld('vds', {
   arbitrate: (payload) => invoke('vds:arbitrate', payload),
   reveal: (payload) => invoke('vds:reveal', payload),
   snippet: (payload) => invoke('vds:snippet', payload),
+  watch: (on) => invoke('vds:watch', on),
+  onWatch: (fn) => {
+    const h = (_e, payload) => fn(payload);
+    ipcRenderer.on('vds:watch', h);
+    return () => ipcRenderer.removeListener('vds:watch', h);
+  },
 
   onEvent: (fn) => {
     const h = (_e, payload) => fn(payload);

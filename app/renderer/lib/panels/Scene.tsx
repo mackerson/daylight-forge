@@ -601,11 +601,21 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     canvas.addEventListener('click', onClick);
     canvas.addEventListener('contextmenu', onContextMenu);
 
+    let lastAspect = 0;
     const resize = () => {
       const r = mount.getBoundingClientRect();
-      camera.aspect = Math.max(r.width, 1) / Math.max(r.height, 1);
+      const aspect = Math.max(r.width, 1) / Math.max(r.height, 1);
+      camera.aspect = aspect;
       camera.updateProjectionMatrix();
       renderer.setSize(r.width, r.height, false);
+
+      // Keep the scene the same apparent size when the panel narrows. Without this,
+      // dragging the splitter silently zooms — and in graph mode camera distance is
+      // semantic, so it would also change which level you were looking at.
+      if (lastAspect && aspect > 0.2 && Math.abs(aspect - lastAspect) > 0.01) {
+        orbit.distance = Math.max(45, Math.min(1200, orbit.distance * (lastAspect / aspect)));
+      }
+      lastAspect = aspect;
     };
     const ro = new ResizeObserver(resize);
     ro.observe(mount);

@@ -144,8 +144,9 @@ Ordered loosely by value, not scheduled.
       consume desloppify's 29-language findings instead of re-deriving them.
 - [ ] Symbol-level depth in the tree, expand-on-demand (~10× the nodes, so it needs the
       expansion path first).
-- [ ] Watch mode: `derive` re-runs on claim changes, but a code change still needs a manual
-      Map. The parse cache makes this cheap now.
+- [x] Watch mode: a **Watch** toggle re-maps on code change, debounced 1.2s because editors
+      write in bursts. Only changed files re-parse, so the loop the product exists to shorten
+      now closes without anyone pressing a button.
 - [x] `vite.config.ts` belongs to the renderer, which owns its own build config. The target
       is now `strict` and every file is claimed.
 
@@ -153,7 +154,11 @@ Ordered loosely by value, not scheduled.
 - [ ] **D4** — copy-paste bodies via token MinHash/winnowing. Specified in the taxonomy, never
       built. `jscpd` is the obvious wrap.
 - [ ] **D5** — near-duplicate module purpose via embeddings. Deferred deliberately.
-- [ ] Community detection (Louvain/Leiden) for collapse candidates. Specified, never built.
+- [x] Community detection via label propagation — deterministic by hash tie-break, because a
+      map that reshuffles every run cannot be navigated from memory. Reports cohesive groups
+      *filed across several directories*; a cohesive group inside one directory is a tidy
+      module and says nothing. On this repo it independently rediscovered the engine/renderer
+      split we had declared by hand. **Test:** `engine/test/communities.ts` (9).
 - [x] Tree divergence — per-file gap between where a file is filed and where it is wired,
       with the directory it actually belongs to. Distinct from a weird limb, which is a whole
       subtree. Found `App.tsx`: filed in `lib`, 78% wired to `lib/panels`.
@@ -176,7 +181,8 @@ Ordered loosely by value, not scheduled.
       answered". A floor rather than an empty queue, because the tail is always populated.
 
 ### Interface
-- [ ] Scene framing does not refit when the panel is resized; `0` recentres manually.
+- [x] Scene refits when the panel resizes, so dragging the splitter no longer silently
+      zooms — which in graph mode would also have changed which level you were looking at.
 - [ ] Replay scrubber over `events.jsonl`. Deferred pending evidence anyone wants it.
 - [ ] Findings panel has no adjudication affordance — Review has one, Findings does not.
 - [ ] Invariant authoring UI. They are hand-written JSON today.

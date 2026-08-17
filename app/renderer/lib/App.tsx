@@ -41,6 +41,7 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [arbitrating, setArbitrating] = useState<Belief | null>(null);
+  const [watching, setWatching] = useState(false);
   // Snapshot of the store before a job, so completion can report the delta rather than
   // making you read a log to find out what happened.
   const statsRef = useRef<QueryPayload['stats'] | null>(null);
@@ -216,6 +217,17 @@ export function App() {
         </button>
         <button disabled={!data?.repo || busy} onClick={() => act(() => window.vds.refocus())}>
           Rebuild
+        </button>
+        <button
+          className={watching ? 'watching' : ''}
+          disabled={!data?.repo}
+          title="re-map automatically when the code changes; only changed files re-parse"
+          onClick={async () => {
+            const r = await window.vds.watch(!watching);
+            setWatching(r.watching);
+          }}
+        >
+          {watching ? 'Watching' : 'Watch'}
         </button>
       </header>
 

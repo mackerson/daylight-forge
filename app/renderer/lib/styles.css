@@ -41,6 +41,8 @@ code, .mono { font-family: inherit; }
 .topbar button:disabled { opacity: .4; cursor: not-allowed; }
 .path { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.topbar button.watching { border-color: var(--ok); color: var(--ok); }
+
 .spend {
   display: flex; gap: 8px; align-items: baseline;
   padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { detectDuplication } from './detect/duplication.ts';
 import { detectStructure } from './detect/structure.ts';
+import { collapseCandidates, detectCommunities } from './detect/communities.ts';
 import { extract } from './extract/index.ts';
 import type { Graph } from './graph/types.ts';
 import { mermaidStats, toMermaid } from './render/mermaid.ts';
@@ -113,6 +114,8 @@ function emitExtract(args: Args, graph: Graph): void {
   const started = Date.now();
   const dup = detectDuplication(graph);
   const structure = detectStructure(graph);
+  const communities = detectCommunities(graph);
+  const collapses = collapseCandidates(communities);
   const mermaid = toMermaid(graph, { depth: args.depth });
   const mstats = mermaidStats(graph, { depth: args.depth });
 
@@ -120,6 +123,10 @@ function emitExtract(args: Args, graph: Graph): void {
   fs.writeFileSync(path.join(args.out, 'graph.json'), JSON.stringify(graph, null, 2));
   fs.writeFileSync(path.join(args.out, 'findings.json'), JSON.stringify(dup, null, 2));
   fs.writeFileSync(path.join(args.out, 'structure.json'), JSON.stringify(structure, null, 2));
+  fs.writeFileSync(
+    path.join(args.out, 'communities.json'),
+    JSON.stringify({ communities, collapses }, null, 2),
+  );
   fs.writeFileSync(path.join(args.out, 'map.mmd'), mermaid + '\n');
 
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
@@ -178,6 +185,14 @@ function emitExtract(args: Args, graph: Graph): void {
   for (const c of st.cycles.slice(0, 3)) {
     console.log(`  cycle ${c.members.length} files, ${c.internalEdges} internal edges: ${c.members.slice(0, 3).map(short).join(' → ')}…`);
   }
+  if (collapses.length) {
+    console.log(`  collapse candidates ${collapses.length} — cohesive groups filed across directories`);
+    for (const c of collapses.slice(0, 3)) {
+      console.log(
+        `    ${c.members.length} files across ${c.dirs.join(', ')} · cohesion ${c.cohesion.toFixed(2)}`,
+      );
+    }
+  }
   for (const l of st.limbs.slice(0, 3)) {
     console.log(`  limb ${l.dir} — ${(l.leakage * 100).toFixed(0)}% of edges leave the subtree (${l.files} files)`);
   }
@@ -192,7 +207,9 @@ function emitExtract(args: Args, graph: Graph): void {
     }
   }
 
-  console.log(`\nwrote ${args.out}/{graph.json,findings.json,structure.json,map.mmd} in ${elapsed}s`);
+  console.log(
+    `\nwrote ${args.out}/{graph,findings,structure,communities}.json and map.mmd in ${elapsed}s`,
+  );
 }
 
 function runInvariants(args: Args): void {

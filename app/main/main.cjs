@@ -175,6 +175,55 @@ function startTail() {
   }, 400);
 }
 
+/**
+ * Watch the repo and re-map when the code changes.
+ *
+ * The product's stated job is shortening the loop between "the codebase changed" and
+ * "everyone can see the new shape", and until now a code change needed someone to press
+ * Map. The parse cache makes this cheap — only changed files re-parse — so the loop can
+ * close by itself.
+ *
+ * Debounced hard: editors write in bursts, and a save should cost one map, not twelve.
+ */
+let watcher = null;
+let watchTimer = null;
+
+const WATCH_IGNORED = /(^|\/)(node_modules|\.git|out|dist|\.cache)(\/|$)/;
+const WATCH_SOURCE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+
+function startWatch() {
+  stopWatch();
+  if (!state.repo || !fs.existsSync(state.repo)) return;
+  try {
+    watcher = fs.watch(state.repo, { recursive: true }, (_event, filename) => {
+      if (!filename) return;
+      const rel = String(filename);
+      if (WATCH_IGNORED.test(rel) || !WATCH_SOURCE.test(rel)) return;
+      if (watchTimer) clearTimeout(watchTimer);
+      watchTimer = setTimeout(() => {
+        send('vds:watch', { reason: rel });
+        runJob('map (watch)', ['map', state.repo, '--out', state.dir, '--top', '0']);
+      }, 1200);
+    });
+  } catch (err) {
+    // Recursive watch is unsupported on some platforms; the manual button still works.
+    console.error(`watch unavailable: ${err.message}`);
+  }
+}
+
+function stopWatch() {
+  if (watcher) watcher.close();
+  watcher = null;
+  if (watchTimer) clearTimeout(watchTimer);
+  watchTimer = null;
+}
+
+ipcMain.handle('vds:watch', (_e, on) => {
+  if (on) startWatch();
+  else stopWatch();
+  return { watching: !!watcher };
+});
+
 function stopTail() {
   if (tail.timer) clearInterval(tail.timer);
   tail.timer = null;
@@ -399,6 +448,7 @@ ipcMain.handle('vds:pick-repo', async () => {
   });
   if (res.canceled || !res.filePaths[0]) return state;
   state.repo = res.filePaths[0];
+  stopWatch();
   return state;
 });
 
@@ -518,6 +568,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopTail();
+  stopWatch();
   for (const child of jobs.values()) child.kill('SIGTERM');
   if (process.platform !== 'darwin') app.quit();
 });
