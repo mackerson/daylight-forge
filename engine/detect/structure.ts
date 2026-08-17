@@ -165,6 +165,33 @@ export function detectStructure(graph: Graph): StructureReport {
     }
   }
 
+  /**
+   * What the tests reach, propagated through the same import graph.
+   *
+   * Tests are excluded from the map by default and should be — they double the node count and
+   * duplicate each other by nature. But excluding them from *reachability* made the tool
+   * confidently wrong: on the fixture all 11 high-tier dead candidates were live code whose
+   * only visible callers sat in files the walk had refused to open.
+   *
+   * They are not treated as entrypoints either, because "only the tests use this" is a real
+   * finding — production code that exists solely to be tested. It caps the tier and says so.
+   */
+  const testImportedFiles = new Set((graph.testImports ?? []).map((t) => t.to));
+  const testReachable = new Set<string>();
+  const testQueue: string[] = [];
+  for (const to of testImportedFiles) {
+    testReachable.add(to);
+    testQueue.push(to);
+  }
+  while (testQueue.length) {
+    for (const next of outgoing.get(testQueue.pop()!) ?? []) {
+      if (!testReachable.has(next)) {
+        testReachable.add(next);
+        testQueue.push(next);
+      }
+    }
+  }
+
   // ---- dead candidates -------------------------------------------------------
   const literals = literalCorpus(graph);
   const dead: DeadCandidate[] = [];
@@ -181,13 +208,16 @@ export function detectStructure(graph: Graph): StructureReport {
     // registry, a route table or a dynamic import. That is exactly how plugin systems
     // work, so it caps the tier rather than clearing the finding.
     const byName = namedInAString(file);
+    const byTest = testReachable.has(file);
     dead.push({
       kind: 'file',
       id: file,
-      tier: byName ? 'medium' : 'high',
-      why: byName
-        ? 'unreachable from entrypoints, but its name appears in a string literal — may be loaded dynamically'
-        : 'unreachable from entrypoints and never named in a string literal',
+      tier: byTest ? 'low' : byName ? 'medium' : 'high',
+      why: byTest
+        ? 'unreachable from entrypoints, but the tests import it — either it exists only to be tested, or the production caller is one we cannot see'
+        : byName
+          ? 'unreachable from entrypoints, but its name appears in a string literal — may be loaded dynamically'
+          : 'unreachable from entrypoints and never named in a string literal',
     });
   }
 
@@ -203,11 +233,16 @@ export function detectStructure(graph: Graph): StructureReport {
     if (referenced.has(node.id)) continue;
     if (!reachable.has(node.file)) continue; // already reported as a dead file
     if (literals.has(node.name)) continue;
+    // File granularity is all we have here: we know the tests import the file, not which
+    // symbol they used. Resolving that needs the tests fully parsed — `--include-tests`.
+    const inTestedFile = testImportedFiles.has(node.file);
     dead.push({
       kind: 'symbol',
       id: node.id,
       tier: 'low',
-      why: 'exported but no resolved reference — call resolution is syntactic, so verify before acting',
+      why: inTestedFile
+        ? 'exported but no resolved reference — though the tests import this file, so a test may well be the reference. Run with --include-tests to resolve which'
+        : 'exported but no resolved reference — call resolution is syntactic, so verify before acting',
     });
   }
 

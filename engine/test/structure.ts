@@ -86,6 +86,58 @@ console.log('\ncoverage guard');
   check('the cap says it is a cap', s2.dead.some((d) => /capped/.test(d.why)));
 }
 
+console.log('\ntest reachability');
+{
+  /**
+   * The bug this is here for: excluding tests from the map also excluded them from
+   * reachability, so on the fixture all 11 high-tier dead candidates were live code whose
+   * only visible callers sat in files the walk had refused to open. High tier is the one
+   * people act on without checking, which makes a false one the most expensive kind.
+   */
+  const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-tests-'));
+  const w2 = (rel: string, body: string) => {
+    const abs = path.join(t2, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, body);
+  };
+  w2('package.json', JSON.stringify({ name: 'fx', main: 'src/index.ts' }));
+  w2('src/index.ts', "import { used } from './used.ts';\nexport const go = () => used();\n");
+  w2('src/used.ts', 'export const used = () => 1;\n');
+  w2('src/tested.ts', 'export const tested = () => 2;\n');
+  w2('src/nobody.ts', 'export const nobody = () => 3;\n');
+  w2('src/tested.test.ts', "import { tested } from './tested.ts';\ntested();\n");
+
+  const g3 = extract({ root: t2 });
+  const s3 = detectStructure(g3);
+  const dead = new Map(s3.dead.filter((d) => d.kind === 'file').map((d) => [d.id, d]));
+
+  check('the test file itself stays out of the map',
+    !g3.nodes.some((n) => n.id.includes('.test.')), 'a test file became a node');
+  check('but what it imports is recorded',
+    g3.testImports.some((t) => t.to === 'src/tested.ts'), JSON.stringify(g3.testImports));
+
+  check('a file only the tests use is not called confidently dead',
+    dead.get('src/tested.ts')?.tier === 'low', JSON.stringify(dead.get('src/tested.ts')));
+  check('and it says why the tier is capped',
+    /tests import it/.test(dead.get('src/tested.ts')?.why ?? ''));
+  check('it is still reported, because test-only code is a real finding',
+    dead.has('src/tested.ts'));
+
+  // Not `high`: this tree is small enough that the coverage guard caps everything, which is
+  // its job. What matters is that the test-only file ranks strictly below the unused one.
+  check('a file genuinely nobody uses outranks one the tests use',
+    dead.get('src/nobody.ts')?.tier === 'medium' && dead.get('src/tested.ts')?.tier === 'low',
+    JSON.stringify([dead.get('src/nobody.ts')?.tier, dead.get('src/tested.ts')?.tier]));
+  check('a reachable file is not a candidate at all', !dead.has('src/used.ts'));
+
+  // Test edges must not leak into the graph proper: they would satisfy forbidden-call
+  // invariants, join communities, and draw edges in the tree.
+  check('test imports are not ordinary edges',
+    !g3.edges.some((e) => e.from.includes('.test.') || e.to.includes('.test.')));
+
+  fs.rmSync(t2, { recursive: true, force: true });
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

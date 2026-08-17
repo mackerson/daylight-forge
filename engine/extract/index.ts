@@ -140,13 +140,14 @@ export function extract(options: ExtractOptions): Graph {
   const liveHashes = new Set<string>();
 
   const allFiles = walk(root);
-  const sourceFiles = allFiles.filter((f) => {
+  const parseable = allFiles.filter((f) => {
     const ext = f.slice(f.lastIndexOf('.'));
     if (!parser.extensions.includes(ext)) return false;
     if (!includeDeclarations && f.endsWith('.d.ts')) return false;
-    if (!includeTests && TEST_RE.test(f)) return false;
     return true;
   });
+  const sourceFiles = includeTests ? parseable : parseable.filter((f) => !TEST_RE.test(f));
+  const testFiles = includeTests ? [] : parseable.filter((f) => TEST_RE.test(f));
 
   const aliases = readAliases(root, allFiles);
   const resolver = new Resolver(sourceFiles, aliases);
@@ -159,6 +160,7 @@ export function extract(options: ExtractOptions): Graph {
     functions: [],
     calls: [],
     literals: [],
+    testImports: [],
     diagnostics: [],
     stats: {
       files: 0, symbols: 0, imports: 0, unresolvedImports: 0, externalImports: 0,
@@ -292,6 +294,50 @@ export function extract(options: ExtractOptions): Graph {
         from: call.from, to, kind: 'calls', member: call.member, line: call.line,
       });
       graph.stats.resolvedCalls++;
+    }
+  }
+
+  // Tests, for reachability only.
+  //
+  // On the fixture, excluding tests reported 11 high-tier dead candidates and every one of
+  // them was wrong — BackupService, ChannelDispatcher and ActiveWorkRegistry all have callers,
+  // in files the tool had refused to open. Parsing them costs one pass and buys the difference
+  // between "nothing uses this" and "only the tests use this", which are different findings.
+  for (const rel of testFiles) {
+    let source: string;
+    try {
+      source = fs.readFileSync(path.join(root, rel), 'utf8');
+    } catch {
+      continue; // A test we cannot read is not worth a diagnostic; it is not part of the map.
+    }
+    if (!includeVendored && looksVendored(source)) continue;
+
+    const contentHash = createHash('sha256').update(source).digest('hex').slice(0, 12);
+    const cacheKey = `${contentHash}:${rel}`;
+    liveHashes.add(cacheKey);
+
+    let parsed: ParsedFile;
+    const cached = cache.entries[cacheKey];
+    if (cached) {
+      parsed = cached;
+      graph.stats.reusedFiles++;
+    } else {
+      try {
+        parsed = parser.parse(rel, source, contentHash);
+        cache.entries[cacheKey] = parsed;
+      } catch {
+        continue;
+      }
+      graph.stats.parsedFiles++;
+    }
+
+    const seen = new Set<string>();
+    for (const imp of parsed.imports) {
+      // `imports` is a list of specifiers; the resolver turns them into files.
+      const to = resolver.resolve(imp, rel);
+      if (!to || seen.has(to)) continue;
+      seen.add(to);
+      graph.testImports.push({ from: rel, to });
     }
   }
 

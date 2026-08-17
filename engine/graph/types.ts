@@ -112,6 +112,15 @@ export interface Graph {
   functions: FunctionRecord[];
   calls: CallRecord[];
   literals: LiteralRecord[];
+  /**
+   * What the tests import, when tests are excluded from the map.
+   *
+   * Kept out of `edges` deliberately: a test edge must not satisfy a `forbidden-call`
+   * invariant, appear in the tree, or join a community. It exists so reachability can tell
+   * "nothing uses this" apart from "only the tests use this" — which are different findings
+   * and were being reported as the same one.
+   */
+  testImports: Array<{ from: string; to: string }>;
   diagnostics: ParseDiagnostic[];
   stats: {
     files: number;

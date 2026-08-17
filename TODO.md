@@ -214,7 +214,16 @@ Ordered loosely by value, not scheduled.
       Both shipped bugs have a named regression case: the tsconfig `/*` that disabled every
       path alias, and the missing `NewExpression` that hid every instantiation.
       Suite is now 142 assertions across 8 files, all run by `pnpm test:all`.
-- [ ] `--include-tests` is off by default, so test files never appear in any map.
+- [x] `--include-tests` is still off by default — tests double the node count and duplicate
+      each other by nature — but excluding them from the *map* no longer excludes them from
+      *reachability*. It did, and the tool was confidently wrong because of it: on the fixture
+      all 11 high-tier dead candidates were live code whose only visible callers sat in files
+      the walk had refused to open. Tests are now parsed for their imports alone, kept in
+      `graph.testImports` rather than `graph.edges` so a test edge cannot satisfy a
+      forbidden-call invariant or draw a line in the tree. A file the tests reach is still
+      reported — "exists only to be tested" is a real finding — but at `low` tier saying so.
+      Symbol-level test usage still needs the flag, and the candidate now says that too.
+      **Test:** `engine/test/structure.ts`, +9.
 
 ---
 
