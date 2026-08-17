@@ -743,6 +743,36 @@ Different finding classes need different mechanisms, which is the whole reason t
 has more than one entry. Layering is checked by the target, duplication by D1–D3, drift by
 invariants, and none substitutes for another.
 
+| **P10 Guard** | invariants and the target run as a check that fails a build | `vds check` exits non-zero on a red invariant; wired to this repo's own CI | next |
+| **P11 Adjudicate the taxonomy** | structural findings reach agents instead of sitting in a file | a high-tier dead candidate gets tiered with evidence, and a false one refuted | after |
+| **P12 Team layer** | the confirmed map is committed, reviewable in a PR, survives a clone | two clones converge on one map; a cluster you confirmed is there for me | after |
+| **P13 Finish the swarm** | remaining adapters usable; budget ceilings enforced | two *different models* disagree live and arbitration resolves it | after |
+
+### Why these four
+
+**P10 is the highest leverage and the smallest.** Invariants are currently only evaluated
+when someone opens the GUI, which makes them documentation with extra steps. ArchUnit's
+entire value is that it fails the build. `plan` already exits non-zero; this needs a combined
+`check` and a workflow file. It is what turns drift *detection* into drift *prevention*.
+
+Caveat worth respecting: a check that fails builds needs its invariants to be right, and ours
+are five hand-written assertions on a young codebase. Ship it warn-only first.
+
+**P11 closes a dangling half-feature.** P8 computes dead-code candidates with confidence
+tiers and nothing routes them anywhere — the frontier only asks about purposes and
+duplication families. "Static proposes, agents adjudicate, human confirms" is unwired for the
+largest finding class we produce, which is also the one most likely to be wrong.
+
+**P12 is where stigmergy actually pays.** The map is currently one person's local artifact in
+a gitignored `./out`. The design specified a committed confirmed layer plus a local cache and
+only the cache was built. Until the confirmed layer exists the shared environment is not
+shared, which undercuts the framing this whole thing rests on.
+
+**P13 is the honest debt.** `codex` is blocked by its approval gate, `grok` and `opencode`
+need a registration we print but have never verified, and the original P4 gate — two models
+genuinely disagreeing — has never been demonstrated live, because the two we ran agreed.
+Leasing makes concurrent agents worth having, so this matters more now than when it slipped.
+
 ### Why P6 is the live map
 
 Two things turned out to be the same feature: **re-analysing after a code change** and

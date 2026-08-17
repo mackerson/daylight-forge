@@ -6,6 +6,8 @@ Static extraction plus an agent swarm that focuses a codebase down to a small ma
 true — and keeps checking it stays true. See [DESIGN.md](DESIGN.md) for the architecture and the
 decisions behind it.
 
+Outstanding work is sequenced in [TODO.md](TODO.md).
+
 **Status: P0–P9 built.** P6 live map, P8 structural findings and P9 target/plan passed their
 gates; P7's convergence gate needs agent spend and has not been run. Original status below.
 
