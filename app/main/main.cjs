@@ -382,6 +382,38 @@ function createWindow() {
           setTimeout(() => win.webContents.sendInputEvent({ type: 'mouseMove', x, y }), 250);
         }, 2200);
       }
+      /**
+       * VDS_SHOT_DRAG="x1,y1,x2,y2" performs a real pointer drag before capture.
+       *
+       * Dragging a node is the one interaction that cannot be verified by reading the code:
+       * it depends on raycasting, a plane derived from the camera, and an instanced matrix
+       * write. Synthetic input exercises the actual handlers rather than a stand-in.
+       */
+      if (process.env.VDS_SHOT_DRAG) {
+        const [x1, y1, x2, y2] = process.env.VDS_SHOT_DRAG.split(',').map(Number);
+        setTimeout(() => {
+          // Hover first: the handler picks whatever the last move-event highlighted.
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: x1, y: y1 });
+          setTimeout(() => {
+            win.webContents.sendInputEvent({ type: 'mouseMove', x: x1, y: y1 });
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: x1, y: y1, button: 'left', clickCount: 1 });
+            const steps = 12;
+            for (let i = 1; i <= steps; i++) {
+              setTimeout(() => {
+                win.webContents.sendInputEvent({
+                  type: 'mouseMove',
+                  x: Math.round(x1 + ((x2 - x1) * i) / steps),
+                  y: Math.round(y1 + ((y2 - y1) * i) / steps),
+                });
+              }, i * 40);
+            }
+            setTimeout(() => {
+              win.webContents.sendInputEvent({ type: 'mouseUp', x: x2, y: y2, button: 'left', clickCount: 1 });
+            }, steps * 40 + 120);
+          }, 400);
+        }, 3000);
+      }
+
       if (process.env.VDS_SHOT_KEYS) {
         const keys = process.env.VDS_SHOT_KEYS.split(',');
         const holdMs = Number(process.env.VDS_SHOT_KEY_MS || 900);
@@ -464,6 +496,32 @@ ipcMain.handle('vds:symbols', (_e, { file }) => {
  */
 const settingsPath = () => path.join(app.getPath('userData'), 'render-settings.json');
 
+/**
+ * Nodes the user has dragged, per repository.
+ *
+ * Kept beside the map rather than with the render settings: where you pulled a node to is a
+ * fact about *this* codebase, and it should follow the repo between machines if the output
+ * directory is shared. Keyed by node id, so a re-map keeps every override whose node still
+ * exists and silently drops the rest.
+ */
+ipcMain.handle('vds:layout', (_e, payload) => {
+  const file = path.join(state.dir, 'layout-overrides.json');
+  if (!payload || typeof payload !== 'object') {
+    try {
+      return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { moved: {} };
+    } catch {
+      return { moved: {} };
+    }
+  }
+  try {
+    fs.mkdirSync(state.dir, { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({ moved: payload.moved ?? {} }, null, 2)}\n`);
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
 ipcMain.handle('vds:settings', (_e, patch) => {
   let current = {};
   try {
@@ -482,6 +540,32 @@ ipcMain.handle('vds:settings', (_e, patch) => {
   }
   return current;
 });
+
+/**
+ * A discrete GPU this machine has but Chromium is not using.
+ *
+ * Worth knowing because the default is wrong on a laptop and silently so: under Wayland the
+ * compositor allocates buffers on the display GPU (the integrated one), NVIDIA cannot import
+ * them, and Chromium quietly falls back. Measured here: 93fps on a Radeon 610M against 143
+ * on an RTX 4080 that was sitting idle two feet away.
+ *
+ * Read once — `nvidia-smi` costs tens of milliseconds and the answer does not change while
+ * the app is running.
+ */
+let discreteGpu;
+function detectDiscreteGpu() {
+  if (discreteGpu !== undefined) return discreteGpu;
+  discreteGpu = null;
+  try {
+    const out = execFileSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], {
+      encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim().split('\n')[0];
+    if (out) discreteGpu = out;
+  } catch {
+    // No nvidia-smi, or no NVIDIA card. Both mean there is nothing to suggest.
+  }
+  return discreteGpu;
+}
 
 ipcMain.handle('vds:load', () => {
   const stack = readJson('focus.json', null);
@@ -528,6 +612,8 @@ ipcMain.handle('vds:load', () => {
     initialTab: process.env.VDS_TAB || null,
     perf: !!process.env.VDS_PERF,
     bench: Number(process.env.VDS_BENCH || 0),
+    debugPick: !!process.env.VDS_DEBUG_PICK,
+    discreteGpu: detectDiscreteGpu(),
     lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
     channelDefault: process.env.VDS_CHANNEL || 'structure',
     autoArbitrate: !!process.env.VDS_ARBITRATE,

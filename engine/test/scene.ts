@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { layoutTree } from '../scene/tree.ts';
+import { applyMoved } from '../scene/types.ts';
 import { harness } from './harness.ts';
 
 const { check, done } = harness();
@@ -243,6 +244,67 @@ console.log('\nring or disc, whichever is smaller');
   const kids = [...flat.nodes.values()].filter((n) => n.level === 2);
   check('and every child sits inside its parent',
     kids.every((k) => Math.hypot(k.x - parent.x, k.z - parent.z) <= 260), String(kids.length));
+}
+
+
+console.log('\nmoving a node by hand');
+{
+  /**
+   * A deterministic layout is what makes the map memorable, but it cannot help you in a
+   * region dense enough that nodes sit on top of each other — which is exactly the region
+   * where you are trying to follow an edge. So a node can be dragged, and where it was
+   * dragged to is remembered.
+   */
+  const files = ['src/a.ts', 'src/b.ts', 'src/deep/c.ts'];
+  const stack = { levels: [{ level: 1, nodes: [{ id: 'g', members: files, purpose: 'x' }] }] } as never;
+  const build = () => layoutTree({ stack, fileEdges: [] }, 'm');
+
+  const before = build();
+  const key = [...before.nodes.keys()].find((k) => k.includes('a.ts'))!;
+  const original = { ...before.nodes.get(key)! };
+
+  const laid = build();
+  const applied = applyMoved(laid, { [key]: [100, -50, 25] });
+  check('a moved node reports as applied', applied === 1);
+  const node = laid.nodes.get(key)!;
+  check('and lands exactly where it was put',
+    node.x === 100 && node.y === -50 && node.z === 25);
+  check('it actually moved from where the layout put it',
+    original.x !== 100 || original.z !== 25);
+
+  const others = [...laid.nodes.entries()].filter(([k]) => k !== key);
+  check('nothing else moves with it',
+    others.every(([k, n]) => {
+      const was = before.nodes.get(k)!;
+      return n.x === was.x && n.y === was.y && n.z === was.z;
+    }));
+
+  // Keyed by node id, so a re-map keeps what still exists and forgets the rest.
+  const stale = build();
+  check('an override for a node that no longer exists is dropped, not resurrected',
+    applyMoved(stale, { 't:gone/away.ts': [1, 2, 3] }) === 0);
+  check('and the layout is otherwise untouched',
+    stale.nodes.size === before.nodes.size);
+
+  // These arrive from a JSON file on disk, so they are input like any other.
+  const guard = build();
+  check('a malformed triple is refused',
+    applyMoved(guard, { [key]: [1, 2] as never }) === 0);
+  check('a non-finite coordinate is refused, rather than sending a node to infinity',
+    applyMoved(guard, { [key]: [1, NaN, 3] }) === 0);
+  check('a non-array is refused', applyMoved(guard, { [key]: 'over there' as never }) === 0);
+  check('after refusing, the node is still where the layout put it',
+    guard.nodes.get(key)!.x === original.x);
+
+  check('no overrides at all is a no-op', applyMoved(build(), undefined) === 0);
+  check('an empty set is a no-op', applyMoved(build(), {}) === 0);
+
+  // Moving is not a one-way door.
+  const restored = build();
+  applyMoved(restored, { [key]: [100, -50, 25] });
+  const fresh = build();
+  check('rebuilding without the override puts it back',
+    fresh.nodes.get(key)!.x === original.x && fresh.nodes.get(key)!.z === original.z);
 }
 
 done();

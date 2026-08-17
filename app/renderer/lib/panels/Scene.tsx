@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { layout } from '../../../../engine/scene/layout.ts';
 import { layoutTree } from '../../../../engine/scene/tree.ts';
+import { applyMoved } from '../../../../engine/scene/types.ts';
 import type { LoadPayload } from '../types.ts';
 import { onReplayEvent, onReplayReset } from '../replay.ts';
 import {
@@ -178,12 +179,32 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   const [settings, setSettings] = useState<RenderSettings>(DEFAULT_SETTINGS);
   const [adaptNote, setAdaptNote] = useState<string | null>(null);
   const [gpu, setGpu] = useState<string>('');
+  /**
+   * Nodes the user has moved.
+   *
+   * The layout is deterministic so that spatial memory works — the same repo lands the same
+   * way every session. These are deliberate exceptions on top of it: in a region dense enough
+   * that nodes overlap, no automatic layout can show you the relationship you are chasing, so
+   * you pull the thing out and look at it. Keyed by node id rather than by position, so they
+   * survive a re-map as long as the node still exists.
+   */
+  const [moved, setMoved] = useState<Record<string, [number, number, number]>>({});
+  const movedRef = useRef(moved);
+  movedRef.current = moved;
   const [stats, setStats] = useState<FrameStats & { visible: number; draws: number; tris: number }>(
     { fps: 0, meanMs: 0, p95Ms: 0, worstMs: 0, samples: 0, visible: 0, draws: 0, tris: 0 },
   );
   useEffect(() => {
     void window.vds.settings().then((s) => setSettings(normaliseSettings(s)));
   }, []);
+  // Positions the user moved last time. Loaded once, keyed by node id, so a re-map keeps
+  // every override whose node still exists and silently forgets the rest.
+  useEffect(() => {
+    if (!data?.dir) return;
+    void window.vds.layout().then((r) => {
+      if (r?.moved && Object.keys(r.moved).length) setMoved(r.moved);
+    });
+  }, [data?.dir]);
   const showFpsRef = useRef(false);
   showFpsRef.current = settings.showFps;
   const [nodeCount, setNodeCount] = useState(0);
@@ -286,6 +307,10 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const laid = mode === 'tree'
       ? layoutTree({ ...data, symbols }, repoName, expanded)
       : layout(data.stack, repoName);
+
+    // Before anything is built from the layout, so ropes, labels and picking all agree with
+    // where the node actually is.
+    applyMoved(laid, moved);
     const bands = laid.bands;
     const distinct = bands.map((b: any) => b.level);
     setLevels(distinct);
@@ -606,19 +631,87 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     let hovered: any = null;
 
     let panning = false;
+    /**
+     * Dragging a node moves it.
+     *
+     * A deterministic layout is what makes the map memorable, but in a region dense enough
+     * that nodes sit on top of each other no automatic arrangement can show you the edge you
+     * are following — you have to pull the thing out and look. So a drag that starts on a
+     * node moves that node, and a drag that starts on empty space still orbits.
+     *
+     * The awkward case is a region so dense there is no empty space to orbit from, which is
+     * exactly the region where you want to drag. Hence ctrl: hold it and a drag always
+     * orbits, whatever is under the cursor.
+     */
+    let moving: { key: string; plane: THREE.Plane; offset: THREE.Vector3 } | null = null;
+    const dragPoint = new THREE.Vector3();
+
+    const pointOnPlane = (plane: THREE.Plane, out: THREE.Vector3) => {
+      raycaster.setFromCamera(pointer, camera);
+      return raycaster.ray.intersectPlane(plane, out);
+    };
+
     const onDown = (e: PointerEvent) => {
       // Middle or right drag pans, matching what every other 3D tool does.
       panning = e.button === 1 || e.button === 2;
+
+      if (!panning && !e.ctrlKey && hovered && !hovered.isRoot) {
+        // The drag plane faces the camera and passes through the node, so the node tracks
+        // the cursor exactly rather than sliding away along the view direction.
+        const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
+        const at = new THREE.Vector3(hovered.x, hovered.y, hovered.z);
+        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, at);
+        const hit = pointOnPlane(plane, dragPoint);
+        moving = {
+          key: hovered.key,
+          plane,
+          offset: hit ? at.clone().sub(hit) : new THREE.Vector3(),
+        };
+        dragging = false;
+        last = { x: e.clientX, y: e.clientY };
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+
+      moving = null;
       dragging = !panning;
       last = { x: e.clientX, y: e.clientY };
     };
     const onUp = () => {
+      if (moving) {
+        const node = laid.nodes.get(moving.key) as any;
+        if (node) {
+          // Recorded on release rather than per frame: the effect rebuilds ropes and labels
+          // from the layout, which is right once but far too much work sixty times a second.
+          const at: [number, number, number] = [node.x, node.y, node.z];
+          setMoved((prev) => ({ ...prev, [moving!.key]: at }));
+          void window.vds.layout({ repo: data.repo ?? '', moved: { ...movedRef.current, [moving.key]: at } });
+        }
+        canvas.style.cursor = '';
+      }
+      moving = null;
       dragging = false;
       panning = false;
     };
     const onContextMenu = (e: Event) => e.preventDefault();
     const onMove = (e: PointerEvent) => {
       const r = canvas.getBoundingClientRect();
+      if (moving) {
+        pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+        pointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+        const hit = pointOnPlane(moving.plane, dragPoint);
+        const node = laid.nodes.get(moving.key) as any;
+        if (hit && node) {
+          node.x = hit.x + moving.offset.x;
+          node.y = hit.y + moving.offset.y;
+          node.z = hit.z + moving.offset.z;
+          // Move only what is cheap to move while the pointer is down: the instance and its
+          // label. Everything routed through the node catches up when the drag ends.
+          nudgeNode(node);
+        }
+        last = { x: e.clientX, y: e.clientY };
+        return;
+      }
       if (panning) {
         const speed = orbit.distance * 0.0022;
         const t = orbit.theta;
@@ -900,6 +993,43 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       flyer.trail.push(flyer.target.clone());
       if (flyer.trail.length > TRAIL) flyer.trail.shift();
     });
+
+    /**
+     * Move one node's instance without rebuilding anything.
+     *
+     * Used while a drag is in flight. Labels are positioned from the node each frame, so they
+     * follow for free; ropes are baked into a vertex buffer and do not, which is why the drag
+     * commits through state on release and lets the effect rebuild them properly.
+     */
+    const nudgeMatrix = new THREE.Matrix4();
+    const nudgeNode = (node: any) => {
+      const mesh = meshes.get(node.level);
+      if (!mesh || node.index === undefined) return;
+      const s = node.radius ?? 1;
+      nudgeMatrix.makeScale(s, s, s);
+      nudgeMatrix.setPosition(node.x, node.y, node.z);
+      mesh.setMatrixAt(node.index, nudgeMatrix);
+      mesh.instanceMatrix.needsUpdate = true;
+    };
+
+    if ((data as any).debugPick) {
+      setTimeout(() => {
+        const r = canvas.getBoundingClientRect();
+        const v = new THREE.Vector3();
+        const picks = [...laid.nodes.values()]
+          .filter((n: any) => !n.isRoot && meshes.get(n.level)?.visible)
+          .slice(0, 6)
+          .map((n: any) => {
+            v.set(n.x, n.y, n.z).project(camera);
+            return {
+              id: n.id,
+              x: Math.round(r.left + ((v.x + 1) / 2) * r.width),
+              y: Math.round(r.top + ((1 - v.y) / 2) * r.height),
+            };
+          });
+        console.error(`PICKS ${JSON.stringify(picks)}`);
+      }, 3500);
+    }
 
     const HL_NODE = new THREE.Color('#6ea8fe');
     const HL_EDGE = new THREE.Color('#ffd479');
@@ -1366,7 +1496,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       tip.remove();
     };
   }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded, symbols,
-      settings.allLevelsLimit]);
+      settings.allLevelsLimit, moved]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;
@@ -1468,6 +1598,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             <span className="dim">
               limit {settings.allLevelsLimit === 0 ? 'off' : settings.allLevelsLimit.toLocaleString()}
             </span>
+            {/* A discrete card the platform declined to use is worth saying out loud: the
+                default is wrong on a laptop and wrong quietly. */}
+            {gpu && (data as any).discreteGpu && !/nvidia/i.test(gpu) && (
+              <span className="fps-hint" title={`pnpm gui:dgpu`}>
+                {String((data as any).discreteGpu)} idle — <code>pnpm gui:dgpu</code>
+              </span>
+            )}
             {gpu && (
               <span className="dim" title={gpu}>
                 {/* ANGLE wraps the real name in parentheses and a pile of driver detail. */}
@@ -1493,6 +1630,22 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           <kbd>0</kbd> recentre · drag orbit · right-drag pan · scroll{' '}
           {mode === 'tree' ? 'depth' : 'altitude'}
           {mode === 'tree' && <> · <kbd>alt</kbd>-click a file to open its symbols</>}
+          {' '}· drag a node to move it · <kbd>ctrl</kbd>-drag to orbit instead
+          {!!Object.keys(moved).length && (
+            <>
+              {' '}·{' '}
+              <button
+                className="link"
+                onClick={() => {
+                  setMoved({});
+                  void window.vds.layout({ repo: data.repo ?? '', moved: {} });
+                }}
+              >
+                put {Object.keys(moved).length} moved node
+                {Object.keys(moved).length === 1 ? '' : 's'} back
+              </button>
+            </>
+          )}
         </div>
         {selected && (
           <div className="scene-inspect">

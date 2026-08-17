@@ -366,3 +366,6 @@ code, .mono { font-family: inherit; }
 .scene-fps.over { border-color: #a86a5a; }
 .scene-fps .fps-headline strong { font-size: 1.25em; }
 .scene-fps.over .fps-headline strong { color: #f0a868; }
+
+.scene-fps .fps-hint { color: #f0a868; }
+.scene-fps .fps-hint code { background: none; padding: 0; }

@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('vds', {
   snippet: (payload) => invoke('vds:snippet', payload),
   symbols: (payload) => invoke('vds:symbols', payload),
   settings: (patch) => invoke('vds:settings', patch),
+  layout: (payload) => invoke('vds:layout', payload),
   watch: (on) => invoke('vds:watch', on),
   tryInvariant: (payload) => invoke('vds:try-invariant', payload),
   saveInvariant: (payload) => invoke('vds:save-invariant', payload),

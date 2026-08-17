@@ -330,6 +330,19 @@ The third is the one worth remembering: it means the contradiction queue, which 
 highest-value screen in the product, was showing noise and hiding signal until it was exercised with
 two real models.
 
+10. **Chromium was rendering on the wrong GPU, silently.** On a laptop with an RTX 4080 the
+    map ran on the integrated Radeon 610M, because under Wayland the compositor allocates
+    buffers on the display GPU and NVIDIA cannot import them — `eglCreateImage` fails and
+    Chromium falls back without saying anything. Neither `powerPreference: 'high-performance'`
+    nor `prime-run` nor the PRIME environment variables move it, because only ANGLE-over-EGL
+    backends are permitted and the choice is made below them.
+
+    What works is XWayland plus ANGLE over desktop GL: `--ozone-platform=x11 --use-angle=gl`
+    with `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia`, which is `pnpm
+    gui:dgpu`. 143fps against 93. The meter names the chip that actually rendered and says so
+    when a discrete card is sitting idle, because a frame time attributed to the wrong
+    hardware is worse than no frame time at all.
+
 9. **LOD was a guess about somebody else's computer.** `LOD_THRESHOLD = 2500` was a constant,
    and above it the "all levels" button was silently inert — on a 14,651-node monorepo the
    interface offered a choice it did not honour and said nothing. Measured properly, with a

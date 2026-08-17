@@ -18,6 +18,37 @@ export interface TreeInput {
   symbols?: Record<string, Array<{ id: string; name: string; kind: string }>>;
 }
 
+/**
+ * Positions a person has dragged a node to, by node key.
+ *
+ * The layout is deterministic so that spatial memory works — the same repo lands the same way
+ * every session. These are deliberate exceptions on top of it: in a region dense enough that
+ * nodes overlap, no automatic arrangement can show the edge you are following, so you pull
+ * the thing out and look at it.
+ */
+export type MovedNodes = Record<string, [number, number, number]>;
+
+/**
+ * Apply moved positions to a finished layout, in place.
+ *
+ * Must run before anything is built *from* the layout — ropes, labels and picking all read
+ * these coordinates, and a node whose mesh and hit-box disagree is worse than one that never
+ * moved. Overrides for nodes that no longer exist are dropped rather than kept: they are
+ * keyed by node id, so a re-map keeps every override still pointing at something real.
+ */
+export function applyMoved(layout: SceneLayout, moved: MovedNodes | undefined): number {
+  if (!moved) return 0;
+  let applied = 0;
+  for (const [key, at] of Object.entries(moved)) {
+    const node = layout.nodes.get(key);
+    if (!node || !Array.isArray(at) || at.length !== 3) continue;
+    if (!at.every((n) => typeof n === 'number' && Number.isFinite(n))) continue;
+    [node.x, node.y, node.z] = at;
+    applied++;
+  }
+  return applied;
+}
+
 /** Shared shape so the scene renders graph and tree layouts through one path. */
 export interface SceneNode {
   key: string;

@@ -128,6 +128,9 @@ declare global {
         file?: string; start?: number; line?: number; lines?: string[]; error?: string;
       }>;
       settings(patch?: Partial<RenderSettings>): Promise<Partial<RenderSettings>>;
+      layout(payload?: { repo: string; moved: Record<string, [number, number, number]> }): Promise<{
+        moved?: Record<string, [number, number, number]>; ok?: boolean; error?: string;
+      }>;
       symbols(p: { file: string }): Promise<{
         symbols: Array<{ id: string; name: string; kind: string }>; error?: string;
       }>;

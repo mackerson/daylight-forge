@@ -23,6 +23,22 @@ rule landed. See P13.
       graph (`--force` for the same repo moved), and the GUI derives a per-repo directory
       unless you chose one. **Test:** `engine/test/isolation.ts` (20).
 
+- [x] **Nodes can be dragged.** A deterministic layout is what makes the map memorable, but
+      it cannot help in a region dense enough that nodes overlap — which is exactly where you
+      are trying to follow an edge. A drag that starts on a node moves it; one that starts on
+      empty space still orbits; `ctrl` forces orbit for the case where the dense region leaves
+      no empty space to start from. Positions persist per repo, keyed by node id, so a re-map
+      keeps every override still pointing at something real and forgets the rest.
+      **Test:** `engine/test/scene.ts` +13, plus `VDS_SHOT_DRAG` which drives a real pointer
+      drag headlessly — raycasting against a camera-derived plane is not something reading the
+      code can verify.
+- [x] **Frame meter and per-machine render settings**, and the measurement that answered
+      whether LOD was needed at all. It was not: 14,651 nodes at 92–107fps on an *integrated*
+      GPU. The default is now to draw everything and let the machine object.
+- [x] **The discrete GPU was idle.** `pnpm gui:dgpu` gets the 4080 — 143fps against 93 — via
+      XWayland and ANGLE-over-GL. Native Wayland cannot, because the compositor's buffers
+      cannot be imported by NVIDIA. The meter says when a card is sitting idle.
+
 ### Still needing a decision from you
 
 All built and working; each stops at a choice that costs something outside this repo:

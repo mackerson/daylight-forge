@@ -29,7 +29,8 @@
     "import": "node engine/cli.ts import",
     "calibrate": "node engine/tools/calibrate.ts",
     "package": "node engine/tools/package.ts",
-    "bench": "VDS_BENCH=6 VDS_SHOT=/tmp/vds-bench.png VDS_SHOT_DELAY=17000 electron app/main/main.cjs"
+    "bench": "VDS_BENCH=6 VDS_SHOT=/tmp/vds-bench.png VDS_SHOT_DELAY=17000 electron app/main/main.cjs",
+    "gui:dgpu": "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia electron app/main/main.cjs --ozone-platform=x11 --use-angle=gl"
   },
   "engines": {
     "node": ">=22.18"
