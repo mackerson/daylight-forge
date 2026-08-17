@@ -1,250 +1,233 @@
 # visual-desloppify
 
-> Get all the data, then focus it down.
+**A map of a codebase that a person and a swarm of agents can read at the same time.**
 
-Static extraction plus an agent swarm that focuses a codebase down to a small map that is actually
-true — and keeps checking it stays true. See [DESIGN.md](DESIGN.md) for the architecture and the
-decisions behind it.
+It parses everything, draws the shape in 3D, finds the duplication and the dead ends
+deterministically, and then lets LLM agents decorate that map with claims — each one carrying
+the evidence it was made from, and the name of whoever made it.
 
-Outstanding work is sequenced in [TODO.md](TODO.md).
+![The tree view of a 10,000-file monorepo](docs/tree.png)
 
-**Status: P0–P9 built.** P6 live map, P8 structural findings and P9 target/plan passed their
-gates; P7's convergence gate needs agent spend and has not been run. Original status below.
+---
 
-**Status: P0–P5 built.** Extraction, invariants, the claim store + MCP server, the focus stack, the
-agent adapters, and the Electron/three.js viewer. P1, P2 and P5 passed their gate tests; P3 and P4
-did not fully — see DESIGN.md → "What the runs actually showed". P6 not started.
+## Why
 
-## Run it
+Agents now change a codebase faster than anyone can re-read it.
 
-Requires Node ≥22.18 (native TypeScript type-stripping; there is no build step).
+That is not a code-quality problem, it is a **read-back latency** problem. Several agents work
+against a shared environment and coordinate through it, so everything depends on how quickly
+each of them — and you — can see the shape the code is *now*. When that loop is slow, they
+drift: two of them solve the same problem twice, a third builds on something that has already
+been replaced, and nobody notices until it is expensive.
+
+So the job is to shorten the loop between *the codebase changed* and *everyone can see the new
+shape*. That means one artifact both a person and a machine can read, which is why this is
+simultaneously a 3D map and an MCP server.
+
+The design principle underneath it all: **get all the data, then focus it down.** Every
+reduction is recorded and reversible, because a summary you cannot expand is just a claim you
+have to take on faith.
+
+---
+
+## What you get
+
+**A map you can fly through.** Directories, files, and — on demand — the symbols inside them.
+Camera distance is the zoom control for detail: pull back and the leaves collapse into their
+directories. Anything too tangled to read, you can drag apart by hand.
+
+![The same monorepo as a dependency graph](docs/graph.png)
+
+Dependencies route *along* the tree to the lowest common ancestor rather than cutting straight
+across it, so edges that travel together merge into visible ropes. That is what turns "this
+limb's dependencies all leave the subtree" from a number in a report into something you notice
+without being told to look for it.
+
+**Six deterministic detectors.** None of them needs a model to *find* anything:
+
+| | finds |
+| --- | --- |
+| D1 | structures that are the same but for a few fields |
+| D2 | duplicate function names across files |
+| D3 | the same signature written under four different names |
+| D4 | copy-pasted bodies, *after* renaming — it compares shape, not text |
+| D5 | two modules described as doing the same job in different words |
+| D6 | two files that are the same thing written twice, sharing no copied code |
+
+**A swarm that leaves evidence.** Agents answer the highest-uncertainty questions first, and
+every claim goes through one boundary that rejects anything unevidenced. Work is leased so two
+agents do not duplicate it, and the run stops when nothing left is worth paying to answer.
+
+**Invariants as a build gate.** Claims about *your* architecture — "the event bus is
+storage-only", "nothing under `scene/` calls a randomness source" — written as prose plus a
+query, living in the repo they constrain. `vds check` exits non-zero when one goes red.
+
+---
+
+## Why you can believe the output
+
+This is the part that matters, because a map you cannot trust is worse than no map.
+
+**Evidence is required at ingest, not at review.** An agent claim without a file and a line is
+rejected at the boundary. Ruling something *out* costs more evidence than asserting it —
+finding one place a thing is true is easier than checking everywhere it could have been.
+
+**Disagreement is preserved, never averaged.** When two agents reach opposite conclusions the
+map records both, marks the belief CONTRADICTED, and routes it to the top of the queue. The
+arbitration screen shows what each side actually read and — the part that matters — whether
+they read *the same thing*. Same evidence and opposite conclusions is a judgement call someone
+has to make. Different evidence usually means neither looked hard enough.
+
+**It says when it does not know.** On a 10,498-file monorepo it reported 10,485 dead-code
+candidates and then immediately capped every one of them to medium confidence:
+
+> only 1% of files are reachable from 41 entrypoint(s), which usually means entrypoints are
+> missing rather than that the rest is dead
+
+Zero high-confidence claims out of ten thousand candidates. A tool that would rather say
+"I probably cannot see your entrypoints" than hand you a confident list of things to delete.
+
+**It is measured, not asserted.** Similarity thresholds are calibrated against a repository
+whose history contains a known deduplication — found before, quiet after. When the measurement
+said a threshold could not reach a duplication a human sees at a glance, that got written down
+as a limitation rather than tuned away.
+
+---
+
+## What it has found
+
+On a 10,498-file / 245,214-symbol / 2M-line monorepo, in about a minute:
+
+- **6,519** copy-pasted function bodies, and **317** file pairs that are the same thing written
+  twice under different names
+- **2,476** duplication families — grouped so one adjudication settles a family rather than
+  each pair
+- **21** import cycles and **103** subtrees whose dependencies mostly leave the subtree
+
+On its own source it reports **0** copy-pasted bodies and **0** parallel implementations, with
+all 6 invariants green — because every finding it made about itself was fixed. Three of those
+were found by the tool and are worth naming: an assertion helper copy-pasted into fifteen test
+files, two store methods that were the same 116 tokens, and a nested function matching its own
+parent (which turned out to be a defect in the detector, not the code).
+
+---
+
+## Getting started
+
+Needs Node 24+ and pnpm.
 
 ```bash
 pnpm install
-pnpm gui                 # the app: pick a repo, map it, run agents, arbitrate
+
+pnpm map <path-to-repo>     # parse, detect, write the map. No agents, nothing spent.
+pnpm gui                    # fly through it
 ```
 
-Or headless:
+That is the whole read-only path. Everything below costs money or changes files.
 
 ```bash
-pnpm map <repo>          # extract + invariants + focus in one parse → ./out
-pnpm view                # just the festooned tree (reads ./out)
+pnpm agent <repo> --tools claude --batch 5 --max-cost 2.00
 ```
 
-Then let agents decorate and focus the map:
+Sends the highest-uncertainty questions to an agent, which answers through the MCP server.
+`--max-cost` is a hard ceiling. `--dry-run` shows what would be asked and spawns nothing.
 
 ```bash
-pnpm agent <repo> --tools claude              # answer frontier questions
-pnpm agent <repo> --tools claude --mode focus # propose clusters / elisions / defences
-pnpm focus <repo>                             # rebuild the stack with what they found
+pnpm check <repo>           # invariants + target architecture; exit 1 on red. For CI.
+pnpm export <repo>          # the committed layer: knowledge + ARCHITECTURE.md
 ```
 
-Everything defaults to `./out`; pass `--out <dir>` to put it elsewhere (then `VDS_DIR=<dir> pnpm view`).
+**On a laptop with a discrete GPU, use `pnpm gui:dgpu`.** Under Wayland, Chromium renders on
+the integrated chip and says nothing about it — 93fps against 143 on the same machine. The
+frame meter (the `fps` chip) names whichever GPU actually rendered.
 
-**Invariants belong to the repo being analysed**, not to this tool — they are claims about a specific
-architecture, so a fixed built-in set would mark every other codebase stale against facts that were
-never about it. Put them in `vds.invariants.json` at the repo root (or pass `--invariants-file`). With
-none defined, L3 reports `UNPROVEN` rather than failing. The worked example from the calibration
-fixture is in `fixtures/enclave.invariants.json`:
+Other useful bits: `pnpm package` builds a portable directory that runs without a checkout;
+`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 540 assertions across 23
+files.
 
-```bash
-pnpm invariants <enclave> --invariants-file fixtures/enclave.invariants.json
+---
+
+## How it is put together
+
+```
+engine/     headless. parse -> detect -> focus -> claims. no DOM, no Electron.
+  extract/    TypeScript compiler API behind a Parser interface, content-addressed cache
+  detect/     D1-D6, dead code, cycles, limbs, god nodes, communities
+  focus/      the L0 -> L3 stack: every elision recorded and reversible
+  store/      SQLite claim store — provenance, evidence, contradiction
+  mcp/        the boundary every agent writes through
+  swarm/      frontier scheduling, leasing, budget ceilings
+app/main/     Electron shell. spawns the engine, never analyses anything itself
+app/renderer/ React + three.js. geometry only; all reasoning lives in engine/
 ```
 
-**Vendored bundles are skipped** (>200KB, or smaller but minified) and the count is reported. Letting
-one in wrecks every downstream number — a single copy of three.js contributed ~7900 symbols to a
-24-file repo and buried the real findings.
+The engine depends on nothing above it, and that is enforced by one of its own invariants.
 
-| Script | Does |
+**Read-only by design.** It generates task packets; it never executes them. The one exception
+is writing an invariant into the repo you asked it to, which is a fixed filename, merged rather
+than overwritten, and refuses to touch a file it cannot parse.
+
+---
+
+## What it does not do
+
+- **TypeScript and JavaScript only.** The schema is language-neutral and the provider seam is
+  real — a second parser is driven end to end in the tests — but adding a real second grammar
+  means a dependency decision that has not been made.
+- **No type information.** Resolution is syntactic, so an unreferenced export is a *candidate*,
+  not a verdict, and the tool says so every time.
+- **Stable identity is best-effort.** Claims follow a renamed file by fingerprint matching. A
+  file that is split in two is reported as ambiguous and left alone, because guessing would
+  attach someone's confirmed knowledge to a file they never looked at.
+- **Nothing is auto-resolved.** Contradictions wait for a human. That is the point of them.
+
+Longer rationale, the phase-by-phase history, and every open problem: [DESIGN.md](DESIGN.md).
+The working list: [TODO.md](TODO.md).
+
+---
+
+## Reference
+
+| Command | Does |
 | --- | --- |
-| `pnpm map <repo>` | extract + invariants + focus, single parse — the usual entry point |
-| `pnpm extract <repo>` | L0 graph + D1–D3 findings + L1 mermaid only |
-| `pnpm invariants <repo>` | compile invariants to L0 queries and run them |
+| `pnpm map <repo>` | extract + detect + invariants + focus in one parse. The usual entry point. |
+| `pnpm extract <repo>` | L0 graph and findings only |
+| `pnpm invariants <repo>` | compile the repo's invariants to L0 queries and run them |
 | `pnpm focus <repo>` | rebuild the L1→L2→L3 stack from the claim store |
-| `pnpm agent <repo>` | drive an agent CLI; `--tools`, `--mode`, `--batch`, `--model`, `--timeout`, `--dry-run` |
-| `pnpm gui` | build the UI and launch the full app |
+| `pnpm check <repo>` | invariants + target architecture; exit 1 on red. `--warn-only` to adopt. |
+| `pnpm agent <repo>` | drive an agent CLI against the frontier |
+| `pnpm plan <repo>` | diff the declared target architecture; writes task packets |
+| `pnpm export <repo>` | write the committed layer: `knowledge.json` + `ARCHITECTURE.md` |
+| `pnpm import <repo>` | merge someone else's exported knowledge |
+| `pnpm adopt <repo>` | review agent-proposed invariants and write the accepted ones |
+| `pnpm gui` | build the UI and launch the app |
+| `pnpm gui:dgpu` | same, forced onto a discrete GPU (see above) |
 | `pnpm gui:dev` | Vite dev server; run `VITE_DEV_SERVER_URL=http://127.0.0.1:5273 pnpm view` beside it |
-| `pnpm view` | Electron app against an already-built UI |
-| `pnpm shot` | render headlessly to `./out/view.png` instead of opening a window |
-| `pnpm plan <repo>` | diff the declared target architecture; writes `plan.json` + task packets |
-| `pnpm test` | smoke + scene-layout tests against `./out` |
-| `pnpm smoke ./out` | claim semantics + MCP boundary tests — costs no agent turns |
-| `pnpm typecheck` | `tsc --noEmit` |
-
-Options:
+| `pnpm view` | Electron against an already-built UI |
+| `pnpm shot` | render headlessly to a PNG instead of opening a window |
+| `pnpm bench` | measure frame time headlessly and print one line |
+| `pnpm package` | build a portable directory that runs without a checkout |
+| `pnpm calibrate <spec>` | sweep similarity thresholds against labelled fixture points |
+| `pnpm test:all` | 540 assertions across 23 files |
+| `pnpm typecheck` | `tsc --noEmit` over engine and renderer |
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--out <dir>` | `<path>/.codemap` | output directory |
-| `--depth <n>` | `3` | L1 grouping depth for the Mermaid render |
-| `--commit <sha>` | — | record the commit the tree came from |
-| `--include-tests` | off | include test files (they duplicate shapes legitimately) |
+| `--out <dir>` | `./out` | output directory. One per repository — it refuses to mix two. |
+| `--invariants-file <f>` | `<repo>/vds.invariants.json` | where the repo's invariants live |
+| `--include-tests` | off | put test files in the map. They are always read for reachability regardless. |
+| `--force` | off | overwrite an output directory belonging to a different repo |
+| `--max-cost <usd>` | — | hard ceiling on agent spend for the run |
+| `--tools <list>` | `claude` | which agent CLIs to drive |
+| `--batch <n>` | `5` | frontier questions per agent |
+| `--dry-run` | off | show what would be asked; spawn nothing |
+| `--depth <n>` | `3` | grouping depth for the Mermaid render |
 | `--top <n>` | `15` | rows per console table |
 
-Outputs `graph.json` (L0), `findings.json` (D1–D3, patterns, families) and `map.mmd` (L1 Mermaid).
+**Invariants belong to the repo being analysed**, not to this tool — they are claims about one
+specific architecture, so a built-in set would mark every other codebase stale against facts
+that were never about it. A repo with none defined reports `UNPROVEN` rather than failing.
 
-## What P0 does
-
-**Extract (L0).** Files, symbols, imports, heritage, structure shapes and callable signatures.
-Resolution is syntactic: relative specifiers plus `tsconfig` path aliases, everything else marked
-external. Asset imports (css, images, fonts) are counted and skipped rather than counted as failures.
-Heritage edges are only drawn when the target name is unambiguous — a guess there would be a
-fabricated edge, which the design forbids.
-
-**Detect duplication (D1–D3).** All deterministic; no LLM finds anything here.
-
-- **D1 — structure shape.** Jaccard over `(fieldName, type)` sets across interfaces, type aliases and
-  classes. Candidates come from an inverted index on field name, so there is no N² matrix.
-- **D2 — duplicate function names**, across at least two files.
-- **D3 — duplicate signatures**, name-agnostic, informative types only. Without inference an
-  un-annotated function is `(any) => any`; that is absence of information, not evidence, so it's
-  dropped.
-
-**Families.** Detector links clustered so we adjudicate once per family rather than once per pair. A
-link qualifies only if D1 is present, or D2 **and** D3 both are — see DESIGN.md for why unioning on
-any single weak link welds the codebase into one blob.
-
-**Patterns.** Oversized D2/D3 groups (`getById` across 19 repositories) are the repository pattern,
-not copy-paste. Reclassified as patterns and kept — they are evidence of a shared *role*, and become
-input to L2 clustering.
-
-## Parser note
-
-P0 parses with the **TypeScript compiler API**, not tree-sitter, behind the `Parser` interface in
-`src/extract/parser.ts`. For a TS/TSX-only milestone it is strictly better: exact JSX handling, no
-native or WASM grammar build, and it parses broken files fine. tree-sitter's value is polyglot, which
-is explicitly deferred. Swapping it in is a provider add, not a rewrite.
-
-## P0 results on the calibration fixture
-
-Fixture: `enclave` (Electron, ~400 source files, ~127k LOC), three labelled points. Full context in
-DESIGN.md → Calibration fixture.
-
-| Fixture | files | symbols | edges | D1 | D2 | D3 | patterns | families |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| pre-collapse `2a1645e` | 326 | 6718 | 8346 | 75 | 80 | 73 | 21 | 47 |
-| pre-remediation `e946f57` | 395 | 8695 | 10657 | 79 | 85 | 90 | 29 | 47 |
-| HEAD `27baaf2` | 404 | 8812 | 10778 | 79 | 85 | 90 | 29 | 47 |
-
-Runs in ~0.3s per fixture. Import resolution 100%, zero diagnostics.
-
-**D1 reproduced the manual swarm's headline finding** on pre-collapse — "several data structures that
-were all the same but for a few fields":
-
-```
-1.00  row-types.ts#ChannelParticipantRow   ≈  row-types.ts#ChatParticipantRow
-1.00  ipc/chatHelpers.ts#PendingApprovalInfo ≈ services/ChatService.ts#CapturedApproval
-1.00  repositories/EventRepository.ts#EventTableRow ≈ repositories/row-types.ts#EventRow
-1.00  services/BackupService.ts#Snapshot   ≈  shared/types.ts#BackupSnapshot
-1.00  sync/DiscoveryService.ts#DiscoveredDevice ≈ shared/ipc-types.ts#SyncDiscoveredDevice
-      … plus five renderer-local *NodeData types each duplicating shared/types.ts
-0.67  row-types.ts#ChannelRow              ≈  row-types.ts#ChatRow
-```
-
-### Two corrections P0 forced on the design
-
-1. **Family clustering.** Unioning on any detector link took transitive closure through common
-   signatures and welded 107 unrelated symbols into one "family". Qualification is now D1-alone or
-   D2+D3-together. An over-merged family is worse than no family — it hides the real one inside it.
-2. **The negative-control criterion.** "Detectors go quiet at HEAD" was wrong. Aggregate counts don't
-   move because the tree *grew* 326 → 404 files, and HEAD is only clean of what was actually
-   remediated. Of three chat/channel pairs surviving at HEAD, two are documented as deliberate
-   ("compat surface", "intentional UX skins") and one — `ChatParticipantRow`, byte-identical to
-   `ChannelParticipantRow` and referenced only by its own declaration — is dead residual left behind
-   when the `chat_*` tables went away. **It survived both manual sweeps.** The criterion is now
-   per-finding triage to documented-deliberate or genuine-residual, never merely unexplained.
-
-## Layout
-
-Three runtimes, not three features — each with its own tsconfig, so the boundaries are
-checked rather than merely intended. Declared in `vds.target.json` and verified by
-`pnpm plan .`.
-
-```
-engine/          headless analysis · Node, type-stripped, no DOM, no bundler
-  cli.ts           entry point; runs standalone
-  graph/           L0 schema — language-neutral on purpose
-  extract/         walk, parse (TS compiler API), resolve, parse cache
-  detect/          D1–D3 duplication, structural findings
-  focus/           the L1→L2→L3 stack  (types.ts is import-free, shared with the renderer)
-  invariants/      compile prose invariants to L0 queries
-  plan/            target architecture diff and task packets
-  scene/           layout geometry — pure maths, so it belongs here not in the renderer
-  store/           claim store  (types.ts is import-free, shared with the renderer)
-  swarm/           adapters, driver, frontier
-  mcp/             the MCP server agents write through
-
-app/
-  main/            Electron main + preload · CommonJS
-  renderer/        Chromium · React + three.js via Vite
-    lib/           panels, App, renderer-only types
-
-fixtures/        calibration invariants and target for the enclave fixture
-```
-
-The engine depends on nothing above it; the renderer shares the engine's type vocabulary
-rather than redeclaring it. That last part was not a design decision — the tool found the
-duplicate declarations on this repo and scored them at 1.00.
-
-## The app
-
-Five panels plus the scene, all driving the same store:
-
-The scene is the primary surface; the info pane sits on the right, drag the splitter to resize
-it (double-click resets), and click the active tab again to collapse it entirely.
-
-- **Scene** — two layouts on one selection. **graph** is the festooned focus stack (what depends
-  on what); **tree** is a cone hierarchy over the real path tree, files as leaves, with edges
-  hierarchically bundled through their common ancestors (where does this live). `VDS_MODE=tree`
-  opens straight into the tree, which is also how the headless screenshots are taken.
-
-  **all levels** is the default: every node visible at once, no popping. LOD was never a
-  performance mechanism here — measured on the 449-node fixture it saves 0.14ms against a
-  16.7ms frame budget, under 1%, because nodes are instanced (one draw call per level
-  regardless of count) and the per-frame CPU work is bounded by screen area rather than tree
-  size. Switch to **auto detail** to get distance-driven levels back; it engages automatically
-  above 2500 nodes, where the numbers start to matter.
-
-  Hover highlights: a node lights up with its label forced visible, its whole subtree's
-  dependencies turn amber, and everything else dims. Hovering a rope highlights just that
-  connection and names both ends. Tracing an edge by eye stops working the moment two cross,
-  so the view does it.
-
-  Camera: drag orbits, right/middle-drag pans, scroll changes altitude (graph) or depth (tree),
-  `WASD` pans, `Q`/`E` moves vertically, `shift` accelerates, `0` recentres. WASD moves the orbit
-  *target*, never the camera along its view axis — distance is semantic in both layouts, so flying
-  forward would silently change which level you are looking at.
-- **Map** — the focus stack, how much of it is actually focused, and any elisions that were
-  rejected. The coverage meter is deliberately blunt: an unfocused map is path grouping, which
-  is how the code is filed, not what it is for.
-- **Findings** — duplication families, D1 pairs with both name and typed scores, and patterns.
-- **Review** — the arbitration surface. Contradictions first; pick which claim is right and it
-  becomes CONFIRMED, outranking every agent. Evidence citations are clickable.
-- **Agents** — jobs with live output, and a stream of every MCP tool call as it lands. That
-  stream comes from the MCP server's own event log rather than from parsing four different CLI
-  output formats — every agent writes through that one boundary, whichever CLI it is.
-- **Invariants** — green/red with the violating spans, or an explanation of why an empty state
-  is normal here.
-
-The renderer displays agent-authored text, which is untrusted: `contextIsolation` on,
-`nodeIntegration` off, a narrow named-operation preload surface, no navigation, no remote content,
-and the renderer served from a contained `app://` scheme.
-
-## Known limitations
-
-- **`codex` cannot be driven headlessly against the MCP server.** It discovers the tools and then
-  auto-denies every call (`user cancelled MCP tool call`). `approval_policy="never"` and
-  `"on-failure"` do not change it; the only bypass also removes the read-only sandbox, so the
-  adapter is left as-is rather than weakened.
-- **`grok` and `opencode` register MCP servers persistently.** The driver prints the exact
-  `mcp add` command for you to run; it will not mutate your agent config itself.
-- **L3 has not converged** to the 8–12 nodes a person can hold — currently 21, of which 7 are
-  unfocused path residue.
-- Verdict claims collected before the boolean-value rule landed are rejected on re-merge by design;
-  they need re-collecting rather than coercing.
-
-## Next
-
-**P6 — target architecture and the plan.** Author the target tree, diff current against it, and emit
-the ordered refactor plan plus per-step task packets. The fixture gives a direct test: generate the
-collapse plan for `2a1645e` and compare it against the real `collapse-plan.md`.
+**Vendored bundles are skipped** (over 200KB, or smaller but minified) and counted. Letting one
+through wrecks every downstream number: a single committed copy of three.js once contributed
+~7,900 symbols to a 24-file repo and buried the real findings.

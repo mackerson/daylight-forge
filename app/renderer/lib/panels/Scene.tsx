@@ -337,6 +337,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const limit = settings.allLevelsLimit;
     const showAll = lod === 'all' && (limit === 0 || laid.nodes.size <= limit);
     const defended = new Set((data.defended ?? []).map(String));
+    // 6% of the layout's radius: big enough to read as "this holds a lot", small enough that
+    // it cannot hide what is behind it.
+    const layoutExtent = Math.max(
+      1,
+      ...[...laid.nodes.values()].map((n: any) => Math.hypot(n.x, n.z)),
+    );
+    const maxNodeRadius = layoutExtent * 0.06;
 
     // Defined before anything paints: the mesh loop below colours through it.
     const maxHeat = Math.max(
@@ -375,6 +382,15 @@ export function Scene({ data }: { data: LoadPayload | null }) {
          * near it. `unit` is a fraction of the mean gap between nodes, and the log keeps a
          * ten-thousand-file directory about three times a single file rather than thirty.
          */
+        /**
+         * No node may be a sizeable fraction of the whole map.
+         *
+         * Size came from file count on an unbounded curve, which is fine until one directory
+         * holds 8,424 files: it renders at radius 65 in a layout 215 across, and a single
+         * sphere swallows its neighbours and everything behind them. The cap is a share of
+         * the layout's own extent, so it never fires on a repo whose largest node was already
+         * reasonable — which is every repo this looked right on before.
+         */
         const u = laid.unit as number | undefined;
         const s = u
           ? node.isRoot
@@ -390,7 +406,10 @@ export function Scene({ data }: { data: LoadPayload | null }) {
               ? 1.3
               : node.isFile
                 ? 2.2
-                : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
+                : Math.min(
+                maxNodeRadius,
+                2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5,
+              );
         m.makeScale(s, s, s);
         m.setPosition(node.x, node.y, node.z);
         mesh.setMatrixAt(i, m);

@@ -1225,14 +1225,14 @@ switch (args.command) {
     console.log(`visual-desloppify — get all the data, then focus it down.
 
 usage:
-  node src/cli.ts map        <path> [options]   # extract + invariants + focus, one pass
-  node src/cli.ts extract    <path> [options]
-  node src/cli.ts invariants <path> [options]
-  node src/cli.ts focus      <path> [options]
-  node src/cli.ts derive     --out <dir>        # rebuild the stack from cached graph.json
+  node engine/cli.ts map        <path> [options]   # extract + invariants + focus, one pass
+  node engine/cli.ts extract    <path> [options]
+  node engine/cli.ts invariants <path> [options]
+  node engine/cli.ts focus      <path> [options]
+  node engine/cli.ts derive     --out <dir>        # rebuild the stack from cached graph.json
   node engine/cli.ts plan    <path> [options]   # diff the declared target architecture
   node engine/cli.ts check   <path> [--warn-only] [--format json]   # CI gate
-  node src/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
+  node engine/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
 
 options:
   --out <dir>            output directory (default: ./out)
