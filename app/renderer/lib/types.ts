@@ -13,20 +13,18 @@ export type {
   Claim, ClaimStatus, Belief, Evidence,
 } from '../../../engine/store/types.ts';
 export type { InvariantResult } from '../../../engine/invariants/engine.ts';
-export type { D1Pair, Family } from '../../../engine/detect/duplication.ts';
+export type {
+  D1Pair, Family, D2Group, D3Group, Pattern,
+  // The renderer had its own `Findings`: the same five fields with the discriminants
+  // dropped and `patterns` widened to plain string. The tool caught it on this repo, so
+  // it is now the engine's type under the renderer's name rather than a restatement.
+  DuplicationReport as Findings,
+} from '../../../engine/detect/duplication.ts';
 
+import type { DuplicationReport } from '../../../engine/detect/duplication.ts';
 import type { FocusStack } from '../../../engine/focus/types.ts';
 import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
 import type { InvariantResult } from '../../../engine/invariants/engine.ts';
-import type { D1Pair, Family } from '../../../engine/detect/duplication.ts';
-
-export interface Findings {
-  d1: D1Pair[];
-  d2: Array<{ key: string; members: string[] }>;
-  d3: Array<{ key: string; members: string[] }>;
-  patterns: Array<{ detector: string; key: string; members: string[] }>;
-  families: Family[];
-}
 
 export interface VdsEvent {
   at: number;
@@ -66,7 +64,7 @@ export interface LoadPayload {
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
-  findings: Findings;
+  findings: DuplicationReport;
   invariants: { results: InvariantResult[] } | null;
   defended: string[];
   graphStats: Record<string, number> | null;
