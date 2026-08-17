@@ -114,6 +114,7 @@ something that looked like a finding and wasn't:
 | Phantom subsystems | an elision named `AgentTurnService.ts` sat in the architecture view as a peer of *Plugin Sandbox* | nothing — an unresolved elision target invented a bucket |
 | Fixture invariants | five RED invariants on every repo analysed | nothing — they were claims about *enclave*, compiled into the tool |
 | The fake trunk and phantom strata | a nexus every subsystem converged on, and three levels of depth | nothing — a hardcoded vertex at `(0,-30,0)`, and one partition drawn three times |
+| Edges to undrawn levels | a spiderweb of connections fanning out past every visible node | nothing — identical partitions render one level, but spine and festoon geometry was still built for all three |
 | Unresolved path aliases | 127 live React components reported as unreachable | nothing — a regex comment-stripper ate the `/*` inside `"@/*"` and destroyed the `paths` block, so aliases never resolved and 2773 edges were missing |
 
 The failure mode is always the same and it is specific to this product: a tool whose

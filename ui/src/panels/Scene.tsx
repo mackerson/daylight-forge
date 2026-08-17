@@ -158,7 +158,11 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const bands = laid.bands;
     const distinct = bands.map((b: any) => b.level);
     setLevels(distinct);
-    setNodeCount(laid.nodes.size);
+    // Count what is drawn, not what exists: with identical partitions the duplicate
+    // levels never render, and reporting them inflated the number by 3x.
+    setNodeCount(
+      [...laid.nodes.values()].filter((n: any) => distinct.includes(n.level) || n.isRoot).length,
+    );
     // Above this, per-frame label and pick work stops being bounded by screen area and
     // LOD starts genuinely paying for itself. Extrapolated from the measurement above.
     const LOD_THRESHOLD = 2500;
@@ -217,11 +221,16 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     }
 
     // Spine, grouped by the level it descends into, plus a trunk from the origin.
+    // Only levels that actually render as spheres get geometry. When partitions are
+    // identical the duplicate levels are never drawn, and edges to their positions were
+    // still being rendered — lines fanning out to nodes that do not exist.
+    const drawn = (n: any) => distinct.includes(n.level) || n.isRoot;
+
     const perChild = new Map<number, number[]>();
     for (const e of laid.spine) {
       const a = laid.nodes.get(e.from);
       const b = laid.nodes.get(e.to);
-      if (!a || !b) continue;
+      if (!a || !b || !drawn(a) || !drawn(b)) continue;
       if (!perChild.has(b.level)) perChild.set(b.level, []);
       perChild.get(b.level)!.push(a.x, a.y, a.z, b.x, b.y, b.z);
     }
@@ -251,6 +260,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
 
     const perLevel = new Map<number, any[]>();
     for (const f of laid.festoons) {
+      const a = laid.nodes.get(f.from);
+      const b = laid.nodes.get(f.to);
+      if (!a || !b || !drawn(a) || !drawn(b)) continue;
       if (!perLevel.has(f.level)) perLevel.set(f.level, []);
       perLevel.get(f.level)!.push(f);
     }
@@ -365,12 +377,16 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         mat.depthWrite = lit;
       }
       for (const lines of festoonGroup.children) {
-        lines.visible = showAll || laid.mode === 'tree' || lines.userData.level === lvl;
+        const l = lines.userData.level;
+        lines.visible =
+          distinct.includes(l) && (showAll || laid.mode === 'tree' || l === lvl);
       }
       for (const line of spineGroup.children) {
-        line.visible = showAll || (laid.mode === 'tree'
-          ? line.userData.level <= lvl
-          : line.userData.level >= lvl);
+        const l = line.userData.level;
+        const levelDrawn = distinct.includes(l);
+        line.visible =
+          levelDrawn &&
+          (showAll || (laid.mode === 'tree' ? l <= lvl : l >= lvl));
       }
       const ys = [...byLevel.values()].flat().map((n: any) => n.y);
       orbit.target.y = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
