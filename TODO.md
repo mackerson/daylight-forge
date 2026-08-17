@@ -186,8 +186,17 @@ Ordered loosely by value, not scheduled.
       `ChatRepository`/`ChannelRepository` at any threshold, and that each individual refusal
       is correct — the duplication is semantic, not syntactic. Two candidate mechanisms with
       very different costs, written up as DESIGN open problem 6. **Needs a decision, not code.**
-- [ ] Wrap `knip` / `dependency-cruiser` as optional providers to cross-check our native
-      reachability.
+- [x] `knip` and `dependency-cruiser` cross-check our reachability when the analysed repo
+      already has them. **Nothing is ever installed** — a provider is used only if it resolves
+      from that repo's own `node_modules/.bin`, never through `npx`, which would fetch and
+      execute a package from the network on a repo we were only asked to read. Absent is the
+      normal answer and reports as such. Their output is untrusted input: bounded, parsed
+      defensively, and only able to name files we already found — a provider can corroborate
+      or dispute a node, never introduce one. Results stay in three buckets rather than one
+      merged verdict, because the two disagreements mean different things: what only we flag
+      is our syntactic resolution being over-eager, what only they flag is a caller we
+      resolved and they did not. **Test:** `engine/test/providers.ts` (22), including
+      traversal and absolute paths in provider output, and a pathological nesting depth.
 
 ### Agents and claims
 - [x] Legacy verdict claims are re-collected rather than coerced. Guessing the polarity of

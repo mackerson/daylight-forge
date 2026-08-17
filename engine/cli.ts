@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { detectDuplication } from './detect/duplication.ts';
+import { crossCheck, runProvider } from './detect/providers.ts';
 import { detectStructure } from './detect/structure.ts';
 import { collapseCandidates, detectCommunities } from './detect/communities.ts';
 import { extract } from './extract/index.ts';
@@ -193,6 +194,24 @@ function emitExtract(args: Args, graph: Graph): void {
   for (const c of st.cycles.slice(0, 3)) {
     console.log(`  cycle ${c.members.length} files, ${c.internalEdges} internal edges: ${c.members.slice(0, 3).map(short).join(' → ')}…`);
   }
+  // Optional cross-check. Silent when nothing is installed, which is the common case.
+  for (const name of ['knip', 'dependency-cruiser'] as const) {
+    const result = runProvider(args.root, name);
+    if (!result.available) continue;
+    const cross = crossCheck(structure.dead.filter((d) => d.kind === 'file').map((d) => d.id), result);
+    if (!cross) {
+      console.log(`  ${name}: ${result.note}`);
+      continue;
+    }
+    console.log(
+      `  ${name}: ${cross.agreed.length} agreed · ${cross.weOnly.length} ours only · ` +
+        `${cross.theyOnly.length} theirs only`,
+    );
+    for (const f of cross.theyOnly.slice(0, 5)) {
+      console.log(`    ${name} calls ${short(f)} unused and we do not — check our resolution`);
+    }
+  }
+
   if (collapses.length) {
     console.log(`  collapse candidates ${collapses.length} — cohesive groups filed across directories`);
     for (const c of collapses.slice(0, 3)) {
