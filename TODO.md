@@ -3,18 +3,30 @@
 Everything outstanding, in the order I would do it. Rationale for the phase ordering lives in
 [DESIGN.md](DESIGN.md); this is the working list.
 
-**Status:** P0–P13 built. Every gate passed except the one under P13 that will not be
-manufactured. This repo maps itself clean — 0 duplication families, 0 D4 body pairs,
-invariants 6/6 green, target passing. Suite is **269 assertions across 12 files**
-(`pnpm test:all`).
+**Status:** P0–P13 built, and the backlog is empty but for one item that cannot be built —
+it has to be *encountered*. This repo maps itself clean: 0 duplication families with a body
+match, 0 D4 pairs, 0 D6 pairs. Invariants 6/6 green, target passing. Suite is **442 assertions
+across 19 files** (`pnpm test:all`).
 
-### What is left, and why
+### The one thing left
 
-Nothing in the backlog is left because it was fiddly. Four things need **your decision**
-before code is the right move, and four are **genuinely large**:
+**A genuine cross-model disagreement (P13).** The mechanism has run end to end in anger — two
+agents disagreed, the arbitration screen surfaced it, and it produced a real fix — but that
+contradiction turned out to be false (`sameConcept` vs `same_concept`). Forcing a *substantive*
+disagreement between two different models means paying for repeated runs and hoping one occurs.
+That is your budget and your call, so it is not being manufactured.
 
-| Needs a decision | Why it is yours |
+### Decisions you may still want to make
+
+These are done, but each stops short of a choice that is yours:
+
+| Built | Where it stops |
 | --- | --- |
+| Polyglot seam | Dispatch, coexistence, per-provider caching and an opt-in loader all work, and a non-TypeScript provider is driven end to end in the tests. Adding a *real* second grammar means either a tree-sitter dependency or becoming a consumer of desloppify's output. |
+| Packaging | `pnpm package` builds a portable directory that runs standalone. A `.deb`/`.dmg`/AppImage needs `electron-builder`; a build anyone should trust needs signing. |
+| D5 embeddings | The lexical scorer runs always and locally. The embedding backend needs an endpoint you point it at, and refuses a remote host until you say so twice. |
+
+--- | --- |
 | Naming a parallel implementation (D5 vs a file-level name detector) | Calibration proved D1–D4 structurally cannot reach it. Two mechanisms, very different costs — DESIGN open problem 6. |
 | Packaging | Needs `electron-builder`. New dependency, and the build produces something you would sign and hand out. |
 | Replay scrubber | Deferred pending evidence anyone wants it. Still no evidence. |
