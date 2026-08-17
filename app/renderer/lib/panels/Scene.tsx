@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { layout } from '../../../../engine/scene/layout.ts';
 import { layoutTree } from '../../../../engine/scene/tree.ts';
 import type { LoadPayload } from '../types.ts';
+import { onReplayEvent, onReplayReset } from '../replay.ts';
 
 /**
  * The festooned tree.
@@ -710,7 +711,29 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       return flyer;
     };
 
-    const offEvent = window.vds.onEvent((e) => {
+    /**
+     * Replay drops everything the map has accumulated.
+     *
+     * Markers and pulses are the state built up by watching events go past, so a jump
+     * backwards has to clear them — otherwise the replay's first frame is the run's
+     * beginning drawn on top of its end.
+     */
+    const offReset = onReplayReset(() => {
+      pulseUntil.clear();
+      for (const flyer of flyers.values()) {
+        agentGroup.remove(flyer.mesh);
+        agentGroup.remove(flyer.line);
+        flyer.mesh.geometry.dispose?.();
+        (flyer.mesh.material as THREE.Material).dispose?.();
+        flyer.line.geometry.dispose?.();
+        (flyer.line.material as THREE.Material).dispose?.();
+      }
+      flyers.clear();
+    });
+
+    // One path for live and replayed events: the scene cannot tell which it is drawing,
+    // which is the only way a replay stays a picture of what actually happened.
+    const offEvent = onReplayEvent((e) => {
       const subject = e.subject ?? e.node;
       const file = subject ? subject.split('#')[0] : null;
       const keys = file ? nodeKeysForFile.get(file) ?? [] : [];
@@ -1101,6 +1124,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       renderer.dispose();
       geo.dispose();
       offEvent();
+      offReset();
       flyerGeo.dispose();
       canvas.remove();
       labelLayer.remove();

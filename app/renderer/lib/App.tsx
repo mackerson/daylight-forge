@@ -4,6 +4,8 @@ import { Findings } from './panels/Findings.tsx';
 import { Invariants } from './panels/Invariants.tsx';
 import { Overview } from './panels/Overview.tsx';
 import { Arbitrate } from './panels/Arbitrate.tsx';
+import { Scrubber } from './panels/Scrubber.tsx';
+import { emitEvent } from './replay.ts';
 import { Review } from './panels/Review.tsx';
 import { Scene } from './panels/Scene.tsx';
 import type { Belief, Job, LoadPayload, QueryPayload, VdsEvent } from './types.ts';
@@ -41,6 +43,11 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [arbitrating, setArbitrating] = useState<Belief | null>(null);
+  const [replaying, setReplaying] = useState(false);
+  // A ref as well as state: the live-event subscription is installed once and must read the
+  // current value, not the one captured when it was installed.
+  const replayingRef = useRef(false);
+  replayingRef.current = replaying;
 
   // Open on a named panel when asked. Screenshots need it; so does a link into a finding.
   const seededTab = useRef(false);
@@ -86,7 +93,14 @@ export function App() {
 
   // Live wiring: MCP tool calls, job lifecycle, job stdout.
   useEffect(() => {
-    const offEvent = window.vds.onEvent((e) => setEvents((prev) => [...prev.slice(-800), e]));
+    // Live events go into the same bus the replay uses, so the scene has one code path for
+    // both. While a replay is running the live feed is withheld from the map — it still
+    // accumulates into `events`, so leaving replay catches up, but it does not draw over a
+    // reconstruction of an earlier moment.
+    const offEvent = window.vds.onEvent((e) => {
+      setEvents((prev) => [...prev.slice(-800), e]);
+      if (!replayingRef.current) emitEvent(e);
+    });
     const offJob = window.vds.onJob((j) => {
       setJobs((prev) => {
         const next = prev.filter((p) => p.id !== j.id);
@@ -323,9 +337,14 @@ export function App() {
               {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
               {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
-              {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend}
-                  selected={selectedJob} onSelect={setSelectedJob}
-                  leases={query?.leases ?? []} />}
+              {mapped && tab === 'agents' && (
+                <>
+                  <Scrubber events={events} active={replaying} onActiveChange={setReplaying} />
+                  <Agents events={events} jobs={jobs} logs={logs} spend={spend}
+                    selected={selectedJob} onSelect={setSelectedJob}
+                    leases={query?.leases ?? []} />
+                </>
+              )}
               {mapped && tab === 'invariants' && <Invariants data={data!} onRefresh={refresh} />}
             </aside>
           </>

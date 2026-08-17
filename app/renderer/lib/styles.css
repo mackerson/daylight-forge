@@ -349,3 +349,9 @@ code, .mono { font-family: inherit; }
 .author .fields label span { font-size: 0.85em; opacity: 0.75; }
 .author .fields input { padding: 0.35rem 0.5rem; font: inherit; }
 .toolbar.wrap { flex-wrap: wrap; }
+
+/* Replay scrubber: a timeline over events.jsonl, driving the same map the live feed does. */
+.scrub { display: grid; gap: 0.5rem; margin-bottom: 0.75rem; }
+.scrub.active { padding: 0.6rem; border: 1px solid var(--line, #2a2f3a); border-radius: 6px; }
+.scrub-range { width: 100%; }
+.scrub-read { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85em; }

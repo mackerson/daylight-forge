@@ -246,7 +246,18 @@ Ordered loosely by value, not scheduled.
 ### Interface
 - [x] Scene refits when the panel resizes, so dragging the splitter no longer silently
       zooms — which in graph mode would also have changed which level you were looking at.
-- [ ] Replay scrubber over `events.jsonl`. Deferred pending evidence anyone wants it.
+- [x] Replay scrubber over `events.jsonl`. The map already shows the swarm working — markers
+      moving, nodes pulsing — but only while it happens, which is exactly when nobody is
+      watching. Play, step, scrub, and speed from 1× to 600× or one-event-per-tick; real gaps
+      are divided by the speed so the run's rhythm survives while the dead air compresses,
+      clamped so a four-minute pause does not stall the bar.
+      Live and replayed events go through **one bus**, so the scene cannot tell which it is
+      drawing — a replay rendered by a second code path drifts, and then it stops being a
+      picture of what happened. Scrubbing backwards resets and refeeds rather than undoing,
+      because undo needs every consumer to be correct in reverse as well as forwards. Entering
+      replay withholds the live feed and says so; blending the two would draw a state the run
+      never passed through. Timing and the bus live in `engine/replay/`, since neither touches
+      the screen. **Test:** `engine/test/replay.ts` (31), against the real `events.jsonl` shape.
 - [x] Findings adjudicates in place: a verdict pill on a family or a dead candidate is now
       the button that opens arbitration, so acting on a disagreement starts where the
       evidence is rather than after finding the same subject again in Review.

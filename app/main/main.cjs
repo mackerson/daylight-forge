@@ -364,6 +364,21 @@ function createWindow() {
       }
       setTimeout(async () => {
         try {
+          /**
+           * What the page actually says, as text.
+           *
+           * `capturePage` on a headless, unfocused window can hand back a frame the
+           * compositor has not caught up on — a scene that had already rendered 57 nodes
+           * captured as an empty canvas reading "0 nodes", which looks exactly like a
+           * regression and is not one. The DOM is the truth; the PNG is a picture of it that
+           * may be late. Assert against this.
+           */
+          if (process.env.VDS_SHOT_ASSERT) {
+            const text = await win.webContents.executeJavaScript(
+              'document.body.innerText.replace(/\\s+/g, " ").slice(0, 600)',
+            );
+            console.log(`DOM: ${text}`);
+          }
           fs.writeFileSync(process.env.VDS_SHOT, (await win.webContents.capturePage()).toPNG());
           console.log(`wrote ${process.env.VDS_SHOT}`);
         } catch (err) {

@@ -33,25 +33,26 @@ import type { ParallelPair } from '../../../engine/detect/parallel.ts';
 import type { FocusStack } from '../../../engine/focus/types.ts';
 import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
 import type { InvariantResult } from '../../../engine/invariants/engine.ts';
+import type { RunEvent } from '../../../engine/replay/types.ts';
 import type { StructureReport } from '../../../engine/detect/structure-types.ts';
 
-export interface VdsEvent {
-  at: number;
-  session: string;
-  agent: string;
-  model: string | null;
-  tool: string;
+/**
+ * One recorded agent action, as the renderer reads it.
+ *
+ * Extends the engine's `RunEvent` rather than restating it — the same mistake the renderer's
+ * old private `Findings` made. The engine owns what a recorded event *is*, because the MCP
+ * server is what writes them; these are the fields the panels happen to display.
+ */
+export type VdsEvent = RunEvent & {
   ok?: boolean;
-  subject?: string;
   predicate?: string;
   name?: string;
-  node?: string;
   into?: string;
   members?: number;
   evidence?: number;
   confidence?: number;
   error?: string;
-}
+};
 
 export interface Job {
   id: string;
