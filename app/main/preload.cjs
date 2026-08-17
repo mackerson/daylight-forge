@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('vds', {
   reveal: (payload) => invoke('vds:reveal', payload),
   snippet: (payload) => invoke('vds:snippet', payload),
   watch: (on) => invoke('vds:watch', on),
+  tryInvariant: (payload) => invoke('vds:try-invariant', payload),
+  saveInvariant: (payload) => invoke('vds:save-invariant', payload),
   onWatch: (fn) => {
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on('vds:watch', h);

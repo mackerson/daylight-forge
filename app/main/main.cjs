@@ -411,6 +411,8 @@ ipcMain.handle('vds:load', () => {
     stack,
     fileEdges,
     initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
+    // Which panel to open on. Exists so `pnpm shot` can capture a specific screen.
+    initialTab: process.env.VDS_TAB || null,
     perf: !!process.env.VDS_PERF,
     lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
     channelDefault: process.env.VDS_CHANNEL || 'structure',
@@ -542,6 +544,63 @@ ipcMain.handle('vds:snippet', (_e, { file, line, context = 4 }) => {
     return { error: err.message };
   }
 });
+
+/**
+ * Evaluate a candidate invariant without saving it.
+ *
+ * The design says adding an already-red invariant should break the branch that adds it —
+ * that is the whole point of the gate. Without a preview that rule is a trap: you write the
+ * claim, commit it, and find out from CI. With one it is a workflow.
+ */
+ipcMain.handle('vds:try-invariant', (_e, { predicate }) =>
+  new Promise((resolve) => {
+    if (!state.repo) return resolve({ error: 'no repo' });
+    execFile(
+      NODE.bin,
+      nodeArgs(['try-invariant', state.repo, '--out', state.dir, '--predicate', predicate]),
+      { cwd: ROOT, env: nodeEnv(), maxBuffer: 32 * 1024 * 1024, timeout: 120_000 },
+      (err, stdout) => {
+        if (err) return resolve({ error: err.message });
+        try {
+          resolve(JSON.parse(stdout.trim().split('\n').pop()));
+        } catch (e) {
+          resolve({ error: `bad output: ${e.message}` });
+        }
+      },
+    );
+  }),
+);
+
+/**
+ * Write an invariant into the analysed repo.
+ *
+ * The only write this app makes to a codebase it is analysing. Every rule about what is
+ * allowed lives in engine/invariants/save.ts, where it is tested — this is a transport, and
+ * a second copy of the validation here would be a second thing to get wrong.
+ */
+ipcMain.handle('vds:save-invariant', (_e, { id, prose, predicate }) =>
+  new Promise((resolve) => {
+    if (!state.repo) return resolve({ error: 'no repo' });
+    execFile(
+      NODE.bin,
+      nodeArgs([
+        'save-invariant', state.repo,
+        '--id', String(id ?? ''),
+        '--prose', String(prose ?? ''),
+        '--predicate', String(predicate ?? ''),
+      ]),
+      { cwd: ROOT, env: nodeEnv(), maxBuffer: 8 * 1024 * 1024, timeout: 30_000 },
+      (err, stdout) => {
+        if (err) return resolve({ error: err.message });
+        try {
+          resolve(JSON.parse(stdout.trim().split('\n').pop()));
+        } catch (e) {
+          resolve({ error: `bad output: ${e.message}` });
+        }
+      },
+    );
+  }),
+);
 
 /** Open a cited file at its line in the user's editor. Never executes anything. */
 ipcMain.handle('vds:reveal', (_e, { file, line }) => {

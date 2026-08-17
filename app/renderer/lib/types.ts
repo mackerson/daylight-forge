@@ -64,6 +64,8 @@ export interface LoadPayload {
   fileEdges: Array<{ from: string; to: string; weight: number }>;
   /** Lets a headless screenshot open straight into a given layout. */
   initialMode?: 'graph' | 'tree';
+  /** Panel to open on. Set from VDS_TAB so `pnpm shot` can capture a specific screen. */
+  initialTab?: string | null;
   /** Enables the frame-time probe; set from VDS_PERF. */
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
@@ -116,6 +118,10 @@ declare global {
       onWatch(fn: (p: { reason: string }) => void): () => void;
       snippet(p: { file: string; line?: number; context?: number }): Promise<{
         file?: string; start?: number; line?: number; lines?: string[]; error?: string;
+      }>;
+      tryInvariant(p: { predicate: string }): Promise<InvariantResult & { error?: string }>;
+      saveInvariant(p: { id: string; prose: string; predicate: string }): Promise<{
+        ok?: boolean; file?: string; count?: number; replaced?: boolean; error?: string;
       }>;
       onEvent(fn: (e: VdsEvent) => void): () => void;
       onJob(fn: (j: Job) => void): () => void;

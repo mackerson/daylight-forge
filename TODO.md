@@ -211,7 +211,19 @@ Ordered loosely by value, not scheduled.
 - [x] Findings adjudicates in place: a verdict pill on a family or a dead candidate is now
       the button that opens arbitration, so acting on a disagreement starts where the
       evidence is rather than after finding the same subject again in Review.
-- [ ] Invariant authoring UI. They are hand-written JSON today.
+- [x] Invariant authoring UI. Six predicate shapes as a form, each with a sentence saying
+      what it is for, and a **Check against the map** button that evaluates the candidate
+      without saving it. The preview is the point: the design says an already-red invariant
+      *should* break the branch that adds it, and without a way to look first that rule
+      punishes you for finding out. Red is still savable, and the form says why you might.
+      The vocabulary lives in `engine/invariants/shapes.ts` rather than the renderer, because
+      it *is* the predicate language stated in the terms a person writes it in — an agent
+      proposing an invariant should be offered the same shapes. Writing is the only change
+      this tool makes to a codebase it analyses, so `engine/invariants/save.ts` owns every
+      rule about it: fixed filename, merge not overwrite, and a refusal to touch an existing
+      file that does not parse, since that may be someone's unfinished work.
+      **Test:** `engine/test/shapes.ts` (39), plus a live round-trip — preview red, save
+      narrower, gate picks it up.
 
 ### Operations
 - [ ] Packaging. `pnpm gui` needs the repo checked out; there is no distributable build.

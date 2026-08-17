@@ -342,3 +342,10 @@ code, .mono { font-family: inherit; }
   cursor: pointer;
 }
 .pill.as-button:hover { filter: brightness(1.25); }
+
+/* Invariant authoring: a form, not a wall of JSON. */
+.author .fields { display: grid; gap: 0.5rem; margin: 0.75rem 0; }
+.author .fields label { display: grid; grid-template-columns: 11rem 1fr; align-items: center; gap: 0.6rem; }
+.author .fields label span { font-size: 0.85em; opacity: 0.75; }
+.author .fields input { padding: 0.35rem 0.5rem; font: inherit; }
+.toolbar.wrap { flex-wrap: wrap; }

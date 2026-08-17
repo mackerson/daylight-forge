@@ -1,12 +1,16 @@
+import { useState } from 'react';
 import type { LoadPayload } from '../types.ts';
+import { Author } from './Author.tsx';
 
 /** Invariants belong to the analysed repo, so an empty state here is normal, not a failure. */
-export function Invariants({ data }: { data: LoadPayload }) {
+export function Invariants({ data, onRefresh }: { data: LoadPayload; onRefresh: () => void }) {
   const results = data.invariants?.results ?? [];
+  const [authoring, setAuthoring] = useState(false);
 
   if (!results.length) {
     return (
-      <div className="empty">
+      <div className="stack">
+        <div className="empty">
         <h2>No invariants defined</h2>
         <p>
           Invariants are claims about <em>this</em> codebase — “the event bus is storage-only”,
@@ -17,6 +21,9 @@ export function Invariants({ data }: { data: LoadPayload }) {
           the <code>prose</code> a human reads, and a <code>predicate</code> compiled against L0.
           Until then L3 reports UNPROVEN rather than failing.
         </p>
+        <button onClick={() => setAuthoring(true)}>Write the first one</button>
+        </div>
+        {authoring && <Author onSaved={onRefresh} />}
       </div>
     );
   }
@@ -25,9 +32,15 @@ export function Invariants({ data }: { data: LoadPayload }) {
 
   return (
     <div className="stack">
-      <p className={red.length ? 'bad' : 'ok'}>
-        {results.length - red.length} green · {red.length} red
-      </p>
+      <div className="toolbar">
+        <span className={red.length ? 'bad' : 'ok'}>
+          {results.length - red.length} green · {red.length} red
+        </span>
+        <button className={authoring ? 'chip active' : 'chip'} onClick={() => setAuthoring(!authoring)}>
+          {authoring ? 'close' : 'write one'}
+        </button>
+      </div>
+      {authoring && <Author onSaved={onRefresh} />}
       {results.map((r) => (
         <section key={r.id} className={r.status === 'red' ? 'card bad-border' : 'card'}>
           <h3>

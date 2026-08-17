@@ -41,6 +41,17 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [arbitrating, setArbitrating] = useState<Belief | null>(null);
+
+  // Open on a named panel when asked. Screenshots need it; so does a link into a finding.
+  const seededTab = useRef(false);
+  useEffect(() => {
+    if (seededTab.current || !data?.initialTab) return;
+    if (TABS.some((t) => t.id === data.initialTab)) {
+      seededTab.current = true;
+      setTab(data.initialTab as Tab);
+    }
+  }, [data?.initialTab]);
+
   const [watching, setWatching] = useState(false);
   // Snapshot of the store before a job, so completion can report the delta rather than
   // making you read a log to find out what happened.
@@ -315,7 +326,7 @@ export function App() {
               {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend}
                   selected={selectedJob} onSelect={setSelectedJob}
                   leases={query?.leases ?? []} />}
-              {mapped && tab === 'invariants' && <Invariants data={data!} />}
+              {mapped && tab === 'invariants' && <Invariants data={data!} onRefresh={refresh} />}
             </aside>
           </>
         )}

@@ -7,13 +7,13 @@ import { collapseCandidates, detectCommunities } from './detect/communities.ts';
 import { extract } from './extract/index.ts';
 import type { Graph } from './graph/types.ts';
 import { mermaidStats, toMermaid } from './render/mermaid.ts';
-import { evaluateAll } from './invariants/engine.ts';
 import { loadInvariants } from './invariants/load.ts';
+import { saveInvariant } from './invariants/save.ts';
 import type { Invariant } from './invariants/engine.ts';
 import { buildStack } from './focus/stack.ts';
 import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive } from './swarm/driver.ts';
-import { evaluate } from './invariants/engine.ts';
+import { evaluate, evaluateAll } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
 import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/share.ts';
 import { toArchitectureDoc } from './render/architecture.ts';
@@ -41,6 +41,10 @@ interface Args {
   confirmedOnly: boolean;
   maxCost?: number;
   concurrency?: number;
+  /** `try-invariant`: a candidate predicate, as JSON, evaluated but never saved. */
+  predicate?: string;
+  invariantId?: string;
+  prose?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -86,6 +90,9 @@ function parseArgs(argv: string[]): Args {
     concurrency: flags.get('concurrency') ? Number(flags.get('concurrency')) : undefined,
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
+    predicate: flags.get('predicate'),
+    invariantId: flags.get('id'),
+    prose: flags.get('prose'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
     timeoutMs: flags.get('timeout') ? Number(flags.get('timeout')) * 1000 : undefined,
   };
@@ -232,6 +239,63 @@ function runInvariants(args: Args): void {
   const loaded = loadInvariants(args.root, args.invariantsFile);
   reportInvariantSource(args, loaded);
   emitInvariants(args, graph, evaluateAll(graph, loaded.invariants));
+}
+
+/**
+ * Evaluate one candidate invariant without writing it anywhere.
+ *
+ * Authoring an invariant blind is how you end up committing one that is already red, which
+ * the design says should break the branch that adds it. Being able to see the answer first
+ * turns that from a trap into a workflow: write it, look, fix the code or fix the claim.
+ *
+ * Reads the cached graph when there is one, because this runs on every keystroke-ish
+ * interaction from the GUI and a full re-parse would make it unusable.
+ */
+function runTryInvariant(args: Args): void {
+  const graphPath = path.join(args.out, 'graph.json');
+  const graph: Graph = fs.existsSync(graphPath)
+    ? JSON.parse(fs.readFileSync(graphPath, 'utf8'))
+    : extract({
+        root: args.root,
+        includeTests: args.includeTests,
+        cacheDir: path.join(args.out, '.cache'),
+      });
+
+  const raw = args.predicate;
+  if (!raw) {
+    console.log(JSON.stringify({ error: 'no --predicate given' }));
+    return;
+  }
+  let predicate: unknown;
+  try {
+    predicate = JSON.parse(raw);
+  } catch (err) {
+    console.log(JSON.stringify({ error: `predicate is not valid JSON: ${(err as Error).message}` }));
+    return;
+  }
+
+  const result = evaluate(graph, {
+    id: args.invariantId ?? 'candidate',
+    prose: args.prose ?? '(unsaved)',
+    predicate: predicate as never,
+  });
+  console.log(JSON.stringify(result));
+}
+
+/** Write a candidate invariant into the analysed repo. Validation lives in save.ts. */
+function runSaveInvariant(args: Args): void {
+  let predicate: unknown;
+  try {
+    predicate = JSON.parse(args.predicate ?? '');
+  } catch (err) {
+    console.log(JSON.stringify({ error: `predicate is not valid JSON: ${(err as Error).message}` }));
+    return;
+  }
+  console.log(JSON.stringify(saveInvariant(args.root, {
+    id: args.invariantId ?? '',
+    prose: args.prose ?? '',
+    predicate,
+  })));
 }
 
 function reportInvariantSource(args: Args, loaded: ReturnType<typeof loadInvariants>): void {
@@ -879,6 +943,12 @@ switch (args.command) {
   case 'query':
     runQuery(args);
     break;
+  case 'save-invariant':
+    runSaveInvariant(args);
+    break;
+  case 'try-invariant':
+    runTryInvariant(args);
+    break;
   case 'arbitrate':
     runArbitrate(args, process.argv.slice(2));
     break;
@@ -903,7 +973,8 @@ options:
   --invariants-file <f>  invariant definitions (default: <repo>/vds.invariants.json)
   --depth <n>        L1 grouping depth (default: 3)
   --commit <sha>     record the commit this tree came from
-  --include-tests    include test files (excluded by default)
+  --include-tests    include test files (excluded from the map, but always read for reachability)
+  --predicate <json> try-invariant: the candidate predicate to evaluate
   --top <n>          rows per console table (default: 15)
 `);
     process.exit(args.command === 'help' ? 0 : 1);
