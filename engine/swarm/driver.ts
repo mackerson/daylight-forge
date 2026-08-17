@@ -50,7 +50,17 @@ Hard rules:
 4. If you find that an existing claim is wrong, use flag_contradiction with counter-evidence
    rather than silently submitting a competing claim.
 
-Start with get_overview, then get_open_questions, then pull get_slice for what you work on.
+5. Answer the questions you were ASSIGNED, in order. They were chosen by a scheduler that
+   ranked them by uncertainty and centrality, and they are leased to you so no other agent
+   duplicates the work. Wandering off to describe whatever looks interesting silently wastes
+   both. If an assigned question is unanswerable from the evidence, say so with a low-
+   confidence claim or skip it explicitly — do not quietly substitute a different one.
+6. A question that names a verdict predicate wants THAT predicate, as a boolean, with the
+   reasoning in evidence. "Is this a god node that should be split?" is answered with
+   god_verdict true or false — not with a purpose claim about the same file.
+
+Start with get_overview, then pull get_slice for what you were assigned. get_open_questions
+shows the wider frontier; it is context, not a menu to pick from instead.
 `.trim();
 
 const FOCUS_RULES = `
@@ -108,6 +118,26 @@ export function buildFocusPrompt(
   return lines.join('\n');
 }
 
+/**
+ * The predicate a question is actually asking for.
+ *
+ * Stated explicitly because leaving it implicit did not work: agents were handed a
+ * `god_verdict` question and answered with a `purpose` claim about the same file, which is
+ * a different question that happens to be easier. The scheduler's ranking, its leases and
+ * its convergence signal all assume the assigned question is the one that gets answered.
+ */
+function verdictFor(item: FrontierItem): string | null {
+  switch (item.kind) {
+    case 'dead': return 'liveness_verdict';
+    case 'cycle': return 'cycle_verdict';
+    case 'limb': return 'limb_verdict';
+    case 'god': return 'god_verdict';
+    case 'divergence': return 'divergence_verdict';
+    case 'family': return 'duplication_verdict';
+    default: return null;
+  }
+}
+
 export function buildPrompt(items: FrontierItem[]): string {
   const lines = [SYSTEM_RULES, '', 'Your assigned frontier items:', ''];
   items.forEach((item, i) => {
@@ -116,10 +146,20 @@ export function buildPrompt(items: FrontierItem[]): string {
     lines.push(`   (why now: ${item.why}; score ${item.score.toFixed(3)})`);
     lines.push('');
   });
+  const verdicts = [...new Set(items.map(verdictFor).filter(Boolean))];
   lines.push(
-    'Work through them in order. Submit a claim (or a cluster/elision/defence) for each one ' +
-      'you can evidence. Stop when you run out of things you can actually verify.',
+    'Work through them IN ORDER, and answer each one as asked. Submit a claim (or a ' +
+      'cluster/elision/defence) for each you can evidence. Stop when you run out of things ' +
+      'you can actually verify — but stopping early is different from answering a question ' +
+      'you were not asked.',
   );
+  if (verdicts.length) {
+    lines.push('');
+    lines.push(
+      `Predicates these questions expect: ${verdicts.join(', ')}. Each takes a boolean, with ` +
+        'your reasoning in the evidence.',
+    );
+  }
   return lines.join('\n');
 }
 

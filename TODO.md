@@ -149,14 +149,31 @@ claim, because it belongs to whoever made it.
 - [x] **Test:** `engine/test/budget.ts` — 8 assertions on spend parsing, including that
       cumulative totals do not compound, per-message costs do, and unparsable output yields
       zero rather than silently defeating the ceiling.
-- [ ] **Still open:** two *different models* disagreeing on substance, live. The path itself
-      has now run end to end in anger — two agents disagreed, the arbitration screen surfaced
-      it, and it produced a real fix — but that contradiction turned out to be *false*
-      (`sameConcept` vs `same_concept`). Forcing a substantive disagreement means paying for
-      repeated runs and hoping, so it is left for a session where a real one occurs.
+- [ ] **Still open, and now attempted: two *different models* disagreeing on substance.**
+      Ran it live — five runs, `claude` on `haiku` and `sonnet`, $3.13. No substantive
+      disagreement occurred, and none was manufactured. What the attempt did establish:
+      - **Assignments were not binding, and that is now fixed.** Handed a `god_verdict`
+        question, agents answered with a `purpose` claim about the same file — a different,
+        easier question — and the prompt never said otherwise. The scheduler's ranking, its
+        leases and its convergence signal all assume the assigned question is the one
+        answered, so all three were advisory. The prompt now names the expected predicate and
+        says stopping early is not the same as answering something else.
+        **Test:** `engine/test/frontier.ts`, +6.
+      - **Narrative predicates cannot produce this gate.** Agents overwhelmingly write
+        `purpose`, which corroborates rather than contradicts by design — correctly. The gate
+        needs a *verdict* question, and those are a small share of the frontier on a
+        well-explored repo.
+      - **Verdict questions are expensive.** Two runs burned 20 turns and timed out at 300s
+        without submitting: reading a large file and forming an architectural judgement does
+        not fit the explore-mode budget. Worth its own item if this is retried.
+      - **`--max-cost` overshoots on `claude`**, by design and now measured: a $0.80 cap
+        stopped a run that had already spent $1.11, because the CLI only reports cost when it
+        finishes. Documented behaviour, first time quantified.
 
 **Gate:** ⚠️ mechanism demonstrated live end to end; a genuine cross-model disagreement has
-not yet occurred, and will not be manufactured.
+been *attempted* and did not occur. Whether two models differ on a given question is not
+something the harness can force, and forcing it is the one thing that would make the gate
+worthless. Left open deliberately.
 
 Also fixed here: the MCP server threw an unexplained error when `graph.json` was missing, so
 every tool showed as "unavailable" with no reason — indistinguishable from the host refusing

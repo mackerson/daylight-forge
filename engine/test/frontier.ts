@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Graph } from '../graph/types.ts';
 import { DatabaseSync } from 'node:sqlite';
+import { buildPrompt } from '../swarm/driver.ts';
 import { ClaimStore } from '../store/claims.ts';
 import { frontier } from '../swarm/frontier.ts';
 import { harness } from './harness.ts';
@@ -80,6 +81,48 @@ console.log('\nstructural findings on the frontier');
     check('an arbitrated finding leaves the frontier',
       !after.some((i) => i.subject === first.subject && i.kind === 'dead'));
   }
+}
+
+console.log('\nassignments are binding');
+{
+  /**
+   * The scheduler ranks by uncertainty and centrality, leases the winners so no other agent
+   * duplicates them, and stops when nothing scores above the floor. Every one of those
+   * mechanisms assumes the assigned question is the one that gets answered.
+   *
+   * It was not. Handed a `god_verdict` question about a file, agents answered with a
+   * `purpose` claim about the same file — a different question that happens to be easier —
+   * and the prompt never said otherwise. Observed live across four runs and two models before
+   * it was fixed: the ranking, the leases and the convergence signal were all advisory.
+   */
+  const items = frontier(graph, store, findings, structure);
+  const god = items.find((i) => i.kind === 'god');
+  const file = items.find((i) => i.kind === 'file');
+
+  if (god) {
+    const prompt = buildPrompt([god]);
+    check('a verdict question names the predicate it expects',
+      /god_verdict/.test(prompt), prompt.slice(-300));
+    check('and says it wants a boolean, not prose',
+      /boolean/.test(prompt));
+  } else {
+    check('a god question exists to assert against', false, 'no god finding in the fixture');
+  }
+
+  const both = buildPrompt([god, file].filter(Boolean) as typeof items);
+  check('the prompt says to work through them in order',
+    /IN ORDER/.test(both));
+  check('and that stopping early is not the same as answering something else',
+    /answering a question you were not asked/.test(both));
+
+  if (file) {
+    check('a question with no verdict predicate does not invent one',
+      !/Predicates these questions expect/.test(buildPrompt([file])),
+      buildPrompt([file]).slice(-200));
+  }
+
+  check('the wider frontier is offered as context, not as a menu',
+    /context, not a menu/.test(buildPrompt(items.slice(0, 1))));
 }
 
 console.log('\nlegacy verdicts return as questions');
