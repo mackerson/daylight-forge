@@ -102,6 +102,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   const [pulses, setPulses] = useState(true);
   const pulsesRef = useRef(true);
   pulsesRef.current = pulses;
+  const [swarm, setSwarm] = useState(true);
+  const swarmRef = useRef(true);
+  swarmRef.current = swarm;
   const seededMode = useRef(false);
   const apiRef = useRef<{ setLevel: (n: number) => void } | null>(null);
   // Selection survives a layout switch: spot a tangle in the graph, then see where it
@@ -574,14 +577,90 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       return scratch.copy(baseColor(n)).lerp(PULSE, left / PULSE_MS).clone();
     };
 
+    /**
+     * Agent markers.
+     *
+     * An agent has no position — but it does have *attention*, and every get_slice records
+     * which node it asked to look at. The marker sits on a node the agent genuinely
+     * touched; the flight between two such nodes is a visual transition, not a claim that
+     * it travelled through anything on the way.
+     */
+    const agentGroup = new THREE.Group();
+    scene.add(agentGroup);
+
+    const TRAIL = 24;
+    const IDLE_MS = 45_000;
+    interface Flyer {
+      label: string;
+      color: THREE.Color;
+      pos: THREE.Vector3;
+      target: THREE.Vector3;
+      trail: THREE.Vector3[];
+      lastAt: number;
+      mesh: THREE.Mesh;
+      line: THREE.Line;
+    }
+    const flyers = new Map<string, Flyer>();
+    const flyerGeo = new THREE.SphereGeometry(1, 16, 12);
+
+    const flyerFor = (session: string, label: string): Flyer => {
+      const existing = flyers.get(session);
+      if (existing) return existing;
+      const color = agentColor(label);
+      const mesh = new THREE.Mesh(
+        flyerGeo,
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
+      );
+      mesh.scale.setScalar(3.2);
+      const lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(TRAIL * 3), 3));
+      const line = new THREE.Line(
+        lineGeo,
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.4 }),
+      );
+      agentGroup.add(mesh, line);
+      const flyer: Flyer = {
+        label, color,
+        pos: new THREE.Vector3(), target: new THREE.Vector3(),
+        trail: [], lastAt: performance.now(), mesh, line,
+      };
+      flyers.set(session, flyer);
+      return flyer;
+    };
+
     const offEvent = window.vds.onEvent((e) => {
-      if (!pulsesRef.current) return;
       const subject = e.subject ?? e.node;
-      if (!subject) return;
-      const file = subject.split('#')[0];
-      for (const key of nodeKeysForFile.get(file) ?? []) {
-        pulseUntil.set(key, performance.now() + PULSE_MS);
+      const file = subject ? subject.split('#')[0] : null;
+      const keys = file ? nodeKeysForFile.get(file) ?? [] : [];
+
+      if (pulsesRef.current && keys.length) {
+        // Ancestors pulse too — the path to the touched node lighting up is the point —
+        // but not the root, which contains everything and would simply strobe.
+        for (const key of keys) {
+          if (!laid.nodes.get(key)?.isRoot) pulseUntil.set(key, performance.now() + PULSE_MS);
+        }
       }
+
+      if (!swarmRef.current) return;
+      const label = `${e.agent}${e.model ? `/${e.model}` : ''}`;
+      const flyer = flyerFor(e.session || label, label);
+      flyer.lastAt = performance.now();
+
+      // Fly to the MOST SPECIFIC node holding this file. The key list is built ancestors
+      // first, so taking the head pinned every agent to the root and it never moved.
+      //
+      // Orientation calls like get_overview carry no subject, and inventing a destination
+      // for them would be exactly the fabrication the referent rule forbids — so they
+      // simply do not move the marker.
+      const node = keys
+        .map((k) => laid.nodes.get(k))
+        .filter((n): n is NonNullable<typeof n> => !!n && !n.isRoot)
+        .sort((a, b) => a.members.length - b.members.length)[0];
+      if (!node) return;
+      flyer.target.set(node.x, node.y + (node.radius ?? 4) + 6, node.z);
+      if (!flyer.trail.length) flyer.pos.copy(flyer.target);
+      flyer.trail.push(flyer.target.clone());
+      if (flyer.trail.length > TRAIL) flyer.trail.shift();
     });
 
     const HL_NODE = new THREE.Color('#6ea8fe');
@@ -761,6 +840,36 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           }
         }
       }
+      if (flyers.size) {
+        const nowMs = performance.now();
+        for (const [session, f] of flyers) {
+          // Ease toward the target rather than snapping: the movement is what makes the
+          // swarm legible at a glance.
+          f.pos.lerp(f.target, Math.min(1, dt * 2.4));
+          f.mesh.position.copy(f.pos);
+
+          const idle = nowMs - f.lastAt;
+          const fade = idle > IDLE_MS ? 0 : 1 - idle / IDLE_MS;
+          (f.mesh.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.6 * fade;
+          f.mesh.scale.setScalar(3.2 + Math.sin(nowMs / 260) * 0.5 * fade);
+          (f.line.material as THREE.LineBasicMaterial).opacity = 0.4 * fade;
+          f.mesh.visible = swarmRef.current;
+          f.line.visible = swarmRef.current && f.trail.length > 1;
+
+          const attr = f.line.geometry.getAttribute('position') as THREE.BufferAttribute;
+          for (let i = 0; i < TRAIL; i++) {
+            const pt = f.trail[Math.min(i, f.trail.length - 1)] ?? f.pos;
+            attr.setXYZ(i, pt.x, pt.y, pt.z);
+          }
+          attr.needsUpdate = true;
+
+          if (idle > IDLE_MS * 2) {
+            agentGroup.remove(f.mesh, f.line);
+            flyers.delete(session);
+          }
+        }
+      }
+
       if (pulseUntil.size) {
         for (const [key] of [...pulseUntil]) {
           const node = laid.nodes.get(key) as any;
@@ -863,6 +972,21 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         el.textContent = c.node.label;
         frag.appendChild(el);
       }
+      // Agent labels ride above everything: knowing who is where is the point.
+      if (swarmRef.current) {
+        for (const f of flyers.values()) {
+          projected.copy(f.pos).project(camera);
+          if (projected.z > 1) continue;
+          const el = document.createElement('div');
+          el.className = 'label agent-label';
+          el.style.left = `${(projected.x * 0.5 + 0.5) * rect.width}px`;
+          el.style.top = `${(-projected.y * 0.5 + 0.5) * rect.height - 14}px`;
+          el.style.color = `#${f.color.getHexString()}`;
+          el.textContent = f.label;
+          frag.appendChild(el);
+        }
+      }
+
       labelLayer.replaceChildren(frag);
     }
 
@@ -884,6 +1008,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       renderer.dispose();
       geo.dispose();
       offEvent();
+      flyerGeo.dispose();
       canvas.remove();
       labelLayer.remove();
       tip.remove();
@@ -930,6 +1055,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             title="flash a node when an agent claims something about it"
           >
             pulse
+          </button>
+          <button
+            className={swarm ? 'chip active' : 'chip'}
+            onClick={() => setSwarm(!swarm)}
+            title="show each agent as a marker at the node it is currently looking at"
+          >
+            swarm
           </button>
           <span className="sep" />
           <button

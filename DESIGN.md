@@ -513,6 +513,14 @@ That routing is what makes "this limb's dependencies all leave the subtree" visi
 haze beneath the leaves. Camera distance maps to tree depth here, the same way it maps to focus
 altitude in the graph view.
 
+**Agents are shown by attention, not position.** An agent has no location, but every
+`get_slice` records which node it asked to look at, so a marker sits on a node it genuinely
+touched and trails the ones before it. The flight between two such nodes is a visual
+transition, not a claim that it passed through anything on the way — and orientation calls
+that carry no subject move nothing, because inventing a destination for them would be the
+referent rule violated again. Marker colour is the same stable per-agent hue the agent
+channel uses, so who-is-where reads the same in both.
+
 **LOD is legibility, not performance — measured.** On the 449-node / 855-rope fixture the
 distance-driven LOD renders 7 nodes at 0.14ms/frame; showing all 449 costs 0.28ms. Against a
 16.7ms budget that is a saving of under 1% of a frame, because nodes are instanced (one draw
