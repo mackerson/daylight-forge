@@ -6,7 +6,11 @@ import type { Belief, Claim, QueryPayload } from '../types.ts';
  * product, and which until now was a JSON file. Contradictions first, because a
  * disagreement between two sources is worth more than another unexamined node.
  */
-export function Review({ query, onRefresh }: { query: QueryPayload | null; onRefresh: () => void }) {
+export function Review({ query, onRefresh, onArbitrate }: {
+  query: QueryPayload | null;
+  onRefresh: () => void;
+  onArbitrate: (b: Belief) => void;
+}) {
   const [filter, setFilter] = useState<'contradicted' | 'all' | 'focus'>('contradicted');
   if (!query) return <div className="empty"><h2>Loading…</h2></div>;
 
@@ -42,7 +46,12 @@ export function Review({ query, onRefresh }: { query: QueryPayload | null; onRef
       )}
 
       {beliefs.map((b) => (
-        <BeliefCard key={`${b.subject}:${b.predicate}`} belief={b} onRefresh={onRefresh} />
+        <BeliefCard
+          key={`${b.subject}:${b.predicate}`}
+          belief={b}
+          onRefresh={onRefresh}
+          onArbitrate={onArbitrate}
+        />
       ))}
     </div>
   );
@@ -146,7 +155,11 @@ function FocusReview({ query, onRefresh }: { query: QueryPayload; onRefresh: () 
   );
 }
 
-function BeliefCard({ belief, onRefresh }: { belief: Belief; onRefresh: () => void }) {
+function BeliefCard({ belief, onRefresh, onArbitrate }: {
+  belief: Belief;
+  onRefresh: () => void;
+  onArbitrate: (b: Belief) => void;
+}) {
   const [busy, setBusy] = useState(false);
 
   const arbitrate = async (value: unknown) => {
@@ -186,7 +199,14 @@ function BeliefCard({ belief, onRefresh }: { belief: Belief; onRefresh: () => vo
           </span>
         </div>
       )}
-      {contested && <p className="hint">Pick the claim that is right — that becomes CONFIRMED and outranks every agent.</p>}
+      {contested && (
+        <div className="actions">
+          <button disabled={busy} onClick={() => onArbitrate(belief)}>
+            Open arbitration
+          </button>
+          <span className="dim">side by side, with the source each side cited</span>
+        </div>
+      )}
     </section>
   );
 }

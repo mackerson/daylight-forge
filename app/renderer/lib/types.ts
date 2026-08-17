@@ -64,6 +64,8 @@ export interface LoadPayload {
   initialMode?: 'graph' | 'tree';
   /** Enables the frame-time probe; set from VDS_PERF. */
   perf?: boolean;
+  /** Opens the first contradiction straight into arbitration; for headless capture. */
+  autoArbitrate?: boolean;
   findings: Findings;
   invariants: { results: InvariantResult[] } | null;
   defended: string[];
@@ -107,6 +109,9 @@ declare global {
         subject: string; predicate: string; value: unknown; note?: string;
       }): Promise<{ ok: boolean; error?: string }>;
       reveal(p: { file: string; line?: number }): Promise<{ ok: boolean }>;
+      snippet(p: { file: string; line?: number; context?: number }): Promise<{
+        file?: string; start?: number; line?: number; lines?: string[]; error?: string;
+      }>;
       onEvent(fn: (e: VdsEvent) => void): () => void;
       onJob(fn: (j: Job) => void): () => void;
       onDerived(fn: (p: { at: number }) => void): () => void;

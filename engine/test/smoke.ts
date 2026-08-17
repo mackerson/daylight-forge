@@ -115,6 +115,20 @@ console.log('\nclaim store');
   check('lone dismissal stays INFERRED, not settled',
     store.belief('src/c.ts', 'is_dead').status === 'INFERRED');
 
+  // A canonical verdict name must be as strict as its aliases, or agents route around
+  // the boolean requirement by using it directly.
+  threw = false;
+  try {
+    store.submit({
+      subject: 'src/d.ts', predicate: 'duplication_verdict',
+      value: { sameConcept: true, canonical: 'x' },
+      source: { kind: 'agent', tool: 'claude' }, confidence: 0.9, evidence: dismissEv,
+    });
+  } catch (e) {
+    threw = e instanceof EvidenceRequired;
+  }
+  check('canonical verdict names require a boolean too', threw);
+
   // Two agents asking at once must not be handed the same work.
   store.lease(['src/a.ts', 'src/b.ts'], 'session-1');
   check('leases are visible to other sessions',

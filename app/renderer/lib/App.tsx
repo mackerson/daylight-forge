@@ -3,9 +3,10 @@ import { Agents } from './panels/Agents.tsx';
 import { Findings } from './panels/Findings.tsx';
 import { Invariants } from './panels/Invariants.tsx';
 import { Overview } from './panels/Overview.tsx';
+import { Arbitrate } from './panels/Arbitrate.tsx';
 import { Review } from './panels/Review.tsx';
 import { Scene } from './panels/Scene.tsx';
-import type { Job, LoadPayload, QueryPayload, VdsEvent } from './types.ts';
+import type { Belief, Job, LoadPayload, QueryPayload, VdsEvent } from './types.ts';
 
 type Tab = 'overview' | 'findings' | 'review' | 'agents' | 'invariants';
 
@@ -39,6 +40,7 @@ export function App() {
   const dragRef = useRef<{ active: boolean }>({ active: false });
   const [toast, setToast] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
+  const [arbitrating, setArbitrating] = useState<Belief | null>(null);
   // Snapshot of the store before a job, so completion can report the delta rather than
   // making you read a log to find out what happened.
   const statsRef = useRef<QueryPayload['stats'] | null>(null);
@@ -60,6 +62,15 @@ export function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const seededArb = useRef(false);
+  useEffect(() => {
+    if (seededArb.current || !data?.autoArbitrate) return;
+    const first = query?.contradictions?.[0];
+    if (!first) return;
+    seededArb.current = true;
+    setArbitrating(first);
+  }, [data?.autoArbitrate, query]);
 
   // Live wiring: MCP tool calls, job lifecycle, job stdout.
   useEffect(() => {
@@ -224,6 +235,19 @@ export function App() {
         </div>
       )}
 
+      {arbitrating && (
+        <div className="overlay">
+          <Arbitrate
+            belief={arbitrating}
+            pair={data?.findings?.d1?.find(
+              (p) => p.a === arbitrating.subject || p.b === arbitrating.subject,
+            )}
+            onClose={() => setArbitrating(null)}
+            onDecided={refresh}
+          />
+        </div>
+      )}
+
       <div className="body">
         <nav className="tabs">
           {TABS.map((t) => (
@@ -275,7 +299,7 @@ export function App() {
               {!mapped && <Empty hasRepo={!!data?.repo} />}
               {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
               {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} />}
-              {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} />}
+              {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend}
                   selected={selectedJob} onSelect={setSelectedJob}
                   leases={query?.leases ?? []} />}

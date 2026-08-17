@@ -264,3 +264,71 @@ code, .mono { font-family: inherit; }
   padding: 0 6px; font-size: 11px; color: var(--dim);
 }
 .badge.warn { background: #331a1c; color: var(--bad); }
+
+/* ---- arbitration ---- */
+.overlay {
+  position: fixed; inset: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  overflow: auto; padding: 20px;
+}
+.arb { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.arb-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+}
+.arb-head > div { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* The screen's whole point: name which kind of disagreement this is. */
+.arb-verdict {
+  padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel);
+}
+.arb-verdict.judgement { border-color: #4a3a1c; background: #211c12; }
+.arb-verdict.incomplete { border-color: #1c3a4a; background: #121c21; }
+.arb-verdict.mixed { border-color: #3a2f4a; background: #1a1621; }
+
+.arb-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.arb-side {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 14px;
+}
+.arb-side h3 { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; font-size: 13px; }
+.arb-side h4 { margin: 12px 0 6px; font-size: 11px; color: var(--dim); }
+.arb-side > button {
+  margin-top: 12px; width: 100%; padding: 7px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; cursor: pointer;
+}
+.arb-side > button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+.arb-diff { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+.arb-diff h3 { margin: 0 0 10px; font-size: 13px; }
+.arb-diff .same { color: var(--dim); }
+.arb-diff .only { color: var(--warn); }
+
+.snip { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+/* Shared spans are what both sides read; unique spans are what only one did. */
+.snip.shared { border-left: 3px solid var(--warn); }
+.snip.unique { border-left: 3px solid var(--line); }
+.snip-head {
+  width: 100%; text-align: left; background: var(--panel-2); border: 0;
+  padding: 5px 9px; cursor: pointer; font: inherit; color: var(--text);
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.snip-head em { color: var(--dim); font-style: normal; }
+.snip-err { padding: 6px 9px; color: var(--bad); font-size: 11px; }
+.snip-code { margin: 0; padding: 6px 0; font-size: 11px; overflow-x: auto; background: #0d1116; }
+.snip-line { padding: 0 9px; white-space: pre; }
+.snip-line.hit { background: #1e2740; }
+.snip-n { display: inline-block; width: 42px; color: var(--dim); user-select: none; }
+
+.arb-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.arb-foot input {
+  flex: 1; min-width: 240px; padding: 7px 10px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--text); font: inherit;
+}
+.arb-foot button {
+  padding: 7px 14px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}

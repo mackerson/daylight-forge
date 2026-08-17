@@ -42,6 +42,14 @@ const POLARITY: Record<string, [string, boolean]> = {
   no_bug: ['bug_verdict', false],
   cluster_verdict: ['cluster_verdict', true],
   elision_verdict: ['elision_verdict', true],
+  // The canonical names must map to themselves. Without this an agent using
+  // `duplication_verdict` directly — rather than `duplicates` — skipped the boolean
+  // requirement and could submit an arbitrary object, which produced a false
+  // CONTRADICTED between two claims that agreed but spelled a JSON key differently
+  // (`sameConcept` vs `same_concept`). Seen on this repo.
+  duplication_verdict: ['duplication_verdict', true],
+  liveness_verdict: ['liveness_verdict', true],
+  bug_verdict: ['bug_verdict', true],
 };
 
 export function isNarrative(predicate: string): boolean {

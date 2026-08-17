@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('vds', {
 
   arbitrate: (payload) => invoke('vds:arbitrate', payload),
   reveal: (payload) => invoke('vds:reveal', payload),
+  snippet: (payload) => invoke('vds:snippet', payload),
 
   onEvent: (fn) => {
     const h = (_e, payload) => fn(payload);

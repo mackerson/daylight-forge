@@ -365,6 +365,7 @@ ipcMain.handle('vds:load', () => {
     perf: !!process.env.VDS_PERF,
     lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
     channelDefault: process.env.VDS_CHANNEL || 'structure',
+    autoArbitrate: !!process.env.VDS_ARBITRATE,
     findings: readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] }),
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),
@@ -466,6 +467,30 @@ ipcMain.handle('vds:arbitrate', (_e, { subject, predicate, value, note }) =>
     );
   }),
 );
+
+/**
+ * Read the source around a cited span.
+ *
+ * Arbitration is impossible without seeing what each side actually looked at, and a
+ * file:line that opens a file manager is not that. Reads are contained to the repo and
+ * bounded in size; nothing is executed.
+ */
+ipcMain.handle('vds:snippet', (_e, { file, line, context = 4 }) => {
+  if (!state.repo) return { error: 'no repo' };
+  const abs = path.resolve(state.repo, file);
+  if (!abs.startsWith(path.resolve(state.repo))) return { error: 'outside repo' };
+  try {
+    const stat = fs.statSync(abs);
+    if (stat.size > 4 * 1024 * 1024) return { error: 'file too large to preview' };
+    const lines = fs.readFileSync(abs, 'utf8').split('\n');
+    if (!line) return { file, start: 1, lines: lines.slice(0, context * 2 + 1) };
+    const start = Math.max(1, line - context);
+    const end = Math.min(lines.length, line + context);
+    return { file, start, line, lines: lines.slice(start - 1, end) };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
 
 /** Open a cited file at its line in the user's editor. Never executes anything. */
 ipcMain.handle('vds:reveal', (_e, { file, line }) => {
