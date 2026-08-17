@@ -749,6 +749,19 @@ function runImport(args: Args): void {
         'shared knowledge does not enter by a side door.',
     );
   }
+  if (result.legacy.length) {
+    console.log(
+      `\n${result.legacy.length} verdict(s) were collected before verdicts had to carry a ` +
+        'boolean, so they cannot be read reliably and were not kept:',
+    );
+    for (const l of result.legacy.slice(0, 10)) console.log(`  ${l}`);
+    if (result.legacy.length > 10) console.log(`  … ${result.legacy.length - 10} more`);
+    console.log(
+      '\nThese are re-collected, not coerced. Guessing the polarity of ' +
+        '"false — these are NOT duplicates" would fabricate a verdict nobody gave. Run the ' +
+        'swarm and the frontier will ask each subject again.',
+    );
+  }
 }
 
 function runCheck(args: Args): void {

@@ -190,8 +190,13 @@ Ordered loosely by value, not scheduled.
       reachability.
 
 ### Agents and claims
-- [ ] Legacy verdict claims collected before the boolean rule are rejected on re-merge and
-      need re-collecting, not coercing.
+- [x] Legacy verdict claims are re-collected rather than coerced. Guessing the polarity of
+      `duplicates: "false — these are NOT duplicates"` would fabricate a verdict nobody gave,
+      which is the exact failure the boolean rule exists to prevent. So they are made visible
+      instead: `import` reports them apart from malformed input, and the frontier asks each
+      subject again — carrying the original claim's evidence, so the second answer costs far
+      less than the first because the search has already been done.
+      **Tests:** `engine/test/share.ts` +8, `engine/test/frontier.ts` +6.
 - [x] `get_focus_state` now emits, so no read tool is invisible in the live feed.
 - [x] Two clusters sharing a name now resolve to neither, rather than an elision silently
       landing in whichever was registered last.

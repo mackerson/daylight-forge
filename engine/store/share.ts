@@ -159,6 +159,15 @@ export interface ImportResult {
   elisions: number;
   defences: number;
   rejected: string[];
+  /**
+   * Verdicts the sender collected before verdicts had to be boolean.
+   *
+   * Reported apart from other rejections because the response is different: these are not
+   * malformed knowledge, they are knowledge in an older shape, and the subject is worth
+   * asking again rather than worth ignoring. The frontier picks them up from a local store;
+   * imported ones never land, so this is the only place they are visible.
+   */
+  legacy: string[];
 }
 
 export function importKnowledge(store: ClaimStore, shared: SharedKnowledge): ImportResult {
@@ -173,7 +182,7 @@ export function importKnowledge(store: ClaimStore, shared: SharedKnowledge): Imp
   }
 
   const result: ImportResult = {
-    claims: 0, skipped: 0, clusters: 0, elisions: 0, defences: 0, rejected: [],
+    claims: 0, skipped: 0, clusters: 0, elisions: 0, defences: 0, rejected: [], legacy: [],
   };
 
   for (const c of shared.claims) {
@@ -187,7 +196,9 @@ export function importKnowledge(store: ClaimStore, shared: SharedKnowledge): Imp
     } catch (err) {
       // Imported knowledge passes the same boundary as anything else. A claim that would be
       // rejected locally is rejected here too, rather than entering by the side door.
-      result.rejected.push(`${c.predicate} on ${c.subject}: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      if (/needs a boolean value/.test(message)) result.legacy.push(`${c.predicate} on ${c.subject}`);
+      else result.rejected.push(`${c.predicate} on ${c.subject}: ${message}`);
     }
   }
 

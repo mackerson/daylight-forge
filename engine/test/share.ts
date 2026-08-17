@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { ClaimStore } from '../store/claims.ts';
 import { exportKnowledge, importKnowledge, claimKey } from '../store/share.ts';
 
@@ -116,6 +117,62 @@ console.log('\nidentity');
 }
 
 alice.close();
-fs.rmSync(tmp, { recursive: true, force: true });
+console.log('\nlegacy verdicts');
+{
+  /**
+   * Verdicts collected before the boolean rule cannot be coerced: `duplicates` with the value
+   * "false — these are NOT duplicates" is exactly the case the rule exists to stop, and
+   * guessing which way it points would fabricate a verdict nobody gave. They must be
+   * *visible* — as a distinct outcome on import, and as a question on the frontier — because
+   * a rejection nobody reads is knowledge silently deleted.
+   */
+  const legacyDb = path.join(tmp, 'legacy.db');
+  {
+    // Written straight into the file, because that is what a store from before the rule is.
+    // Going through `submit` would be impossible — it rejects these now — and adding a
+    // test-only escape hatch to the store would widen the boundary the rule depends on.
+    const raw = new DatabaseSync(legacyDb);
+    raw.exec(`CREATE TABLE IF NOT EXISTS claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT NOT NULL, predicate TEXT NOT NULL,
+      value TEXT NOT NULL, source_kind TEXT NOT NULL, source_tool TEXT, source_model TEXT,
+      source_session TEXT, confidence REAL NOT NULL, evidence TEXT NOT NULL,
+      observed_hash TEXT, at INTEGER NOT NULL)`);
+    raw.prepare(
+      `INSERT INTO claims (subject, predicate, value, source_kind, source_tool, confidence,
+        evidence, at) VALUES (?,?,?,?,?,?,?,?)`,
+    ).run(
+      'src/a.ts', 'duplicates',
+      JSON.stringify('false — these are NOT duplicates, they only look alike'),
+      'agent', 'claude', 0.7, JSON.stringify(ev), 900,
+    );
+    raw.close();
+  }
+  const old = new ClaimStore(legacyDb, () => 1000);
+  old.submit({ subject: 'src/b.ts', predicate: 'duplicates', value: true,
+    source: { kind: 'agent', tool: 'grok' }, confidence: 0.7, evidence: ev });
+
+  const legacy = old.legacyVerdicts();
+  check('a pre-boolean verdict is found', legacy.length === 1, JSON.stringify(legacy));
+  check('it is the non-boolean one', legacy[0]?.subject === 'src/a.ts');
+  check('a proper boolean verdict is not flagged',
+    !legacy.some((l) => l.subject === 'src/b.ts'));
+  check('the original evidence travels with it, so re-asking is cheaper than asking',
+    legacy[0]?.evidence[0]?.file === 'src/a.ts');
+  check('and so does who said it', legacy[0]?.source.tool === 'claude');
+
+  // On the receiving side: rejected, but reported apart from malformed input.
+  const shared = exportKnowledge(old);
+  const fresh = new ClaimStore(path.join(tmp, 'fresh.db'), () => 2000);
+  const r = importKnowledge(fresh, shared);
+  check('a legacy verdict does not enter by a side door',
+    fresh.claimsFor('src/a.ts', 'duplicates').length === 0);
+  check('it is reported as legacy, not as garbage',
+    r.legacy.length === 1 && r.rejected.length === 0, JSON.stringify([r.legacy, r.rejected]));
+  check('the well-formed verdict still imports', r.claims === 1);
+
+  old.close();
+  fresh.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

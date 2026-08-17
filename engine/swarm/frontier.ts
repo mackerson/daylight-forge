@@ -14,7 +14,9 @@ import type { ClaimStore } from '../store/claims.ts';
 
 export interface FrontierItem {
   subject: string;
-  kind: 'file' | 'family' | 'contradiction' | 'dead' | 'cycle' | 'limb' | 'god' | 'divergence';
+  kind:
+    | 'file' | 'family' | 'contradiction' | 'dead' | 'cycle' | 'limb' | 'god' | 'divergence'
+    | 'legacy';
   question: string;
   score: number;
   uncertainty: number;
@@ -253,6 +255,38 @@ export function frontier(
       uncertainty: 1.5,
       centrality: c,
       why: `${b.claims.length} conflicting claims`,
+    });
+  }
+
+  /**
+   * Verdicts collected before the boolean rule.
+   *
+   * `submit` now rejects them, so importing an older store drops them into `rejected` and the
+   * knowledge quietly disappears. Coercing them is not on the table — `duplicates` with the
+   * value "false — these are NOT duplicates" is precisely the case the rule exists to stop,
+   * and guessing the polarity would fabricate a verdict nobody gave.
+   *
+   * So the subject goes back on the frontier, carrying the original evidence: the second
+   * answer costs far less than the first because the search has already been done.
+   */
+  for (const legacy of store.legacyVerdicts()) {
+    const c = cent.get(legacy.subject.split('#')[0]) ?? 0.5;
+    const cited = legacy.evidence
+      .map((e) => `${e.file}${e.line ? `:${e.line}` : ''}`)
+      .slice(0, 6)
+      .join(', ');
+    items.push({
+      subject: legacy.subject,
+      kind: 'legacy',
+      question:
+        `A previous run answered ${legacy.predicate} for ${legacy.subject} before verdicts had ` +
+        `to be boolean, so the answer cannot be read reliably and has not been kept. ` +
+        (cited ? `It cited ${cited} — start there. ` : '') +
+        `Answer ${legacy.predicate} again with a boolean value and put the reasoning in evidence.`,
+      score: 1.2 * Math.max(c, 0.2),
+      uncertainty: 1.2,
+      centrality: c,
+      why: `legacy ${legacy.predicate} from ${legacy.source.tool ?? legacy.source.kind}, value not boolean`,
     });
   }
 

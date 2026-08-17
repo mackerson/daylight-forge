@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Graph } from '../graph/types.ts';
+import { DatabaseSync } from 'node:sqlite';
 import { ClaimStore } from '../store/claims.ts';
 import { frontier } from '../swarm/frontier.ts';
 
@@ -83,6 +84,43 @@ console.log('\nstructural findings on the frontier');
     check('an arbitrated finding leaves the frontier',
       !after.some((i) => i.subject === first.subject && i.kind === 'dead'));
   }
+}
+
+console.log('\nlegacy verdicts return as questions');
+{
+  // A store from before the boolean rule. Written directly, because `submit` rejects these
+  // now and a test-only escape hatch would widen the boundary the rule depends on.
+  const legacyDb = path.join(tmp, 'legacy.db');
+  const raw = new DatabaseSync(legacyDb);
+  raw.exec(`CREATE TABLE IF NOT EXISTS claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT NOT NULL, predicate TEXT NOT NULL,
+    value TEXT NOT NULL, source_kind TEXT NOT NULL, source_tool TEXT, source_model TEXT,
+    source_session TEXT, confidence REAL NOT NULL, evidence TEXT NOT NULL,
+    observed_hash TEXT, at INTEGER NOT NULL)`);
+  raw.prepare(
+    `INSERT INTO claims (subject, predicate, value, source_kind, source_tool, confidence,
+      evidence, at) VALUES (?,?,?,?,?,?,?,?)`,
+  ).run(
+    'src/a.ts', 'duplicates', JSON.stringify('probably not, they just look alike'),
+    'agent', 'claude', 0.6, JSON.stringify([{ file: 'src/a.ts', line: 12 }]), 900,
+  );
+  raw.close();
+
+  const legacyStore = new ClaimStore(legacyDb);
+  const items = frontier(graph, legacyStore, findings, structure);
+  const q = items.find((i) => i.kind === 'legacy');
+
+  check('a pre-boolean verdict comes back as a question', !!q, JSON.stringify(items.slice(0, 3)));
+  check('on the subject it was about', q?.subject === 'src/a.ts');
+  check('the question carries the evidence the first answer cited, so re-asking is cheaper',
+    /src\/a\.ts:12/.test(q?.question ?? ''), q?.question);
+  check('it asks for a boolean this time', /boolean/.test(q?.question ?? ''));
+  check('and says why it is being asked again',
+    /value not boolean/.test(q?.why ?? ''), q?.why);
+  // It outranks routine work but not a live contradiction: a stale answer is worth less
+  // than two sources actively disagreeing.
+  check('it ranks below a contradiction', (q?.uncertainty ?? 0) < 1.5);
+  legacyStore.close();
 }
 
 store.close();

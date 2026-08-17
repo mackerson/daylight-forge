@@ -484,6 +484,43 @@ export class ClaimStore {
       .all(this.now()) as Array<{ subject: string; session: string; until: number }>;
   }
 
+  /**
+   * Verdict claims that predate the boolean rule.
+   *
+   * These were collected when a verdict could carry prose, and `submit` now rejects them —
+   * so importing a colleague's older store drops them silently into `rejected` and the
+   * knowledge is simply gone. Coercing them is not an option: `duplicates` with the value
+   * "false — these are NOT duplicates" is exactly the case the boolean rule exists to stop,
+   * and guessing which way it points would fabricate a verdict nobody gave.
+   *
+   * So they are surfaced as *questions*. The subject goes back to the frontier and gets
+   * asked again, with the original claim's evidence attached so the second answer is cheaper
+   * than the first.
+   */
+  legacyVerdicts(): Array<{
+    subject: string;
+    predicate: string;
+    value: unknown;
+    evidence: Evidence[];
+    source: Source;
+  }> {
+    const out: Array<{
+      subject: string; predicate: string; value: unknown; evidence: Evidence[]; source: Source;
+    }> = [];
+    for (const { subject, predicate } of this.allSubjects()) {
+      if (!POLARITY[predicate]) continue;
+      for (const c of this.claimsFor(subject, predicate)) {
+        if (typeof c.value === 'boolean') continue;
+        out.push({
+          subject, predicate, value: c.value, evidence: c.evidence, source: c.source,
+        });
+      }
+    }
+    return out.sort(
+      (a, b) => a.subject.localeCompare(b.subject) || a.predicate.localeCompare(b.predicate),
+    );
+  }
+
   stats() {
     const one = (sql: string) => Number((this.db.prepare(sql).get() as any).n);
     return {
