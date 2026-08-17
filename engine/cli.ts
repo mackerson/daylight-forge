@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { detectDuplication } from './detect/duplication.ts';
 import { detectParallel } from './detect/parallel.ts';
+import { detectPurpose } from './detect/purpose.ts';
 import { crossCheck, runProvider } from './detect/providers.ts';
 import { detectRenames, fingerprints, type Fingerprint } from './identity/fingerprint.ts';
 import { detectStructure } from './detect/structure.ts';
@@ -124,6 +125,7 @@ function emitExtract(args: Args, graph: Graph): void {
   const started = Date.now();
   const dup = detectDuplication(graph);
   const parallels = detectParallel(graph);
+  const purposes = detectPurpose(graph, readPurposes(args));
   const structure = detectStructure(graph);
   const communities = detectCommunities(graph);
   const collapses = collapseCandidates(communities);
@@ -136,7 +138,7 @@ function emitExtract(args: Args, graph: Graph): void {
   fs.writeFileSync(path.join(args.out, 'graph.json'), JSON.stringify(graph, null, 2));
   fs.writeFileSync(
     path.join(args.out, 'findings.json'),
-    JSON.stringify({ ...dup, d6: parallels }, null, 2),
+    JSON.stringify({ ...dup, d5: purposes, d6: parallels }, null, 2),
   );
   fs.writeFileSync(path.join(args.out, 'structure.json'), JSON.stringify(structure, null, 2));
   fs.writeFileSync(
@@ -170,7 +172,8 @@ function emitExtract(args: Args, graph: Graph): void {
 
   console.log(
     `\nD1 shape pairs ${dup.d1.length} · D2 name groups ${dup.d2.length} · D3 signature groups ${dup.d3.length}` +
-      ` · D4 body pairs ${dup.d4.length} · D6 parallel files ${parallels.length}`,
+      ` · D4 body pairs ${dup.d4.length} · D5 purpose pairs ${purposes.length}` +
+      ` · D6 parallel files ${parallels.length}`,
   );
   console.log(
     `Patterns ${dup.patterns.length} (oversized groups — shared role, not copy-paste; input to L2 clustering)`,
@@ -252,6 +255,16 @@ function emitExtract(args: Args, graph: Graph): void {
     }
   }
 
+  if (purposes.length) {
+    console.log(`\nTop D5 near-duplicate purposes (what the swarm said these are for):`);
+    for (const p of purposes.slice(0, args.top)) {
+      console.log(`  ${p.score.toFixed(2)} [${p.by}]  ${short(p.a)}  ≈  ${short(p.b)}`);
+      console.log(`      "${p.purposeA}"`);
+      console.log(`      "${p.purposeB}"`);
+      if (p.shared.length) console.log(`      shared and rare: ${p.shared.join(', ')}`);
+    }
+  }
+
   if (parallels.length) {
     console.log(`\nTop D6 parallel implementations (the same thing written twice):`);
     for (const p of parallels.slice(0, args.top)) {
@@ -318,6 +331,38 @@ function runTryInvariant(args: Args): void {
     predicate: predicate as never,
   });
   console.log(JSON.stringify(result));
+}
+
+/**
+ * The purposes the swarm has written, which are D5's entire input.
+ *
+ * An unexplored map has none, so D5 reports nothing — correctly. It is the one detector whose
+ * silence means "nobody has looked yet" rather than "there is nothing here", and that is worth
+ * knowing when reading a report with no D5 section in it.
+ */
+function readPurposes(args: Args): Array<{ subject: string; text: string }> {
+  const dbPath = path.join(args.out, 'claims.db');
+  if (!fs.existsSync(dbPath)) return [];
+  const store = new ClaimStore(dbPath);
+  const out: Array<{ subject: string; text: string }> = [];
+  try {
+    for (const { subject, predicate } of store.allSubjects()) {
+      if (predicate !== 'purpose') continue;
+      // The most-corroborated wording, not every variant: two agents describing one module
+      // similarly is a fact about the module, and counting it twice would make every
+      // well-examined file look like a near-duplicate of itself.
+      const best = store
+        .claimsFor(subject, predicate)
+        .sort((a, b) => b.confidence - a.confidence)[0];
+      if (typeof best?.value === 'string') out.push({ subject, text: best.value });
+    }
+    for (const c of store.clusters()) {
+      if (c.purpose) out.push({ subject: c.id, text: c.purpose });
+    }
+  } finally {
+    store.close();
+  }
+  return out;
 }
 
 /** Write a candidate invariant into the analysed repo. Validation lives in save.ts. */

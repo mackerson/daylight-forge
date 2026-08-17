@@ -202,7 +202,22 @@ Ordered loosely by value, not scheduled.
       `add*Node` handlers in one file that want to be one parameterised function.
       A D4 link alone forms a family — it is the only detector that read the code rather
       than its label. **Test:** `engine/test/duplication.ts` (19).
-- [ ] **D5** — near-duplicate module purpose via embeddings. Deferred deliberately.
+- [x] **D5** — near-duplicate purpose. The only detector that reads what a module is *for*
+      rather than what it looks like, and so the only one that can see two subsystems doing
+      the same job under entirely different vocabulary. Its input is the `purpose` claims the
+      swarm has already written, which means it finds nothing on an unexplored map — the one
+      detector whose silence means "nobody has looked yet" rather than "there is nothing
+      here". A pair is only reported if the two files are **not already connected**: same
+      directory, or an import either way, means they are one subsystem and describe themselves
+      alike for a reason another detector already covers properly.
+      Two scorers. TF-IDF cosine always runs, no dependency and nothing leaves the machine.
+      Embeddings run only if `VDS_EMBED_URL` names an endpoint, loopback-only unless
+      `VDS_EMBED_ALLOW_REMOTE=1` — a second deliberate act, because sending module purposes to
+      a remote host means sending a description of your architecture over a network. It says
+      what it is sending and where before it sends anything.
+      Found a real defect here on the first run: two clusters whose purposes differ by one
+      word (`exists` vs `is wired`), which should be one cluster.
+      **Test:** `engine/test/purpose.ts` (40), including a real loopback endpoint.
 - [x] Community detection via label propagation — deterministic by hash tie-break, because a
       map that reshuffles every run cannot be navigated from memory. Reports cohesive groups
       *filed across several directories*; a cohesive group inside one directory is a tidy

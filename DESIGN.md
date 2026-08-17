@@ -283,8 +283,10 @@ What the app exists to surface. Ordered by how much the prior manual run suggest
 
 ### 1. Duplication families — the headline
 
-Six cheap, fully deterministic detectors (five built; D5 is deferred). None needs an LLM to
-*find* anything; agents only adjudicate.
+Six cheap detectors, all built. Five are fully deterministic and need no model at all. D5 is
+the exception in two ways: its input is what agents *wrote* rather than what the parser saw,
+and it can optionally use an embedding endpoint you have already set up. None of the six needs
+an LLM to *find* anything; agents adjudicate.
 
 | # | Detector | Signature | Catches |
 | --- | --- | --- | --- |
@@ -292,7 +294,7 @@ Six cheap, fully deterministic detectors (five built; D5 is deferred). None need
 | D2 | Duplicate function names | exact + case/separator-normalized name index | copy-paste families, and genuine convention collisions |
 | D3 | Duplicate signatures | name-agnostic: arity + normalized param types + return type | the same function written four times under four names |
 | D4 | Repeated code blocks | token-stream MinHash / winnowing over bodies | copy-paste that drifted enough to hide from D2/D3 |
-| D5 | Near-duplicate purpose | embeddings over agent-written module summaries | semantically redundant subsystems with no textual overlap |
+| D5 | Near-duplicate purpose | TF-IDF cosine over agent-written purposes, optionally embeddings | semantically redundant subsystems with no textual overlap |
 | D6 | Parallel implementations | IDF-weighted method-name overlap between *files* | the same thing written twice, where nothing inside either is a copy of anything inside the other |
 
 ### Corrections the build forced on this design
