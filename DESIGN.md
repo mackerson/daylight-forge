@@ -330,6 +330,32 @@ The third is the one worth remembering: it means the contradiction queue, which 
 highest-value screen in the product, was showing noise and hiding signal until it was exercised with
 two real models.
 
+8. **The tree was unusable on a large repo** (reported from use). A containment layout has no
+   bounded size — every level must hold everything beneath it — so on a 10k-file monorepo the
+   deepest nodes sat 28,000 units from the centre while the camera clamps to a few hundred.
+   There was no distance from which the tree could be seen: it rendered as a dot with lines
+   going off past the far plane. Three separate causes, none of which showed on a small repo:
+
+   - **Unbounded extent.** The finished layout is now scaled to fit the camera's range, and
+     only ever shrunk — a tree that already fitted is left exactly as it was. Depth is
+     deliberately not scaled with it, or thirteen levels flatten into seventeen units and a
+     tree becomes a disc.
+   - **A ring's radius grows with the *sum* of its children**, so hundreds of siblings became
+     a wall. Ring and disc packing are both computed and the smaller wins: neither is right
+     everywhere, because a disc is sized by its largest occupant and one dominant subtree
+     ruins it.
+   - **LOD thresholds were `420 - depth * 90`**, which reaches zero at level 5 — so on a
+     13-level tree every deeper level shared a threshold, the lookup always matched the fifth,
+     and levels 6 to 13 were in the scene but unreachable at any distance. Nine tenths of the
+     tree could not be looked at. Thresholds now spread over the depth the repo actually has.
+
+   Two more surfaced alongside it. `graph.json` is 322MB on that repo, and the window was
+   parsing it on the process that draws the window on every refresh, then shipping 28MB across
+   the IPC boundary — of which 27.5MB was a symbol index shipped whole to answer a question
+   about whichever single file you opened, on an estimate ("a few hundred kilobytes") that was
+   wrong by two orders of magnitude. The two derivations the interface needs are precomputed
+   at map time into `view.json` (888KB), and symbols are fetched per file.
+
 7. **One output directory, two repositories** (reported from use, and the worst of the lot).
    Choosing a new repo in the GUI showed the old repo's map, because picking a repo set the repo
    and left the output directory alone. That is the mild, visible half. The severe half is that

@@ -188,6 +188,7 @@ function emitExtract(args: Args, graph: Graph): void {
   applyRenames(args, graph);
 
   fs.writeFileSync(path.join(args.out, 'graph.json'), JSON.stringify(graph, null, 2));
+  emitViewData(args, graph);
   fs.writeFileSync(
     path.join(args.out, 'findings.json'),
     JSON.stringify({ ...dup, d5: purposes, d6: parallels }, null, 2),
@@ -415,6 +416,50 @@ function readPurposes(args: Args): Array<{ subject: string; text: string }> {
     store.close();
   }
   return out;
+}
+
+/**
+ * The two derivations the interface needs, written once here instead of recomputed there.
+ *
+ * `graph.json` is the exhaustive record and it is *big* — 322MB on a ten-thousand-file
+ * monorepo. The window was parsing that on every refresh, on the process that draws the
+ * window, and then shipping 28MB of it across the IPC boundary; the result was an app that
+ * looked like it had failed to load a repo it had loaded perfectly well. Neither of the two
+ * things it actually wanted is large: the file-to-file edges are under a megabyte, and the
+ * symbol index only matters for whichever file you open.
+ *
+ * Written at map time because that is where the graph already exists in memory. Both are
+ * derived, so they live in the gitignored output alongside everything else derivable.
+ */
+function emitViewData(args: Args, graph: Graph): void {
+  const fileOf = (id: string) => (id.includes('#') ? id.slice(0, id.indexOf('#')) : id);
+
+  const weights = new Map<string, number>();
+  for (const e of graph.edges) {
+    if (e.external || e.kind === 'contains') continue;
+    const from = fileOf(e.from);
+    const to = fileOf(e.to);
+    if (from === to) continue;
+    const key = `${from}\u0000${to}`;
+    weights.set(key, (weights.get(key) ?? 0) + 1);
+  }
+  const fileEdges = [...weights].map(([key, weight]) => {
+    const [from, to] = key.split('\u0000');
+    return { from, to, weight };
+  });
+
+  fs.writeFileSync(
+    path.join(args.out, 'view.json'),
+    JSON.stringify({ root: graph.root, stats: graph.stats, fileEdges }),
+  );
+
+  const symbols: Record<string, Array<{ id: string; name: string; kind: string }>> = {};
+  for (const n of graph.nodes) {
+    if (n.kind === 'file' || !n.file) continue;
+    (symbols[n.file] ??= []).push({ id: n.id, name: n.name, kind: n.kind });
+  }
+  for (const list of Object.values(symbols)) list.sort((a, b) => a.name.localeCompare(b.name));
+  fs.writeFileSync(path.join(args.out, 'symbols.json'), JSON.stringify(symbols));
 }
 
 /** Write a candidate invariant into the analysed repo. Validation lives in save.ts. */

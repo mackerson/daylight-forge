@@ -57,4 +57,11 @@ export interface SceneLayout {
   bands: Array<{ level: number; minDistance: number }>;
   mode: 'graph' | 'tree';
   maxDepth?: number;
+  /**
+   * How much the layout was shrunk to fit the camera's range, 1 when it already did.
+   * The renderer needs it to size nodes in the same world the positions ended up in.
+   */
+  scale?: number;
+  /** Suggested base node radius for this layout's density. Absent means use the old sizing. */
+  unit?: number;
 }

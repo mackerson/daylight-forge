@@ -19,6 +19,17 @@ const DEPTH_GAP = 40;
 const LEAF_SPREAD = 5.5;
 const MIN_RADIUS = 14;
 
+/** Above this many children, a ring becomes a wall and the disc packing takes over. */
+const RING_LIMIT = 12;
+/** Fraction of a disc that evenly-spread circles occupy. Empirical, and deliberately shy. */
+const PACKING = 0.55;
+/** Golden angle: successive children land in the gaps left by the previous ones. */
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** World radius the finished tree is shrunk to fit, chosen against the camera's range. */
+const TARGET_RADIUS = 520;
+/** Distance at which only the top level shows. The camera clamps a little beyond it. */
+const BAND_FAR = 900;
+
 interface Build {
   id: string;
   name: string;
@@ -62,24 +73,58 @@ function buildTree(files: string[], rootLabel: string): Build {
     });
   }
 
-  // Bottom-up: a parent's disc must be wide enough that no child's disc overlaps another.
+  /**
+   * Bottom-up sizing: a parent's disc must hold every child's disc without overlap.
+   *
+   * Children used to go on a single ring, which makes the radius grow *linearly* with how
+   * many there are — the circumference has to fit them all. On a monorepo that is fatal: six
+   * top-level packages ended up 10,000 units from the centre and the deepest nodes 38,000
+   * out, while the camera is clamped to a few hundred. You could never get far enough away
+   * to see it, so the whole tree read as a dot with rays going off past the far plane.
+   *
+   * Packing them into the disc's *area* instead makes the radius grow with the square root of
+   * the count, which is the difference between 620 siblings needing 25x the room and 5x.
+   *
+   * A single ring is still better to look at when it fits, so small fan-outs keep it. The
+   * switch is on count alone, so it stays deterministic.
+   */
   const measure = (node: Build): void => {
     node.files = node.isFile ? node.files : [];
     if (!node.children.length) {
       node.spread = LEAF_SPREAD;
       return;
     }
-    let circumference = 0;
+
     let widest = 0;
+    let areaSum = 0;
+    let circumference = 0;
     for (const child of node.children) {
       measure(child);
-      circumference += child.spread * 2.15;
       widest = Math.max(widest, child.spread);
+      areaSum += child.spread * child.spread;
+      circumference += child.spread * 2.15;
       node.files.push(...child.files);
     }
-    const radius = Math.max(MIN_RADIUS, circumference / TAU);
+
+    /**
+     * Ring or disc, whichever is actually smaller here.
+     *
+     * Neither wins everywhere, which is why this measures instead of choosing. A ring's
+     * radius grows with the *sum* of its children, so hundreds of siblings become a wall —
+     * `api`, with 179 children, needs 6125 on a ring and 3201 in a disc. But a disc is sized
+     * by its largest occupant, so one dominant subtree ruins it: `launchpad` has 33 children
+     * of which one is 30797 wide, and the disc wants 49275 against the ring's 11054.
+     *
+     * Taking the smaller is never worse than the ring alone, which is what shipped.
+     */
+    const ringRadius = Math.max(MIN_RADIUS, circumference / TAU);
+    const discRadius = Math.max(MIN_RADIUS, Math.sqrt(areaSum / PACKING));
+    const ring = node.children.length <= RING_LIMIT || ringRadius <= discRadius;
+    const radius = ring ? ringRadius : discRadius;
+
     node.spread = radius + widest;
     (node as any).radius = radius;
+    (node as any).ring = ring;
   };
   measure(root);
 
@@ -180,16 +225,35 @@ export function layoutTree(
 
     if (!node.children.length) return;
     const radius = (node as any).radius ?? MIN_RADIUS;
-    const total = node.children.reduce((sum, c) => sum + c.spread, 0) || 1;
 
-    // Angular share proportional to each subtree's width, so a heavy branch gets room.
-    let angle = 0;
-    for (const child of node.children) {
-      const share = (child.spread / total) * TAU;
-      const a = angle + share / 2;
-      place(child, x + Math.cos(a) * radius, z + Math.sin(a) * radius, nodeKey);
-      angle += share;
+    if ((node as any).ring) {
+      // Few enough to go round the edge: angular share proportional to each subtree's width,
+      // so a heavy branch gets the room it needs.
+      const total = node.children.reduce((sum, c) => sum + c.spread, 0) || 1;
+      let angle = 0;
+      for (const child of node.children) {
+        const share = (child.spread / total) * TAU;
+        const a = angle + share / 2;
+        place(child, x + Math.cos(a) * radius, z + Math.sin(a) * radius, nodeKey);
+        angle += share;
+      }
+      return;
     }
+
+    /**
+     * Too many for a ring, so they fill the disc.
+     *
+     * `sqrt((k + 0.5) / n)` spaces them evenly by *area* rather than by radius — without it
+     * everything crowds the rim — and the golden angle drops each one into the gap left by
+     * its predecessors, which is why sunflower seeds pack the way they do. Index order, so
+     * the same tree lays out identically every time.
+     */
+    const n = node.children.length;
+    node.children.forEach((child, k) => {
+      const r = radius * Math.sqrt((k + 0.5) / n);
+      const a = k * GOLDEN_ANGLE;
+      place(child, x + Math.cos(a) * r, z + Math.sin(a) * r, nodeKey);
+    });
   };
   place(root, 0, 0);
 
@@ -234,13 +298,69 @@ export function layoutTree(
     });
   }
 
-  // Camera distance maps to tree depth here, the same way it maps to focus altitude in
-  // the graph view: pull back and the deep leaves collapse into their directories.
+  /**
+   * Bring the layout within reach of the camera.
+   *
+   * A containment layout has no bounded size — each level must hold everything beneath it, so
+   * extent grows with the repo. On a 10k-file monorepo the deepest nodes landed 28,000 units
+   * out while the camera is clamped to a few hundred, so there was no distance from which the
+   * tree was visible: you sat inside the first ring looking at a dot with lines going off past
+   * the far plane. Scaling only ever shrinks — a repo that already fits is left exactly as it
+   * was, since its layout is not the one that was broken.
+   *
+   * Depth is deliberately *not* scaled with it. Shrinking a 10k-file tree by thirty times
+   * would flatten 13 levels into 17 units and turn a tree into a disc; keeping the vertical
+   * gap fixed is what makes it still read as a hierarchy at any size.
+   */
+  let scale = 1;
+  {
+    let maxRadial = 0;
+    for (const n of nodes.values()) maxRadial = Math.max(maxRadial, Math.hypot(n.x, n.z));
+    if (maxRadial > TARGET_RADIUS) {
+      scale = TARGET_RADIUS / maxRadial;
+      for (const n of nodes.values()) {
+        n.x *= scale;
+        n.z *= scale;
+      }
+    }
+  }
+
+  /**
+   * Camera distance maps to tree depth, the same way it maps to focus altitude in the graph
+   * view: pull back and the deep leaves collapse into their directories.
+   *
+   * The thresholds have to be spread over the depth this repo actually has. They were
+   * `420 - depth * 90`, which reaches zero at level 5 — so on a 13-level tree every level
+   * below the fifth shared a threshold, `find` always matched the fifth, and levels 6 to 13
+   * were unreachable at any distance. Nine tenths of the tree was in the scene and could not
+   * be looked at.
+   */
+  /**
+   * A base node radius that suits how crowded this tree actually is.
+   *
+   * Node size was computed purely from file count, in absolute units, which was fine while
+   * every layout was about the same size. Once the layout shrinks to fit, positions move
+   * thirty times closer together and unchanged sizes turn the tree into overlapping blobs —
+   * the one enormous sphere swallowing its neighbours. Deriving it from mean spacing
+   * (extent over root-n) makes a node a fraction of the gap to the next one, at any scale.
+   */
+  let unit: number | undefined;
+  if (scale < 1) {
+    // Only where the layout had to be shrunk. A tree that already fitted was never the
+    // problem, and its sizing is what people have been looking at — leave it alone.
+    let extent = 0;
+    for (const n of nodes.values()) extent = Math.max(extent, Math.hypot(n.x, n.z));
+    // Mean spacing between nodes spread over the disc, with the node taking a share of it.
+    const spacing = Math.sqrt((Math.PI * extent * extent) / Math.max(nodes.size, 1));
+    unit = Math.max(0.5, Math.min(6, spacing * 0.22));
+  }
+
   const bands = [];
   for (let d = 1; d <= maxDepth; d++) {
-    bands.push({ level: d, minDistance: Math.max(0, 420 - d * 90) });
+    const t = maxDepth > 1 ? (maxDepth - d) / (maxDepth - 1) : 0;
+    bands.push({ level: d, minDistance: Math.round(BAND_FAR * t ** 1.5) });
   }
   if (bands.length) bands[bands.length - 1].minDistance = 0;
 
-  return { nodes, spine, festoons, bands, mode: 'tree', maxDepth };
+  return { nodes, spine, festoons, bands, mode: 'tree', maxDepth, scale, unit };
 }

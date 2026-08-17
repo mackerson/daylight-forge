@@ -76,8 +76,6 @@ export interface LoadPayload {
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
-  /** Declared symbols per file, for expanding a file in the tree. */
-  symbols?: Record<string, Array<{ id: string; name: string; kind: string }>>;
   findings: Findings;
   structure: StructureReport | null;
   invariants: { results: InvariantResult[] } | null;
@@ -126,6 +124,9 @@ declare global {
       onWatch(fn: (p: { reason: string }) => void): () => void;
       snippet(p: { file: string; line?: number; context?: number }): Promise<{
         file?: string; start?: number; line?: number; lines?: string[]; error?: string;
+      }>;
+      symbols(p: { file: string }): Promise<{
+        symbols: Array<{ id: string; name: string; kind: string }>; error?: string;
       }>;
       tryInvariant(p: { predicate: string }): Promise<InvariantResult & { error?: string }>;
       saveInvariant(p: { id: string; prose: string; predicate: string }): Promise<{

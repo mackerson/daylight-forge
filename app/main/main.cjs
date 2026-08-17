@@ -422,17 +422,53 @@ ipcMain.handle('vds:state', () => ({
   hasGraph: fs.existsSync(path.join(state.dir, 'graph.json')),
 }));
 
+/**
+ * Symbols for one file, loaded on demand.
+ *
+ * The index is 28MB on a large monorepo. It used to travel whole with every load, on an
+ * estimate ("a few hundred kilobytes") that was wrong by two orders of magnitude, and only
+ * ever to answer a question about whichever single file someone opened. Parsed once, on the
+ * first expansion, and re-read when the map underneath it changes.
+ */
+let symbolIndex = { mtime: 0, byFile: null };
+
+ipcMain.handle('vds:symbols', (_e, { file }) => {
+  const p = path.join(state.dir, 'symbols.json');
+  if (!fs.existsSync(p)) return { symbols: [] };
+  try {
+    const mtime = fs.statSync(p).mtimeMs;
+    if (!symbolIndex.byFile || symbolIndex.mtime !== mtime) {
+      symbolIndex = { mtime, byFile: JSON.parse(fs.readFileSync(p, 'utf8')) };
+    }
+    return { symbols: symbolIndex.byFile[file] ?? [] };
+  } catch (err) {
+    return { symbols: [], error: err.message };
+  }
+});
+
 ipcMain.handle('vds:load', () => {
   const stack = readJson('focus.json', null);
-  const graph = readJson('graph.json', null);
 
-  // File-to-file edges, aggregated. The focus stack only carries bucket-level edges,
-  // but the hierarchy view's leaves are files, so it needs the finer pairs.
-  const fileEdges = [];
-  if (graph?.edges) {
+  /**
+   * File-to-file edges come precomputed now.
+   *
+   * They used to be aggregated here from `graph.json`, which meant parsing the exhaustive
+   * record — 322MB on a ten-thousand-file repo — on the process that draws the window, every
+   * time anything refreshed. The window sat there looking like it had failed to load a repo
+   * it had loaded fine. `view.json` is the same information at under a megabyte.
+   */
+  const view = readJson('view.json', null);
+  let fileEdges = view?.fileEdges ?? [];
+  let graphStats = view?.stats ?? null;
+
+  if (!view) {
+    // An output directory written before view.json existed. Slow, but correct, and it only
+    // happens once because the next map writes one.
+    const graph = readJson('graph.json', null);
+    graphStats = graph?.stats ?? null;
     const acc = new Map();
     const fileOf = (id) => (id.includes('#') ? id.slice(0, id.indexOf('#')) : id);
-    for (const e of graph.edges) {
+    for (const e of graph?.edges ?? []) {
       if (e.external || e.kind === 'contains') continue;
       const from = fileOf(e.from);
       const to = fileOf(e.to);
@@ -440,31 +476,16 @@ ipcMain.handle('vds:load', () => {
       const k = `${from}\u0000${to}`;
       acc.set(k, (acc.get(k) ?? 0) + 1);
     }
-    for (const [k, weight] of acc) {
+    fileEdges = [...acc].map(([k, weight]) => {
       const [from, to] = k.split('\u0000');
-      fileEdges.push({ from, to, weight });
-    }
+      return { from, to, weight };
+    });
   }
-
-  /**
-   * Declared symbols per file, so the tree can open one on demand.
-   *
-   * Sent whole rather than fetched per file: it is a few hundred kilobytes for a large repo,
-   * already in memory here, and a round trip per expansion would make opening a file feel
-   * like waiting for something rather than like looking closer.
-   */
-  const symbols = {};
-  for (const n of graph?.nodes ?? []) {
-    if (n.kind === 'file' || !n.file) continue;
-    (symbols[n.file] ??= []).push({ id: n.id, name: n.name, kind: n.kind });
-  }
-  for (const list of Object.values(symbols)) list.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
     ...state,
     stack,
     fileEdges,
-    symbols,
     initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
     // Which panel to open on. Exists so `pnpm shot` can capture a specific screen.
     initialTab: process.env.VDS_TAB || null,
@@ -476,9 +497,10 @@ ipcMain.handle('vds:load', () => {
     structure: readJson('structure.json', null),
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),
-    graphStats: graph?.stats ?? null,
+    graphStats,
   };
 });
+
 
 ipcMain.handle('vds:query', () =>
   new Promise((resolve) => {

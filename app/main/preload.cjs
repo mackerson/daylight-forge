@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('vds', {
   arbitrate: (payload) => invoke('vds:arbitrate', payload),
   reveal: (payload) => invoke('vds:reveal', payload),
   snippet: (payload) => invoke('vds:snippet', payload),
+  symbols: (payload) => invoke('vds:symbols', payload),
   watch: (on) => invoke('vds:watch', on),
   tryInvariant: (payload) => invoke('vds:try-invariant', payload),
   saveInvariant: (payload) => invoke('vds:save-invariant', payload),

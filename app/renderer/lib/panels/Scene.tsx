@@ -191,6 +191,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
+  /**
+   * Symbols for the files that have been opened, fetched one file at a time.
+   *
+   * The whole index used to arrive with every load — 28MB on a large monorepo, to answer a
+   * question about one file. Now it is asked for when you open something.
+   */
+  const [symbols, setSymbols] = useState<Record<string, Array<{ id: string; name: string; kind: string }>>>({});
 
   // `data` is null on first render, so an initial mode from the host has to be applied
   // when it actually arrives — once, so it never fights the user's own toggle.
@@ -239,7 +246,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
 
     const repoName = (data.repo ?? 'repo').split('/').filter(Boolean).pop() ?? 'repo';
     const laid = mode === 'tree'
-      ? layoutTree(data, repoName, expanded)
+      ? layoutTree({ ...data, symbols }, repoName, expanded)
       : layout(data.stack, repoName);
     const bands = laid.bands;
     const distinct = bands.map((b: any) => b.level);
@@ -288,15 +295,31 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       nodes.forEach((node: any, i: number) => {
         // Compressed so a 200-file bucket does not render a 3-file one invisible.
         // The root holds every file, so size it as a marker rather than by mass.
-        const s = node.isRoot
-          ? 5
-          // Symbols are smaller than the file that holds them, so an opened file still reads
-          // as one thing with parts rather than as a cluster of peers.
-          : node.isSymbol
-            ? 1.3
-            : node.isFile
-              ? 2.2
-              : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
+        /**
+         * Size follows the layout's own density when it offers one.
+         *
+         * The old formula was absolute — a directory of 8424 files came out at radius 65,
+         * which is fine in a layout 28,000 units wide and absurd in one shrunk to 520. It
+         * also had a 27x dynamic range, so on a monorepo one sphere swallowed everything
+         * near it. `unit` is a fraction of the mean gap between nodes, and the log keeps a
+         * ten-thousand-file directory about three times a single file rather than thirty.
+         */
+        const u = laid.unit as number | undefined;
+        const s = u
+          ? node.isRoot
+            ? u * 3
+            : node.isSymbol
+              ? u * 0.6
+              : node.isFile
+                ? u
+                : u * (1 + Math.log10(1 + Math.max(node.fileCount, 1)) * 0.55)
+          : node.isRoot
+            ? 5
+            : node.isSymbol
+              ? 1.3
+              : node.isFile
+                ? 2.2
+                : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
         m.makeScale(s, s, s);
         m.setPosition(node.x, node.y, node.z);
         mesh.setMatrixAt(i, m);
@@ -435,16 +458,40 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const depthSpan = Math.abs(
       Math.min(...[...laid.nodes.values()].map((n: any) => n.y)),
     );
+    /**
+     * Frame what will actually be drawn, not the whole layout.
+     *
+     * LOD renders cumulatively up to whichever band the distance selects, so on a large tree
+     * the first view is the top few levels — and those are wide but shallow. Framing to the
+     * full depth pointed the camera a couple of hundred units below anything visible, which
+     * put a 10k-file monorepo in the top-left corner of the window and made a correct layout
+     * look broken. So: guess a distance, see which levels that shows, then frame those. One
+     * pass is enough — the second only ever tightens it.
+     */
+    const treeNodes = [...laid.nodes.values()];
+    const frameFor = (maxLevel: number) => {
+      const shown = treeNodes.filter((n: any) => n.level <= maxLevel);
+      const pool = shown.length ? shown : treeNodes;
+      const radial = Math.max(...pool.map((n: any) => Math.hypot(n.x, n.z)), 1);
+      const lo = Math.min(...pool.map((n: any) => n.y));
+      const hi = Math.max(...pool.map((n: any) => n.y));
+      return {
+        distance: Math.max(200, radial * 1.5, (hi - lo) * 1.15),
+        centreY: (lo + hi) / 2,
+      };
+    };
+
+    let frame = frameFor(laid.maxDepth ?? 99);
+    if (laid.mode === 'tree' && !showAll) {
+      const band = laid.bands.find((b: any) => frame.distance >= b.minDistance);
+      if (band) frame = frameFor(band.level);
+    }
+
     const orbit = {
       theta: 0.7,
       phi: laid.mode === 'tree' ? 1.35 : 1.15,
-      // Fit to the vertical FOV rather than a guessed multiple: a deep tree and a wide one
-      // need different distances, and the old constant framed both too far out.
-      distance:
-        laid.mode === 'tree'
-          ? Math.max(200, extent * 1.5, depthSpan * 1.15)
-          : 300,
-      target: new THREE.Vector3(0, laid.mode === 'tree' ? -depthSpan / 2 : 0, 0),
+      distance: laid.mode === 'tree' ? frame.distance : 300,
+      target: new THREE.Vector3(0, laid.mode === 'tree' ? frame.centreY : 0, 0),
     };
     // Framing to return to, so panning is always recoverable with one key.
     const home = {
@@ -616,10 +663,20 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       // than on a plain click because selecting a file is the common act and relaying out
       // the tree under the cursor every time you inspect something would be hostile.
       if (!e.altKey || !hovered?.isFile) return;
+      const id = hovered.id;
       const next = new Set(expandedRef.current);
-      if (next.has(hovered.id)) next.delete(hovered.id);
-      else next.add(hovered.id);
-      setExpanded(next);
+      if (next.has(id)) {
+        next.delete(id);
+        setExpanded(next);
+        return;
+      }
+      next.add(id);
+      // Fetch before expanding, so the relayout happens once with the symbols in hand
+      // rather than once empty and again when they arrive.
+      void window.vds.symbols({ file: id }).then((r) => {
+        setSymbols((prev) => ({ ...prev, [id]: r.symbols ?? [] }));
+        setExpanded(next);
+      });
     };
 
     canvas.addEventListener('pointerdown', onDown);
@@ -1160,7 +1217,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       labelLayer.remove();
       tip.remove();
     };
-  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded]);
+  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded, symbols]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;

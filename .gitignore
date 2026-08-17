@@ -6,3 +6,6 @@ app/dist/
 # .codemap/ is committed on purpose — it is the shared layer.
 # Only the machine-local cache inside it is not.
 .codemap/.cache/
+
+# Portable builds. 347MB of Electron runtime, reproducible with `pnpm package`.
+build/

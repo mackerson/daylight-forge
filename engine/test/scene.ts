@@ -168,4 +168,81 @@ console.log('\nsymbol depth, on demand');
       === shut.nodes.size);
 }
 
+
+console.log('\nlarge trees stay reachable');
+{
+  /**
+   * A containment layout has no bounded size: every level must hold everything beneath it, so
+   * extent grows with the repo. On a 10k-file monorepo the deepest nodes landed 28,000 units
+   * from the centre while the camera clamps to a few hundred — there was no distance from
+   * which the tree could be seen, so it rendered as a dot with lines going off past the far
+   * plane. Reported as "tree is almost totally useless".
+   */
+  const files: string[] = [];
+  for (let pkg = 0; pkg < 6; pkg++) {
+    for (let dir = 0; dir < 40; dir++) {
+      for (let f = 0; f < 30; f++) files.push(`pkg${pkg}/src/area${dir}/deep/file${f}.ts`);
+    }
+  }
+  const stack = { levels: [{ level: 1, nodes: [{ id: 'g', members: files, purpose: 'x' }] }] } as never;
+  const big = layoutTree({ stack, fileEdges: [] }, 'mono');
+
+  const radial = [...big.nodes.values()].map((n) => Math.hypot(n.x, n.z));
+  check('a 7000-file tree is laid out at all', big.nodes.size > 7000, String(big.nodes.size));
+  check('and fits within reach of the camera',
+    Math.max(...radial) <= 521, Math.max(...radial).toFixed(0));
+  check('the layout says how much it was shrunk',
+    (big.scale ?? 1) < 1 && (big.scale ?? 1) > 0, String(big.scale));
+  check('depth is not shrunk with it, or a tree becomes a disc',
+    Math.abs(Math.min(...[...big.nodes.values()].map((n) => n.y))) > 100);
+
+  // Every level needs its own distance threshold or it can never be looked at.
+  check('there is one band per level', big.bands.length === big.maxDepth);
+  const distances = big.bands.map((b) => b.minDistance);
+  check('the thresholds strictly decrease with depth',
+    distances.every((d, i) => i === 0 || d < distances[i - 1]), distances.join(','));
+  check('so no two levels share one, which made nine of thirteen unreachable',
+    new Set(distances).size === distances.length, distances.join(','));
+  check('and the deepest level is reachable at any distance',
+    distances[distances.length - 1] === 0);
+
+  check('node size follows the layout density once it has been shrunk',
+    typeof big.unit === 'number' && big.unit > 0, String(big.unit));
+}
+
+console.log('\na tree that already fitted is left alone');
+{
+  const files = ['src/a.ts', 'src/b.ts', 'src/deep/c.ts', 'lib/d.ts'];
+  const stack = { levels: [{ level: 1, nodes: [{ id: 'g', members: files, purpose: 'x' }] }] } as never;
+  const small = layoutTree({ stack, fileEdges: [] }, 'small');
+
+  check('it is not scaled', small.scale === 1);
+  check('and keeps the sizing it has always had', small.unit === undefined);
+  const radial = Math.max(...[...small.nodes.values()].map((n) => Math.hypot(n.x, n.z)));
+  check('because it was nowhere near the limit', radial < 520, radial.toFixed(0));
+}
+
+console.log('\nring or disc, whichever is smaller');
+{
+  // Many uniform siblings: a ring has to fit them all on its circumference, a disc does not.
+  const wide: string[] = [];
+  for (let i = 0; i < 200; i++) wide.push(`flat/file${i}.ts`);
+  const wideStack = { levels: [{ level: 1, nodes: [{ id: 'g', members: wide, purpose: 'x' }] }] } as never;
+  const flat = layoutTree({ stack: wideStack, fileEdges: [] }, 'flat');
+  const flatRadial = Math.max(...[...flat.nodes.values()].map((n) => Math.hypot(n.x, n.z)));
+  // A 200-child ring needs radius ~ sum(spread)/2pi ~ 375; the disc is well under that.
+  check('200 uniform siblings pack into a disc rather than a wall',
+    flatRadial < 260, flatRadial.toFixed(0));
+
+  check('the layout is still deterministic',
+    JSON.stringify([...layoutTree({ stack: wideStack, fileEdges: [] }, 'flat').nodes.keys()])
+      === JSON.stringify([...flat.nodes.keys()]));
+
+  // Every child must still be inside its parent's disc, or subtrees overlap.
+  const parent = flat.nodes.get('t:flat')!;
+  const kids = [...flat.nodes.values()].filter((n) => n.level === 2);
+  check('and every child sits inside its parent',
+    kids.every((k) => Math.hypot(k.x - parent.x, k.z - parent.z) <= 260), String(kids.length));
+}
+
 done();
