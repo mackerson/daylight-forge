@@ -114,5 +114,8 @@ export interface Graph {
     literals: number;
     /** Vendored bundles skipped. Reported, never silently dropped. */
     vendoredSkipped: number;
+    /** Files actually parsed this run, versus served from the content-addressed cache. */
+    parsedFiles: number;
+    reusedFiles: number;
   };
 }

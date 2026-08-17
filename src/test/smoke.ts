@@ -27,6 +27,8 @@ function check(name: string, cond: boolean, detail = '') {
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-smoke-'));
 const ev = [{ file: 'src/a.ts', line: 10 }];
+/** Ruling something out costs more evidence than asserting it — see ClaimStore.submit. */
+const dismissEv = [{ file: 'src/a.ts', line: 10 }, { file: 'src/b.ts', line: 4 }];
 
 // ---- claim store ------------------------------------------------------------
 console.log('\nclaim store');
@@ -69,15 +71,28 @@ console.log('\nclaim store');
   check('two agreeing sources → CORROBORATED', corr.status === 'CORROBORATED', corr.status);
   check('corroboration raises confidence', corr.confidence > 0.8, String(corr.confidence));
 
+  threw = false;
+  try {
+    store.submit({
+      subject: 'src/a.ts', predicate: 'is_dead', value: false,
+      source: { kind: 'agent', tool: 'grok' }, confidence: 0.9, evidence: ev,
+    });
+  } catch (e) {
+    threw = e instanceof EvidenceRequired;
+  }
+  check('dismissal needs more evidence than assertion', threw);
+
   store.submit({
     subject: 'src/a.ts', predicate: 'is_dead', value: false,
-    source: { kind: 'agent', tool: 'grok' }, confidence: 0.9, evidence: ev,
+    source: { kind: 'agent', tool: 'grok' }, confidence: 0.9, evidence: dismissEv,
   });
   const contra = store.belief('src/a.ts', 'is_dead');
   check('a dissenting source → CONTRADICTED', contra.status === 'CONTRADICTED', contra.status);
   check('contradiction keeps every claim', contra.claims.length === 3, String(contra.claims.length));
   check('contradiction is listed for review', store.contradictions().length === 1);
 
+  // Humans are exempt from the dismissal cost: arbitration is where someone takes
+  // responsibility, and making that expensive would just discourage it.
   store.submit({
     subject: 'src/a.ts', predicate: 'is_dead', value: false,
     source: { kind: 'human' }, confidence: 1, evidence: [{ file: 'src/a.ts', note: 'checked' }],
@@ -91,6 +106,14 @@ console.log('\nclaim store');
     observedHash: 'aaa',
   });
   check('changed file → STALE', store.belief('src/b.ts', 'purpose', 'bbb').status === 'STALE');
+
+  // A lone dismissal must not retire a frontier item as cheaply as an answer.
+  store.submit({
+    subject: 'src/c.ts', predicate: 'is_dead', value: false,
+    source: { kind: 'agent', tool: 'claude' }, confidence: 0.9, evidence: dismissEv,
+  });
+  check('lone dismissal stays INFERRED, not settled',
+    store.belief('src/c.ts', 'is_dead').status === 'INFERRED');
 
   const elId = store.putElision({ level: 3, members: ['x', 'y'], into: 'z', reason: 'r', source: { kind: 'agent' } });
   check('elision recorded', store.elisions(3).length === 1);

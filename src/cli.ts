@@ -80,7 +80,11 @@ function short(id: string): string {
 }
 
 function runExtract(args: Args): void {
-  const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
+  const graph: Graph = extract({
+    root: args.root,
+    includeTests: args.includeTests,
+    cacheDir: path.join(args.out, '.cache'),
+  });
   graph.generatedAt = new Date().toISOString();
   if (args.commit) graph.commit = args.commit;
   emitExtract(args, graph);
@@ -103,7 +107,10 @@ function emitExtract(args: Args, graph: Graph): void {
   console.log(`\nvisual-desloppify — ${args.root}`);
   if (graph.commit) console.log(`commit ${graph.commit}`);
   console.log('─'.repeat(64));
-  console.log(`L0   ${s.files} files · ${s.symbols} symbols · ${graph.edges.length} edges`);
+  console.log(
+    `L0   ${s.files} files · ${s.symbols} symbols · ${graph.edges.length} edges` +
+      (s.reusedFiles ? `  (parsed ${s.parsedFiles}, reused ${s.reusedFiles})` : ''),
+  );
   console.log(
     `     imports ${s.imports} → internal ${s.imports - s.externalImports - s.unresolvedImports}` +
       ` · external ${s.externalImports} · unresolved ${s.unresolvedImports} (${pct(s.unresolvedImports, s.imports)}) · assets ${s.assetImports} skipped`,
@@ -148,7 +155,11 @@ function emitExtract(args: Args, graph: Graph): void {
 }
 
 function runInvariants(args: Args): void {
-  const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
+  const graph: Graph = extract({
+    root: args.root,
+    includeTests: args.includeTests,
+    cacheDir: path.join(args.out, '.cache'),
+  });
   const loaded = loadInvariants(args.root, args.invariantsFile);
   reportInvariantSource(args, loaded);
   emitInvariants(args, graph, evaluateAll(graph, loaded.invariants));
@@ -201,7 +212,11 @@ function emitInvariants(
 
 /** extract + invariants + focus from ONE parse. The individual commands re-parse. */
 function runMap(args: Args): void {
-  const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
+  const graph: Graph = extract({
+    root: args.root,
+    includeTests: args.includeTests,
+    cacheDir: path.join(args.out, '.cache'),
+  });
   graph.generatedAt = new Date().toISOString();
   if (args.commit) graph.commit = args.commit;
   emitExtract(args, graph);
@@ -217,7 +232,11 @@ function runMap(args: Args): void {
 }
 
 function runFocus(args: Args): void {
-  const graph: Graph = extract({ root: args.root, includeTests: args.includeTests });
+  const graph: Graph = extract({
+    root: args.root,
+    includeTests: args.includeTests,
+    cacheDir: path.join(args.out, '.cache'),
+  });
   const store = new ClaimStore(path.join(args.out, 'claims.db'));
   const loaded = loadInvariants(args.root, args.invariantsFile);
   const invariants = loaded.invariants.map((inv) => evaluate(graph, inv));
@@ -338,8 +357,12 @@ function runQuery(args: Args): void {
   }
   out.beliefs = beliefs;
   out.contradictions = store.contradictions();
-  out.clusters = store.clusters();
-  out.elisions = store.elisions();
+  const verdict = (id: string, predicate: string) => {
+    const b = store.belief(id, predicate);
+    return b.status === 'UNKNOWN' ? null : { status: b.status, value: b.value };
+  };
+  out.clusters = store.clusters().map((c) => ({ ...c, verdict: verdict(c.id, 'cluster_verdict') }));
+  out.elisions = store.elisions().map((e) => ({ ...e, verdict: verdict(e.id, 'elision_verdict') }));
   out.defences = store.defences();
 
   const events = path.join(args.out, 'events.jsonl');

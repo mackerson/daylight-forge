@@ -56,8 +56,16 @@ export function frontier(graph: Graph, store: ClaimStore, findings: Findings = {
         return { u: 1.5, why: 'sources disagree — highest value to resolve' };
       case 'STALE':
         return { u: 0.9, why: 'file changed since the claim was made' };
-      case 'INFERRED':
-        return { u: Math.max(0.1, 1 - b.confidence), why: 'single uncorroborated source' };
+      case 'INFERRED': {
+        // A lone dismissal keeps residual uncertainty. Otherwise "no, nothing here" from one
+        // agent retires a question as cheaply as a positive finding, and the frontier drains
+        // by attrition rather than by being answered.
+        const dismissal = b.value === false;
+        const base = Math.max(0.1, 1 - b.confidence);
+        return dismissal
+          ? { u: Math.max(base, 0.35), why: 'ruled out by a single source — needs corroboration' }
+          : { u: base, why: 'single uncorroborated source' };
+      }
       case 'CORROBORATED':
         return { u: Math.max(0.05, (1 - b.confidence) * 0.5), why: 'corroborated' };
       case 'CONFIRMED':

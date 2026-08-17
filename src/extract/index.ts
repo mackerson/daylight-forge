@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Graph, GraphNode } from '../graph/types.ts';
-import type { CallSite, ImportBinding } from './parser.ts';
+import type { CallSite, ImportBinding, ParsedFile } from './parser.ts';
 import { aliasesFromTsconfig, Resolver } from './resolve.ts';
 import { TypeScriptParser } from './ts-parser.ts';
 
@@ -14,6 +14,13 @@ const IGNORED_DIRS = new Set([
 
 export interface ExtractOptions {
   root: string;
+  /**
+   * Where to keep the parse cache. Parsing is the expensive half and it is per-file and
+   * content-addressed, so an unchanged file never needs parsing twice. Resolution stays
+   * global and re-runs every time — it is cheap, and a cached edge could otherwise point
+   * at a file that has since moved.
+   */
+  cacheDir?: string;
   /** Skip vendored bundles. On by default; they are not authored code. */
   includeVendored?: boolean;
   /** Skip `.d.ts` — ambient declarations inflate D1 with types nobody wrote by hand. */
@@ -88,9 +95,46 @@ export function walk(root: string): string[] {
   return out.sort();
 }
 
+interface ParseCache {
+  version: number;
+  parser: string;
+  entries: Record<string, ParsedFile>;
+}
+
+const CACHE_VERSION = 1;
+
+function loadCache(dir: string | undefined, parserName: string): ParseCache {
+  const empty: ParseCache = { version: CACHE_VERSION, parser: parserName, entries: {} };
+  if (!dir) return empty;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, 'parse.json'), 'utf8')) as ParseCache;
+    // A parser change invalidates everything — cached output is only as good as the code
+    // that produced it.
+    if (raw.version !== CACHE_VERSION || raw.parser !== parserName) return empty;
+    return raw;
+  } catch {
+    return empty;
+  }
+}
+
+function saveCache(dir: string | undefined, cache: ParseCache, live: Set<string>): void {
+  if (!dir) return;
+  // Prune hashes no file currently carries, so the cache tracks the tree rather than growing
+  // forever with every past edit.
+  for (const key of Object.keys(cache.entries)) if (!live.has(key)) delete cache.entries[key];
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'parse.json'), JSON.stringify(cache));
+  } catch {
+    // A cache we cannot write is a slow run, not a broken one.
+  }
+}
+
 export function extract(options: ExtractOptions): Graph {
   const { root, includeDeclarations = false, includeTests = false, includeVendored = false } = options;
   const parser = new TypeScriptParser();
+  const cache = loadCache(options.cacheDir, parser.name);
+  const liveHashes = new Set<string>();
 
   const allFiles = walk(root);
   const sourceFiles = allFiles.filter((f) => {
@@ -116,6 +160,7 @@ export function extract(options: ExtractOptions): Graph {
     stats: {
       files: 0, symbols: 0, imports: 0, unresolvedImports: 0, externalImports: 0,
       assetImports: 0, calls: 0, resolvedCalls: 0, literals: 0, vendoredSkipped: 0,
+      parsedFiles: 0, reusedFiles: 0,
     },
   };
 
@@ -153,12 +198,25 @@ export function extract(options: ExtractOptions): Graph {
     graph.nodes.push(fileNode);
     graph.stats.files++;
 
-    let parsed;
-    try {
-      parsed = parser.parse(rel, source, contentHash);
-    } catch (err) {
-      graph.diagnostics.push({ file: rel, message: `parse failed: ${(err as Error).message}` });
-      continue;
+    // Cache key includes the path: the same content at a different path produces different
+    // node ids, so content alone would hand back records pointing at the wrong file.
+    const cacheKey = `${contentHash}:${rel}`;
+    liveHashes.add(cacheKey);
+
+    let parsed: ParsedFile;
+    const cached = cache.entries[cacheKey];
+    if (cached) {
+      parsed = cached;
+      graph.stats.reusedFiles++;
+    } else {
+      try {
+        parsed = parser.parse(rel, source, contentHash);
+        cache.entries[cacheKey] = parsed;
+      } catch (err) {
+        graph.diagnostics.push({ file: rel, message: `parse failed: ${(err as Error).message}` });
+        continue;
+      }
+      graph.stats.parsedFiles++;
     }
 
     for (const node of parsed.nodes) {
@@ -242,6 +300,7 @@ export function extract(options: ExtractOptions): Graph {
     }
   }
 
+  saveCache(options.cacheDir, cache, liveHashes);
   return graph;
 }
 

@@ -7,12 +7,24 @@ import type { Belief, Claim, QueryPayload } from '../types.ts';
  * disagreement between two sources is worth more than another unexamined node.
  */
 export function Review({ query, onRefresh }: { query: QueryPayload | null; onRefresh: () => void }) {
-  const [filter, setFilter] = useState<'contradicted' | 'all'>('contradicted');
+  const [filter, setFilter] = useState<'contradicted' | 'all' | 'focus'>('contradicted');
   if (!query) return <div className="empty"><h2>Loading…</h2></div>;
 
   const beliefs = filter === 'contradicted' ? query.contradictions : query.beliefs;
+  const unjudged =
+    query.clusters.filter((c) => !c.verdict).length +
+    query.elisions.filter((e) => !e.verdict).length;
 
-  if (!query.beliefs.length) {
+  if (filter === 'focus') {
+    return (
+      <div className="stack">
+        <Tabs filter={filter} setFilter={setFilter} query={query} unjudged={unjudged} />
+        <FocusReview query={query} onRefresh={onRefresh} />
+      </div>
+    );
+  }
+
+  if (!query.beliefs.length && !query.clusters.length) {
     return (
       <div className="empty">
         <h2>Nothing claimed yet</h2>
@@ -23,14 +35,7 @@ export function Review({ query, onRefresh }: { query: QueryPayload | null; onRef
 
   return (
     <div className="stack">
-      <div className="toolbar">
-        <button className={filter === 'contradicted' ? 'chip active' : 'chip'} onClick={() => setFilter('contradicted')}>
-          Contradicted ({query.contradictions.length})
-        </button>
-        <button className={filter === 'all' ? 'chip active' : 'chip'} onClick={() => setFilter('all')}>
-          All beliefs ({query.beliefs.length})
-        </button>
-      </div>
+      <Tabs filter={filter} setFilter={setFilter} query={query} unjudged={unjudged} />
 
       {!beliefs.length && (
         <p className="dim">No contradictions. Sources agree on everything examined so far.</p>
@@ -40,6 +45,104 @@ export function Review({ query, onRefresh }: { query: QueryPayload | null; onRef
         <BeliefCard key={`${b.subject}:${b.predicate}`} belief={b} onRefresh={onRefresh} />
       ))}
     </div>
+  );
+}
+
+function Tabs({ filter, setFilter, query, unjudged }: {
+  filter: string;
+  setFilter: (f: any) => void;
+  query: QueryPayload;
+  unjudged: number;
+}) {
+  return (
+    <div className="toolbar">
+      <button className={filter === 'contradicted' ? 'chip active' : 'chip'} onClick={() => setFilter('contradicted')}>
+        Contradicted ({query.contradictions.length})
+      </button>
+      <button className={filter === 'all' ? 'chip active' : 'chip'} onClick={() => setFilter('all')}>
+        All beliefs ({query.beliefs.length})
+      </button>
+      <button className={filter === 'focus' ? 'chip active' : 'chip'} onClick={() => setFilter('focus')}>
+        Focus ({unjudged} unjudged)
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Arbitrating the focus itself, not just claims about nodes.
+ *
+ * Confirming a cluster is the more valuable act once focusing is underway — it is what
+ * turns an agent's proposal into part of the map. Rejection is consequential: a rejected
+ * cluster or elision is dropped from the stack on the next derive, so this is editing the
+ * map rather than annotating it.
+ */
+function FocusReview({ query, onRefresh }: { query: QueryPayload; onRefresh: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const judge = async (subject: string, predicate: string, value: boolean) => {
+    setBusy(subject);
+    await window.vds.arbitrate({ subject, predicate, value, note: 'arbitrated in GUI' });
+    setBusy(null);
+    onRefresh();
+  };
+
+  const Verdict = ({ v }: { v: { status: string; value?: unknown } | null }) =>
+    !v ? null : (
+      <span className={v.value === false ? 'pill bad' : 'pill confirmed'}>
+        {v.value === false ? 'rejected' : 'kept'}
+      </span>
+    );
+
+  return (
+    <>
+      {!query.clusters.length && !query.elisions.length && (
+        <p className="dim">
+          Nothing to arbitrate. Run <strong>Focus</strong> to have an agent propose clusters and
+          elisions.
+        </p>
+      )}
+
+      {query.clusters.map((c) => (
+        <section key={c.id} className="card">
+          <h3>
+            <span className="pill">cluster</span>
+            {c.name}
+            <Verdict v={c.verdict} />
+          </h3>
+          <p className="prose">{c.purpose}</p>
+          <p className="dim">{c.members.length} members</p>
+          <div className="actions">
+            <button disabled={busy === c.id} onClick={() => judge(c.id, 'cluster_verdict', true)}>
+              Keep
+            </button>
+            <button disabled={busy === c.id} onClick={() => judge(c.id, 'cluster_verdict', false)}>
+              Reject
+            </button>
+          </div>
+        </section>
+      ))}
+
+      {query.elisions.map((e) => (
+        <section key={e.id} className="card">
+          <h3>
+            <span className="pill">elision</span>
+            <code>→ {e.into ?? '(none)'}</code>
+            <Verdict v={e.verdict} />
+          </h3>
+          <p className="prose">{e.reason}</p>
+          <p className="dim">{e.members.length} members collapsed</p>
+          <div className="actions">
+            <button disabled={busy === e.id} onClick={() => judge(e.id, 'elision_verdict', true)}>
+              Keep
+            </button>
+            <button disabled={busy === e.id} onClick={() => judge(e.id, 'elision_verdict', false)}>
+              Reject
+            </button>
+          </div>
+        </section>
+      ))}
+    </>
   );
 }
 

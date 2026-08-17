@@ -86,6 +86,8 @@ const POLARITY: Record<string, [string, boolean]> = {
   is_live: ['liveness_verdict', false],
   has_bug: ['bug_verdict', true],
   no_bug: ['bug_verdict', false],
+  cluster_verdict: ['cluster_verdict', true],
+  elision_verdict: ['elision_verdict', true],
 };
 
 export function isNarrative(predicate: string): boolean {
@@ -217,6 +219,31 @@ export class ClaimStore {
         `predicate '${input.predicate}' is a verdict and needs a boolean value ` +
           `(got ${typeof input.value}). Put the reasoning in evidence[].note, not in value.`,
       );
+    }
+
+    /**
+     * Dismissal is not free.
+     *
+     * Evidence enforcement makes a *false* claim expensive but does nothing about a
+     * *dismissive* one: an agent could clear the frontier cheaply by ruling things out, and
+     * nothing cost it anything. desloppify solves the analogous problem by widening its score
+     * gap on `wontfix`; this is our version.
+     *
+     * Asserting a thing means finding one place it is true. Ruling it out means checking the
+     * places it could have been true — strictly more work — so a negative verdict must cite
+     * strictly more, and at least one citation must point at a line rather than waving at a
+     * file. Humans are exempt: arbitration is the point at which someone takes responsibility.
+     */
+    const polar = POLARITY[input.predicate];
+    if (polar && input.value === false && input.source.kind !== 'human') {
+      const cited = input.evidence.filter((e) => e.file && typeof e.line === 'number');
+      if (input.evidence.length < 2 || cited.length < 1) {
+        throw new EvidenceRequired(
+          `ruling out '${input.predicate}' on ${input.subject} needs at least two pieces of ` +
+            'evidence including one with a line number — show where it would have been true. ' +
+            `Got ${input.evidence.length} item(s), ${cited.length} with a line.`,
+        );
+      }
     }
 
     const at = this.now();

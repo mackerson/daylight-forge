@@ -204,7 +204,10 @@ export function createServer(opts: ServerOptions) {
     {
       description:
         'Assert a predicate about a node or edge. Evidence is REQUIRED and is checked ' +
-        'here: cite the file and line you actually read. Unevidenced claims are rejected.',
+        'here: cite the file and line you actually read. Unevidenced claims are rejected. ' +
+        'Ruling something OUT (a verdict with value false) needs at least two pieces of ' +
+        'evidence including one with a line number — asserting a thing means finding one ' +
+        'place it is true, ruling it out means checking the places it could have been.',
       inputSchema: {
         subject: z.string(),
         predicate: z.string().describe("e.g. 'is_dead', 'purpose', 'duplicates', 'canonical_of'"),

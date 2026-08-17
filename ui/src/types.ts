@@ -139,8 +139,14 @@ export interface QueryPayload {
   stats: { claims: number; subjects: number; clusters: number; elisions: number; defences: number };
   beliefs: Belief[];
   contradictions: Belief[];
-  clusters: Array<{ id: string; name: string; purpose: string; members: string[] }>;
-  elisions: Array<{ id: string; members: string[]; into?: string; reason: string }>;
+  clusters: Array<{
+    id: string; name: string; purpose: string; members: string[];
+    verdict: { status: ClaimStatus; value?: unknown } | null;
+  }>;
+  elisions: Array<{
+    id: string; members: string[]; into?: string; reason: string;
+    verdict: { status: ClaimStatus; value?: unknown } | null;
+  }>;
   defences: Array<{ id: string; node: string; reason: string }>;
   events: VdsEvent[];
   error?: string;
