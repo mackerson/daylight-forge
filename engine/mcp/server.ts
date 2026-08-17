@@ -37,7 +37,17 @@ export interface ServerOptions {
 }
 
 export function loadGraph(dir: string): Graph {
-  return JSON.parse(fs.readFileSync(path.join(dir, 'graph.json'), 'utf8')) as Graph;
+  const file = path.join(dir, 'graph.json');
+  if (!fs.existsSync(file)) {
+    // Dying here makes every tool "unavailable" with no reason given, which is
+    // indistinguishable from the host refusing them — a full evening was spent on that
+    // ambiguity with codex. Say what is wrong, on stderr, where the host will log it.
+    throw new Error(
+      `no graph.json in ${dir}. Set VDS_DIR to a directory produced by \`vds map\`, ` +
+        'or run map first. The MCP server has nothing to serve without it.',
+    );
+  }
+  return JSON.parse(fs.readFileSync(file, 'utf8')) as Graph;
 }
 
 export function createServer(opts: ServerOptions) {
@@ -398,7 +408,11 @@ export function createServer(opts: ServerOptions) {
 }
 
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
-  const dir = process.env.VDS_DIR ?? process.cwd();
+  // Accept the directory as an argument too: some hosts do not pass environment through to
+  // stdio servers, and a server that cannot be told where to look is a server that cannot
+  // be used from those hosts.
+  const fromArg = process.argv.slice(2).find((a) => !a.startsWith('-'));
+  const dir = fromArg ?? process.env.VDS_DIR ?? process.cwd();
   const { server } = createServer({
     dir,
     session: process.env.VDS_SESSION ?? 'local',

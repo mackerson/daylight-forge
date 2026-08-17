@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaimStore } from '../store/claims.ts';
-import { ADAPTERS, available, mcpConfig, run, type AgentResult } from './adapters.ts';
+import { ADAPTERS, available, mcpConfig, run, type Adapter, type AgentResult } from './adapters.ts';
 import { frontier, type FrontierItem } from './frontier.ts';
 import { buildStack } from '../focus/stack.ts';
 import type { Graph } from '../graph/types.ts';
@@ -27,6 +27,10 @@ export interface DriveOptions {
   mode?: DriveMode;
   /** Ties every event this run emits back to the job that started it. */
   session?: string;
+  /** Refuse to start another agent once the run has spent this much. */
+  maxCost?: number;
+  /** How many agents may run at once. Sequential by default. */
+  concurrency?: number;
 }
 
 const SYSTEM_RULES = `
@@ -131,6 +135,8 @@ export interface DriveReport {
   registrationHints: string[];
   /** Frontier items skipped because another live session holds them. */
   skippedLeased: number;
+  /** Adapters not launched because the run had spent its ceiling. */
+  budgetStops: string[];
 }
 
 export async function drive(options: DriveOptions): Promise<DriveReport> {
@@ -185,7 +191,9 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   const results: AgentResult[] = [];
   const unavailable: string[] = [];
   const registrationHints: string[] = [];
+  const budgetStops: string[] = [];
 
+  const runnable: Adapter[] = [];
   for (const name of tools) {
     const adapter = ADAPTERS[name];
     if (!adapter) {
@@ -200,15 +208,45 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
       // We never mutate the user's agent config. Surface the command instead.
       registrationHints.push(adapter.registrationHint(cfgPath, cmd));
     }
-    if (dryRun) continue;
+    runnable.push(adapter);
+  }
 
-    results.push(
-      await run(adapter, {
-        prompt, cwd: repo, mcpConfigPath: cfgPath,
-        session: options.session ? `${options.session}:${name}` : `vds-${name}-${claimsBefore}`,
-        model, timeoutMs, maxTurns: 40,
-      }),
-    );
+  if (!dryRun && runnable.length) {
+    let spent = 0;
+    const launch = (adapter: Adapter) =>
+      run(adapter, {
+        prompt,
+        cwd: repo,
+        mcpConfigPath: cfgPath,
+        session: options.session
+          ? `${options.session}:${adapter.name}`
+          : `vds-${adapter.name}-${claimsBefore}`,
+        model,
+        timeoutMs,
+        maxTurns: 40,
+        maxCost: options.maxCost ? Math.max(0, options.maxCost - spent) : undefined,
+      });
+
+    const limit = Math.max(1, options.concurrency ?? 1);
+    const queue = [...runnable];
+
+    while (queue.length) {
+      // The ceiling is enforced *between* launches as well as during one, because most CLIs
+      // only report cost when they finish — by which point a mid-run kill is moot.
+      if (options.maxCost && spent >= options.maxCost) {
+        budgetStops.push(
+          `stopped before ${queue.map((a) => a.name).join(', ')}: ` +
+            `spent $${spent.toFixed(2)} of $${options.maxCost.toFixed(2)}`,
+        );
+        break;
+      }
+      const batch = queue.splice(0, limit);
+      const done = await Promise.all(batch.map(launch));
+      for (const r of done) {
+        results.push(r);
+        spent += r.cost;
+      }
+    }
   }
 
   const statsAfter = store.stats();
@@ -219,5 +257,6 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
     assigned, prompt, results, claimsBefore, claimsAfter,
     statsBefore, statsAfter, unavailable, registrationHints,
     skippedLeased: taken.size,
+    budgetStops,
   };
 }

@@ -38,6 +38,8 @@ interface Args {
   warnOnly: boolean;
   json: boolean;
   confirmedOnly: boolean;
+  maxCost?: number;
+  concurrency?: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -79,6 +81,8 @@ function parseArgs(argv: string[]): Args {
     warnOnly: flags.get('warn-only') === 'true',
     json: flags.get('format') === 'json',
     confirmedOnly: flags.get('confirmed-only') === 'true',
+    maxCost: flags.get('max-cost') ? Number(flags.get('max-cost')) : undefined,
+    concurrency: flags.get('concurrency') ? Number(flags.get('concurrency')) : undefined,
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
@@ -344,6 +348,7 @@ async function runAgent(args: Args): Promise<void> {
   const report = await drive({
     dir: args.out, repo, tools: args.tools, batch: args.batch, dryRun: args.dryRun,
     mode: args.mode, timeoutMs: args.timeoutMs, model: args.model, session: args.session,
+    maxCost: args.maxCost, concurrency: args.concurrency,
   });
 
   console.log(
@@ -361,6 +366,7 @@ async function runAgent(args: Args): Promise<void> {
     console.log(`  ${hint}`);
   }
   for (const u of report.unavailable) console.log(`skipped: ${u}`);
+  for (const b of report.budgetStops) console.log(`budget: ${b}`);
 
   if (args.dryRun) {
     console.log(`\n(dry run — no agent spawned)`);
@@ -373,7 +379,10 @@ async function runAgent(args: Args): Promise<void> {
   for (const r of report.results) {
     console.log(
       `${r.tool}: ${r.ok ? 'ok' : 'FAILED'} exit=${r.exitCode} ${(r.durationMs / 1000).toFixed(1)}s` +
-        (r.timedOut ? ' (timed out)' : ''),
+        (r.cost ? ` · $${r.cost.toFixed(2)}` : '') +
+        (r.turns ? ` · ${r.turns} turns` : '') +
+        (r.timedOut ? ' (timed out)' : '') +
+        (r.overBudget ? ' (stopped: over budget)' : ''),
     );
     if (!r.ok) console.log(`  ${(r.stderr || r.stdout).slice(0, 400)}`);
   }

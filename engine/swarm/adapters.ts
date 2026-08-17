@@ -17,6 +17,8 @@ import fs from 'node:fs';
 
 export interface AgentRun {
   prompt: string;
+  /** Kill the run if reported spend passes this. See the caveat in `run()`. */
+  maxCost?: number;
   /** Repo root the agent may read. */
   cwd: string;
   /** Path to an MCP config JSON, for adapters that take one per invocation. */
@@ -29,6 +31,11 @@ export interface AgentRun {
 
 export interface AgentResult {
   tool: string;
+  /** Spend the CLI reported, when it reports any. */
+  cost: number;
+  turns: number;
+  /** True when we killed it for passing the cost ceiling. */
+  overBudget: boolean;
   ok: boolean;
   exitCode: number | null;
   signal: string | null;
@@ -72,6 +79,18 @@ export const CLAUDE: Adapter = {
   ],
 };
 
+/**
+ * codex cannot currently be driven headlessly against an MCP server.
+ *
+ * Verified two independent ways: a per-invocation `-c mcp_servers.*` override, and a
+ * persistent `codex mcp add` registration in an isolated CODEX_HOME. In both cases codex
+ * discovers the tools and then answers every call with `user cancelled MCP tool call`.
+ * `approval_policy` values do not reach it. The only documented bypass is
+ * `--dangerously-bypass-approvals-and-sandbox`, which also removes the read-only sandbox —
+ * so the adapter stays as it is and codex is unusable for now rather than weakened.
+ *
+ * The flags below are correct and the run itself works; only MCP is blocked.
+ */
 export const CODEX: Adapter = {
   name: 'codex',
   bin: 'codex',
@@ -98,6 +117,7 @@ export const CODEX: Adapter = {
   },
 };
 
+/** Flags verified against the installed binary; only the MCP registration is untested. */
 export const GROK: Adapter = {
   name: 'grok',
   bin: 'grok',
@@ -120,6 +140,10 @@ export const GROK: Adapter = {
     `grok mcp add vds -- ${cmd.join(' ')}`,
 };
 
+/**
+ * Flags verified against the installed binary. Its JSON reports per-message `cost`, which
+ * `readSpend` accumulates rather than maxing — the opposite of claude's running total.
+ */
 export const OPENCODE: Adapter = {
   name: 'opencode',
   bin: 'opencode',
@@ -150,6 +174,34 @@ export function available(adapter: Adapter): boolean {
   }
 }
 
+/**
+ * Spend as each CLI reports it.
+ *
+ * Adapter-specific by necessity: cost never crosses the MCP boundary, it is only ever in the
+ * CLI's own output. Tolerant by design — an adapter that reports nothing yields zero rather
+ * than breaking the run, and the between-runs ceiling still applies.
+ */
+export function readSpend(text: string): { cost: number; turns: number } {
+  let cost = 0;
+  let turns = 0;
+  const take = (re: RegExp, onto: (n: number) => void) => {
+    for (const m of text.matchAll(re)) {
+      const v = Number(m[1]);
+      if (Number.isFinite(v)) onto(v);
+    }
+  };
+  // claude
+  take(/"total_cost_usd"\s*:\s*([0-9.]+)/g, (v) => (cost = Math.max(cost, v)));
+  take(/"num_turns"\s*:\s*([0-9]+)/g, (v) => (turns = Math.max(turns, v)));
+  // codex / generic: a cumulative usd figure under any of the usual names
+  take(/"(?:cost_usd|total_cost|usd)"\s*:\s*([0-9.]+)/g, (v) => (cost = Math.max(cost, v)));
+  // opencode reports per-message cost, so those accumulate rather than take a max
+  let summed = 0;
+  take(/"cost"\s*:\s*([0-9.]+)/g, (v) => (summed += v));
+  if (summed > cost) cost = summed;
+  return { cost, turns };
+}
+
 export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
   const started = Date.now();
   const argv = adapter.argv(options);
@@ -164,6 +216,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let overBudget = false;
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -171,18 +224,29 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
     }, options.timeoutMs ?? 300_000);
 
-    child.stdout.on('data', (d) => (stdout += d));
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      // Mid-run enforcement only works when the CLI reports cost as it goes. When it only
+      // reports at the end, the between-runs ceiling in the driver is what actually holds.
+      if (options.maxCost && !overBudget && readSpend(stdout).cost > options.maxCost) {
+        overBudget = true;
+        child.kill('SIGTERM');
+        setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+      }
+    });
     child.stderr.on('data', (d) => (stderr += d));
 
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
+      const spend = readSpend(stdout);
       resolve({
         tool: adapter.name,
-        ok: exitCode === 0 && !timedOut,
+        ok: exitCode === 0 && !timedOut && !overBudget,
         exitCode, signal,
         stdout, stderr,
         durationMs: Date.now() - started,
-        timedOut,
+        timedOut, overBudget,
+        ...spend,
       });
     });
 
@@ -190,7 +254,8 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       clearTimeout(timer);
       resolve({
         tool: adapter.name, ok: false, exitCode: null, signal: null,
-        stdout, stderr: String(err), durationMs: Date.now() - started, timedOut,
+        stdout, stderr: String(err), durationMs: Date.now() - started,
+        timedOut, overBudget, cost: 0, turns: 0,
       });
     });
   });

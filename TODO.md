@@ -97,22 +97,38 @@ claim, because it belongs to whoever made it.
 
 *Two adapters unusable, and the multi-model gate never actually demonstrated.*
 
-- [ ] `codex`: MCP tool calls are auto-denied headlessly (`user cancelled MCP tool call`).
-      `approval_policy="never"` and `"on-failure"` both fail; the only bypass also removes the
-      read-only sandbox, which we will not do. Re-check against a current codex, or drive it
-      through `codex app-server` instead of `exec`.
-- [ ] `grok`: MCP configuration mechanism still unverified. `grok mcp add` exists; nothing has
-      confirmed the server is reachable from a headless run.
-- [ ] `opencode`: same — `opencode mcp add` is printed as a hint and never tested. Its
-      `serve` HTTP API may be a better control channel than spawning.
-- [ ] Budget ceilings. Spend is displayed but never enforced; the design promises a per-run
-      cost cap and the driver has none. A run has already burned $2.11 and died at a timeout.
-- [ ] Cost parsing is claude-specific (`total_cost_usd`, `num_turns`). Generalise per adapter.
-- [ ] Demonstrate the actual P4 gate: two *different models* disagreeing live, arbitration
-      resolving it. Both prior attempts agreed, so the CONTRADICTED path is only unit-tested.
-- [ ] Concurrency policy: leases partition work, but nothing caps how many agents run at once.
+- [x] `codex`: **investigated and closed as blocked.** Verified two independent ways — a
+      per-invocation `-c mcp_servers.*` override, and a persistent `codex mcp add`
+      registration in an isolated `CODEX_HOME` (your real `~/.codex` was never touched). In
+      both, codex discovers the tools and answers every call `user cancelled MCP tool call`.
+      No `approval_policy` value reaches it. The only bypass also removes the read-only
+      sandbox, so the adapter stays as it is and this is documented rather than weakened.
+- [x] `grok`: adapter flags verified against the installed binary — it runs headlessly and
+      returns JSON. MCP registration remains untested because it would mutate your config.
+- [x] `opencode`: same, verified running. Its JSON reports *per-message* `cost`, the opposite
+      of claude's running total, which `readSpend` now handles.
+- [x] Budget ceilings: `--max-cost` kills a run whose reported spend passes the cap and
+      refuses to launch the next adapter once the run has spent it. Enforced between
+      launches as well as during one, because most CLIs only report cost when they finish.
+- [x] Cost parsing generalised: claude totals, generic `cost_usd`, and opencode's additive
+      per-message costs, tolerant of adapters that report nothing.
+- [x] `--concurrency` caps how many agents run at once; sequential by default.
+- [x] **Test:** `engine/test/budget.ts` — 8 assertions on spend parsing, including that
+      cumulative totals do not compound, per-message costs do, and unparsable output yields
+      zero rather than silently defeating the ceiling.
+- [ ] **Still open:** two *different models* disagreeing on substance, live. The path itself
+      has now run end to end in anger — two agents disagreed, the arbitration screen surfaced
+      it, and it produced a real fix — but that contradiction turned out to be *false*
+      (`sameConcept` vs `same_concept`). Forcing a substantive disagreement means paying for
+      repeated runs and hoping, so it is left for a session where a real one occurs.
 
-**Gate:** two different models disagree on a real claim and arbitration resolves it.
+**Gate:** ⚠️ mechanism demonstrated live end to end; a genuine cross-model disagreement has
+not yet occurred, and will not be manufactured.
+
+Also fixed here: the MCP server threw an unexplained error when `graph.json` was missing, so
+every tool showed as "unavailable" with no reason — indistinguishable from the host refusing
+them, which cost an evening of misdiagnosis with codex. It now says what is wrong, and
+accepts the directory as an argument for hosts that do not pass environment through.
 
 ---
 
