@@ -173,8 +173,18 @@ Ordered loosely by value, not scheduled.
       **Test:** `engine/test/identity.ts` (33), leaning on what must be *refused*.
 - [ ] Polyglot. Either a tree-sitter provider behind the existing `Parser` interface, or
       consume desloppify's 29-language findings instead of re-deriving them.
-- [ ] Symbol-level depth in the tree, expand-on-demand (~10× the nodes, so it needs the
-      expansion path first).
+- [x] Symbol-level depth in the tree, expand-on-demand. **alt**-click a file and it opens to
+      show what it declares; alt-click again and it shuts. On the modifier rather than a plain
+      click because selecting a file is the common act, and relaying out the tree under the
+      cursor every time you inspect something would be hostile.
+      The load-bearing property is that opening a file **moves nothing else**: a file keeps
+      its spread whether open or shut, so its parent's disc does not resize and no sibling
+      subtree shifts. A deterministic layout only buys spatial memory if the tree stays put,
+      and rearranging it when you ask about one file trades that away for tidier packing.
+      Symbols may crowd a neighbour with several files open, which is much the cheaper
+      failure. Symbols render smaller and in one colour across every channel — they carry no
+      belief or heat of their own, and painting them "unknown" would read as a finding rather
+      than as a level of detail. **Test:** `engine/test/scene.ts`, +12.
 - [x] Watch mode: a **Watch** toggle re-maps on code change, debounced 1.2s because editors
       write in bursts. Only changed files re-parse, so the loop the product exists to shorten
       now closes without anyone pressing a button.

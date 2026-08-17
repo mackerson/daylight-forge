@@ -421,10 +421,25 @@ ipcMain.handle('vds:load', () => {
     }
   }
 
+  /**
+   * Declared symbols per file, so the tree can open one on demand.
+   *
+   * Sent whole rather than fetched per file: it is a few hundred kilobytes for a large repo,
+   * already in memory here, and a round trip per expansion would make opening a file feel
+   * like waiting for something rather than like looking closer.
+   */
+  const symbols = {};
+  for (const n of graph?.nodes ?? []) {
+    if (n.kind === 'file' || !n.file) continue;
+    (symbols[n.file] ??= []).push({ id: n.id, name: n.name, kind: n.kind });
+  }
+  for (const list of Object.values(symbols)) list.sort((a, b) => a.name.localeCompare(b.name));
+
   return {
     ...state,
     stack,
     fileEdges,
+    symbols,
     initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
     // Which panel to open on. Exists so `pnpm shot` can capture a specific screen.
     initialTab: process.env.VDS_TAB || null,

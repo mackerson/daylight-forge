@@ -93,4 +93,79 @@ console.log('\nedge bundling');
   }
 }
 
+
+console.log('\nsymbol depth, on demand');
+{
+  /**
+   * The reason this is expand-on-demand and not a depth slider: every symbol at once is
+   * roughly ten times the nodes and reliably unreadable. You pay the node count only where
+   * you asked a question.
+   *
+   * The property that matters more than the expansion is that opening a file must not move
+   * anything else. A deterministic layout only buys spatial memory if the tree stays put —
+   * a map that rearranges itself when you inspect one file has thrown that away to buy
+   * tidier packing.
+   */
+  const stack = {
+    levels: [{
+      level: 1,
+      nodes: [{ id: 'g', members: ['src/a.ts', 'src/b.ts', 'src/deep/c.ts'], purpose: 'x' }],
+    }],
+  } as never;
+  const data = {
+    stack,
+    fileEdges: [],
+    symbols: {
+      'src/a.ts': [
+        { id: 'src/a.ts#go', name: 'go', kind: 'function' },
+        { id: 'src/a.ts#Thing', name: 'Thing', kind: 'class' },
+      ],
+    },
+  };
+
+  const shut = layoutTree(data, 'repo');
+  const open = layoutTree(data, 'repo', new Set(['src/a.ts']));
+
+  check('a file is a leaf until it is opened',
+    ![...shut.nodes.values()].some((n) => n.isSymbol));
+  check('opening one adds exactly its symbols',
+    open.nodes.size === shut.nodes.size + 2, `${shut.nodes.size} → ${open.nodes.size}`);
+  check('the symbols are the ones the file declares',
+    [...open.nodes.values()].filter((n) => n.isSymbol).map((n) => n.label).sort().join(',')
+      === 'Thing,go');
+  check('each says what kind of thing it is',
+    [...open.nodes.values()].filter((n) => n.isSymbol).every((n) => !!n.symbolKind));
+
+  // The load-bearing property.
+  for (const key of shut.nodes.keys()) {
+    const a = shut.nodes.get(key)!;
+    const b = open.nodes.get(key);
+    if (!b) { check(`${key} survives expansion`, false); break; }
+  }
+  const moved = [...shut.nodes.keys()].filter((k) => {
+    const a = shut.nodes.get(k)!;
+    const b = open.nodes.get(k)!;
+    return a.x !== b.x || a.y !== b.y || a.z !== b.z;
+  });
+  check('opening a file moves nothing else — spatial memory survives it',
+    moved.length === 0, moved.join(', '));
+
+  const sym = [...open.nodes.values()].find((n) => n.isSymbol)!;
+  const file = open.nodes.get('t:src/a.ts')!;
+  check('symbols hang below their file', sym.y < file.y);
+  check('and are attributed to it', sym.members[0] === 'src/a.ts');
+  check('the spine connects them',
+    open.spine.some((e) => e.from === 't:src/a.ts' && e.to === sym.key));
+  check('they deepen the tree by exactly one level', sym.level === file.level + 1);
+
+  check('expanding a file with no recorded symbols is a no-op',
+    layoutTree(data, 'repo', new Set(['src/b.ts'])).nodes.size === shut.nodes.size);
+  check('expanding is reversible',
+    JSON.stringify([...layoutTree(data, 'repo', new Set()).nodes.keys()])
+      === JSON.stringify([...shut.nodes.keys()]));
+  check('a layout with no symbol data at all still works',
+    layoutTree({ stack, fileEdges: [] }, 'repo', new Set(['src/a.ts'])).nodes.size
+      === shut.nodes.size);
+}
+
 done();

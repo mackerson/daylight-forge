@@ -76,6 +76,8 @@ export interface LoadPayload {
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
+  /** Declared symbols per file, for expanding a file in the tree. */
+  symbols?: Record<string, Array<{ id: string; name: string; kind: string }>>;
   findings: Findings;
   structure: StructureReport | null;
   invariants: { results: InvariantResult[] } | null;

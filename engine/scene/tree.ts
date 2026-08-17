@@ -86,7 +86,24 @@ function buildTree(files: string[], rootLabel: string): Build {
   return root;
 }
 
-export function layoutTree(data: TreeInput, rootLabel: string): SceneLayout {
+/**
+ * Where an expanded file's symbols sit.
+ *
+ * Deliberately *outside* the spread calculation: a file keeps `LEAF_SPREAD` whether it is
+ * open or shut, so opening one does not resize its parent's disc and shuffle every sibling
+ * subtree. The whole argument for a deterministic layout is spatial memory — you learn where
+ * things are — and a tree that rearranges itself when you ask a question about one file
+ * throws that away to buy tidier packing. Symbols may crowd a neighbour when several files
+ * are open at once; that is the cheaper failure by a wide margin.
+ */
+const SYMBOL_RADIUS = LEAF_SPREAD * 1.7;
+const SYMBOL_GAP = DEPTH_GAP * 0.55;
+
+export function layoutTree(
+  data: TreeInput,
+  rootLabel: string,
+  expanded: ReadonlySet<string> = new Set(),
+): SceneLayout {
   const stack = data.stack as FocusStack;
   const files = new Set<string>();
   for (const l of stack.levels) for (const n of l.nodes) for (const m of n.members) files.add(m);
@@ -132,6 +149,33 @@ export function layoutTree(data: TreeInput, rootLabel: string): SceneLayout {
     if (parentKey) {
       spine.push({ from: parentKey, to: nodeKey });
       parentOf.set(nodeKey, parentKey);
+    }
+
+    if (node.isFile && expanded.has(node.id)) {
+      const symbols = data.symbols?.[node.id] ?? [];
+      symbols.forEach((sym, i) => {
+        const a = (i / Math.max(1, symbols.length)) * TAU;
+        const symKey = `t:${sym.id}`;
+        nodes.set(symKey, {
+          key: symKey,
+          level: node.depth + 1,
+          id: sym.id,
+          label: sym.name,
+          members: [node.id],
+          fileCount: 0,
+          symbolCount: 1,
+          origin: 'symbol',
+          isFile: false,
+          isSymbol: true,
+          symbolKind: sym.kind,
+          x: x + Math.cos(a) * SYMBOL_RADIUS,
+          y: -node.depth * DEPTH_GAP - SYMBOL_GAP,
+          z: z + Math.sin(a) * SYMBOL_RADIUS,
+        });
+        spine.push({ from: nodeKey, to: symKey });
+        parentOf.set(symKey, nodeKey);
+      });
+      maxDepth = Math.max(maxDepth, node.depth + 1);
     }
 
     if (!node.children.length) return;

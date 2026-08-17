@@ -20,6 +20,7 @@ const COLORS = {
   path: new THREE.Color('#5a6675'),
   defended: new THREE.Color('#f0a868'),
   hover: new THREE.Color('#6ea8fe'),
+  symbol: new THREE.Color('#8f7fd0'),
 };
 
 export type Channel = 'structure' | 'belief' | 'frontier' | 'agent';
@@ -59,6 +60,10 @@ const scratch = new THREE.Color();
 
 /** Colour for a node under the active channel. */
 function channelColor(node: any, channel: Channel, maxHeat: number): THREE.Color {
+  // A symbol has no belief, no heat and no agents of its own — every channel would paint it
+  // "unknown", which reads as a finding rather than as a level of detail. One colour, so an
+  // opened file is legible as structure regardless of what the rest of the map is showing.
+  if (node.isSymbol) return COLORS.symbol;
   if (channel === 'belief') {
     const b = node.belief;
     if (!b) return BELIEF.UNKNOWN;
@@ -176,6 +181,16 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   // Selection survives a layout switch: spot a tangle in the graph, then see where it
   // lives in the tree without hunting for it again.
   const keepId = useRef<string | null>(null);
+  /**
+   * Files opened to show their symbols.
+   *
+   * Expand-on-demand rather than a depth setting: every symbol at once is roughly ten times
+   * the nodes and reliably unreadable, so you pay the node count only where you asked a
+   * question. A ref alongside the state because the click handler is installed once.
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
 
   // `data` is null on first render, so an initial mode from the host has to be applied
   // when it actually arrives — once, so it never fights the user's own toggle.
@@ -223,7 +238,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     scene.add(dir);
 
     const repoName = (data.repo ?? 'repo').split('/').filter(Boolean).pop() ?? 'repo';
-    const laid = mode === 'tree' ? layoutTree(data, repoName) : layout(data.stack, repoName);
+    const laid = mode === 'tree'
+      ? layoutTree(data, repoName, expanded)
+      : layout(data.stack, repoName);
     const bands = laid.bands;
     const distinct = bands.map((b: any) => b.level);
     setLevels(distinct);
@@ -273,9 +290,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         // The root holds every file, so size it as a marker rather than by mass.
         const s = node.isRoot
           ? 5
-          : node.isFile
-            ? 2.2
-            : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
+          // Symbols are smaller than the file that holds them, so an opened file still reads
+          // as one thing with parts rather than as a cluster of peers.
+          : node.isSymbol
+            ? 1.3
+            : node.isFile
+              ? 2.2
+              : 2.4 + Math.pow(Math.max(node.fileCount, 1), 0.42) * 1.5;
         m.makeScale(s, s, s);
         m.setPosition(node.x, node.y, node.z);
         mesh.setMatrixAt(i, m);
@@ -587,9 +608,18 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       if (held.has('e')) orbit.target.y += speed;
       if (held.has('q')) orbit.target.y -= speed;
     }
-    const onClick = () => {
+    const onClick = (e: MouseEvent) => {
       keepId.current = hovered ? hovered.id : null;
       setSelected(hovered ? { ...hovered } : null);
+
+      // Alt-click opens a file to its symbols, or shuts it again. On the modifier rather
+      // than on a plain click because selecting a file is the common act and relaying out
+      // the tree under the cursor every time you inspect something would be hostile.
+      if (!e.altKey || !hovered?.isFile) return;
+      const next = new Set(expandedRef.current);
+      if (next.has(hovered.id)) next.delete(hovered.id);
+      else next.add(hovered.id);
+      setExpanded(next);
     };
 
     canvas.addEventListener('pointerdown', onDown);
@@ -1130,7 +1160,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       labelLayer.remove();
       tip.remove();
     };
-  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel]);
+  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;
@@ -1218,6 +1248,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           <kbd>Q</kbd><kbd>E</kbd> up/down · <kbd>shift</kbd> faster ·
           <kbd>0</kbd> recentre · drag orbit · right-drag pan · scroll{' '}
           {mode === 'tree' ? 'depth' : 'altitude'}
+          {mode === 'tree' && <> · <kbd>alt</kbd>-click a file to open its symbols</>}
         </div>
         {selected && (
           <div className="scene-inspect">

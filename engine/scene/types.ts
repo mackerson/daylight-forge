@@ -8,6 +8,14 @@ import type { FocusStack } from '../focus/types.ts';
 export interface TreeInput {
   stack: FocusStack | null;
   fileEdges: Array<{ from: string; to: string; weight: number }>;
+  /**
+   * Declared symbols per file, for expand-on-demand.
+   *
+   * Absent means the tree stops at files, which is the default: showing every symbol at once
+   * is roughly ten times the nodes and reliably unreadable. Present, it lets a *chosen* file
+   * open — the whole point being that you pay the node count only where you asked a question.
+   */
+  symbols?: Record<string, Array<{ id: string; name: string; kind: string }>>;
 }
 
 /** Shared shape so the scene renders graph and tree layouts through one path. */
@@ -24,6 +32,10 @@ export interface SceneNode {
   origin: string;
   isRoot?: boolean;
   isFile?: boolean;
+  /** A declared symbol inside an expanded file, rather than a file or a directory. */
+  isSymbol?: boolean;
+  /** For a symbol: what it is — function, class, interface. */
+  symbolKind?: string;
   x: number;
   y: number;
   z: number;
