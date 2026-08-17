@@ -1,0 +1,2239 @@
+{
+  "version": 1,
+  "claims": [
+    {
+      "subject": "app/renderer/lib/types.ts",
+      "predicate": "purpose",
+      "value": "Declares the Electron main↔renderer contract — the IPC payload shapes and the typed `window.vds` preload surface — while deliberately re-exporting the focus/claim/duplication vocabulary from the engine instead of redeclaring it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.92,
+      "evidence": [
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 1,
+          "endLine": 8,
+          "note": "header states the intent: only IPC payloads and the preload surface genuinely belong here; shared shapes are imported from the engine"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 9,
+          "endLine": 21,
+          "note": "re-exports FocusNode/Claim/InvariantResult/D1Pair/Family from engine modules"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 57,
+          "endLine": 88,
+          "note": "LoadPayload and QueryPayload — the two IPC payloads"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 90,
+          "endLine": 116,
+          "note": "declare global Window.vds — the preload bridge surface"
+        }
+      ],
+      "observedHash": "9eb4e0271558",
+      "at": 1786941473408
+    },
+    {
+      "subject": "app/renderer/lib/types.ts#Findings",
+      "predicate": "notes",
+      "value": "Merging Findings into DuplicationReport is low-risk: the renderer already imports D1Pair and Family from engine/detect/duplication.ts in this same file, and the JSON it receives is the serialised report, so the extra fields (detector, exportedCount) are present at runtime and would only widen the renderer's static view. The panel reads families, d1, patterns and p.detector/key/members only, none of which the merge removes. The one thing lost is the deliberate narrowing itself — Findings is currently a hand-written restatement inside the file whose own header says shared shapes must be imported from the engine rather than redeclared, which is the inconsistency, not a design.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.82,
+      "evidence": [
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 16,
+          "note": "the file already imports D1Pair and Family from engine/detect/duplication.ts, so the dependency edge that a merge needs is present"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 1,
+          "endLine": 8,
+          "note": "header: 'The focus, claim and duplication shapes are imported from the engine rather than redeclared' — Findings at line 23 is an exception to the rule the file states"
+        },
+        {
+          "file": "app/renderer/lib/panels/Findings.tsx",
+          "line": 18,
+          "endLine": 96,
+          "note": "the only consumer reads f.families, f.d1, f.patterns (p.detector/key/members); nothing depends on the narrowed d2/d3 element types"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 368,
+          "note": "the default fallback literal lives in untyped .cjs, so widening the TS type cannot break it"
+        }
+      ],
+      "observedHash": "9eb4e0271558",
+      "at": 1786941515877
+    },
+    {
+      "subject": "engine/detect/duplication.ts",
+      "predicate": "purpose",
+      "value": "Finds duplication deterministically and cheaply — no LLM is involved — by running three independent detectors (structural shape overlap, repeated function names, repeated signatures) and then clustering only their corroborating links into families, so that agents adjudicate once per family instead of once per pair, and so that oversized groups are reclassified as shared-role patterns rather than being reported as copy-paste.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 3,
+          "endLine": 6,
+          "note": "module doc: D1-D3 deterministic and cheap; agents only adjudicate the families"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 97,
+          "endLine": 161,
+          "note": "D1: Jaccard over field names and name:type, inverted index avoids the N^2 matrix"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 171,
+          "endLine": 195,
+          "note": "D2: duplicate function names, conventional names ignored"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 199,
+          "endLine": 226,
+          "note": "D3: duplicate signatures, uninformative any-typed ones dropped"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 260,
+          "endLine": 277,
+          "note": "family qualification: D1 alone, or D2+D3 agreeing; precision over recall to avoid over-merge"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 38,
+          "endLine": 43,
+          "note": "Pattern: oversized groups are a shared role, kept as input to clustering"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 382,
+          "endLine": 397,
+          "note": "detectDuplication composes all of it into the report"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942220633
+    },
+    {
+      "subject": "engine/detect/duplication.ts",
+      "predicate": "purpose",
+      "value": "Finds duplication deterministically and cheaply — similar structures, repeated function names, repeated signatures — then clusters only the corroborated links into families, so that agents are asked to adjudicate once per family instead of once per pair and never asked to do the detection itself.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 3,
+          "endLine": 6,
+          "note": "module doc states the intent: 'D1-D3. All three are deterministic and cheap - no LLM finds anything here. Agents only adjudicate the families these produce.'"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 97,
+          "endLine": 161,
+          "note": "D1: Jaccard over field name-sets and over name:type pairs, with an inverted-index candidate generator to avoid the N² matrix"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 171,
+          "endLine": 195,
+          "note": "D2: duplicate function names, minus a stoplist of conventionally-repeated names and same-file overloads"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 199,
+          "endLine": 226,
+          "note": "D3: duplicate signatures, dropping un-annotated (any)=>any functions as absence of information and deferring same-name hits to D2"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 260,
+          "endLine": 277,
+          "note": "buildFamilies doc: cluster links into families 'so we adjudicate once per family rather than once per pair - the difference between N² and N agent calls'; D1 alone or D2+D3 together qualify, D2 or D3 alone does not, because unioning on any link welded 107 unrelated symbols into one family"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 278,
+          "endLine": 380,
+          "note": "buildFamilies(): union-find over qualifying links, each family carrying its detectors, topScore and human-readable evidence strings, sorted by detector agreement"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 38,
+          "endLine": 43,
+          "note": "Pattern: oversized D2/D3 groups are kept as evidence of a shared *role* (input to L2 clustering), not discarded and not reported as duplication"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 382,
+          "endLine": 397,
+          "note": "detectDuplication(graph): the single entry point assembling d1/d2/d3/patterns/families into a DuplicationReport"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 101,
+          "endLine": 108,
+          "note": "consumer: the CLI runs it during extract and serialises the report to findings.json, which the app, the MCP server and the swarm driver all read"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942301655
+    },
+    {
+      "subject": "engine/detect/duplication.ts",
+      "predicate": "purpose",
+      "value": "Finds duplication deterministically and cheaply — structural shape overlap, repeated function names, repeated signatures — and then clusters the resulting links into families under a deliberately strict qualification rule, so that an agent adjudicates once per family rather than once per pair and never inherits an over-merged cluster that hides the real finding inside it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.89,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 3,
+          "endLine": 6,
+          "note": "header: D1-D3 are deterministic and cheap, no LLM finds anything here; agents only adjudicate the families"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 97,
+          "endLine": 101,
+          "note": "detectD1 — shape similarity by Jaccard over field names and name:type pairs"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 171,
+          "endLine": 179,
+          "note": "detectD2 — duplicate function names, with conventional names ignored"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 199,
+          "endLine": 214,
+          "note": "detectD3 — duplicate signatures, un-annotated functions dropped as absence of information"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 260,
+          "endLine": 277,
+          "note": "buildFamilies rationale: N agent calls instead of N², and the qualification rule that stops transitive over-merging"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 327,
+          "endLine": 329,
+          "note": "the rule in code: D1 alone qualifies, D2+D3 together qualify, either alone does not"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 38,
+          "endLine": 43,
+          "note": "oversized groups become Patterns — evidence of a shared role, kept as clustering input rather than discarded"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 382,
+          "endLine": 397,
+          "note": "detectDuplication composes all of it into the DuplicationReport"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942205365
+    },
+    {
+      "subject": "engine/detect/duplication.ts#DuplicationReport",
+      "predicate": "canonical_of",
+      "value": "app/renderer/lib/types.ts#Findings",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.88,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 382,
+          "note": "detectDuplication is the producer; DuplicationReport is its return type"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 108,
+          "note": "that exact value is what gets written to findings.json"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 368,
+          "note": "findings.json is read back unchanged into LoadPayload"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 23,
+          "endLine": 29,
+          "note": "Findings is the consumer-side redeclaration of that payload, structurally weaker"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942223968
+    },
+    {
+      "subject": "engine/detect/duplication.ts#DuplicationReport",
+      "predicate": "canonical_of",
+      "value": "app/renderer/lib/types.ts#Findings",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.85,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 54,
+          "endLine": 60,
+          "note": "the producer side: this is the shape cli.ts actually writes to findings.json, so it defines the contract"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 21,
+          "endLine": 32,
+          "note": "D2Group/D3Group extend a shared DetectorGroup carrying the key and members plus per-detector fields such as exportedCount; the renderer's inline {key, members} is a lossy subset, not an equal alternative"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 21,
+          "note": "the consumer already imports D1Pair and Family across this exact boundary, so importing DuplicationReport too costs nothing and removes the drift surface"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942305862
+    },
+    {
+      "subject": "engine/detect/duplication.ts#DuplicationReport",
+      "predicate": "canonical_of",
+      "value": "app/renderer/lib/types.ts#Findings",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 54,
+          "endLine": 60,
+          "note": "DuplicationReport { d1, d2, d3, patterns, families } — the producer-side declaration, returned by detectDuplication"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 23,
+          "endLine": 29,
+          "note": "Findings declares the identical five field names with structurally weaker element types (d2/d3 lose `detector` and `exportedCount`)"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 106,
+          "note": "detectDuplication's DuplicationReport is JSON.stringify'd verbatim to findings.json"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 368,
+          "note": "main reads findings.json back unchanged into LoadPayload.findings; the renderer types that same bytes as Findings, so both names describe one runtime object and the engine side is the producer"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786941506428
+    },
+    {
+      "subject": "engine/detect/duplication.ts#DuplicationReport",
+      "predicate": "duplication_verdict",
+      "value": "Same concept. DuplicationReport is canonical: it is the type the engine actually produces (detectDuplication returns it, cli.ts serialises it to findings.json) while Findings is a hand-written structural narrowing of that same JSON in the renderer (d2/d3 drop `detector` and `exportedCount`, patterns widens `detector` to string). Merging breaks nothing statically or at runtime: DuplicationReport is assignable to Findings, the sole TS construction site is the type annotation itself, the only literal is the untyped fallback in main.cjs which already supplies all five keys, and the sole consumer (Findings.tsx) reads only families/d1/patterns/key/members. The only loss is the narrowing itself, which the file's own header declares an error — it says shared shapes are imported from the engine rather than redeclared.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 54,
+          "endLine": 60,
+          "note": "DuplicationReport: d1: D1Pair[]; d2: D2Group[]; d3: D3Group[]; patterns: Pattern[]; families: Family[]"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 23,
+          "endLine": 29,
+          "note": "Findings: identical five keys; d2/d3 typed as {key;members} (no detector, no exportedCount), patterns as {detector: string;key;members} — a structural supertype of DuplicationReport"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 382,
+          "endLine": 396,
+          "note": "detectDuplication(graph) returns DuplicationReport — the producing function"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 101,
+          "endLine": 108,
+          "note": "const dup = detectDuplication(graph); written verbatim to findings.json — the wire format IS the report"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 368,
+          "note": "findings: readJson('findings.json', {families:[],d1:[],d2:[],d3:[],patterns:[]}) — the only value-level construction, in untyped .cjs, and its empty-array fallback satisfies DuplicationReport too"
+        },
+        {
+          "file": "app/renderer/lib/panels/Findings.tsx",
+          "line": 10,
+          "endLine": 31,
+          "note": "sole consumer: reads f.families, f.d1, f.patterns only — none of the fields the merge would add are removed"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 4,
+          "endLine": 8,
+          "note": "file header: focus/claim/duplication shapes are imported from the engine rather than redeclared — Findings violates the file's own stated rule"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 16,
+          "note": "the same file already imports D1Pair and Family from engine/detect/duplication.ts, so the import path for the merge exists"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942223255
+    },
+    {
+      "subject": "engine/detect/duplication.ts#DuplicationReport",
+      "predicate": "duplication_verdict",
+      "value": "{\"same_concept\":true,\"canonical\":\"engine/detect/duplication.ts#DuplicationReport\",\"duplicate\":\"app/renderer/lib/types.ts#Findings\",\"reason\":\"Both name the same artefact: the on-disk findings.json. detectDuplication() returns DuplicationReport and cli.ts serialises exactly that value to findings.json; main.cjs reads findings.json straight back and hands it to the renderer as LoadPayload.findings, typed as Findings. Findings redeclares the same five fields (d1/d2/d3/patterns/families) but structurally widened: d2 drops exportedCount and the 'D2' literal, patterns widens detector to plain string. It is a lossy hand-copy of the producer type across the IPC boundary, not a distinct concept.\",\"breaks_if_merged\":\"Nothing observable. Findings already imports D1Pair and Family from the engine module, so the merge only replaces three inline structural literals. The sole consumer, panels/Findings.tsx, reads families, d1 (nameScore/score/a/b/onlyA/onlyB) and patterns.key/members — every one of those is present and identically typed on DuplicationReport, and the extra exportedCount field is additive. The untyped JS default in main.cjs is unaffected since it is a .cjs file with no type checking.\",\"note\":\"types.ts's own header states engine shapes are imported rather than redeclared because the tool caught the copies on this repo; Findings is the one that got missed.\"}",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.88,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 54,
+          "endLine": 60,
+          "note": "DuplicationReport: d1/d2/d3/patterns/families"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 382,
+          "endLine": 396,
+          "note": "detectDuplication returns DuplicationReport"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 101
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 108,
+          "note": "JSON.stringify(dup) -> findings.json; dup is the DuplicationReport"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 368,
+          "note": "readJson('findings.json', ...) becomes LoadPayload.findings"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 23,
+          "endLine": 29,
+          "note": "Findings redeclares the same five fields, widened"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 67,
+          "note": "LoadPayload.findings: Findings"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 16,
+          "endLine": 21,
+          "note": "D1Pair and Family already imported from the engine module"
+        },
+        {
+          "file": "app/renderer/lib/panels/Findings.tsx",
+          "line": 10,
+          "endLine": 31,
+          "note": "only consumer; reads families/d1/patterns"
+        },
+        {
+          "file": "app/renderer/lib/panels/Findings.tsx",
+          "line": 94,
+          "endLine": 96,
+          "note": "patterns usage is key + members only"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942188325
+    },
+    {
+      "subject": "engine/detect/duplication.ts#DuplicationReport",
+      "predicate": "duplication_verdict",
+      "value": "{\"sameConcept\":true,\"canonical\":\"engine/detect/duplication.ts#DuplicationReport\",\"verdict\":\"app/renderer/lib/types.ts#Findings is a lossy hand-written restatement of the SAME runtime object, not a second concept. Verified by the produce/consume path, not by shape alone: engine/cli.ts:108 serialises the DuplicationReport returned by detectDuplication (duplication.ts:382-396) to findings.json, and app/main/main.cjs:368 reads that exact file back into the LoadPayload field typed `findings: Findings` (types.ts:67). Same bytes, two declarations.\",\"whatBreaksIfMerged\":\"Nothing at runtime, and nothing the UI reads. Findings narrows three fields relative to DuplicationReport: d2/d3 drop the `detector` and `exportedCount` discriminants (types.ts:25-26 vs duplication.ts:29-36) and `patterns` widens `detector` to plain string (types.ts:27 vs the 'D2'|'D3' union at duplication.ts:23). Those fields are present in the JSON at runtime regardless, so merging only widens the renderer's static view. The consumer panel reads f.families, f.d1, f.patterns and per-item .key/.members/.detectors/.topScore/.evidence only (Findings.tsx:18-97) — the merge removes none of them. The one real loss is the narrowing itself, which the file's own header (types.ts:1-8) says should not exist: it declares that duplication shapes are imported from the engine rather than redeclared, and lines 16/21 already import D1Pair and Family from duplication.ts. Findings is the exception to its own stated rule.\",\"caveat\":\"A third, independent restatement exists at engine/swarm/frontier.ts:42-44 — also named Findings, narrowed to families only. Merging the renderer copy does not address it; it is structurally reachable from the same findings.json (engine/cli.ts:281-285 feeds it through buildStack -> frontier).\"}",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.88,
+      "evidence": [
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 54,
+          "endLine": 60,
+          "note": "DuplicationReport: d1/d2/d3/patterns/families"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 23,
+          "endLine": 29,
+          "note": "Findings: identical five fields, d2/d3/patterns restated with weaker types"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 108,
+          "note": "writes the DuplicationReport (`dup`) to findings.json"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 368,
+          "note": "reads findings.json back into the LoadPayload `findings` field"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 67,
+          "note": "findings: Findings — the field that receives the serialised report"
+        },
+        {
+          "file": "app/renderer/lib/types.ts",
+          "line": 1,
+          "endLine": 21,
+          "note": "header says duplication shapes are imported not redeclared; lines 16 and 21 do exactly that for D1Pair and Family"
+        },
+        {
+          "file": "app/renderer/lib/panels/Findings.tsx",
+          "line": 18,
+          "endLine": 97,
+          "note": "sole consumer; touches only families/d1/patterns and fields the merge preserves"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 42,
+          "endLine": 44,
+          "note": "third restatement, families-only"
+        }
+      ],
+      "observedHash": "dcc7ef9e78d4",
+      "at": 1786942172923
+    },
+    {
+      "subject": "engine/extract/index.ts",
+      "predicate": "purpose",
+      "value": "Turns a repository on disk into the exhaustive L0 graph: it decides what counts as authored source (git-tracked, non-vendored, no .d.ts or tests), parses each file through a content-addressed cache so unchanged files are never re-parsed, and resolves imports, call sites and heritage into edges — declining to emit an edge whose target it cannot resolve unambiguously, on the principle that a fabricated edge is worse than a missing one.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/extract/index.ts",
+          "line": 133,
+          "endLine": 149,
+          "note": "extract(): walk, then filter to parser extensions minus .d.ts/tests"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 53,
+          "endLine": 70,
+          "note": "git ls-files is the file-set authority, with a walk fallback"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 37,
+          "endLine": 51,
+          "note": "looksVendored: bundles excluded by shape, not name"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 15,
+          "endLine": 30,
+          "note": "ExtractOptions doc explains why each exclusion exists"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 106,
+          "endLine": 131,
+          "note": "content-addressed parse cache, invalidated on parser change, pruned to live tree"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 187,
+          "endLine": 220,
+          "note": "per-file hash keyed by path; reuse vs parse"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 266,
+          "endLine": 293,
+          "note": "call resolution via import bindings; unresolved stays unresolved rather than guessed"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 295,
+          "endLine": 301,
+          "note": "heritage linked only when the name is unambiguous"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 252,
+          "endLine": 262,
+          "note": "import edges: resolved, unresolved-relative diagnostic, or external"
+        }
+      ],
+      "observedHash": "6c6be37bdd16",
+      "at": 1786942205490
+    },
+    {
+      "subject": "engine/extract/index.ts",
+      "predicate": "purpose",
+      "value": "Turns a repository on disk into the L0 graph — enumerating the source files that are genuinely authored, parsing each through a content-addressed cache, and resolving imports, calls and heritage into edges — under a standing rule that an edge it cannot prove is left out rather than guessed.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/extract/index.ts",
+          "line": 133,
+          "endLine": 305,
+          "note": "extract(options): Graph — the single entry point; builds nodes, edges, shapes, functions, calls, literals, diagnostics and stats"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 67,
+          "endLine": 96,
+          "note": "walk(): prefers `git ls-files` so files git ignores are never analysed, falling back to a directory walk"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 140,
+          "endLine": 146,
+          "note": "the authored-code filter: parser extensions only, excluding .d.ts and test files by default"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 43,
+          "endLine": 51,
+          "note": "looksVendored(): rejects bundles by size and line length — a vendored three.js added ~8000 symbols to a 25-file repo and buried the real findings"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 17,
+          "endLine": 23,
+          "note": "cacheDir doc: parsing is the expensive half and is per-file content-addressed; resolution stays global and re-runs, since a cached edge could point at a moved file"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 203,
+          "endLine": 220,
+          "note": "cache key is `${contentHash}:${rel}`; a hit reuses ParsedFile and bumps reusedFiles, a miss parses and stores"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 243,
+          "endLine": 263,
+          "note": "import resolution into `imports` edges; assets skipped, unresolved relative specifiers recorded as diagnostics (our bug), bare specifiers marked external"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 266,
+          "endLine": 293,
+          "note": "call resolution via imported bindings only — 'a fabricated edge is worse than a missing one'; unresolvable calls are dropped, not guessed"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 295,
+          "endLine": 301,
+          "note": "heritage edges linked only when the target name is unambiguous, for the same reason"
+        }
+      ],
+      "observedHash": "6c6be37bdd16",
+      "at": 1786942280099
+    },
+    {
+      "subject": "engine/extract/index.ts",
+      "predicate": "purpose",
+      "value": "Turns a source tree into the exhaustive L0 graph — walking what git actually tracks, parsing each file through a content-addressed cache, and resolving imports, calls and heritage into edges — under a standing rule that anything it cannot resolve honestly is recorded as a diagnostic rather than guessed into an edge.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.87,
+      "evidence": [
+        {
+          "file": "engine/extract/index.ts",
+          "line": 133,
+          "endLine": 165,
+          "note": "extract(): builds the Graph with nodes/edges/shapes/functions/calls/literals/diagnostics/stats"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 53,
+          "endLine": 70,
+          "note": "gitTracked/walk — files git ignores are not ours to analyse"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 17,
+          "endLine": 23,
+          "note": "parse cache is per-file and content-addressed; resolution stays global and re-runs"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 202,
+          "endLine": 220,
+          "note": "cache key is contentHash+path; parse failure becomes a diagnostic, not a dropped file"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 266,
+          "endLine": 293,
+          "note": "call resolution — unresolved stays unresolved, 'a fabricated edge is worse than a missing one'"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 295,
+          "endLine": 301,
+          "note": "heritage linked only when the name is unambiguous"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 255,
+          "endLine": 258,
+          "note": "unresolved relative import recorded as a diagnostic"
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 37,
+          "endLine": 51,
+          "note": "vendored bundles excluded by shape so downstream detector numbers are not wrecked"
+        }
+      ],
+      "observedHash": "6c6be37bdd16",
+      "at": 1786942188703
+    },
+    {
+      "subject": "engine/focus/stack.ts",
+      "predicate": "purpose",
+      "value": "Builds the focus stack that lets the map be read at an altitude — folding the exhaustive L0 graph into L1 path modules, then L2 agent-named clusters, then L3 elision-collapsed architecture — while keeping every bucket's member file list and per-node belief so any altitude expands back to real spans and shows how well-known it actually is.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.86,
+      "evidence": [
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 6,
+          "endLine": 13,
+          "note": "header states the intent: partition into buckets + aggregated edges, members non-optional so a focused map is always expandable"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 184,
+          "endLine": 197,
+          "note": "buildStack entry; L1 is pure path grouping"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 199,
+          "endLine": 234,
+          "note": "L2: agent-named clusters from the claim store override path grouping; human-rejected clusters are dropped"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 236,
+          "endLine": 281,
+          "note": "L3: applies elisions, defended nodes survive, unresolvable targets are rejected rather than invented"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 113,
+          "endLine": 181,
+          "note": "annotate() attaches per-node belief status, coverage, contradictions and frontier heat"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 168,
+          "endLine": 170,
+          "note": "a node is only as resolved as its least-resolved member — partial coverage never reads as confirmed"
+        }
+      ],
+      "observedHash": "3161e1cc78fc",
+      "at": 1786942179310
+    },
+    {
+      "subject": "engine/focus/stack.ts",
+      "predicate": "purpose",
+      "value": "Compiles the exhaustive L0 graph into the three progressively coarser altitudes of the map — path-derived modules, agent-named clusters, then human-arbitrated elisions — carrying every bucket's member list and aggregated belief/heat along, so zooming out never costs the ability to expand a node back to real files.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 6,
+          "endLine": 13,
+          "note": "module doc states the intent verbatim: L0 exhaustive up to L3 architecture; every level is a partition of files plus aggregated edges; `members` non-optional because a map that cannot be expanded is indistinguishable from a lie"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 193,
+          "endLine": 196,
+          "note": "L1: groupByPath over files — the crude path partition"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 199,
+          "endLine": 234,
+          "note": "L2: agent-proposed clusters override the path grouping; a human-rejected cluster is dropped so arbitration is consequential"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 236,
+          "endLine": 281,
+          "note": "L3: applies elisions, defended nodes always survive, and an elision into a non-existent target fails closed into `rejected` rather than conjuring a bucket"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 62,
+          "endLine": 99,
+          "note": "makeLevel: every bucket accumulates node.members (the expand-back list), fileCount and symbolCount"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 113,
+          "endLine": 182,
+          "note": "annotate: folds per-file claim status and frontier heat up into each bucket's belief; worst-status-wins and partial coverage downgrades CONFIRMED to CORROBORATED"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 184,
+          "endLine": 298,
+          "note": "buildStack is the single entry point returning the FocusStack {l0, levels, invariants, l3Status}"
+        }
+      ],
+      "observedHash": "3161e1cc78fc",
+      "at": 1786942249222
+    },
+    {
+      "subject": "engine/focus/stack.ts",
+      "predicate": "purpose",
+      "value": "Builds the focus stack that lets the map be read at an altitude: it re-partitions the same file set three times — by path (L1), then overridden by agent-named clusters (L2), then by adjudicated elisions with defended nodes held back (L3) — aggregating edges at each level and annotating every bucket with its members' worst belief status and frontier heat, so a collapsed view always expands back to real files and never reads as more resolved than its least-resolved member.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 6,
+          "endLine": 13,
+          "note": "module doc: L0 exhaustive up to L3; members non-optional by construction"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 184,
+          "endLine": 196,
+          "note": "buildStack; L1 path grouping via groupByPath"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 199,
+          "endLine": 234,
+          "note": "L2: agent-named clusters override path grouping, rejected clusters leave the map"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 236,
+          "endLine": 281,
+          "note": "L3: elisions applied, defended nodes excluded, unresolvable targets rejected not invented"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 26,
+          "endLine": 60,
+          "note": "aggregate: edges rolled up per bucket pair"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 113,
+          "endLine": 124,
+          "note": "annotate: one frontier pass gives per-file heat"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 162,
+          "endLine": 170,
+          "note": "worst-status-wins and partial coverage downgrades CONFIRMED"
+        }
+      ],
+      "observedHash": "3161e1cc78fc",
+      "at": 1786942195262
+    },
+    {
+      "subject": "engine/graph/types.ts",
+      "predicate": "purpose",
+      "value": "Defines the language-neutral vocabulary of the exhaustive L0 code graph — nodes, edges, and the side-tables (shapes, signatures, calls, string literals) that detectors and invariants read — so that any parser provider can populate it without the rest of the system knowing what language it parsed.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.93,
+      "evidence": [
+        {
+          "file": "engine/graph/types.ts",
+          "line": 1,
+          "endLine": 6,
+          "note": "header: L0 exhaustive layer, language-neutral on purpose, filled by a parser provider"
+        },
+        {
+          "file": "engine/graph/types.ts",
+          "line": 18,
+          "endLine": 45,
+          "note": "GraphNode / GraphEdge shapes with contentHash invalidation key"
+        },
+        {
+          "file": "engine/graph/types.ts",
+          "line": 47,
+          "endLine": 63,
+          "note": "CallRecord/LiteralRecord exist because invariants lean on string-literal coupling"
+        },
+        {
+          "file": "engine/graph/types.ts",
+          "line": 65,
+          "endLine": 85,
+          "note": "ShapeRecord for D1, FunctionRecord for D2/D3 detectors"
+        },
+        {
+          "file": "engine/graph/types.ts",
+          "line": 92,
+          "endLine": 121,
+          "note": "Graph aggregates all of the above plus extraction stats"
+        }
+      ],
+      "observedHash": "85f00c5fd042",
+      "at": 1786941425045
+    },
+    {
+      "subject": "engine/invariants/engine.ts",
+      "predicate": "purpose",
+      "value": "Turns architectural claims that would otherwise rot as prose into executable queries over the L0 graph, keeping the human-readable statement and its compiled predicate in one object and evaluating each into a green/red result with concrete violation sites.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.93,
+      "evidence": [
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 3,
+          "endLine": 13,
+          "note": "header: prose obligation nobody honors becomes a query against L0 honored every pass; prose and compiled form live in the same object"
+        },
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 50,
+          "endLine": 57,
+          "note": "Invariant carries id, prose, predicate, rationale"
+        },
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 23,
+          "endLine": 48,
+          "note": "Predicate union: absent, count, literal-fanin, forbidden-call, forbidden-callee, required-callee, ordering"
+        },
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 90,
+          "endLine": 224,
+          "note": "evaluate() dispatches each predicate type to a green/red InvariantResult with violations"
+        },
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 65,
+          "endLine": 72,
+          "note": "InvariantResult carries `measured`, a one-line summary of what was actually counted"
+        }
+      ],
+      "observedHash": "f891c0ae3ac4",
+      "at": 1786941468995
+    },
+    {
+      "subject": "engine/plan/target.ts",
+      "predicate": "belongs_to_cluster",
+      "value": "Declared Intent — not Outbound Artifacts",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.8,
+      "evidence": [
+        {
+          "file": "engine/plan/target.ts",
+          "line": 6,
+          "endLine": 16,
+          "note": "The standing 'Outbound Artifacts' cluster groups this with render/mermaid.ts as two ways of getting the map out. The file itself makes the opposite claim: it is 'the shape the code is *supposed* to have... the one thing no amount of extraction can derive — it is intent, so a human or an agent declares it and it lives with the repo.' TargetSpec is an INPUT authored alongside the code, not an artifact emitted from it. mermaid.ts takes a Graph and returns a string; this takes a declaration and diffs reality against it."
+        },
+        {
+          "file": "engine/invariants/load.ts",
+          "line": 5,
+          "endLine": 12,
+          "note": "The invariants loader makes the identical argument in the identical shape — 'invariants belong to the repo being analysed, not to this tool... they are authored and live with the code they constrain' — and is currently in a different cluster ('Invariant Check'). Two files asserting the same principle about the same class of artifact are one subsystem; the current cut splits them and instead pairs one with a diagram printer."
+        },
+        {
+          "file": "engine/render/mermaid.ts",
+          "line": 3,
+          "endLine": 10,
+          "note": "Counter-evidence that 'Outbound Artifacts' is not a subsystem at all: its other member disavows itself as a stopgap whose mechanism is to be replaced ('already a focus operation, and a crude one: it elides by path depth, which is a filing decision rather than an intent claim'). A cluster whose stated purpose is carried by a diagram printer and a declaration format is grouping by the direction data happens to flow, which is a filing decision — the same error the mermaid header names."
+        }
+      ],
+      "at": 1786942725018
+    },
+    {
+      "subject": "engine/store/claims.ts",
+      "predicate": "purpose",
+      "value": "Append-only, evidence-gated ledger of assertions about the graph: it enforces at ingest that every claim cites something (with a stiffer bar for negative verdicts), normalises predicate polarity so real disagreements collide instead of passing each other, and derives a per-subject belief status that preserves contradictions for human arbitration rather than auto-resolving them.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.92,
+      "evidence": [
+        {
+          "file": "engine/store/claims.ts",
+          "line": 3,
+          "endLine": 8,
+          "note": "header: every assertion lives here with provenance, nothing overwritten, disagreement preserved"
+        },
+        {
+          "file": "engine/store/claims.ts",
+          "line": 146,
+          "endLine": 176,
+          "note": "submit() rejects evidence-free claims and non-boolean verdict values — the evidence boundary"
+        },
+        {
+          "file": "engine/store/claims.ts",
+          "line": 191,
+          "endLine": 201,
+          "note": "ruling out requires >=2 evidence items and >=1 with a line number, unless source is human"
+        },
+        {
+          "file": "engine/store/claims.ts",
+          "line": 258,
+          "endLine": 317,
+          "note": "belief() folds claims into UNKNOWN/CONFIRMED/STALE/CONTRADICTED/CORROBORATED/INFERRED"
+        },
+        {
+          "file": "engine/store/claims.ts",
+          "line": 34,
+          "endLine": 66,
+          "note": "POLARITY + canonicalise() map not_duplicates onto duplication_verdict=false"
+        }
+      ],
+      "observedHash": "e881c5140fa3",
+      "at": 1786941420651
+    },
+    {
+      "subject": "engine/swarm/frontier.ts",
+      "predicate": "purpose",
+      "value": "Decides what to spend the next agent turn on, by scoring every unresolved question about the codebase as uncertainty × centrality so effort lands where resolving something shifts the most downstream belief, and so the queue draining is itself the signal that the map has converged.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 4,
+          "endLine": 13,
+          "note": "header: score = uncertainty x centrality; queue draining is the convergence signal, not an iteration count"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 46,
+          "endLine": 48,
+          "note": "frontier() returns a scored FrontierItem list"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 50,
+          "endLine": 74,
+          "note": "uncertainty derived from claim-store belief status; CONFIRMED scores 0, CONTRADICTED 1.5"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 59,
+          "endLine": 68,
+          "note": "a lone dismissal keeps residual uncertainty so the frontier cannot drain by attrition"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 26,
+          "endLine": 40,
+          "note": "centrality is fan-in weighted, normalised 0..1"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 76,
+          "endLine": 123,
+          "note": "three question sources: duplication families, per-file purpose, contradictions"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 125,
+          "note": "sorted by descending score — the output is a work queue"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 119,
+          "endLine": 124,
+          "note": "consumer: one frontier pass feeds per-file heat into every focus level"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786942195655
+    },
+    {
+      "subject": "engine/swarm/frontier.ts",
+      "predicate": "purpose",
+      "value": "Decides what the swarm should look at next: it scores every unresolved question — unadjudicated duplication families, files with no purpose claim, and open contradictions — as uncertainty x fan-in centrality and returns them ranked, so hubs and disagreements are worked before leaves and the run converges when the top score falls below a floor rather than at an arbitrary iteration count.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 4,
+          "endLine": 13,
+          "note": "module doc: score = uncertainty x centrality; drain is the convergence signal"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 15,
+          "endLine": 23,
+          "note": "FrontierItem: subject, kind, question, score"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 26,
+          "endLine": 40,
+          "note": "centrality: fan-in weighted, normalised 0..1"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 50,
+          "endLine": 74,
+          "note": "uncertaintyOf maps belief status to weight; contradictions score highest at 1.5"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 59,
+          "endLine": 68,
+          "note": "lone dismissals keep residual uncertainty so the queue is not drained by attrition"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 77,
+          "endLine": 123,
+          "note": "the three item sources: families, file purposes, contradictions"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 125,
+          "note": "returned sorted by score descending"
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 132,
+          "note": "driver takes the top `batch` items as the agents' assignment"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786942212140
+    },
+    {
+      "subject": "engine/swarm/frontier.ts",
+      "predicate": "purpose",
+      "value": "Decides what the swarm should look at next, scoring every unresolved subject as uncertainty × centrality so agent turns go to hubs and disagreements first, and so the queue draining below a floor — rather than an arbitrary iteration count — is what signals the map has converged.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 4,
+          "endLine": 13,
+          "note": "module doc states the intent: 'The frontier scheduler. score = uncertainty x centrality'; resolving a hub changes more downstream beliefs than a leaf; the queue draining below a floor is the convergence signal rather than an iteration count"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 46,
+          "endLine": 125,
+          "note": "frontier() emits FrontierItems from three sources — duplication families, files lacking a `purpose`, and open contradictions — sorted by descending score"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 26,
+          "endLine": 40,
+          "note": "centrality(): fan-in weighted, normalised 0..1, ignoring external and `contains` edges"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 50,
+          "endLine": 74,
+          "note": "uncertaintyOf() maps claim status to weight: CONTRADICTED 1.5 > UNKNOWN 1 > STALE 0.9 > INFERRED > CORROBORATED > CONFIRMED 0; a lone dismissal keeps residual 0.35 so the frontier cannot drain by attrition"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 94,
+          "endLine": 110,
+          "note": "the file arm exists because the `purpose` claim is what promotes L1 to L2 — the scheduler is aimed at what unblocks clustering"
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 132,
+          "note": "consumer: driver takes frontier(...).slice(0, batch) as the agent's assignment for a turn"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 119,
+          "endLine": 124,
+          "note": "second consumer: one frontier pass supplies per-file 'heat' shared by every focus level"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786942291729
+    },
+    {
+      "subject": "engine/swarm/frontier.ts#Findings",
+      "predicate": "notes",
+      "value": "A THIRD restatement of engine/detect/duplication.ts#DuplicationReport, missed by D1 because it declares only one field (`families?`) and D1's minFields default is 3. Its element type {id, members, detectors, topScore?} is Family minus `evidence`, with detectors widened from ('D1'|'D2'|'D3')[] to string[]. engine/focus/stack.ts is a fourth handling of the same bytes: it types the payload `unknown` and casts `as any` to reach frontier(). So the duplication family for this concept has four members, not the two the detector found — and the miss is a calibration artefact of minFields, not evidence of difference.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.85,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 42,
+          "endLine": 44,
+          "note": "export interface Findings { families?: Array<{ id: string; members: string[]; detectors: string[]; topScore?: number }> }"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 45,
+          "endLine": 52,
+          "note": "Family: id, members, detectors: Array<'D1'|'D2'|'D3'>, topScore?, evidence — the canonical shape frontier.ts restates"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 98,
+          "note": "const minFields = opts.minFields ?? 3"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 103,
+          "note": "shapes.filter((s) => s.fields.length >= minFields) — excludes a 1-field restatement from D1 candidacy"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 105,
+          "note": "StackOptions.findings is typed `unknown` — a fourth static spelling of the same runtime payload"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 121,
+          "note": "frontier(graph, store, findings as any) — the cast papering over the mismatch"
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 124,
+          "endLine": 132,
+          "note": "driver parses findings.json (the serialised DuplicationReport) and passes it straight to frontier()"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786942270535
+    },
+    {
+      "subject": "engine/swarm/frontier.ts#Findings",
+      "predicate": "notes",
+      "value": "A third declaration of the same runtime object as engine/detect/duplication.ts#DuplicationReport, which is canonical: driver and MCP server both parse findings.json (the serialised DuplicationReport) and pass it straight into frontier(). Unlike app/renderer/lib/types.ts#Findings, this one is a deliberate one-field structural minimum — frontier only needs families[] to compute heat — so it is a legitimate narrow parameter type, not a copy. Merging it into DuplicationReport would over-couple the swarm to the detector's full output; the correct fix if any is to derive it (Pick<DuplicationReport, 'families'>) rather than to unify the declarations.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.85,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 42,
+          "endLine": 44,
+          "note": "Findings here declares only optional families[], structurally weaker than DuplicationReport's five fields"
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 122,
+          "endLine": 130,
+          "note": "driver reads findings.json and passes the parsed object as frontier()'s findings argument"
+        },
+        {
+          "file": "engine/mcp/server.ts",
+          "line": 172,
+          "note": "the MCP server does the same with the findings.json it parsed at line 54"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 106,
+          "note": "findings.json is the serialised DuplicationReport, so all three types name one object"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786941539363
+    },
+    {
+      "subject": "engine/swarm/frontier.ts#Findings",
+      "predicate": "notes",
+      "value": "A THIRD hand-written narrowing of engine/detect/duplication.ts#DuplicationReport, distinct from the known app/renderer/lib/types.ts#Findings copy and invisible to D1. It keeps only `families`, retypes Family.detectors as string[] where the engine declares Array<'D1'|'D2'|'D3'>, and drops Family.evidence — type drift, not just narrowing. All three declarations describe one runtime object: the findings.json the engine itself writes. D1 could not have found it because a one-field interface is below the minFields floor of 3. Merge case is weaker than the renderer copy — frontier genuinely consumes only families, and this file states no rule against redeclaring engine shapes — but importing Family would remove the drift and close the `unknown` cast it currently travels through.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.8,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 42,
+          "endLine": 44,
+          "note": "the restatement itself: families-only, detectors typed string[], evidence absent"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 45,
+          "endLine": 52,
+          "note": "the engine Family being restated: detectors is a D1|D2|D3 union, evidence required"
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 281,
+          "endLine": 285,
+          "note": "findings.json read here and handed to buildStack — same payload the renderer copy types"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 121,
+          "note": "buildStack forwards findings to frontier() through an `unknown` cast; the cast is what lets the drift go unchecked"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "line": 98,
+          "endLine": 103,
+          "note": "minFields defaults to 3 and gates `eligible` — why the detector never surfaced this one-field copy"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 77,
+          "endLine": 91,
+          "note": "frontier's only use of the type: fam.id, members, detectors, topScore"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786942235821
+    },
+    {
+      "subject": "engine/swarm/frontier.ts#Findings",
+      "predicate": "purpose",
+      "value": "A deliberately minimal structural subset of the duplication report — families only, with detectors widened to string[] — that exists so the scheduler can consume findings.json without importing the detector module; it is a narrowing input contract, not a third copy of DuplicationReport, and should not be flagged as duplication of it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.75,
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 42,
+          "endLine": 44,
+          "note": "Findings declares only optional families, detectors as string[]"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 1,
+          "endLine": 2,
+          "note": "imports only graph/types and store/claims — no dependency on engine/detect"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 46,
+          "note": "frontier() defaults findings to {}, so an absent findings.json is legal"
+        },
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 77,
+          "endLine": 80,
+          "note": "only fam.id, fam.members, fam.detectors are ever read"
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 124,
+          "endLine": 132,
+          "note": "the JSON blob is parsed untyped and passed straight in"
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 105,
+          "note": "StackOptions.findings is `unknown`, cast at the frontier call — the same decoupling"
+        }
+      ],
+      "observedHash": "52473b72296a",
+      "at": 1786942236895
+    },
+    {
+      "subject": "invariant:scene-layout-deterministic",
+      "predicate": "invariant",
+      "value": {
+        "prose": "Nothing under engine/scene/ calls a randomness source. Position is a pure function of the focus stack, so the same repo lays out the same way every session — which is the only thing that makes flying around build spatial memory.",
+        "predicate": "{\"type\": \"forbidden-callee\", \"within\": {\"file\": \"^engine/scene/\"}, \"callee\": \"random\"}"
+      },
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "file": "engine/scene/layout.ts",
+          "line": 9,
+          "endLine": 12,
+          "note": "the claim in prose: 'The layout is DETERMINISTIC. Flying around only builds spatial memory if the same repo lays out the same way every session, so there is no force relaxation and no randomness here — position is a pure function of the focus stack.' Until now this was a comment, which is not a check"
+        },
+        {
+          "file": "engine/scene/layout.ts",
+          "line": 16,
+          "endLine": 21,
+          "note": "how determinism is actually achieved: hashAngle folds the node id into a stable integer hash for the angular seed, so subtree ordering never jitters. A Math.random tiebreak would be the natural 'fix' for an overlap bug and would silently destroy this"
+        },
+        {
+          "file": "engine/scene/tree.ts",
+          "line": 12,
+          "endLine": 15,
+          "note": "the cone tree makes the same guarantee independently, so the invariant must cover the whole directory rather than one file"
+        },
+        {
+          "file": "engine/scene/layout.ts",
+          "note": "currently GREEN: grep for Math.random, Date.now and performance.now across engine/scene/ returns no matches in layout.ts, tree.ts or types.ts"
+        }
+      ],
+      "at": 1786942373745
+    }
+  ],
+  "clusters": [
+    {
+      "id": "cl_11berq4",
+      "level": 2,
+      "name": "Capability Root",
+      "purpose": "Hold every capability the window is not allowed to have. The renderer displays agent-authored text, so it is treated as untrusted: no filesystem, no spawn, no store — only named operations this process validates, runs and reports back.",
+      "members": [
+        "app/main/main.cjs",
+        "app/main/preload.cjs"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "app/main/main.cjs",
+          "line": 6,
+          "endLine": 17,
+          "note": "\"Holds the data, owns every job, and hardens the renderer. The renderer displays agent-authored text (cluster names, purposes, elision reasons), which is untrusted content, so: contextIsolation on, nodeIntegration off, a narrow preload surface, no remote content, no navigation.\""
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 14,
+          "endLine": 17,
+          "note": "\"Jobs shell out to `node src/cli.ts` rather than importing the TypeScript directly — one implementation of every operation\" — this process deliberately holds no engine code, which is what makes it a capability boundary rather than a second copy of the product"
+        },
+        {
+          "file": "app/main/preload.cjs",
+          "line": 23,
+          "note": "the entire renderer API is a list of invoke() wrappers over named ipc channels — arbitrate is one line, and anything not on this list is unreachable from the window by construction"
+        }
+      ]
+    },
+    {
+      "id": "cl_14qx2jc",
+      "level": 2,
+      "name": "Invariant Check",
+      "purpose": "Make the top of the map falsifiable: compile the prose facts a human would hand-write into queries against L0 that re-run every pass, and keep those facts in the repo they describe so no codebase is ever measured against another's architecture.",
+      "members": [
+        "engine/invariants/engine.ts",
+        "engine/invariants/load.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 3,
+          "endLine": 13,
+          "note": "An invariant is a query against L0; prose and compiled form live in one object so they cannot drift apart."
+        },
+        {
+          "file": "engine/invariants/engine.ts",
+          "line": 23,
+          "endLine": 45,
+          "note": "Predicate union: absent / count / literal-fanin / forbidden-call — prose facts as graph queries."
+        },
+        {
+          "file": "engine/invariants/load.ts",
+          "line": 5,
+          "endLine": 12,
+          "note": "Shipping a fixed set marks every other codebase STALE against facts that were never about it."
+        },
+        {
+          "file": "engine/focus/stack.ts",
+          "line": 283,
+          "endLine": 287,
+          "note": "l3Status is derived from invariant results — this is what makes L3 checkable rather than asserted."
+        }
+      ]
+    },
+    {
+      "id": "cl_1h0d7bi",
+      "level": 2,
+      "name": "Belief and Provenance",
+      "purpose": "Accumulate every assertion about the map alongside who made it and what they cited, and keep disagreement alive rather than resolving it — a contradiction is this system's highest-value output, not an error state.",
+      "members": [
+        "engine/store/claims.ts",
+        "engine/store/types.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/store/claims.ts",
+          "line": 3,
+          "endLine": 8,
+          "note": "\"Every interesting assertion about the graph lives here with its provenance, and nothing is ever overwritten — disagreement is preserved, not resolved.\""
+        },
+        {
+          "file": "engine/store/claims.ts",
+          "line": 15,
+          "endLine": 31,
+          "note": "the polarity rule was DISCOVERED by running two models on the same questions: naive value-inequality gets it backwards, since two prose purposes always differ textually (loud false contradictions) while `duplicates` vs `not_duplicates` never gets compared at all. Narrative predicates corroborate; verdict predicates normalise onto one predicate with a boolean."
+        },
+        {
+          "file": "engine/store/claims.ts",
+          "line": 34,
+          "endLine": 40,
+          "note": "the POLARITY table is where a real disagreement becomes machine-visible — is_dead/partially_dead/not_dead/is_live all collapse onto liveness_verdict"
+        }
+      ]
+    },
+    {
+      "id": "cl_1k8f0vn",
+      "level": 2,
+      "name": "Spatial Memory",
+      "purpose": "Give the graph a body you can fly and navigate back to from memory — position is a pure function of the focus stack with no solver and no randomness, and camera distance IS altitude, so pulling back collapses a node into its agent-named abstraction instead of fading it out.",
+      "members": [
+        "app/renderer/lib/panels/Scene.tsx",
+        "engine/scene/layout.ts",
+        "engine/scene/tree.ts",
+        "engine/scene/types.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "app/renderer/lib/panels/Scene.tsx",
+          "line": 7,
+          "endLine": 15,
+          "note": "the consumer states the two properties the whole node exists for: \"the spine is a pure function of the focus stack (no force relaxation, no randomness, so flying around builds spatial memory), and LOD is SEMANTIC — camera distance IS altitude on the focus stack, so pulling back collapses nodes into their agent-named abstraction rather than fading them out\""
+        },
+        {
+          "file": "app/renderer/lib/panels/Scene.tsx",
+          "line": 3,
+          "endLine": 4,
+          "note": "Scene.tsx imports layout and layoutTree across the app/engine boundary — the geometry is engine code and the panel is its dumb consumer, so cutting this cluster on the app/ vs engine/ folder line would split one mechanism in half"
+        },
+        {
+          "file": "engine/scene/tree.ts",
+          "line": 4,
+          "endLine": 15,
+          "note": "the cone tree exists because the focus stack's three flat buckets throw the real nesting away; it is \"deterministic, like the graph layout — the same repo lays out the same way every session, which is the whole basis for spatial memory\""
+        },
+        {
+          "file": "app/renderer/lib/panels/Scene.tsx",
+          "line": 33,
+          "endLine": 45,
+          "note": "the belief palette encodes the same epistemic stance as the store: UNKNOWN is deliberately near-invisible so \"an unexamined map should look unexamined\" — colour here is a claim about knowledge, not styling"
+        }
+      ]
+    },
+    {
+      "id": "cl_1pbo9vi",
+      "level": 2,
+      "name": "Ground Truth",
+      "purpose": "Turn a repo that may not compile into one exhaustive, content-addressed graph stated in a vocabulary that never names a language — so every claim made above it resolves back to a span, and the language that produced a fact is a swappable provider rather than a property of the map.",
+      "members": [
+        "engine/extract/index.ts",
+        "engine/extract/parser.ts",
+        "engine/extract/resolve.ts",
+        "engine/extract/ts-parser.ts",
+        "engine/graph/types.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/graph/types.ts",
+          "line": 1,
+          "endLine": 6,
+          "note": "\"L0 graph — the exhaustive layer. Everything above it is derived by recorded elision. Language-neutral on purpose: a parser provider fills these in, and nothing here mentions TypeScript.\""
+        },
+        {
+          "file": "engine/graph/types.ts",
+          "line": 28,
+          "endLine": 29,
+          "note": "contentHash on every node is declared as the invalidation key — the content-addressing is in the vocabulary itself, not a caching detail bolted on later"
+        },
+        {
+          "file": "engine/extract/parser.ts",
+          "note": "declares the Parser contract (name, extensions, parse(relPath, source, contentHash)) and states that import-specifier resolution happens OUTSIDE the parser — which is why resolve.ts is a separate global pass rather than parser-internal"
+        }
+      ]
+    },
+    {
+      "id": "cl_1y1rzvl",
+      "level": 2,
+      "name": "Arbitration Surface",
+      "purpose": "Where the human closes the stigmergic loop: read what the swarm deposited, see precisely where two sources disagree, and issue the CONFIRMED verdict that outranks every agent and actually removes things from the map.",
+      "members": [
+        "app/renderer/lib/App.tsx",
+        "app/renderer/lib/main.tsx",
+        "app/renderer/lib/panels/Agents.tsx",
+        "app/renderer/lib/panels/Findings.tsx",
+        "app/renderer/lib/panels/Invariants.tsx",
+        "app/renderer/lib/panels/Overview.tsx",
+        "app/renderer/lib/panels/Review.tsx",
+        "app/renderer/lib/types.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "app/renderer/lib/panels/Review.tsx",
+          "line": 4,
+          "endLine": 8,
+          "note": "\"The arbitration surface — the screen the design calls the highest-value thing in the product, and which until now was a JSON file. Contradictions first, because a disagreement between two sources is worth more than another unexamined node.\" The default filter is literally 'contradicted'."
+        },
+        {
+          "file": "app/renderer/lib/panels/Review.tsx",
+          "line": 189,
+          "note": "\"Pick the claim that is right — that becomes CONFIRMED and outranks every agent\" — the panel states the authority ordering the whole belief calculus rests on"
+        },
+        {
+          "file": "app/renderer/lib/panels/Agents.tsx",
+          "line": 17,
+          "endLine": 22,
+          "note": "the tab set is not five screens, it is one loop: \"a running agent is quiet most of the time... the honest signal is 'how long since anything happened', not 'nothing is happening'\" — this exists so the human can tell a working swarm from a dead one before judging what it deposited"
+        },
+        {
+          "file": "app/renderer/lib/App.tsx",
+          "line": 42,
+          "endLine": 44,
+          "note": "the store is snapshotted before every job \"so completion can report the delta rather than making you read a log to find out what happened\" — the window is built to surface what changed for judgement, not to browse"
+        }
+      ]
+    },
+    {
+      "id": "cl_3tntzd",
+      "level": 2,
+      "name": "Ground Truth",
+      "purpose": "Turn an unbuildable, half-written repo into the one exhaustive L0 graph that every later claim must resolve back to — syntactically, so broken code still maps, and content-addressed, so an unchanged file is never parsed twice.",
+      "members": [
+        "engine/extract",
+        "engine/graph"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/graph/types.ts",
+          "line": 1,
+          "endLine": 6,
+          "note": "L0 is the exhaustive layer; everything above is derived by recorded elision. Language-neutral on purpose."
+        },
+        {
+          "file": "engine/extract/resolve.ts",
+          "line": 13,
+          "endLine": 19,
+          "note": "Deliberately syntactic: no type info, no node_modules walk — resolves what a bundler would for first-party code."
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 17,
+          "endLine": 23,
+          "note": "Parsing is the expensive half and is per-file content-addressed; resolution stays global and re-runs."
+        },
+        {
+          "file": "engine/extract/index.ts",
+          "line": 43,
+          "endLine": 51,
+          "note": "looksVendored: vendored bundles are not authored code and wreck every downstream number."
+        },
+        {
+          "file": "engine/extract/parser.ts",
+          "line": 26,
+          "endLine": 31,
+          "note": "ParsedFile is the provider contract — providers report what was written, resolution happens outside."
+        }
+      ]
+    },
+    {
+      "id": "cl_4llyhe",
+      "level": 2,
+      "name": "Composition Root",
+      "purpose": "Own the only path from a request to a finished artifact — every operation the product performs is wired exactly once here, so the window and the terminal cannot drift, and the outward forms of the map are produced nowhere else.",
+      "members": [
+        "engine/cli.ts",
+        "engine/render/mermaid.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/cli.ts",
+          "line": 558,
+          "note": "every operation the product performs is a case in one switch here — map, extract, invariants, focus, derive, plan, query, arbitrate, agent — including the arbitrate path the GUI reaches only by shelling out to this file"
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 448,
+          "endLine": 453,
+          "note": "confirms the seam from the other side: the Electron ipc handler for vds:arbitrate spawns this CLI with 'arbitrate' rather than importing the engine, so the GUI and the terminal run identical code"
+        },
+        {
+          "file": "engine/render/mermaid.ts",
+          "line": 3,
+          "endLine": 10,
+          "note": "mermaid is the map's cheapest outward form and is explicitly a stopgap whose mechanism M1.5 replaces — it is an output format of the composition root, not a subsystem standing beside Ground Truth and the Agent Plane"
+        }
+      ]
+    },
+    {
+      "id": "cl_54tl3z",
+      "level": 2,
+      "name": "Declared Intent",
+      "purpose": "Hold the one thing extraction can never derive — what this code is SUPPOSED to be — as machine-checkable declarations that live in the repo they constrain, and express the gap against L0 as either a failing fact or an ordered plan with blast radius attached.",
+      "members": [
+        "engine/invariants/engine.ts",
+        "engine/invariants/load.ts",
+        "engine/plan/target.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/invariants/load.ts",
+          "line": 5,
+          "endLine": 12,
+          "note": "\"Invariants belong to the repo being analysed, not to this tool... shipping a fixed set and running it everywhere marks every other codebase STALE against facts that were never about it. They are authored and live with the code they constrain.\""
+        },
+        {
+          "file": "engine/plan/target.ts",
+          "line": 6,
+          "endLine": 16,
+          "note": "Same argument, different artifact: \"the shape the code is *supposed* to have. This is the one thing no amount of extraction can derive — it is intent, so a human or an agent declares it and it lives with the repo. Everything else here is a diff against that declaration.\" And what it adds over ArchUnit/Sonargraph is that violations become an ordered plan, not a flat rule-failure list."
+        },
+        {
+          "file": "engine/plan/target.ts",
+          "line": 39,
+          "endLine": 41,
+          "note": "Violation.count is documented as \"the weight of the problem\" — blast radius is a field on the diff, not a presentation choice"
+        }
+      ]
+    },
+    {
+      "id": "cl_9a4w65",
+      "level": 2,
+      "name": "Silent-Failure Gates",
+      "purpose": "Pin the three things in this system that go wrong without throwing — evidence enforcement at the agent boundary, the polarity of the belief calculus, and the referent rule in the geometry — because the failure mode here is not a crash, it is a confident-looking map that is quietly false.",
+      "members": [
+        "engine/test/merge-beliefs.ts",
+        "engine/test/scene.ts",
+        "engine/test/smoke.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/test/smoke.ts",
+          "note": "drives createServer over an in-memory transport against ClaimStore to exercise the EvidenceRequired boundary — an unevidenced write must be rejected, and nothing else in the system would notice if it stopped being"
+        },
+        {
+          "file": "engine/test/merge-beliefs.ts",
+          "note": "merges two agent runs through canonicalise/ClaimStore and asserts corroboration vs CONTRADICTED — the polarity rule is the one correction that turned the contradiction queue from noise back into signal, and getting it backwards produces a plausible queue, not an error"
+        },
+        {
+          "file": "engine/test/scene.ts",
+          "note": "imports layoutTree and checks the referent rule in geometry — fake trunks, phantom strata, nodes visible but not hoverable — which is exactly the class of defect that pixel-hunting in a screenshot cannot catch"
+        }
+      ]
+    },
+    {
+      "id": "cl_j7bd3r",
+      "level": 2,
+      "name": "Candidate Findings",
+      "purpose": "Propose — never decide — the specific ways this codebase is redundant or misshapen, emitting tiered candidates that carry their own caveat, because a confident wrong finding is worse than none: it is the one that gets acted on.",
+      "members": [
+        "engine/detect/duplication.ts",
+        "engine/detect/structure.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/detect/structure.ts",
+          "note": "every dead-code result is a DeadCandidate carrying a confidence tier and a `why` explaining why it is not a higher tier, because static reachability is wrong in exactly the ways real codebases are built — dynamic dispatch, DI, file-based routing, decorators, plugin registries, string-keyed lookups; the header states the thesis: the detector proposes, an agent or human adjudicates"
+        },
+        {
+          "file": "engine/detect/duplication.ts",
+          "note": "duplication is emitted as families of candidates for adjudication rather than as a verdict — the overview counts one duplicationFamily, and the store's polarity table carries duplicates/not_duplicates precisely because this output is expected to be argued with"
+        }
+      ]
+    },
+    {
+      "id": "cl_kq4w3p",
+      "level": 2,
+      "name": "Altitude Control",
+      "purpose": "Decide what survives at each altitude and keep the collapse lossy rather than a lie — every node enumerates its members, a defended node is never moved, and an elision whose target does not resolve is rejected out loud instead of conjuring a subsystem that does not exist.",
+      "members": [
+        "engine/focus/stack.ts",
+        "engine/focus/types.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/focus/stack.ts",
+          "note": "members is non-optional on a focus node, so a node that cannot enumerate what it stands for cannot be constructed; defended nodes are filtered out of every elision before it applies; an elision whose target resolves to neither a cluster nor a module group is reported as rejected rather than creating the bucket; a human CONFIRMED-false verdict actually removes a cluster"
+        },
+        {
+          "file": "engine/render/mermaid.ts",
+          "line": 3,
+          "endLine": 10,
+          "note": "negative evidence for why this cluster is a subsystem and not a folder: the mermaid path-depth grouping is called out in its own header as \"already a focus operation, and a crude one: it elides by path depth, which is a filing decision rather than an intent claim\" — focus/ exists precisely to replace that mechanism with recorded, attributable elisions"
+        }
+      ]
+    },
+    {
+      "id": "cl_wrj695",
+      "level": 2,
+      "name": "Outbound Artifacts",
+      "purpose": "Get the map out of the tool and into work someone can act on — a diagram cheap enough to paste into a PR or an agent's context, and the gap between declared intent and actual wiring expressed as ranked steps with blast radius attached.",
+      "members": [
+        "engine/plan/target.ts",
+        "engine/render/mermaid.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/plan/target.ts",
+          "line": 5,
+          "endLine": 16,
+          "note": "The target is the one thing no extraction can derive; what this adds over ArchUnit is that violations become an ordered plan with blast radius."
+        },
+        {
+          "file": "engine/render/mermaid.ts",
+          "line": 3,
+          "endLine": 10,
+          "note": "L1 render — a crude focus operation kept so the output stays comparable to the hand-drawn map."
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 499,
+          "endLine": 505,
+          "note": "taskPackets are written to disk as step-N.md — self-contained prompts, the second export path."
+        },
+        {
+          "file": "DESIGN.md",
+          "line": 546,
+          "endLine": 552,
+          "note": "Design names exactly these two as the exports: Mermaid for parity/PRs, task packets to make execution trivial."
+        }
+      ]
+    },
+    {
+      "id": "cl_xfgims",
+      "level": 2,
+      "name": "Agent Plane",
+      "purpose": "Rent judgment from external agent CLIs and let it back in only as evidenced claims — aim each sandboxed, read-only run at the most uncertain-and-central open question, and make one stdio boundary the only write path that exists.",
+      "members": [
+        "engine/mcp/server.ts",
+        "engine/swarm/adapters.ts",
+        "engine/swarm/driver.ts",
+        "engine/swarm/frontier.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/swarm/frontier.ts",
+          "line": 4,
+          "endLine": 13,
+          "note": "\"score = uncertainty x centrality... Resolving a hub changes more downstream beliefs than resolving a leaf, and a contradiction is worth more than a blank. The queue drains when the top score falls below a floor — that is the natural 'the map has converged' signal, rather than an arbitrary iteration count.\" The aiming is a scheduler, not a loop."
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 32,
+          "endLine": 45,
+          "note": "SYSTEM_RULES hands every rented agent the same posture: READ-ONLY, \"the ONLY thing that counts is the tool calls you make against the 'vds' MCP server\", every claim needs evidence because \"a claim without evidence is rejected at the boundary\", and a purpose is intent, not a file list"
+        },
+        {
+          "file": "engine/swarm/driver.ts",
+          "line": 11,
+          "endLine": 14,
+          "note": "the driver resolves mcp/server.ts as SERVER_ENTRY and hands out serverCommand() — the four adapters and the evidence boundary are one mechanism, so splitting swarm/ from mcp/ would put the enforcement in a different subsystem from the thing it enforces on"
+        }
+      ]
+    },
+    {
+      "id": "cl_yky623",
+      "level": 2,
+      "name": "Composition Root",
+      "purpose": "Own the only path from a request to a finished artifact — every operation the product performs exists exactly once here, so the window and the terminal cannot drift, and the outward forms of the map are produced nowhere else.",
+      "members": [
+        "engine/cli.ts",
+        "engine/plan/target.ts",
+        "engine/render/mermaid.ts"
+      ],
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      },
+      "evidence": [
+        {
+          "file": "engine/cli.ts",
+          "line": 239,
+          "endLine": 258,
+          "note": "runMap is the one-pass ordering: a single extract feeds the detectors, the invariant evaluation and the focus stack. The individual subcommands re-parse; this is the only place the pass is composed."
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 448,
+          "endLine": 469,
+          "note": "runDerive rebuilds the whole stack from cached graph.json with no re-extraction — the operation that makes a continuously-live map affordable."
+        },
+        {
+          "file": "app/main/main.cjs",
+          "line": 14,
+          "endLine": 20,
+          "note": "The GUI deliberately shells out to engine/cli.ts rather than importing the engine, so there is exactly one implementation of every operation. CLI is a resolved path constant, not a module import."
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 8,
+          "note": "The only import of render/mermaid.ts anywhere in the repo — verified by grep across ts/tsx/cjs."
+        },
+        {
+          "file": "engine/cli.ts",
+          "line": 15,
+          "note": "The only import of plan/target.ts anywhere in the repo — verified by grep across ts/tsx/cjs."
+        },
+        {
+          "file": "engine/plan/target.ts",
+          "line": 5,
+          "endLine": 16,
+          "note": "The outward form that carries intent: declared target architecture diffed into ranked steps with blast radius, emitted for a person or an agent to act on."
+        },
+        {
+          "file": "engine/render/mermaid.ts",
+          "line": 3,
+          "endLine": 10,
+          "note": "The cheap outward form: an L1 render whose own header calls it a crude focus operation kept for comparability, superseded by recorded agent-proposed elisions."
+        }
+      ]
+    }
+  ],
+  "elisions": [
+    {
+      "id": "el_16mrv8e",
+      "level": 3,
+      "members": [
+        "(root)",
+        "vite.config.ts"
+      ],
+      "into": "Capability Root",
+      "reason": "vite.config.ts is the build of the window the host serves: it sets root to app/renderer and base './' precisely because production loads the renderer over the custom app:// scheme the main process registers. A one-file build config standing as a peer of Ground Truth and the Agent Plane asserts a subsystem that does not exist — it is a property of the capability root, not a thing beside it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "el_1c5umr5",
+      "level": 3,
+      "members": [
+        "Outbound Artifacts"
+      ],
+      "into": "Composition Root",
+      "reason": "Outbound Artifacts is grouped by output shape, not by intent, and neither member has an independent existence: engine/render/mermaid.ts and engine/plan/target.ts are each imported by exactly one file in the repo, engine/cli.ts (cli.ts:8, cli.ts:15 — verified by grep, no other importer). A pair whose sole consumer is the command that invokes them is the tail of that command, not a peer subsystem of Ground Truth and the Agent Plane. Collapsing them also removes the one architecture-level node still labelled by a directory: engine/cli.ts currently stands at L3 as the raw path group \"engine\", which is a filing decision masquerading as intent — precisely what this level is supposed to eliminate. mermaid.ts argues its own case here: its header describes an L1 render kept only so the early milestone produced something comparable to the hand-drawn map, explicitly superseded by recorded agent-proposed elisions. Net effect at L3: eleven nodes to ten, and every survivor named by what it is for.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "el_1mc7jfu",
+      "level": 3,
+      "members": [
+        "engine/test/merge-beliefs.ts",
+        "engine/test/smoke.ts"
+      ],
+      "into": "Belief and Provenance",
+      "reason": "At architecture altitude a gate belongs with the thing it holds honest, not in a box labelled 'tests'. Both files exist only to exercise the belief calculus and the evidence boundary: smoke.ts drives createServer over an in-memory transport against ClaimStore so an unevidenced write is rejected, and merge-beliefs.ts merges two agent runs through canonicalise/ClaimStore to check corroboration vs CONTRADICTED. Neither is a subsystem; each is the falsifiability of the claim store, and shown beside it they make the store's central claim — disagreement is preserved, not resolved — checkable rather than asserted.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "el_1q4vlpd",
+      "level": 3,
+      "members": [
+        "vite.config.ts"
+      ],
+      "into": "Capability Root",
+      "reason": "vite.config.ts is the build of the window the host serves: it sets root to app/renderer and base './' precisely because production loads the renderer over the custom app:// scheme the main process registers, which is part of the same no-remote-content posture. A one-file build config standing as a peer of Ground Truth and the Agent Plane asserts a subsystem that does not exist — it is a property of the capability root, not a thing beside it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "el_1uaygsw",
+      "level": 3,
+      "members": [
+        "engine/render/mermaid.ts"
+      ],
+      "into": "Composition Root",
+      "reason": "An 'Outbound Artifacts' node reads as a subsystem for getting the map out, but mermaid.ts is one function that groups files by path depth and prints a diagram — and its own header disavows the mechanism: 'already a focus operation, and a crude one: it elides by path depth, which is a filing decision rather than an intent claim', kept only until recorded elisions replace it. At architecture altitude it is an output format of the single place every operation is wired, and pairing it there also stops it from being mistaken for a second, competing focus mechanism alongside Altitude Control. The other half of the old pairing, plan/target.ts, belongs with Declared Intent instead — it is a diff against a declaration, not a rendering.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "el_xmh0ki",
+      "level": 3,
+      "members": [
+        "engine/graph/types.ts"
+      ],
+      "into": "Ground Truth",
+      "reason": "graph/types.ts is pure vocabulary — type declarations with no behaviour, no I/O and no runtime presence. Its very high fan-in is an argument for eliding it, not against: a node that every other node depends on equally adds no information at architecture altitude, it just draws nine edges to itself and makes the level look more coupled than it is. It is the schema of the exhaustive parse, so it belongs to the layer that produces it. The property worth preserving — that detectors, focus, invariants and plan read this vocabulary and never touch a parser — survives as Ground Truth's stated purpose and is enforced structurally inside the cluster by extract/parser.ts, which is defended separately for exactly that reason.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "el_zujo4x",
+      "level": 3,
+      "members": [
+        "engine/test/scene.ts"
+      ],
+      "into": "Spatial Memory",
+      "reason": "Same argument, different subject: scene.ts imports layoutTree and exists solely because the layouts are where the referent rule keeps getting violated — fake trunks, phantom strata, nodes visible but not hoverable — and pixel-hunting in screenshots cannot catch that. It is the check on the geometry, so it collapses into the geometry rather than standing beside it. With this and the two store gates elided, 'Silent-Failure Gates' correctly ceases to exist at L3: it was never a subsystem, it was three files each belonging to a different one.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    }
+  ],
+  "defences": [
+    {
+      "id": "df_104cpqo",
+      "node": "Spatial Memory",
+      "reason": "Defended against my own collapse instinct, because this is the cheapest remaining way to take L3 from ten nodes to nine and it is the wrong one. Scene.tsx is a tab in App.tsx, rendered by the same React root as Review and Findings, so on a dependency graph Spatial Memory and Arbitration Surface look like one window that got cut in half. They are not the same claim. Arbitration Surface exists so a human can issue a verdict; this node exists so the map has a body that is the same body every session — position is a pure function of the focus stack, no force relaxation, no randomness, and camera distance IS altitude rather than a zoom level. Two structural facts make the separation real rather than aesthetic. First, the mechanism is engine code: layout.ts and tree.ts hold no React and no THREE, are consumed identically by the standalone geometry check, and Scene.tsx imports them across the app/engine boundary — collapsing this into the renderer would file a deterministic, testable pure function under \"the GUI\" and invite the next person to reach for a force pass to fix an overlap. Second, layout.ts is already a defended node, so this collapse would be filtered down to moving three files while leaving the defended one stranded beside them — a merge that buys no simplification and costs the reader the reason the remaining node is there. The failure mode is the whole argument: a jittering layout still renders. Nothing throws, no correctness test fails, the screenshot looks right, and the only symptom is that the user's memory of where a subsystem sits stops working across sessions. That regression is invisible in exactly the medium people would review it in, so the map has to name it at the altitude where someone decides what this view is for.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_1byr4q0",
+      "node": "app/main/preload.cjs",
+      "reason": "Trust boundary. This 51-line file IS the entire capability surface between agent-authored text rendered in the window and a process holding fs, spawn and the claim store. Every capability the renderer has is one of the named operations listed here; anything not on this list is unreachable by construction. Collapsing it into 'the Electron app' erases where the trust boundary sits, which is the one thing a security reader opens this map to find.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_1mn6u8w",
+      "node": "engine/scene/layout.ts",
+      "reason": "Argued against the direction I pushed everywhere else in this pass, and against the obvious read of it: this looks like drawing code, the softest thing on the level, and Spatial Memory would seem to lose nothing by collapsing to \"the 3D view\". It should survive, because the determinism is not a rendering detail — it is the entire product claim of the view. \"The layout is DETERMINISTIC. Flying around only builds spatial memory if the same repo lays out the same way every session, so there is no force relaxation and no randomness here — position is a pure function of the focus stack.\" Purity is asserted in this one file and enforced nowhere else: hashAngle derives the angular seed from a stable content hash so subtree ordering never jitters, and LEVEL_Y/LEVEL_RADIUS are fixed tables rather than a solver's output. That is why Scene.tsx can be a dumb consumer of it, and why the standalone check on the geometry was collapsed into this node rather than kept beside it. The failure mode is the reason to defend it: a jittering layout still renders. Nothing throws, no test of correctness fails, the screenshot looks fine, and the only symptom is that the user's memory of where a subsystem sits stops working over sessions — a regression that is invisible in exactly the medium people would try to review it in. Anyone adding a force pass or a Math.random tiebreak to fix an overlap would be destroying the feature while appearing to polish it, and at architecture altitude this node is the only place the map says so.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_1mp0nuq",
+      "node": "engine/detect/structure.ts",
+      "reason": "Argued against my own instinct to collapse. Candidate Findings and Ground Truth look like one node from a distance: both are deterministic, both run with no LLM and no spend, both read only the Graph, and both write into the same findings/graph pair that cli.ts emits in a single pass. Merging them would take L3 from ten nodes to nine, which is the direction this level is supposed to move. It is still wrong, and this file is why. Ground Truth asserts fact — an exhaustive, content-addressed parse where every node resolves back to a span. This file asserts guesses, on purpose: every dead-code result is a DeadCandidate carrying a confidence tier and a `why` explaining why it is not a higher tier, because static reachability is wrong in exactly the ways real codebases are built — dynamic dispatch, DI, file-based routing, decorators, plugin registries, string-keyed lookups. Its header states the product thesis outright: the detector proposes and an agent or human adjudicates, because a confident dead-code report is worse than none, since it gets acted on. Putting a tiered guess in the same architecture-level box as an exhaustive parse erases the epistemic difference the whole belief calculus exists to preserve, and the failure it invites is the one this tool is built to prevent — a caveat dropping off a finding on its way to being acted on. The boundary between what was measured and what was inferred must be visible at the altitude where someone decides to trust the map.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_1nbyd0q",
+      "node": "engine/mcp/server.ts",
+      "reason": "Sole write path, and the single point where evidence is enforced. Agents read the repo with their own tools but can only affect the map through a tool on this server, and every write tool requires a non-empty evidence array at the schema boundary (EvidenceSchema, .min(1)). It is also the one place all four adapters converge — the events.jsonl the GUI tails is written here because the CLIs stream differently. If it disappears into 'Agent Plane', the map stops asserting the property the whole design rests on: that a confabulated claim cannot get in.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_3h9sg7",
+      "node": "engine/store/claims.ts",
+      "reason": "Hub and single source of belief. focus/stack.ts, swarm/frontier.ts, swarm/driver.ts, mcp/server.ts and cli.ts all import it — highest fan-in in the engine — and it is the only place contradiction is preserved rather than resolved. Its polarity rules (narrative predicates corroborate, verdict predicates normalise onto a boolean) are the correction that turned the contradiction queue from noise back into signal. Eliding it hides both the fan-in and the one invariant that makes the map arguable.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_5u8evo",
+      "node": "engine/swarm/adapters.ts",
+      "reason": "Outbound trust boundary, and the counterweight to the defence already standing on mcp/server.ts. server.ts guards what comes back IN — no claim without evidence. This file is the only place anything goes OUT: the sole spawn of an external agent binary in the engine, and the only place the read-only posture is actually asserted rather than assumed. Every constraint that keeps a rented agent from mutating the repo is a literal in this one file and nowhere else — claude's --allowedTools list naming eleven read/query tools and no write tool, codex's -s read-only, grok's --tools read,grep,glob,ls, the stated rule that no adapter ever passes --dangerously-*, --always-approve or --auto, and the refusal to run `mcp add` on the user's behalf because it would silently mutate their config (registrationHint prints the command instead). The header records that these flags were verified against the installed binaries rather than recalled, which is exactly the kind of fact that decays silently. It is also the only spawn site that hard-kills on timeout (SIGTERM then SIGKILL at 5s) and refuses a shell even for `which`. Collapsed into Agent Plane it sits beside frontier.ts, a pure scoring function with no I/O at all, and the map stops showing where the sandbox is declared — which is the first thing anyone auditing an agent harness opens it to find, and the first thing to quietly regress when a fifth adapter is added.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_ajnu8f",
+      "node": "engine/extract/parser.ts",
+      "reason": "The provider seam, and the only thing standing between this map and the false claim that this is a TypeScript tool. 48 lines, no runtime code — which is exactly why it is the first thing an eye looking for subsystems will discard into \"Ground Truth = the parse\", and that collapse would be lossy in the one direction that matters. Parser (name, extensions, parse(relPath, source, contentHash) -> ParsedFile) is a contract, and ts-parser.ts is one implementation of it, not the thing itself. The split is load-bearing in a way the file makes explicit: \"Resolution of import specifiers to files happens outside the parser — providers only report what was written.\" That single sentence is what keeps a new language provider from having to reimplement module resolution, and it is the reason resolve.ts is a separate global pass rather than parser-internal. Nothing downstream of extract/ imports ts-parser.ts; everything reads the graph vocabulary instead, so the swappability is real today, not aspirational. Its failure mode is silent and structural: the second provider gets added by copying the TypeScript one and leaning on some TS-shaped assumption that leaked past the interface, and the graph quietly stops being language-neutral while every downstream consumer keeps compiling. Ground Truth's whole claim is that a fact resolves back to a span regardless of what produced it — this file is where that regardless is written down, so it cannot be invisible inside the cluster that claims it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_k4418e",
+      "node": "engine/invariants/engine.ts",
+      "reason": "Counterweight to my own elisions: this one looks small (2 files, 51 symbols) and reads like a helper of the focus stack, since l3Status is computed from its results. It should still survive. It is the only mechanism that makes a claim at the top of the map falsifiable from the bottom, it runs with no LLM and no agent spend at all — so it is the tool's standalone value — and its failure mode is specifically the one this product exists to prevent: a map that has quietly gone stale. Eliding it into Altitude Control would render the status without rendering what produces it.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_qs3p3j",
+      "node": "app/renderer/lib/panels/Review.tsx",
+      "reason": "The only place human authority enters this system, and the top of the belief hierarchy. Arbitration Surface is eight files and the obvious next collapse is \"the window\" — five tabs, one React app. That collapse would be wrong, and this file is why. Every other tab reads; this one writes a verdict that outranks every agent, and the map says so in its own words: \"Pick the claim that is right — that becomes CONFIRMED and outranks every agent\" (line 189). A CONFIRMED-false verdict issued here is the only input that makes focus/stack.ts actually remove a cluster, so it is the sole path by which anything an agent proposed can be taken back out of the map. Its second property is just as load-bearing and even easier to lose: contradictions are the default filter, not a tab you find (line 10), because \"a disagreement between two sources is worth more than another unexamined node\" — the screen is ordered by the design's own claim about where value is. Structurally it is also the counterpart to the two boundaries already defended: mcp/server.ts is where agent claims get in under evidence, adapters.ts is where agent runs go out under sandbox, and this is where a human overrules both. A map that shows the two machine boundaries but hides the human one describes an autonomous system, which is precisely the thing this product is not. The failure mode is quiet: strip the arbitration buttons and everything still renders, the swarm still deposits, the store still accumulates — the tool just silently becomes unfalsifiable by its user, with agent consensus as the highest available authority.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_rjg5ls",
+      "node": "engine/focus/stack.ts",
+      "reason": "This is where the referent rule is enforced structurally rather than by review: members is non-optional so a node that cannot enumerate its members cannot be constructed, defended nodes are filtered out of every elision before it applies, an elision whose target resolves to neither a cluster nor a module group is rejected and reported instead of conjuring a bucket, and a human CONFIRMED-false verdict actually removes a cluster. Every past incident where the map lied — phantom subsystems, the fake trunk — is now prevented in this file. It cannot be inside the thing it polices.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    },
+    {
+      "id": "df_zbhr9b",
+      "node": "engine/cli.ts",
+      "reason": "Composition root and the seam between the two front ends. Every operation the product can perform — map, extract, invariants, focus, derive, plan, query, arbitrate, agent — exists once, here, and the Electron main process deliberately shells out to this file rather than importing the engine, so the GUI and the terminal run identical code. It is also where the one-pass ordering lives (runMap: one extract feeding detectors, invariants and the focus stack) and where derive re-builds the stack from cached graph.json with no re-parse, which is what makes the live map affordable. Collapse it and the map loses the fact that there is only one implementation.",
+      "source": {
+        "kind": "agent",
+        "tool": "multi"
+      }
+    }
+  ]
+}

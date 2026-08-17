@@ -67,21 +67,29 @@ The MCP tool also accepts a stringified predicate, which is what agents actually
 
 *The map is one person's local artifact until the confirmed layer is committed.*
 
-- [ ] Split output as the design specified: committed `.codemap/{graph,confirmed,target,
-      findings}.json` versus gitignored `.codemap/.cache/`. Today everything lands in a
-      gitignored `./out`.
-- [ ] Decide what is committed. Confirmed claims and human arbitration, certainly. Agent
-      claims — probably, with provenance. Raw traces — no.
-- [ ] Deterministic serialisation: stable key order, no timestamps in committed files, or
-      every run produces a diff and nobody will keep it.
-- [ ] Merge semantics for two people confirming different things about one subject. The
-      claim store already models disagreement; the file format needs to survive a git merge.
-- [ ] `contentHash` staleness across machines — a claim confirmed on someone else's checkout
-      must go STALE on yours if the file differs.
-- [ ] Human-readable committed summary (Mermaid L3 + invariant status) so a PR reviewer sees
-      the architecture change without running anything.
+- [x] `.codemap/` is the committed layer — `knowledge.json` and `ARCHITECTURE.md`. The
+      derivable graph, the parse cache and agent transcripts stay in the gitignored `./out`.
+- [x] Committed: claims with provenance, clusters, elisions, defences. `--confirmed-only`
+      narrows to human knowledge. Machine-local session ids are stripped; the tool and model
+      that made a claim are kept, because that is what corroboration counts.
+- [x] Deterministic: ordered keys, content-sorted records, no run timestamps. Verified byte
+      identical across consecutive exports — a file that churns is a file nobody commits.
+- [x] Merge is a union of append-only facts keyed by content, so re-import is a no-op and
+      genuine divergence surfaces as CONTRADICTED rather than one side silently winning.
+- [x] `observedHash` travels with the claim, so knowledge confirmed on another checkout goes
+      STALE on yours when the file differs.
+- [x] `ARCHITECTURE.md` — subsystem table with purposes, an L3 Mermaid diagram, invariant
+      status, and what was elided to get there. Renders in a PR with nothing installed.
+- [x] **Test:** `engine/test/share.ts` — 18 assertions on determinism, round-trip losslessness,
+      re-import as a no-op, divergence surfacing, and imported claims crossing the same
+      evidence boundary as any other.
 
-**Gate:** two clones converge on the same map; a cluster confirmed in one appears in the other.
+**Gate:** ✅ a second store imports the first's knowledge, sees the clusters, does not double
+on re-import, and surfaces disagreement when the two diverge.
+
+Fixed along the way: `at` was stamped at insert, so a shared fact looked newer on every
+machine it reached and the round-trip was not lossless. Assertion time now travels with the
+claim, because it belongs to whoever made it.
 
 ---
 

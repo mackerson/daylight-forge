@@ -14,6 +14,8 @@ import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive } from './swarm/driver.ts';
 import { evaluate } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
+import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/share.ts';
+import { toArchitectureDoc } from './render/architecture.ts';
 
 interface Args {
   command: string;
@@ -35,6 +37,7 @@ interface Args {
   session?: string;
   warnOnly: boolean;
   json: boolean;
+  confirmedOnly: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -75,6 +78,7 @@ function parseArgs(argv: string[]): Args {
     session: flags.get('session'),
     warnOnly: flags.get('warn-only') === 'true',
     json: flags.get('format') === 'json',
+    confirmedOnly: flags.get('confirmed-only') === 'true',
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
@@ -647,6 +651,63 @@ function runAdopt(args: Args): void {
   console.log(`\nwrote ${adopted.length} new invariant(s) to ${targetFile}`);
 }
 
+/** The directory a team commits. Everything derivable or machine-local stays out of it. */
+const shareDir = (args: Args) => path.join(args.root, '.codemap');
+
+function runExport(args: Args): void {
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  const knowledge = exportKnowledge(store, { confirmedOnly: args.confirmedOnly });
+
+  const dir = shareDir(args);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'knowledge.json'), JSON.stringify(knowledge, null, 2) + '\n');
+
+  // The readable half, if there is a map to describe.
+  const focusPath = path.join(args.out, 'focus.json');
+  if (fs.existsSync(focusPath)) {
+    const stack = JSON.parse(fs.readFileSync(focusPath, 'utf8'));
+    const invPath = path.join(args.out, 'invariants.json');
+    const invariants = fs.existsSync(invPath)
+      ? JSON.parse(fs.readFileSync(invPath, 'utf8')).results ?? []
+      : [];
+    fs.writeFileSync(
+      path.join(dir, 'ARCHITECTURE.md'),
+      toArchitectureDoc(stack, invariants, { repo: path.basename(args.root) }),
+    );
+  }
+
+  store.close();
+  console.log(
+    `\nexported ${knowledge.claims.length} claim(s), ${knowledge.clusters.length} cluster(s), ` +
+      `${knowledge.elisions.length} elision(s), ${knowledge.defences.length} defence(s)`,
+  );
+  console.log(`wrote ${dir}/{knowledge.json,ARCHITECTURE.md} — commit these`);
+}
+
+function runImport(args: Args): void {
+  const file = path.join(shareDir(args), 'knowledge.json');
+  if (!fs.existsSync(file)) {
+    console.error(`no ${file} — nothing to import`);
+    process.exit(2);
+  }
+  const shared = JSON.parse(fs.readFileSync(file, 'utf8')) as SharedKnowledge;
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  const result = importKnowledge(store, shared);
+  store.close();
+
+  console.log(
+    `\nimported ${result.claims} new claim(s) (${result.skipped} already present), ` +
+      `${result.clusters} cluster(s), ${result.elisions} elision(s), ${result.defences} defence(s)`,
+  );
+  for (const r of result.rejected.slice(0, 10)) console.log(`  rejected: ${r}`);
+  if (result.rejected.length) {
+    console.log(
+      `\n${result.rejected.length} rejected at the same boundary as any other claim — ` +
+        'shared knowledge does not enter by a side door.',
+    );
+  }
+}
+
 function runCheck(args: Args): void {
   const graphPath = path.join(args.out, 'graph.json');
   const graph: Graph = fs.existsSync(graphPath) && !args.commit
@@ -740,6 +801,12 @@ switch (args.command) {
     break;
   case 'map':
     runMap(args);
+    break;
+  case 'export':
+    runExport(args);
+    break;
+  case 'import':
+    runImport(args);
     break;
   case 'adopt':
     runAdopt(args);

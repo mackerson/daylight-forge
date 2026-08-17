@@ -218,7 +218,7 @@ export class ClaimStore {
       }
     }
 
-    const at = this.now();
+    const at = input.at ?? this.now();
     this.db
       .prepare(
         `INSERT INTO claims

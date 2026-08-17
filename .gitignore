@@ -2,3 +2,7 @@ node_modules/
 out/
 *.db
 app/dist/
+
+# .codemap/ is committed on purpose — it is the shared layer.
+# Only the machine-local cache inside it is not.
+.codemap/.cache/

@@ -23,8 +23,10 @@
     "test": "node engine/test/smoke.ts ./out && node engine/test/scene.ts ./out",
     "plan": "node engine/cli.ts plan",
     "check": "node engine/cli.ts check",
-    "test:all": "node engine/cli.ts map . --out ./out --top 0 && node engine/test/smoke.ts ./out && node engine/test/scene.ts ./out && node engine/test/frontier.ts ./out && node engine/test/check.ts",
-    "adopt": "node engine/cli.ts adopt"
+    "test:all": "node engine/cli.ts map . --out ./out --top 0 && node engine/test/smoke.ts ./out && node engine/test/scene.ts ./out && node engine/test/frontier.ts ./out && node engine/test/share.ts && node engine/test/check.ts",
+    "adopt": "node engine/cli.ts adopt",
+    "export": "node engine/cli.ts export",
+    "import": "node engine/cli.ts import"
   },
   "engines": {
     "node": ">=22.18"

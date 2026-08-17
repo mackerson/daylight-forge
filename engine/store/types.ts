@@ -32,6 +32,11 @@ export interface ClaimInput {
   confidence: number;
   evidence: Evidence[];
   observedHash?: string;
+  /**
+   * When the claim was asserted. Set automatically; supplied only when importing shared
+   * knowledge, where the assertion time belongs to whoever made it, not to the import.
+   */
+  at?: number;
 }
 
 export interface Claim extends ClaimInput {
