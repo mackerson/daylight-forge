@@ -330,6 +330,19 @@ The third is the one worth remembering: it means the contradiction queue, which 
 highest-value screen in the product, was showing noise and hiding signal until it was exercised with
 two real models.
 
+6. **No verdict claim could be submitted at all** (P13, found by running the gate rather than reading
+   about it). The boolean rule is right and stays — an agent sending `duplicates` with the value
+   "false — these are NOT duplicates" is exactly the failure it prevents. But it also rejected a bare
+   `"true"`, which is a boolean that went through a JSON boundary and carries no reasoning to lose.
+   Watched live, an agent assigned a `god_verdict` question answered it fifteen times, was rejected
+   fifteen times, and burned its whole budget without landing one claim. **The contradiction queue had
+   therefore been unreachable for verdicts since the rule landed** — the highest-value screen in the
+   product, fed by a path that could not be traversed. That, not model agreement, is why no
+   cross-model disagreement had ever been observed. Two more fell out of the same session: two
+   concurrent agents crashed on `database is locked` in a design whose premise is a swarm, and
+   assigned frontier questions were never made binding, so agents answered easier ones and the
+   scheduler's ranking, leases and convergence signal were all advisory.
+
 **Cluster into families, don't report pairs.** A thing that is name-duplicated *and* shape-duplicated
 *and* body-duplicated should land in one family, so we run **one adjudication per family** rather than
 one per pair — the difference between N² and N agent calls, and between a coherent "here is the

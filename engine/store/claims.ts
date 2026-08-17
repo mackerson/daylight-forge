@@ -154,6 +154,20 @@ export class ClaimStore {
 
   constructor(dbPath: string, now: () => number = () => Date.now()) {
     this.db = new DatabaseSync(dbPath);
+    /**
+     * Concurrency, which this store is for.
+     *
+     * The whole design is a swarm — leases exist precisely so several agents can work at
+     * once — and two agents launched together crashed on `database is locked` before either
+     * had asked a question. SQLite's default is one writer and no waiting, which is the
+     * wrong default for the one access pattern this file was built to serve.
+     *
+     * WAL lets readers run while a writer holds the lock, and a busy timeout makes a
+     * competing writer wait its turn instead of failing instantly. Neither weakens any
+     * guarantee: writes are still serialised, they just queue rather than crash.
+     */
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.db.exec('PRAGMA busy_timeout = 10000');
     this.db.exec(SCHEMA);
     this.now = now;
   }
@@ -187,6 +201,27 @@ export class ClaimStore {
     // name says one thing and a prose value that says the opposite ("duplicates" with
     // value "false — these are NOT duplicates"), which no polarity rule can resolve and
     // which shows up as a phantom disagreement. Force the ambiguity into a boundary error.
+    /**
+     * `"true"` is a boolean that went through a JSON boundary. Prose is not.
+     *
+     * The rule that a verdict must carry a boolean is right, and it stays: an agent sending
+     * `duplicates` with the value "false — these are NOT duplicates" is the failure it exists
+     * to stop. But a bare `"true"` carries no reasoning to lose, so rejecting it was not
+     * enforcing the rule — it was refusing an answer over its serialisation.
+     *
+     * It cost more than it sounds. Watched live, an agent assigned a `god_verdict` question
+     * answered it fifteen times, was rejected fifteen times, and burned its whole budget
+     * without landing a single claim. No verdict claim could be submitted at all, which means
+     * the contradiction queue — the screen this design calls its highest-value surface — has
+     * been unreachable for verdicts since the rule landed. That is why no cross-model
+     * disagreement had ever been seen: not because models agree, but because neither could
+     * record an answer.
+     */
+    const bare = typeof input.value === 'string' ? input.value.trim().toLowerCase() : null;
+    if (POLARITY[input.predicate] && (bare === 'true' || bare === 'false')) {
+      input = { ...input, value: bare === 'true' };
+    }
+
     if (POLARITY[input.predicate] && typeof input.value !== 'boolean') {
       throw new EvidenceRequired(
         `predicate '${input.predicate}' is a verdict and needs a boolean value ` +

@@ -203,5 +203,101 @@ console.log('\nmcp boundary');
   }
 }
 
+
+console.log('\nverdicts must be answerable');
+{
+  /**
+   * The boolean rule is right and stays: an agent sending `duplicates` with the value
+   * "false — these are NOT duplicates" is exactly what it exists to stop. But `"true"` is a
+   * boolean that went through a JSON boundary, not prose, and rejecting it was refusing an
+   * answer over its serialisation.
+   *
+   * Watched live: an agent assigned a `god_verdict` question answered it fifteen times, was
+   * rejected fifteen times, and burned its entire budget without landing one claim. No
+   * verdict claim could be submitted at all — so the contradiction queue, which this design
+   * calls its highest-value screen, was unreachable for verdicts. That is why no cross-model
+   * disagreement had ever been observed: not because models agree, but because neither side
+   * could record an answer to disagree with.
+   */
+  const vdb = path.join(tmp, 'verdicts.db');
+  const vs = new ClaimStore(vdb);
+  const ev = [{ file: 'a.ts', line: 1, note: 'why' }, { file: 'b.ts', line: 2 }];
+  const submit = (value: unknown) => {
+    try {
+      return vs.submit({
+        subject: 'src/x.ts', predicate: 'god_verdict', value,
+        source: { kind: 'agent', tool: 't' }, confidence: 0.8, evidence: ev,
+      }).value;
+    } catch (err) {
+      return `REJECTED:${(err as Error).message}`;
+    }
+  };
+
+  check('a real boolean is accepted', submit(true) === true);
+  check('a serialised boolean is accepted, not refused over its encoding',
+    submit('true') === true, String(submit('true')));
+  check('and false survives the round trip', submit('False') === false);
+  check('whitespace does not defeat it', submit('  true  ') === true);
+
+  check('prose carrying a verdict is still rejected — the rule it exists for',
+    String(submit('false - these are NOT duplicates')).startsWith('REJECTED'));
+  check('an object is still rejected',
+    String(submit({ verdict: true })).startsWith('REJECTED'));
+  check('a number is still rejected', String(submit(1)).startsWith('REJECTED'));
+  check('the rejection says what to send instead',
+    /boolean/.test(String(submit('maybe'))), String(submit('maybe')));
+
+  // A narrative predicate must not be coerced: "true" is a perfectly good purpose string.
+  const narrative = vs.submit({
+    subject: 'src/y.ts', predicate: 'purpose', value: 'true',
+    source: { kind: 'agent', tool: 't' }, confidence: 0.8, evidence: ev,
+  });
+  check('a narrative predicate keeps its string, uncoerced', narrative.value === 'true');
+
+  vs.close();
+}
+
+console.log('\nseveral agents at once');
+{
+  /**
+   * Leasing exists so several agents can work concurrently, which makes "two agents cannot
+   * both open the store" the one failure this file cannot tolerate. Two launched together
+   * crashed on `database is locked` before either had asked a question — SQLite's default is
+   * one writer and no waiting, which is the wrong default for the only access pattern here.
+   */
+  const cdb = path.join(tmp, 'concurrent.db');
+  const a = new ClaimStore(cdb);
+  const b = new ClaimStore(cdb);
+  const ev = [{ file: 'a.ts', line: 1 }];
+
+  let failed: string | null = null;
+  try {
+    for (let i = 0; i < 25; i++) {
+      a.submit({ subject: `a${i}`, predicate: 'purpose', value: 'x',
+        source: { kind: 'agent', tool: 'a' }, confidence: 0.5, evidence: ev });
+      b.submit({ subject: `b${i}`, predicate: 'purpose', value: 'x',
+        source: { kind: 'agent', tool: 'b' }, confidence: 0.5, evidence: ev });
+    }
+  } catch (err) {
+    failed = (err as Error).message;
+  }
+
+  check('two stores on one file can both write', failed === null, failed ?? '');
+  check('and both sets of claims are there',
+    a.claimsFor('a24').length === 1 && a.claimsFor('b24').length === 1);
+  check('a second connection sees the first\'s writes',
+    b.claimsFor('a0').length === 1);
+
+  // Leases are the mechanism that stops them duplicating work, so they must cross connections.
+  a.lease(['shared'], 'session-a');
+  check('a lease taken on one connection is visible on the other',
+    b.leasedElsewhere('session-b').has('shared'));
+  check('and is not withheld from its own holder',
+    !b.leasedElsewhere('session-a').has('shared'));
+
+  a.close();
+  b.close();
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 done();

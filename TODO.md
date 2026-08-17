@@ -3,25 +3,26 @@
 Everything outstanding, in the order I would do it. Rationale for the phase ordering lives in
 [DESIGN.md](DESIGN.md); this is the working list.
 
-**Status:** P0–P13 built, and the backlog is empty but for one item that cannot be built —
-it has to be *encountered*. This repo maps itself clean: 0 duplication families with a body
-match, 0 D4 pairs, 0 D6 pairs. Invariants 6/6 green, target passing. Suite is **442 assertions
-across 19 files** (`pnpm test:all`).
+**Status:** P0–P13 built, **every gate closed**, backlog empty. This repo maps itself clean:
+0 D4 pairs, 0 D6 pairs. Invariants 6/6 green, target passing. Suite is **462 assertions across
+19 files** (`pnpm test:all`).
 
-### The one thing left
+The last gate closed by running it rather than reasoning about it, and running it found three
+bugs that reading never would have — including one that had made the contradiction queue, the
+screen this design calls its highest-value surface, unreachable for verdicts since the boolean
+rule landed. See P13.
 
-**A genuine cross-model disagreement (P13).** The mechanism has run end to end in anger — two
-agents disagreed, the arbitration screen surfaced it, and it produced a real fix — but that
-contradiction turned out to be false (`sameConcept` vs `same_concept`). Forcing a *substantive*
-disagreement between two different models means paying for repeated runs and hoping one occurs.
-That is your budget and your call, so it is not being manufactured.
+### Still needing a decision from you
 
-### Decisions you may still want to make
-
-These are done, but each stops short of a choice that is yours:
+All built and working; each stops at a choice that costs something outside this repo:
 
 | Built | Where it stops |
 | --- | --- |
+| Polyglot seam | Dispatch, coexistence, per-provider caching and an opt-in loader all work, with a non-TypeScript provider driven end to end in the tests. A *real* second grammar means a tree-sitter dependency, or becoming a consumer of desloppify's output. |
+| Packaging | `pnpm package` builds a portable directory that runs standalone, verified outside the repo. A `.deb`/`.dmg`/AppImage needs `electron-builder`; a build anyone should trust needs signing. |
+| D5 embeddings | The lexical scorer runs always and locally. The embedding backend needs an endpoint you point it at, and refuses a remote host until you say so twice. |
+
+--- | --- |
 | Polyglot seam | Dispatch, coexistence, per-provider caching and an opt-in loader all work, and a non-TypeScript provider is driven end to end in the tests. Adding a *real* second grammar means either a tree-sitter dependency or becoming a consumer of desloppify's output. |
 | Packaging | `pnpm package` builds a portable directory that runs standalone. A `.deb`/`.dmg`/AppImage needs `electron-builder`; a build anyone should trust needs signing. |
 | D5 embeddings | The lexical scorer runs always and locally. The embedding backend needs an endpoint you point it at, and refuses a remote host until you say so twice. |
@@ -149,31 +150,39 @@ claim, because it belongs to whoever made it.
 - [x] **Test:** `engine/test/budget.ts` — 8 assertions on spend parsing, including that
       cumulative totals do not compound, per-message costs do, and unparsable output yields
       zero rather than silently defeating the ceiling.
-- [ ] **Still open, and now attempted: two *different models* disagreeing on substance.**
-      Ran it live — five runs, `claude` on `haiku` and `sonnet`, $3.13. No substantive
-      disagreement occurred, and none was manufactured. What the attempt did establish:
-      - **Assignments were not binding, and that is now fixed.** Handed a `god_verdict`
-        question, agents answered with a `purpose` claim about the same file — a different,
-        easier question — and the prompt never said otherwise. The scheduler's ranking, its
-        leases and its convergence signal all assume the assigned question is the one
-        answered, so all three were advisory. The prompt now names the expected predicate and
-        says stopping early is not the same as answering something else.
-        **Test:** `engine/test/frontier.ts`, +6.
-      - **Narrative predicates cannot produce this gate.** Agents overwhelmingly write
-        `purpose`, which corroborates rather than contradicts by design — correctly. The gate
-        needs a *verdict* question, and those are a small share of the frontier on a
-        well-explored repo.
-      - **Verdict questions are expensive.** Two runs burned 20 turns and timed out at 300s
-        without submitting: reading a large file and forming an architectural judgement does
-        not fit the explore-mode budget. Worth its own item if this is retried.
-      - **`--max-cost` overshoots on `claude`**, by design and now measured: a $0.80 cap
-        stopped a run that had already spent $1.11, because the CLI only reports cost when it
-        finishes. Documented behaviour, first time quantified.
+- [x] **Two different models disagreeing on substance — happened, live.** On
+      `engine/store/claims.ts`, asked whether 11 dependents mean cohesion or a missing split:
+      **sonnet said split (true, 0.95), haiku said the fan-in is appropriate (false, 0.92)**,
+      both heavily evidenced, both reached independently through the ordinary frontier flow.
+      Nobody was told what to conclude.
+      It is a *good* disagreement: they reason on different axes. Sonnet looks at what the
+      file **exports** — a class, a pure `canonicalise`, an error type — and calls that three
+      concepts. Haiku looks at what the **data** is — one SQLite ledger, five tables, one
+      responsibility — and calls that one thing. The arbitration screen characterised it
+      correctly without being asked to: *"No shared evidence. The sides looked at different
+      places, so neither is necessarily wrong — this is more likely an incomplete search than
+      a real disagreement."*
+      Getting there needed two bugs fixed, both found only by running it:
+      - **No verdict claim could be submitted at all.** An agent assigned a `god_verdict`
+        question answered it fifteen times and was rejected fifteen times — the boundary
+        demanded a boolean and the agent sent `"true"`, a boolean that had been through a JSON
+        boundary. The rule stays (prose carrying a verdict is still rejected, which is what it
+        is for) but a bare `"true"`/`"false"` is now accepted. **The contradiction queue — the
+        screen this design calls its highest-value surface — had been unreachable for verdicts
+        since the boolean rule landed.** That, not model agreement, is why this had never been
+        seen.
+      - **Two concurrent agents crashed on `database is locked`**, in a product whose premise
+        is a swarm with leasing. SQLite defaulted to one writer and no waiting. WAL plus a busy
+        timeout; writes still serialise, they queue instead of failing.
+      - Assignments were also not binding — agents answered an easier question than the one
+        they were given, making the ranking, the leases and the convergence signal advisory.
+      **Tests:** `engine/test/smoke.ts` +14, `engine/test/frontier.ts` +6.
+      Cost of the whole exercise: **$5.62** across nine runs on `haiku` and `sonnet`.
 
-**Gate:** ⚠️ mechanism demonstrated live end to end; a genuine cross-model disagreement has
-been *attempted* and did not occur. Whether two models differ on a given question is not
-something the harness can force, and forcing it is the one thing that would make the gate
-worthless. Left open deliberately.
+**Gate:** ✅ closed live. Two different models reached opposite, evidenced verdicts on the same
+subject, the contradiction was routed to the top of the frontier at score 1.304, and the
+arbitration screen named which *kind* of disagreement it was. Nothing was manufactured — the
+question came from the scheduler and each model read the code and formed its own view.
 
 Also fixed here: the MCP server threw an unexplained error when `graph.json` was missing, so
 every tool showed as "unavailable" with no reason — indistinguishable from the host refusing

@@ -236,8 +236,16 @@ export function createServer(opts: ServerOptions) {
         'place it is true, ruling it out means checking the places it could have been.',
       inputSchema: {
         subject: z.string(),
-        predicate: z.string().describe("e.g. 'is_dead', 'purpose', 'duplicates', 'canonical_of'"),
-        value: z.any(),
+        predicate: z.string().describe(
+          "e.g. 'purpose', 'canonical_of', or a verdict: 'god_verdict', 'liveness_verdict', " +
+          "'duplication_verdict', 'cycle_verdict', 'limb_verdict', 'divergence_verdict'",
+        ),
+        value: z.any().describe(
+          'For a *_verdict predicate this MUST be a JSON boolean — true or false, not a ' +
+          'sentence. Put every word of your reasoning in evidence[].note instead; a verdict ' +
+          'whose value is prose cannot be compared against another agent\'s and is rejected. ' +
+          'For narrative predicates like purpose, a string is what is wanted.',
+        ),
         confidence: z.number().min(0).max(1),
         evidence: EvidenceSchema,
       },
