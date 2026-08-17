@@ -62,12 +62,23 @@ function isDataLiteral(body: ts.Node): boolean {
 function bodySignature(node: ts.Node, sf: ts.SourceFile): { sig: number[]; tokens: number } | null {
   if (isDataLiteral(node)) return null;
 
+  /**
+   * Every node's kind, in traversal order, with identifiers and literals flattened to a
+   * placeholder.
+   *
+   * The first version emitted a token only for identifiers, literals and childless nodes,
+   * which sounds like a token stream and is not one: `forEachChild` skips punctuation, so a
+   * perfectly ordinary two-statement method produced fewer than the twenty-four tokens
+   * required to earn a signature and got none at all. Recording the kind of *every* node
+   * captures the shape — `IfStatement`, `BinaryExpression`, `CallExpression` — which is what
+   * structural similarity is supposed to compare in the first place.
+   */
   const tokens: string[] = [];
   const walk = (n: ts.Node): void => {
     if (ts.isIdentifier(n) || ts.isPrivateIdentifier(n)) tokens.push('id');
     else if (ts.isStringLiteralLike(n)) tokens.push('str');
     else if (ts.isNumericLiteral(n)) tokens.push('num');
-    else if (n.getChildCount(sf) === 0) tokens.push(ts.SyntaxKind[n.kind]);
+    else tokens.push(ts.SyntaxKind[n.kind]);
     n.forEachChild(walk);
   };
   node.forEachChild(walk);
@@ -219,7 +230,7 @@ export class TypeScriptParser implements Parser {
         push(id, 'function', name, node, isExported(node));
         const fnBody = node.body ? bodySignature(node.body, sf) : null;
         functions.push({
-          nodeId: id, name, file: relPath, line: lineOf(node), kind: 'function',
+          nodeId: id, name, file: relPath, line: lineOf(node), kind: 'function', endLine: endLineOf(node),
           params: params(node.parameters), returnType: normalizeType(node.type, sf),
           exported: isExported(node),
           ...(fnBody ? { body: fnBody.sig, bodyTokens: fnBody.tokens } : {}),
@@ -246,7 +257,7 @@ export class TypeScriptParser implements Parser {
             push(mId, 'method', mName, m, false);
             const mBody = m.body ? bodySignature(m.body, sf) : null;
             functions.push({
-              nodeId: mId, name: mName, file: relPath, line: lineOf(m), kind: 'method',
+              nodeId: mId, name: mName, file: relPath, line: lineOf(m), kind: 'method', endLine: endLineOf(m),
               params: params(m.parameters), returnType: normalizeType(m.type, sf), exported: false,
               ...(mBody ? { body: mBody.sig, bodyTokens: mBody.tokens } : {}),
             });
@@ -302,7 +313,7 @@ export class TypeScriptParser implements Parser {
         if (isCallable) {
           const arrowBody = init.body ? bodySignature(init.body, sf) : null;
           functions.push({
-            nodeId: id, name, file: relPath, line: lineOf(node), kind: 'arrow',
+            nodeId: id, name, file: relPath, line: lineOf(node), kind: 'arrow', endLine: endLineOf(node),
             params: params(init.parameters), returnType: normalizeType(init.type, sf),
             exported: isExported(node),
             ...(arrowBody ? { body: arrowBody.sig, bodyTokens: arrowBody.tokens } : {}),

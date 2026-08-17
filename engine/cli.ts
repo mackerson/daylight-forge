@@ -4,6 +4,7 @@ import path from 'node:path';
 import { detectDuplication } from './detect/duplication.ts';
 import { detectParallel } from './detect/parallel.ts';
 import { crossCheck, runProvider } from './detect/providers.ts';
+import { detectRenames, fingerprints, type Fingerprint } from './identity/fingerprint.ts';
 import { detectStructure } from './detect/structure.ts';
 import { collapseCandidates, detectCommunities } from './detect/communities.ts';
 import { extract } from './extract/index.ts';
@@ -130,6 +131,8 @@ function emitExtract(args: Args, graph: Graph): void {
   const mstats = mermaidStats(graph, { depth: args.depth });
 
   fs.mkdirSync(args.out, { recursive: true });
+  applyRenames(args, graph);
+
   fs.writeFileSync(path.join(args.out, 'graph.json'), JSON.stringify(graph, null, 2));
   fs.writeFileSync(
     path.join(args.out, 'findings.json'),
@@ -331,6 +334,62 @@ function runSaveInvariant(args: Args): void {
     prose: args.prose ?? '',
     predicate,
   })));
+}
+
+/**
+ * Follow files that moved since the last run, so their claims move with them.
+ *
+ * Runs as part of `map`, because the moment to notice a rename is the moment you re-read the
+ * tree — a rename discovered three runs later has already lost the fingerprints that would
+ * have identified it.
+ *
+ * High-confidence matches are applied. Ambiguous ones are reported and left alone: a file
+ * that resembles two arrivals is a split, which is a real event with no single right answer,
+ * and picking one would attach somebody's confirmed knowledge to a file they never examined.
+ */
+function applyRenames(args: Args, graph: Graph): void {
+  const printsPath = path.join(args.out, 'fingerprints.json');
+  const now = fingerprints(graph);
+
+  let before: Fingerprint[] = [];
+  if (fs.existsSync(printsPath)) {
+    try {
+      before = JSON.parse(fs.readFileSync(printsPath, 'utf8')) as Fingerprint[];
+    } catch {
+      // A fingerprint file we cannot read costs us one run of rename detection, nothing more.
+    }
+  }
+
+  fs.writeFileSync(printsPath, JSON.stringify(now, null, 2));
+  if (!before.length) return;
+
+  const report = detectRenames(before, now);
+  if (!report.renames.length && !report.ambiguous.length) return;
+
+  if (report.renames.length) {
+    const store = new ClaimStore(path.join(args.out, 'claims.db'));
+    let moved = 0;
+    for (const r of report.renames) moved += store.migrateSubject(r.from, r.to);
+    store.close();
+
+    console.log(`\nFollowed ${report.renames.length} move(s), carrying ${moved} claim(s):`);
+    for (const r of report.renames.slice(0, 10)) {
+      console.log(
+        `  ${short(r.from)} → ${short(r.to)}` +
+          `  (structure ${r.structure.toFixed(2)}, names ${r.names.toFixed(2)})`,
+      );
+    }
+  }
+
+  for (const a of report.ambiguous) {
+    console.log(
+      `\n  ${short(a.from)} resembles ${a.candidates.length} new files — not followed, ` +
+        'because a split has no single right answer:',
+    );
+    for (const c of a.candidates.slice(0, 4)) {
+      console.log(`      ${short(c.to)} (${c.confidence.toFixed(2)})`);
+    }
+  }
 }
 
 function reportInvariantSource(args: Args, loaded: ReturnType<typeof loadInvariants>): void {

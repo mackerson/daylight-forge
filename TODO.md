@@ -158,9 +158,19 @@ accepts the directory as an argument for hosts that do not pass environment thro
 Ordered loosely by value, not scheduled.
 
 ### Extraction
-- [ ] **Stable node identity across renames and moves.** `path#Name` is fragile and breaks
-      claim survival across exactly the refactors this tool recommends. Expensive to retrofit;
-      the longer it waits the worse it gets. (DESIGN open problem 1.)
+- [x] **Stable identity across renames and moves.** Not a content-addressed node id — content
+      changes constantly, so that trades a rare failure for a continuous one, and it would
+      rewrite identity everywhere to fix a problem that only exists at the claim layer. The
+      graph keeps path identity; `map` compares this run's fingerprints against last run's and
+      detects moves the way git does. A file's fingerprint is the elementwise minimum of its
+      functions' body signatures — which *is* the MinHash of their union, so it falls out of
+      what D4 already computes — plus the set of names it declares. Both must agree: structure
+      alone matches a file that was rewritten wholesale, names alone match any two siblings.
+      Matches migrate claims, evidence paths, defences and cluster membership in place,
+      keeping the original assertion time and source, because a move is not new knowledge and
+      must not look like it. Splits and merges are reported as ambiguous and left alone —
+      guessing would attach a human's confirmed knowledge to a file they never examined.
+      **Test:** `engine/test/identity.ts` (33), leaning on what must be *refused*.
 - [ ] Polyglot. Either a tree-sitter provider behind the existing `Parser` interface, or
       consume desloppify's 29-language findings instead of re-deriving them.
 - [ ] Symbol-level depth in the tree, expand-on-demand (~10× the nodes, so it needs the

@@ -104,7 +104,7 @@ interface ParseCache {
   entries: Record<string, ParsedFile>;
 }
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 function loadCache(dir: string | undefined, parserName: string): ParseCache {
   const empty: ParseCache = { version: CACHE_VERSION, parser: parserName, entries: {} };

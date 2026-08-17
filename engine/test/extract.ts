@@ -14,13 +14,9 @@ import { extract } from '../extract/index.ts';
 import { aliasesFromTsconfig, Resolver } from '../extract/resolve.ts';
 import { evaluate } from '../invariants/engine.ts';
 import type { Graph } from '../graph/types.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-extract-'));
 const write = (rel: string, body: string) => {
@@ -167,5 +163,4 @@ console.log('\ninvariant engine');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

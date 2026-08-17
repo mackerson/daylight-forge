@@ -681,9 +681,29 @@ the fixture repo.**
 
 ## Open problems
 
-1. **Stable node identity across renames and moves.** Path+name is fragile and breaks time-travel,
-   incremental caching, and any claim's survival across a refactor. Probably content-and-context
-   fingerprinting with a similarity-matched rename detector. Expensive to retrofit — decide early.
+1. **~~Stable node identity across renames and moves.~~ Solved at the claim layer.** The framing was
+   wrong: it read as an identity problem in the graph, and the graph does not need stable identity —
+   it is rebuilt from scratch every run and nothing in it survives on purpose. **Claims** need to
+   survive, and they are keyed by subject.
+
+   So node ids stay `path#Name`, and `map` matches this run's files against last run's the way git
+   detects a rename. A file's fingerprint is the elementwise minimum of its functions' body
+   signatures — which is exactly the MinHash of their union, so it costs nothing beyond what D4
+   already computes — together with the set of names the file declares. Both signals must agree:
+   structure alone matches a file that was rewritten wholesale into the same shape, names alone
+   match any two siblings in a conventional codebase.
+
+   A match migrates claims, their evidence paths, defences and cluster membership in place, keeping
+   the original assertion time and source — a move is not new knowledge and must not look like it,
+   or a two-month-old human confirmation appears to have been made by the migration.
+
+   Splits and merges are reported and left alone. One file resembling two arrivals is a real event
+   with no single right answer, and picking one would attach somebody's confirmed knowledge to a
+   file they never examined. That is the failure worth avoiding here; missing a rename only costs a
+   re-collection.
+
+   A content-addressed node id was the obvious alternative and is worse: content changes constantly,
+   so it breaks on every edit, trading a rare failure for a continuous one.
 2. **Where similarity thresholds sit.** ~~Every threshold is a guess.~~ **Measured.**
    `engine/tools/calibrate.ts` sweeps them across all three fixture points and scores each setting on
    what it finds versus how much it reports. Three results, one of them uncomfortable:

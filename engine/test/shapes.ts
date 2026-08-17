@@ -17,13 +17,9 @@ import { evaluate } from '../invariants/engine.ts';
 import { INVARIANTS_FILENAME, saveInvariant } from '../invariants/save.ts';
 import { KINDS, SHAPES } from '../invariants/shapes.ts';
 import type { Graph } from '../graph/types.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-shapes-'));
 const write = (rel: string, body: string) => {
@@ -164,5 +160,4 @@ console.log('\nsaving into the repo');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

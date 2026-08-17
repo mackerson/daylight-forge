@@ -8,13 +8,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const CLI = path.join(ROOT, 'engine', 'cli.ts');
@@ -92,5 +88,4 @@ console.log('\ncheck gate');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

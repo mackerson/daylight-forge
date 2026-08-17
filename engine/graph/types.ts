@@ -94,6 +94,8 @@ export interface FunctionRecord {
   body?: BodySignature;
   /** Token count of the body, so trivial functions can be excluded by size. */
   bodyTokens?: number;
+  /** Last line of the declaration. Present so nesting can be detected. */
+  endLine?: number;
 }
 
 export interface ParseDiagnostic {

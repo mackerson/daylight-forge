@@ -12,13 +12,9 @@ import type { Graph } from '../graph/types.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { ClaimStore } from '../store/claims.ts';
 import { frontier } from '../swarm/frontier.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const dir = process.argv[2] ?? './out';
 const graph: Graph = JSON.parse(fs.readFileSync(path.join(dir, 'graph.json'), 'utf8'));
@@ -125,5 +121,4 @@ console.log('\nlegacy verdicts return as questions');
 
 store.close();
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

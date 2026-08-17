@@ -104,6 +104,12 @@ export interface DuplicationOptions {
 
 const stop = (s: string) => s.replace(/^['"`]|['"`]$/g, '');
 
+/** Whether one declaration's source range encloses the other's. */
+function nests(a: FunctionRecord, b: FunctionRecord): boolean {
+  if (a.endLine === undefined || b.endLine === undefined) return false;
+  return (a.line <= b.line && a.endLine >= b.endLine) || (b.line <= a.line && b.endLine >= a.endLine);
+}
+
 // ---- D1: structure shape ----------------------------------------------------
 
 function fieldKeys(shape: ShapeRecord) {
@@ -293,6 +299,10 @@ export function detectD4(functions: FunctionRecord[], opts: DuplicationOptions =
         if (A.nodeId === B.nodeId) continue;
         // A body compared against itself in the same file is an overload, not a copy.
         if (A.file === B.file && stop(A.name) === stop(B.name)) continue;
+        // A nested function is *part of* its parent's body, so of course they match — on
+        // this repo `TypeScriptParser.parse` scored 1.00 against `visit`, which it contains.
+        // Containment is not duplication; it is one function, counted twice.
+        if (A.file === B.file && nests(A, B)) continue;
         const key = pairKey(A.nodeId, B.nodeId);
         if (seen.has(key)) continue;
         seen.add(key);

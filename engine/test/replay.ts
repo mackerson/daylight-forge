@@ -21,13 +21,9 @@ import {
   delayFor, elapsedAt, formatElapsed, SPEEDS, speedLabel, timeline,
 } from '../replay/timeline.ts';
 import type { RunEvent } from '../replay/types.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const ev = (at: number, tool: string, node?: string, session = 'a'): RunEvent =>
   ({ at, session, agent: 'claude', model: null, tool, ...(node ? { node } : {}) });
@@ -147,5 +143,4 @@ console.log('\nagainst a real events file');
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

@@ -370,11 +370,23 @@ export class ClaimStore {
     return id;
   }
 
+  /**
+   * Rows from a level-scoped table, optionally filtered.
+   *
+   * Extracted because D4 found `clusters()` and `elisions()` to be the same 116 tokens at
+   * 0.92 — the same optional-level filter and the same JSON-column parse, written twice. The
+   * per-row mapping stays with each caller, since that part genuinely differs.
+   */
+  private atLevel(table: 'clusters' | 'elisions', where: string, level?: number): unknown[] {
+    const clause = [where, level === undefined ? '' : 'level=?'].filter(Boolean).join(' AND ');
+    const sql = `SELECT * FROM ${table}${clause ? ` WHERE ${clause}` : ''}`;
+    return level === undefined
+      ? this.db.prepare(sql).all()
+      : this.db.prepare(sql).all(level);
+  }
+
   clusters(level?: number) {
-    const rows = level === undefined
-      ? this.db.prepare('SELECT * FROM clusters').all()
-      : this.db.prepare('SELECT * FROM clusters WHERE level=?').all(level);
-    return (rows as any[]).map((r) => ({
+    return (this.atLevel('clusters', '', level) as any[]).map((r) => ({
       id: r.id as string,
       level: r.level as number,
       name: r.name as string,
@@ -410,10 +422,7 @@ export class ClaimStore {
   }
 
   elisions(level?: number) {
-    const rows = level === undefined
-      ? this.db.prepare('SELECT * FROM elisions WHERE revoked=0').all()
-      : this.db.prepare('SELECT * FROM elisions WHERE revoked=0 AND level=?').all(level);
-    return (rows as any[]).map((r) => ({
+    return (this.atLevel('elisions', 'revoked=0', level) as any[]).map((r) => ({
       id: r.id as string,
       level: r.level as number,
       members: JSON.parse(r.members as string) as string[],
@@ -519,6 +528,75 @@ export class ClaimStore {
     return out.sort(
       (a, b) => a.subject.localeCompare(b.subject) || a.predicate.localeCompare(b.predicate),
     );
+  }
+
+  /**
+   * Follow a file that moved.
+   *
+   * Claims are keyed by subject, and a subject is a path. When the path changes, every claim
+   * about it is orphaned — still stored, attached to something that no longer exists, and
+   * invisible on the map. Since this tool spends its time recommending exactly the refactors
+   * that move files, it was quietly punishing you for taking its advice.
+   *
+   * Rewrites in place rather than re-asserting: the claim, its evidence, its confidence and
+   * above all *who said it and when* are unchanged, because none of that stopped being true.
+   * A move is not new knowledge, so it must not look like new knowledge — re-asserting would
+   * make a two-month-old human confirmation appear to have been made by the migration.
+   *
+   * Evidence file paths move with the subject, or the arbitration screen would try to show
+   * spans from a file that is gone.
+   */
+  migrateSubject(from: string, to: string): number {
+    if (from === to) return 0;
+    const prefixed = (subject: string) =>
+      subject === from || subject.startsWith(`${from}#`)
+        ? to + subject.slice(from.length)
+        : null;
+
+    const rows = this.db
+      .prepare('SELECT id, subject, evidence FROM claims')
+      .all() as Array<{ id: number; subject: string; evidence: string }>;
+
+    const update = this.db.prepare('UPDATE claims SET subject = ?, evidence = ? WHERE id = ?');
+    let moved = 0;
+    for (const row of rows) {
+      const next = prefixed(row.subject);
+      if (!next) continue;
+      let evidence: Evidence[];
+      try {
+        evidence = JSON.parse(row.evidence) as Evidence[];
+      } catch {
+        evidence = [];
+      }
+      const rewritten = evidence.map((e) =>
+        e.file === from ? { ...e, file: to } : e,
+      );
+      update.run(next, JSON.stringify(rewritten), row.id);
+      moved++;
+    }
+
+    // Clusters, elisions and defences name files too; a stale member is a phantom node.
+    const remap = (list: string[]) => list.map((m) => prefixed(m) ?? m);
+    for (const c of this.clusters()) {
+      const members = remap(c.members);
+      if (members.join() !== c.members.join()) {
+        this.db.prepare('UPDATE clusters SET members = ? WHERE id = ?')
+          .run(JSON.stringify(members), c.id);
+      }
+    }
+    for (const e of this.elisions()) {
+      const members = remap(e.members);
+      if (members.join() !== e.members.join()) {
+        this.db.prepare('UPDATE elisions SET members = ? WHERE id = ?')
+          .run(JSON.stringify(members), e.id);
+      }
+    }
+    for (const d of this.defences()) {
+      const node = prefixed(d.node);
+      if (node) this.db.prepare('UPDATE defences SET node = ? WHERE id = ?').run(node, d.id);
+    }
+
+    return moved;
   }
 
   stats() {

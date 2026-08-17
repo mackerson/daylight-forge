@@ -6,13 +6,9 @@
  * place adapter-specific parsing is unavoidable, and the one place it has to be tolerant.
  */
 import { readSpend } from '../swarm/adapters.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 console.log('\nspend parsing');
 {
@@ -44,5 +40,4 @@ console.log('\nspend parsing');
     typeof readSpend('nothing').cost === 'number');
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

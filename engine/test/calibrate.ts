@@ -16,13 +16,9 @@ import { DEFAULT_SWEEP, grid, matches, reported } from '../tools/calibrate-sweep
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 console.log('\nsweep grid');
 {
@@ -108,5 +104,4 @@ console.log('\nwhat gets scored');
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

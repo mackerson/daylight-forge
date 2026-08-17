@@ -10,13 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { extract } from '../extract/index.ts';
 import { collapseCandidates, detectCommunities } from '../detect/communities.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-comm-'));
 const write = (rel: string, body: string) => {
@@ -73,5 +69,4 @@ console.log('\ncollapse candidates');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

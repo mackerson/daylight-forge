@@ -11,13 +11,9 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ClaimStore } from '../store/claims.ts';
 import { exportKnowledge, importKnowledge, claimKey } from '../store/share.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, cond: boolean, detail = '') => {
-  if (cond) { passed++; console.log(`  ok   ${name}`); }
-  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
-};
+const { check, done } = harness();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-share-'));
 const ev = [{ file: 'src/a.ts', line: 3 }];
@@ -174,5 +170,4 @@ console.log('\nlegacy verdicts');
   fresh.close();
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();

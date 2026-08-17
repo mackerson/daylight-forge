@@ -11,19 +11,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../mcp/server.ts';
 import { ClaimStore, EvidenceRequired } from '../store/claims.ts';
+import { harness } from './harness.ts';
 
-let passed = 0;
-let failed = 0;
-
-function check(name: string, cond: boolean, detail = '') {
-  if (cond) {
-    passed++;
-    console.log(`  ok   ${name}`);
-  } else {
-    failed++;
-    console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
+const { check, done } = harness();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-smoke-'));
 const ev = [{ file: 'src/a.ts', line: 10 }];
@@ -214,5 +204,4 @@ console.log('\nmcp boundary');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+done();
