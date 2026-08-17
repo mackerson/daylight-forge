@@ -1,0 +1,44 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The map is derived from the tree, not from history, but `git ls-files` decides
+          # what counts as source — so a shallow checkout is fine and a sparse one is not.
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test:all
+
+      # Reuses the parse cache written by the run above, so this is seconds rather than a
+      # second full parse of the tree.
+      - name: architecture check
+        run: pnpm check . --warn-only
+
+      - name: upload the map
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemap
+          path: |
+            out/graph.json
+            out/findings.json
+            out/structure.json
+            out/invariants.json
+            out/plan.json
+          if-no-files-found: ignore

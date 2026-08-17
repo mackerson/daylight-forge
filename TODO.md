@@ -12,19 +12,21 @@ P13. This repo maps itself clean — 0 duplication pairs, invariants 5/5 green, 
 
 *Make the invariants fail a build instead of being documentation with extra steps.*
 
-- [ ] `vds check <repo>` — run invariants + target diff together, exit non-zero on any red
-      invariant or target violation. Compose the existing `invariants` and `plan` paths;
-      neither needs new analysis.
-- [ ] `--warn-only` flag, and make it the documented default for adoption. Five hand-written
-      invariants on a young codebase should not gate anyone's merge on day one.
-- [ ] Machine-readable output: `--format json` and a summary line CI can annotate with.
-- [ ] `.github/workflows/check.yml` for this repo — typecheck, tests, then `vds check`
-      warn-only. There is no CI at all right now.
-- [ ] Decide and document what a *new* invariant means for an existing red build: does adding
-      one break the branch that adds it? (Probably yes, and that is correct.)
-- [ ] Cache: `check` should reuse the parse cache so CI runs are seconds, not a full parse.
+- [x] `vds check <repo>` — invariants + target together, exit non-zero on any red invariant
+      or target violation. Composes the existing paths; no new analysis.
+- [x] `--warn-only`, documented as the way to adopt.
+- [x] `--format json`, plus a `PASS/WARN/FAIL:` summary line CI can annotate with.
+- [x] `.github/workflows/check.yml` — typecheck, `pnpm test:all`, then `check --warn-only`,
+      uploading the map as an artifact.
+- [x] Documented in DESIGN.md: adding an already-red invariant **should** break the branch
+      that adds it. The alternative is a permanently red main everyone learns to ignore.
+- [x] `check` reads the cached `graph.json` when present and otherwise extracts through the
+      parse cache, so CI is seconds rather than a second full parse.
+- [x] **Test:** `engine/test/check.ts` — 12 assertions on exit codes, built against a
+      throwaway repo it deliberately breaks. Exit code is the only part CI reads.
 
-**Gate:** a deliberately-broken invariant fails the workflow; reverting it passes.
+**Gate:** ✅ a deliberately-broken invariant exits 1; `--warn-only` exits 0 and still reports;
+a target violation fails on its own with no invariants present.
 
 ---
 

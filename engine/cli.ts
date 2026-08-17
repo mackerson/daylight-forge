@@ -32,6 +32,8 @@ interface Args {
   timeoutMs?: number;
   model?: string;
   session?: string;
+  warnOnly: boolean;
+  json: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -70,6 +72,8 @@ function parseArgs(argv: string[]): Args {
     repo: flags.get('repo'),
     model: flags.get('model'),
     session: flags.get('session'),
+    warnOnly: flags.get('warn-only') === 'true',
+    json: flags.get('format') === 'json',
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
@@ -535,6 +539,95 @@ function runPlan(args: Args): void {
   process.exitCode = diff.ok ? 0 : 1;
 }
 
+/**
+ * The build gate.
+ *
+ * Invariants that are only evaluated when someone opens a GUI are documentation with extra
+ * steps. This composes the two checks that already exist and gives CI an exit code, which is
+ * the entire difference between detecting drift and preventing it.
+ *
+ * `--warn-only` exists because a check that fails builds needs its invariants to be right,
+ * and a young set of hand-written assertions should not gate anyone's merge on day one.
+ */
+function runCheck(args: Args): void {
+  const graphPath = path.join(args.out, 'graph.json');
+  const graph: Graph = fs.existsSync(graphPath) && !args.commit
+    ? JSON.parse(fs.readFileSync(graphPath, 'utf8'))
+    : extract({
+        root: args.root,
+        includeTests: args.includeTests,
+        cacheDir: path.join(args.out, '.cache'),
+      });
+
+  const loaded = loadInvariants(graph.root, args.invariantsFile);
+  const invariants = loaded.invariants.map((inv) => evaluate(graph, inv));
+  const red = invariants.filter((r) => r.status === 'red');
+
+  const spec = loadTarget(graph.root, args.targetFile);
+  const diff = spec ? diffTarget(graph, spec) : null;
+
+  const failed = red.length > 0 || (diff ? !diff.ok : false);
+
+  if (args.json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          ok: !failed,
+          warnOnly: args.warnOnly,
+          root: graph.root,
+          commit: graph.commit,
+          invariants: {
+            total: invariants.length,
+            red: red.length,
+            results: invariants,
+            source: loaded.source,
+          },
+          target: diff
+            ? { ok: diff.ok, violations: diff.violations.length, unplaced: diff.unplaced.length, steps: diff.steps }
+            : null,
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+  } else {
+    console.log(`\ncheck — ${graph.root}`);
+    console.log('─'.repeat(72));
+
+    if (!loaded.source) {
+      console.log('invariants: none defined (see `vds invariants` for how to add them)');
+    } else {
+      for (const r of invariants) {
+        console.log(`${r.status === 'green' ? 'GREEN' : 'RED  '}  ${r.id}`);
+        if (r.status === 'red') {
+          console.log(`       ${r.measured}`);
+          for (const v of r.violations.slice(0, 3)) {
+            console.log(`       ↳ ${v.where}${v.line ? `:${v.line}` : ''} — ${v.detail}`);
+          }
+        }
+      }
+      console.log(`       ${invariants.length - red.length} green · ${red.length} red`);
+    }
+
+    if (!diff) console.log('target:     none declared');
+    else if (diff.ok) console.log('target:     OK');
+    else {
+      console.log(`target:     ${diff.violations.length} violating file pair(s)`);
+      for (const step of diff.steps.slice(0, 5)) {
+        console.log(`       ${step.rank}. [${step.kind}] ${step.title}`);
+      }
+    }
+
+    // One line CI can annotate with, whatever else scrolled past.
+    const verdict = failed ? (args.warnOnly ? 'WARN' : 'FAIL') : 'PASS';
+    console.log(
+      `\n${verdict}: ${red.length} red invariant(s), ${diff?.violations.length ?? 0} target violation(s)`,
+    );
+  }
+
+  process.exitCode = failed && !args.warnOnly ? 1 : 0;
+}
+
 const args = parseArgs(process.argv.slice(2));
 
 switch (args.command) {
@@ -549,6 +642,9 @@ switch (args.command) {
     break;
   case 'map':
     runMap(args);
+    break;
+  case 'check':
+    runCheck(args);
     break;
   case 'plan':
     runPlan(args);
@@ -574,7 +670,8 @@ usage:
   node src/cli.ts invariants <path> [options]
   node src/cli.ts focus      <path> [options]
   node src/cli.ts derive     --out <dir>        # rebuild the stack from cached graph.json
-  node src/cli.ts plan       <path> [options]   # diff the declared target architecture
+  node engine/cli.ts plan    <path> [options]   # diff the declared target architecture
+  node engine/cli.ts check   <path> [--warn-only] [--format json]   # CI gate
   node src/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
 
 options:

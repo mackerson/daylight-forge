@@ -758,6 +758,12 @@ entire value is that it fails the build. `plan` already exits non-zero; this nee
 Caveat worth respecting: a check that fails builds needs its invariants to be right, and ours
 are five hand-written assertions on a young codebase. Ship it warn-only first.
 
+**Adding an invariant that is already red should break the branch that adds it.** That is the
+correct behaviour, not a papercut: an invariant is a claim the architecture already holds, so
+authoring a red one means either the claim is wrong or the code is — and both want fixing on
+the branch that raised it, by the person who has the context. The alternative is a permanently
+red main that everyone learns to ignore, which is how architecture rules die everywhere else.
+
 **P11 closes a dangling half-feature.** P8 computes dead-code candidates with confidence
 tiers and nothing routes them anywhere — the frontier only asks about purposes and
 duplication families. "Static proposes, agents adjudicate, human confirms" is unwired for the

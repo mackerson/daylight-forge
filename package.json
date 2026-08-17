@@ -21,7 +21,9 @@
     "gui:dev": "vite --host 127.0.0.1",
     "ui:build": "vite build",
     "test": "node engine/test/smoke.ts ./out && node engine/test/scene.ts ./out",
-    "plan": "node engine/cli.ts plan"
+    "plan": "node engine/cli.ts plan",
+    "check": "node engine/cli.ts check",
+    "test:all": "node engine/cli.ts map . --out ./out --top 0 && node engine/test/smoke.ts ./out && node engine/test/scene.ts ./out && node engine/test/check.ts"
   },
   "engines": {
     "node": ">=22.18"
