@@ -12,6 +12,17 @@ bugs that reading never would have — including one that had made the contradic
 screen this design calls its highest-value surface, unreachable for verdicts since the boolean
 rule landed. See P13.
 
+### Fixed since
+- [x] **Switching repos showed the previous repo's map**, because picking a repo left the
+      output directory pointing at the old one. The visible half of a much worse bug: claims
+      address files by repo-relative path with no repo in them, so one output directory across
+      two projects re-indexes one codebase's confirmed knowledge onto the other's
+      identically-named files — and the rename detector migrates them there on purpose. A
+      human claim about repo A's `src/Store.ts` landed on repo B's `src/Cache.ts`.
+      Fingerprints now record their repo, `map` refuses a directory holding another repo's
+      graph (`--force` for the same repo moved), and the GUI derives a per-repo directory
+      unless you chose one. **Test:** `engine/test/isolation.ts` (20).
+
 ### Still needing a decision from you
 
 All built and working; each stops at a choice that costs something outside this repo:

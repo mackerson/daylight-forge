@@ -2,6 +2,7 @@ const { app, BrowserWindow, Notification, ipcMain, protocol, net, dialog, shell 
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 
 /**
  * Electron main — the control plane.
@@ -52,6 +53,30 @@ const state = {
   repo: process.env.VDS_REPO || null,
   dir: process.env.VDS_DIR || path.resolve(ROOT, 'out'),
 };
+
+/**
+ * Whether the user picked the output directory themselves.
+ *
+ * If they did, it is theirs and nothing moves it. If they did not, it follows the repo —
+ * because an output directory belongs to one repository and sharing one across two is not a
+ * tidiness problem, it is a correctness one: `claims.db` addresses files by repo-relative
+ * path, so repo A's confirmed knowledge silently re-indexes onto repo B's identically-named
+ * files. Choosing a repo and seeing the previous repo's map is the visible half of that.
+ */
+let dirExplicit = !!process.env.VDS_DIR;
+
+/**
+ * A stable per-repo output directory.
+ *
+ * Basename first so it is recognisable in a file manager, plus a hash of the full path so two
+ * checkouts of the same project — `~/work/api` and `~/scratch/api` — do not collide and
+ * inherit each other's claims.
+ */
+function derivedDirFor(repo) {
+  const slug = path.basename(repo).replace(/[^\w.-]+/g, '-').slice(0, 40) || 'repo';
+  const hash = createHash('sha256').update(path.resolve(repo)).digest('hex').slice(0, 8);
+  return path.join(app.getPath('userData'), 'maps', `${slug}-${hash}`);
+}
 
 let win = null;
 const jobs = new Map();
@@ -479,8 +504,20 @@ ipcMain.handle('vds:pick-repo', async () => {
     properties: ['openDirectory'],
   });
   if (res.canceled || !res.filePaths[0]) return state;
-  state.repo = res.filePaths[0];
+  const picked = res.filePaths[0];
+  if (picked === state.repo) return state;
+
+  state.repo = picked;
   stopWatch();
+
+  // The map, the findings and the claim store all belong to the repo that produced them, so
+  // they move together with it. Without this, choosing a new repo showed the old one's map
+  // and then wrote the new one's on top of the old one's claims.
+  if (!dirExplicit) {
+    state.dir = derivedDirFor(picked);
+    fs.mkdirSync(state.dir, { recursive: true });
+    startTail();
+  }
   return state;
 });
 
@@ -491,6 +528,7 @@ ipcMain.handle('vds:set-dir', async () => {
   });
   if (res.canceled || !res.filePaths[0]) return state;
   state.dir = res.filePaths[0];
+  dirExplicit = true;
   startTail();
   return state;
 });

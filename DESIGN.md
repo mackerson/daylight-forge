@@ -330,6 +330,22 @@ The third is the one worth remembering: it means the contradiction queue, which 
 highest-value screen in the product, was showing noise and hiding signal until it was exercised with
 two real models.
 
+7. **One output directory, two repositories** (reported from use, and the worst of the lot).
+   Choosing a new repo in the GUI showed the old repo's map, because picking a repo set the repo
+   and left the output directory alone. That is the mild, visible half. The severe half is that
+   `claims.db` addresses files by **repo-relative path with no repo in the subject**, so pointing
+   one directory at a second project re-indexes the first project's confirmed knowledge onto the
+   second's identically-named files — and the rename detector, seeing every file of A vanish and
+   every file of B appear, migrates them there deliberately. Reproduced: a *human* claim about
+   repo A's `src/Store.ts` landed on repo B's `src/Cache.ts`, two unrelated projects, and
+   presented as reviewed knowledge about a codebase nobody had opened.
+
+   Fixed at three depths, because one guard in one place would have been the same mistake again:
+   fingerprints record the repo they describe and are ignored across repos; `map` refuses an
+   output directory holding a different repo's graph, with `--force` for the one legitimate case
+   of the same repo at a new path; and the GUI derives a per-repo output directory unless the
+   user has explicitly chosen one, so the common path never reaches the guard at all.
+
 6. **No verdict claim could be submitted at all** (P13, found by running the gate rather than reading
    about it). The boolean rule is right and stays — an agent sending `duplicates` with the value
    "false — these are NOT duplicates" is exactly the failure it prevents. But it also rejected a bare

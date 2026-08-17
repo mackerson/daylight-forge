@@ -46,6 +46,8 @@ interface Args {
   confirmedOnly: boolean;
   maxCost?: number;
   concurrency?: number;
+  /** Overwrite an output directory that belongs to a different repository. */
+  force: boolean;
   /** `try-invariant`: a candidate predicate, as JSON, evaluated but never saved. */
   predicate?: string;
   invariantId?: string;
@@ -95,6 +97,7 @@ function parseArgs(argv: string[]): Args {
     concurrency: flags.get('concurrency') ? Number(flags.get('concurrency')) : undefined,
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
+    force: flags.get('force') === 'true',
     predicate: flags.get('predicate'),
     invariantId: flags.get('id'),
     prose: flags.get('prose'),
@@ -122,7 +125,55 @@ function runExtract(args: Args): void {
   emitExtract(args, graph);
 }
 
+/**
+ * An output directory belongs to one repository.
+ *
+ * `claims.db` lives here, and a claim is a statement about a *particular* codebase — its
+ * subject is a repo-relative path with no repo in it. Point one directory at a second project
+ * and repo A's confirmed knowledge is suddenly indexed against repo B's files: same paths,
+ * different meaning. The map, the findings and the invariant results get overwritten while
+ * the claims quietly do not, so the store keeps asserting things about files that are gone
+ * and attaching them to files it has never seen.
+ *
+ * Refused rather than merged, because there is no sensible merge. `--force` is there for the
+ * one legitimate case — the same repo at a new path, after a move or a fresh checkout — where
+ * the paths inside are unchanged and the claims still mean what they said.
+ */
+function guardOutputDirectory(args: Args, root: string): void {
+  const graphPath = path.join(args.out, 'graph.json');
+  if (!fs.existsSync(graphPath)) return;
+
+  let previous: string | undefined;
+  try {
+    previous = (JSON.parse(fs.readFileSync(graphPath, 'utf8')) as Graph).root;
+  } catch {
+    return; // Unreadable output is not evidence of anything; the run rewrites it.
+  }
+  if (!previous || previous === root) return;
+
+  if (args.force) {
+    console.log(
+      `\n⚠ ${args.out} held a map of ${previous}. Overwriting it as asked — any claim in ` +
+        'its store still refers to that repo, by paths that now mean something else.',
+    );
+    return;
+  }
+
+  console.error(
+    `\n${args.out} already holds a map of a different repository:\n` +
+      `    it has:  ${previous}\n` +
+      `    you ran: ${root}\n\n` +
+      'Refusing, because claims.db in there describes that repo by repo-relative path, and\n' +
+      'those same paths mean something else here — a human-confirmed claim about one project\n' +
+      'would present as reviewed knowledge about the other.\n\n' +
+      'Use a separate --out per repository. If this *is* the same repo at a new path, pass\n' +
+      '--force and the existing claims will be kept.',
+  );
+  process.exit(2);
+}
+
 function emitExtract(args: Args, graph: Graph): void {
+  guardOutputDirectory(args, graph.root);
   const started = Date.now();
   const dup = detectDuplication(graph);
   const parallels = detectParallel(graph);
@@ -396,17 +447,42 @@ function runSaveInvariant(args: Args): void {
 function applyRenames(args: Args, graph: Graph): void {
   const printsPath = path.join(args.out, 'fingerprints.json');
   const now = fingerprints(graph);
+  const record = { root: graph.root, prints: now };
 
+  /**
+   * Fingerprints belong to one repo, and comparing across two is not a near-miss — it is a
+   * different kind of statement entirely.
+   *
+   * Point the same output directory at a second codebase and every file of the first
+   * "disappears" while every file of the second "appears". Any structurally similar pair then
+   * looks exactly like a rename, and the claims migrate. Caught by trying it: a *human*
+   * claim about repo A's `Store.ts` landed on repo B's `Cache.ts` — two unrelated projects —
+   * and presented there as reviewed knowledge about a codebase nobody had opened. Fabricated
+   * provenance is the one failure this whole design exists to prevent.
+   */
   let before: Fingerprint[] = [];
   if (fs.existsSync(printsPath)) {
     try {
-      before = JSON.parse(fs.readFileSync(printsPath, 'utf8')) as Fingerprint[];
+      const raw = JSON.parse(fs.readFileSync(printsPath, 'utf8')) as
+        | Fingerprint[]
+        | { root?: string; prints?: Fingerprint[] };
+      if (Array.isArray(raw)) {
+        // Written before fingerprints recorded their repo. Unattributable, so unusable.
+        before = [];
+      } else if (raw.root === graph.root) {
+        before = raw.prints ?? [];
+      } else {
+        console.log(
+          `\nfingerprints in ${args.out} are from ${short(raw.root ?? '(unknown)')}, not this ` +
+            'repo — skipping rename detection rather than matching files across two codebases',
+        );
+      }
     } catch {
       // A fingerprint file we cannot read costs us one run of rename detection, nothing more.
     }
   }
 
-  fs.writeFileSync(printsPath, JSON.stringify(now, null, 2));
+  fs.writeFileSync(printsPath, JSON.stringify(record, null, 2));
   if (!before.length) return;
 
   const report = detectRenames(before, now);
@@ -1118,6 +1194,7 @@ options:
   --invariants-file <f>  invariant definitions (default: <repo>/vds.invariants.json)
   --depth <n>        L1 grouping depth (default: 3)
   --commit <sha>     record the commit this tree came from
+  --force            overwrite an out dir that holds a different repo's map
   --include-tests    include test files (excluded from the map, but always read for reachability)
   --predicate <json> try-invariant: the candidate predicate to evaluate
   --top <n>          rows per console table (default: 15)
