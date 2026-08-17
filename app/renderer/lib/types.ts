@@ -34,6 +34,8 @@ import type { FocusStack } from '../../../engine/focus/types.ts';
 import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
 import type { InvariantResult } from '../../../engine/invariants/engine.ts';
 import type { RunEvent } from '../../../engine/replay/types.ts';
+import type { RenderSettings } from '../../../engine/render/settings.ts';
+export type { RenderSettings, FrameStats } from '../../../engine/render/settings.ts';
 import type { StructureReport } from '../../../engine/detect/structure-types.ts';
 
 /**
@@ -125,6 +127,7 @@ declare global {
       snippet(p: { file: string; line?: number; context?: number }): Promise<{
         file?: string; start?: number; line?: number; lines?: string[]; error?: string;
       }>;
+      settings(patch?: Partial<RenderSettings>): Promise<Partial<RenderSettings>>;
       symbols(p: { file: string }): Promise<{
         symbols: Array<{ id: string; name: string; kind: string }>; error?: string;
       }>;

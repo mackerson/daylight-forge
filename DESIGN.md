@@ -330,6 +330,33 @@ The third is the one worth remembering: it means the contradiction queue, which 
 highest-value screen in the product, was showing noise and hiding signal until it was exercised with
 two real models.
 
+9. **LOD was a guess about somebody else's computer.** `LOD_THRESHOLD = 2500` was a constant,
+   and above it the "all levels" button was silently inert — on a 14,651-node monorepo the
+   interface offered a choice it did not honour and said nothing. Measured properly, with a
+   frame meter and a headless benchmark, on the *integrated* GPU of the machine that reported
+   the problem:
+
+   | | visible | fps | mean | p95 | draws | tris |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | LOD on | 701 | 138 | 7.2ms | 14.6ms | 6 | 0.4M |
+   | everything | 14,651 | 92–107 | 9.3–10.8ms | 15.2–17.9ms | 26 | 7.6M |
+
+   Twenty times the nodes for about a fifth of the frame time, because nodes are instanced: a
+   level costs one draw call whether it holds seven or seven thousand. The constant was not
+   conservative, it was wrong, and it was wrong because no one had measured.
+
+   So the default is now to draw everything and let the machine object. A run whose 95th
+   percentile stays above 26ms for two seconds sets its own limit, once, records it, and says
+   so — rather than a number chosen in advance for hardware nobody had seen. The 95th
+   percentile rather than the mean, because ninety-five frames at 8ms and five at 60 averages
+   under 11ms: a number that reads as comfortable and feels like a stutter every twentieth
+   frame.
+
+   The same measurement found Electron rendering on the integrated Radeon 610M while a mobile
+   RTX 4080 sat idle. `powerPreference: 'high-performance'` is now requested and the meter
+   names the chip that actually rendered, because a frame time attributed to the wrong
+   hardware is worse than no frame time. The driver still ignores the hint on this laptop.
+
 8. **The tree was unusable on a large repo** (reported from use). A containment layout has no
    bounded size — every level must hold everything beneath it — so on a 10k-file monorepo the
    deepest nodes sat 28,000 units from the centre while the camera clamps to a few hundred.

@@ -355,3 +355,14 @@ code, .mono { font-family: inherit; }
 .scrub.active { padding: 0.6rem; border: 1px solid var(--line, #2a2f3a); border-radius: 6px; }
 .scrub-range { width: 100%; }
 .scrub-read { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85em; }
+
+/* Frame meter. Sits with the key rather than over the scene, so it never hides a node. */
+.scene-fps {
+  display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline;
+  padding: 0.3rem 0.5rem; margin-bottom: 0.25rem;
+  border: 1px solid var(--line, #2a2f3a); border-radius: 5px;
+  font-size: 0.82em; font-family: ui-monospace, monospace;
+}
+.scene-fps.over { border-color: #a86a5a; }
+.scene-fps .fps-headline strong { font-size: 1.25em; }
+.scene-fps.over .fps-headline strong { color: #f0a868; }

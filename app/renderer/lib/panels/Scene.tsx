@@ -4,6 +4,10 @@ import { layout } from '../../../../engine/scene/layout.ts';
 import { layoutTree } from '../../../../engine/scene/tree.ts';
 import type { LoadPayload } from '../types.ts';
 import { onReplayEvent, onReplayReset } from '../replay.ts';
+import {
+  DEFAULT_SETTINGS, limitAfterSlowdown, normaliseSettings, SLOW_FRAME_MS, summarise,
+} from '../../../../engine/render/settings.ts';
+import type { FrameStats, RenderSettings } from '../types.ts';
 
 /**
  * The festooned tree.
@@ -167,6 +171,21 @@ export function Scene({ data }: { data: LoadPayload | null }) {
    * showing everything and only fall back to LOD when the tree is genuinely large.
    */
   const [lod, setLod] = useState<'auto' | 'all'>('all');
+  /**
+   * Per-machine render settings. Loaded once; the render loop reads them through a ref so a
+   * change does not tear the scene down and rebuild it.
+   */
+  const [settings, setSettings] = useState<RenderSettings>(DEFAULT_SETTINGS);
+  const [adaptNote, setAdaptNote] = useState<string | null>(null);
+  const [gpu, setGpu] = useState<string>('');
+  const [stats, setStats] = useState<FrameStats & { visible: number; draws: number; tris: number }>(
+    { fps: 0, meanMs: 0, p95Ms: 0, worstMs: 0, samples: 0, visible: 0, draws: 0, tris: 0 },
+  );
+  useEffect(() => {
+    void window.vds.settings().then((s) => setSettings(normaliseSettings(s)));
+  }, []);
+  const showFpsRef = useRef(false);
+  showFpsRef.current = settings.showFps;
   const [nodeCount, setNodeCount] = useState(0);
   const [channel, setChannel] = useState<Channel>('structure');
   const [agents, setAgents] = useState<string[]>([]);
@@ -236,7 +255,26 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     scene.fog = new THREE.Fog('#0a0c10', 320, 900);
 
     const camera = new THREE.PerspectiveCamera(52, 1, 0.5, 3000);
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    /**
+     * Ask for the discrete GPU.
+     *
+     * Without `powerPreference` the browser picks, and on a laptop it picks the integrated
+     * chip: a benchmark on this machine reported an AMD Radeon 610M while a mobile 4080 sat
+     * idle. It is a hint rather than a guarantee — the driver and the platform's power policy
+     * both get a say — which is why the meter reports the GPU that actually rendered.
+     */
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      powerPreference: 'high-performance',
+    });
+    // Which chip actually rendered, so a frame time is never read as a fact about the wrong
+    // hardware — `powerPreference` is a hint, and on this laptop the driver ignored it.
+    try {
+      const gl = renderer.getContext();
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) setGpu(String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)));
+    } catch { /* never worth failing a render over */ }
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 
     scene.add(new THREE.AmbientLight(0xffffff, 1.5));
@@ -263,8 +301,16 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     );
     // Above this, per-frame label and pick work stops being bounded by screen area and
     // LOD starts genuinely paying for itself. Extrapolated from the measurement above.
-    const LOD_THRESHOLD = 2500;
-    const showAll = lod === 'all' && laid.nodes.size <= LOD_THRESHOLD;
+    /**
+     * The limit is a setting now, not a constant.
+     *
+     * It was 2500, hard-coded, and it silently overrode the user's own choice: on any repo
+     * past it the 'all levels' button was inert and nothing in the interface said so. A limit
+     * is reasonable — a limit you cannot see or move is a bug wearing a constant's clothes.
+     * Zero means never fall back, for a machine whose owner has measured it.
+     */
+    const limit = settings.allLevelsLimit;
+    const showAll = lod === 'all' && (limit === 0 || laid.nodes.size <= limit);
     const defended = new Set((data.defended ?? []).map(String));
 
     // Defined before anything paints: the mesh loop below colours through it.
@@ -929,13 +975,101 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     let pickWork = 0;
     let reportAt = 0;
     const perf = !!(data as any).perf;
+    /**
+     * Frame times for the meter, as a ring buffer over about a second.
+     *
+     * Wall-clock between frames rather than the time spent inside `tick`: the cost of a frame
+     * includes what the GPU does after we hand it the scene, and measuring only our own
+     * JavaScript reports a comfortable 2ms while the window drops to 20fps.
+     */
+    const FRAME_WINDOW = 90;
+    const frameTimes: number[] = [];
+    let meterAt = 0;
+    /**
+     * Adaptive fallback: draw everything, and if this machine cannot keep up, stop.
+     *
+     * Sampled continuously rather than only when the meter is open, because the machine's
+     * capability is not a function of whether anyone is looking at the number. It gives up
+     * once — after a sustained slow patch, not a single stutter — records what it learned,
+     * and never re-litigates it. Popping the detail level back and forth while someone is
+     * moving the camera is worse than showing less.
+     */
+    const adaptTimes: number[] = [];
+    let slowSince = 0;
+    let adapted = false;
+
+    /**
+     * Headless benchmark: sample for N seconds, print one line, quit.
+     *
+     * The only way to answer "does this machine need LOD at all" is to measure it on that
+     * machine, and a question answered by opinion is how the 2500 limit got there. Orbits
+     * slowly while sampling, because a still camera measures a best case nobody experiences.
+     */
+    const benchSeconds = Number((data as any).bench ?? 0);
+    const bench = benchSeconds > 0;
+    const benchTimes: number[] = [];
+    let benchUntil = 0;
 
     const tick = (now = 0) => {
       raf = requestAnimationFrame(tick);
       const frameStart = perf ? performance.now() : 0;
       // Clamp so a backgrounded window does not resume with one enormous step.
-      const dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 0;
+      const wall = lastFrame ? now - lastFrame : 0;
+      const dt = lastFrame ? Math.min(wall / 1000, 0.05) : 0;
       lastFrame = now;
+      if (showAll && !adapted && !bench && wall > 0) {
+        adaptTimes.push(wall);
+        if (adaptTimes.length > FRAME_WINDOW) adaptTimes.shift();
+        if (adaptTimes.length === FRAME_WINDOW) {
+          const slow = summarise(adaptTimes).p95Ms > SLOW_FRAME_MS;
+          if (!slow) slowSince = 0;
+          else if (!slowSince) slowSince = now;
+          else if (now - slowSince > 2000) {
+            adapted = true;
+            const learned = limitAfterSlowdown(laid.nodes.size);
+            void window.vds.settings({ allLevelsLimit: learned });
+            setSettings((prev) => ({ ...prev, allLevelsLimit: learned }));
+            setAdaptNote(
+              `This machine could not hold 60fps drawing all ${laid.nodes.size.toLocaleString()} ` +
+                `nodes, so detail now follows camera distance above ${learned.toLocaleString()}. ` +
+                'Change it in the fps panel.',
+            );
+          }
+        }
+      }
+
+      if ((showFpsRef.current || bench) && wall > 0) {
+        frameTimes.push(wall);
+        if (frameTimes.length > FRAME_WINDOW) frameTimes.shift();
+      }
+      if (bench && wall > 0) {
+        // Warm up for a second: the first frames include shader compilation and upload.
+        if (!benchUntil) benchUntil = now + 1000 + benchSeconds * 1000;
+        else if (now > benchUntil - benchSeconds * 1000) benchTimes.push(wall);
+        orbit.theta += dt * 0.25;
+        if (now > benchUntil) {
+          const visible = [...meshes.entries()]
+            .filter(([, m]) => m.visible)
+            .reduce((sum, [l]) => sum + (byLevel.get(l)?.length ?? 0), 0);
+          const info = renderer.info.render;
+          // Which GPU actually rendered this, so a software-rasterised run is never mistaken
+          // for a measurement of the machine.
+          let gpu = 'unknown';
+          try {
+            const gl = renderer.getContext();
+            const ext = gl.getExtension('WEBGL_debug_renderer_info');
+            if (ext) gpu = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
+          } catch { /* reporting the GPU is never worth failing a benchmark over */ }
+
+          console.error(`BENCH ${JSON.stringify({
+            gpu, mode: laid.mode, lod, limit, showAll,
+            nodes: laid.nodes.size, visible, ropes: ropes.length,
+            ...summarise(benchTimes),
+            draws: info.calls, tris: info.triangles,
+          })}`);
+          benchUntil = Infinity;
+        }
+      }
       applyPan(dt);
       const { theta, phi, distance, target } = orbit;
       camera.position.set(
@@ -1092,6 +1226,20 @@ export function Scene({ data }: { data: LoadPayload | null }) {
 
       renderer.render(scene, camera);
 
+      if (showFpsRef.current && now > meterAt && frameTimes.length > 8) {
+        meterAt = now + 400;
+        const visible = [...meshes.entries()]
+          .filter(([, m]) => m.visible)
+          .reduce((sum, [l]) => sum + (byLevel.get(l)?.length ?? 0), 0);
+        const info = renderer.info.render;
+        setStats({
+          ...summarise(frameTimes),
+          visible,
+          draws: info.calls,
+          tris: info.triangles,
+        });
+      }
+
       if (perf) {
         accum += performance.now() - frameStart;
         frames++;
@@ -1217,7 +1365,8 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       labelLayer.remove();
       tip.remove();
     };
-  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded, symbols]);
+  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded, symbols,
+      settings.allLevelsLimit]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;
@@ -1300,6 +1449,44 @@ export function Scene({ data }: { data: LoadPayload | null }) {
                   : 'camera distance = focus altitude'}
           </span>
         </div>
+        {adaptNote && (
+          <div className="hint" onClick={() => setAdaptNote(null)}>{adaptNote}</div>
+        )}
+        {settings.showFps && (
+          <div className={stats.p95Ms > 16.7 ? 'scene-fps over' : 'scene-fps'}>
+            <span className="fps-headline">
+              <strong>{stats.fps.toFixed(0)}</strong> fps
+            </span>
+            {/* Mean is the number that hides a stutter; p95 is the one you feel. */}
+            <span>{stats.meanMs.toFixed(1)}ms mean</span>
+            <span>{stats.p95Ms.toFixed(1)}ms p95</span>
+            <span>{stats.worstMs.toFixed(1)}ms worst</span>
+            <span className="dim">
+              {stats.visible.toLocaleString()} of {nodeCount.toLocaleString()} drawn
+            </span>
+            <span className="dim">{stats.draws} draws · {(stats.tris / 1000).toFixed(0)}k tris</span>
+            <span className="dim">
+              limit {settings.allLevelsLimit === 0 ? 'off' : settings.allLevelsLimit.toLocaleString()}
+            </span>
+            {gpu && (
+              <span className="dim" title={gpu}>
+                {/* ANGLE wraps the real name in parentheses and a pile of driver detail. */}
+                {(/\(([^,]+),\s*([^,)]+)/.exec(gpu)?.[2] ?? gpu).trim().slice(0, 28)}
+              </span>
+            )}
+            <button
+              className="link"
+              onClick={() => {
+                // Off means "draw everything, I have measured this machine".
+                const next = settings.allLevelsLimit === 0 ? DEFAULT_SETTINGS.allLevelsLimit : 0;
+                setSettings({ ...settings, allLevelsLimit: next });
+                void window.vds.settings({ allLevelsLimit: next });
+              }}
+            >
+              {settings.allLevelsLimit === 0 ? 'restore limit' : 'draw everything'}
+            </button>
+          </div>
+        )}
         <div className="scene-keys">
           <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> pan ·
           <kbd>Q</kbd><kbd>E</kbd> up/down · <kbd>shift</kbd> faster ·

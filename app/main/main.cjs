@@ -49,6 +49,15 @@ const DIST = path.join(__dirname, '..', 'dist');
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
 /** Session state. `dir` is the codemap output dir; `repo` is what we analyse. */
+/**
+ * Name the app before anything asks where its data lives.
+ *
+ * Without this `app.getName()` is "Electron", so `userData` is ~/.config/Electron — a folder
+ * shared with every other unpackaged Electron app on the machine. Render settings and the
+ * per-repo map directories were both being written there.
+ */
+app.setName('visual-desloppify');
+
 const state = {
   repo: process.env.VDS_REPO || null,
   dir: process.env.VDS_DIR || path.resolve(ROOT, 'out'),
@@ -446,6 +455,34 @@ ipcMain.handle('vds:symbols', (_e, { file }) => {
   }
 });
 
+/**
+ * Render settings live with the app, not with the repo.
+ *
+ * They describe the machine — what its GPU will draw before the frame budget goes — so they
+ * apply to every codebase you open and follow you between them. Written whole on each change;
+ * it is three fields and the file is read once at startup.
+ */
+const settingsPath = () => path.join(app.getPath('userData'), 'render-settings.json');
+
+ipcMain.handle('vds:settings', (_e, patch) => {
+  let current = {};
+  try {
+    if (fs.existsSync(settingsPath())) current = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
+  } catch {
+    // A settings file we cannot read is replaced by the defaults rather than failing a launch.
+  }
+  if (patch && typeof patch === 'object') {
+    current = { ...current, ...patch };
+    try {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      fs.writeFileSync(settingsPath(), `${JSON.stringify(current, null, 2)}\n`);
+    } catch (err) {
+      return { ...current, error: err.message };
+    }
+  }
+  return current;
+});
+
 ipcMain.handle('vds:load', () => {
   const stack = readJson('focus.json', null);
 
@@ -490,6 +527,7 @@ ipcMain.handle('vds:load', () => {
     // Which panel to open on. Exists so `pnpm shot` can capture a specific screen.
     initialTab: process.env.VDS_TAB || null,
     perf: !!process.env.VDS_PERF,
+    bench: Number(process.env.VDS_BENCH || 0),
     lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
     channelDefault: process.env.VDS_CHANNEL || 'structure',
     autoArbitrate: !!process.env.VDS_ARBITRATE,
