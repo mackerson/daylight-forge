@@ -154,18 +154,35 @@ were all the same but for a few fields":
 
 ## Layout
 
+Three runtimes, not three features — each with its own tsconfig, so the boundaries are
+checked rather than merely intended. Declared in `vds.target.json` and verified by
+`pnpm plan .`.
+
 ```
-src/
-  cli.ts                 entry point
-  graph/types.ts         L0 schema — language-neutral on purpose
-  extract/
-    parser.ts            provider contract
-    ts-parser.ts         TypeScript compiler API provider
-    resolve.ts           import resolution + tsconfig path aliases
-    index.ts             walk, parse, assemble
-  detect/duplication.ts  D1-D3, patterns, families
-  render/mermaid.ts      L1 render
+engine/          headless analysis · Node, type-stripped, no DOM, no bundler
+  cli.ts           entry point; runs standalone
+  graph/           L0 schema — language-neutral on purpose
+  extract/         walk, parse (TS compiler API), resolve, parse cache
+  detect/          D1–D3 duplication, structural findings
+  focus/           the L1→L2→L3 stack  (types.ts is import-free, shared with the renderer)
+  invariants/      compile prose invariants to L0 queries
+  plan/            target architecture diff and task packets
+  scene/           layout geometry — pure maths, so it belongs here not in the renderer
+  store/           claim store  (types.ts is import-free, shared with the renderer)
+  swarm/           adapters, driver, frontier
+  mcp/             the MCP server agents write through
+
+app/
+  main/            Electron main + preload · CommonJS
+  renderer/        Chromium · React + three.js via Vite
+    lib/           panels, App, renderer-only types
+
+fixtures/        calibration invariants and target for the enclave fixture
 ```
+
+The engine depends on nothing above it; the renderer shares the engine's type vocabulary
+rather than redeclaring it. That last part was not a design decision — the tool found the
+duplicate declarations on this repo and scored them at 1.00.
 
 ## The app
 

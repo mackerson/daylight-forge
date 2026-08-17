@@ -7,7 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { layoutTree } from '../../ui/src/scene/tree.ts';
+import { layoutTree } from '../scene/tree.ts';
 
 let passed = 0;
 let failed = 0;

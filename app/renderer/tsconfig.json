@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": []
+  },
+  // Only what the renderer actually imports is followed. Blanket-including engine
+  // directories dragged in node:sqlite, which the browser has no business seeing.
+  "include": ["."]
+}

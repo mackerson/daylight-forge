@@ -5,23 +5,23 @@
   "type": "module",
   "description": "Get all the data, then focus it down.",
   "bin": {
-    "vds": "src/cli.ts"
+    "vds": "engine/cli.ts"
   },
   "scripts": {
-    "map": "node src/cli.ts map",
-    "extract": "node src/cli.ts extract",
-    "invariants": "node src/cli.ts invariants",
-    "focus": "node src/cli.ts focus",
-    "agent": "node src/cli.ts agent",
-    "view": "electron electron/main.cjs",
-    "shot": "VDS_SHOT=${VDS_SHOT:-./out/view.png} electron electron/main.cjs",
-    "smoke": "node src/test/smoke.ts",
-    "typecheck": "tsc --noEmit",
-    "gui": "vite build && electron electron/main.cjs",
+    "map": "node engine/cli.ts map",
+    "extract": "node engine/cli.ts extract",
+    "invariants": "node engine/cli.ts invariants",
+    "focus": "node engine/cli.ts focus",
+    "agent": "node engine/cli.ts agent",
+    "view": "electron app/main/main.cjs",
+    "shot": "VDS_SHOT=${VDS_SHOT:-./out/view.png} electron app/main/main.cjs",
+    "smoke": "node engine/test/smoke.ts",
+    "typecheck": "tsc -p engine --noEmit && tsc -p app/renderer --noEmit",
+    "gui": "vite build && electron app/main/main.cjs",
     "gui:dev": "vite --host 127.0.0.1",
     "ui:build": "vite build",
-    "test": "node src/test/smoke.ts ./out && node src/test/scene.ts ./out",
-    "plan": "node src/cli.ts plan"
+    "test": "node engine/test/smoke.ts ./out && node engine/test/scene.ts ./out",
+    "plan": "node engine/cli.ts plan"
   },
   "engines": {
     "node": ">=22.18"

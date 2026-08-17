@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { layout } from '../scene/layout.ts';
-import { layoutTree } from '../scene/tree.ts';
+import { layout } from '../../../../engine/scene/layout.ts';
+import { layoutTree } from '../../../../engine/scene/tree.ts';
 import type { LoadPayload } from '../types.ts';
 
 /**

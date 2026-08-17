@@ -1,90 +1,24 @@
-export interface FocusNode {
-  id: string;
-  label: string;
-  purpose?: string;
-  members: string[];
-  fileCount: number;
-  symbolCount: number;
-  origin: 'path' | 'cluster' | 'elision' | 'defended';
-}
+/**
+ * Renderer-local types.
+ *
+ * The focus, claim and duplication shapes are imported from the engine rather than
+ * redeclared — the tool caught the copies on this very repo, scoring `FocusLevel` and
+ * `FocusEdge` at 1.00 against their originals. Only what genuinely belongs to the
+ * renderer lives here: the IPC payloads and the preload surface.
+ */
+export type {
+  FocusNode, FocusEdge, FocusLevel, FocusStack, NodeBelief,
+} from '../../../engine/focus/types.ts';
+export type {
+  Claim, ClaimStatus, Belief, Evidence,
+} from '../../../engine/store/types.ts';
+export type { InvariantResult } from '../../../engine/invariants/engine.ts';
+export type { D1Pair, Family } from '../../../engine/detect/duplication.ts';
 
-export interface FocusEdge {
-  from: string;
-  to: string;
-  weight: number;
-  kinds: string[];
-}
-
-export interface FocusLevel {
-  level: 1 | 2 | 3;
-  name: string;
-  nodes: FocusNode[];
-  edges: FocusEdge[];
-  elided: Array<{ id: string; members: number; reason: string }>;
-  rejected?: Array<{ id: string; into: string; why: string }>;
-}
-
-export interface FocusStack {
-  l0: { files: number; symbols: number; edges: number };
-  levels: FocusLevel[];
-  l3Status: 'TRUE' | 'STALE' | 'UNPROVEN';
-}
-
-export interface InvariantResult {
-  id: string;
-  prose: string;
-  status: 'green' | 'red';
-  measured: string;
-  violations: Array<{ where: string; detail: string; line?: number }>;
-}
-
-export interface Evidence {
-  file: string;
-  line?: number;
-  endLine?: number;
-  note?: string;
-}
-
-export interface Claim {
-  id: number;
-  subject: string;
-  predicate: string;
-  value: unknown;
-  source: { kind: 'static' | 'agent' | 'human'; tool?: string; model?: string };
-  confidence: number;
-  evidence: Evidence[];
-  at: number;
-}
-
-export type ClaimStatus =
-  | 'UNKNOWN' | 'INFERRED' | 'CORROBORATED' | 'CONTRADICTED' | 'CONFIRMED' | 'STALE';
-
-export interface Belief {
-  subject: string;
-  predicate: string;
-  status: ClaimStatus;
-  value?: unknown;
-  confidence: number;
-  claims: Claim[];
-}
-
-export interface Family {
-  id: string;
-  members: string[];
-  detectors: string[];
-  topScore?: number;
-  evidence: string[];
-}
-
-export interface D1Pair {
-  a: string;
-  b: string;
-  score: number;
-  nameScore: number;
-  shared: string[];
-  onlyA: string[];
-  onlyB: string[];
-}
+import type { FocusStack } from '../../../engine/focus/types.ts';
+import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
+import type { InvariantResult } from '../../../engine/invariants/engine.ts';
+import type { D1Pair, Family } from '../../../engine/detect/duplication.ts';
 
 export interface Findings {
   d1: D1Pair[];

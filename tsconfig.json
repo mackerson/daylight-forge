@@ -1,28 +1,6 @@
 {
-  "compilerOptions": {
-    "target": "ES2023",
-    "lib": [
-      "ES2023",
-      "DOM",
-      "DOM.Iterable"
-    ],
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "types": [
-      "node"
-    ],
-    "allowImportingTsExtensions": true,
-    "erasableSyntaxOnly": true,
-    "verbatimModuleSyntax": true,
-    "noEmit": true,
-    "strict": true,
-    "noUncheckedIndexedAccess": false,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "jsx": "react-jsx"
-  },
-  "include": [
-    "src",
-    "ui/src"
-  ]
+  // Solution file: each runtime is checked under its own lib set. `pnpm typecheck`
+  // runs both, because a single shared config is what let DOM leak into the engine.
+  "files": [],
+  "references": [{ "path": "./engine" }, { "path": "./app/renderer" }]
 }

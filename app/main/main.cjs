@@ -16,8 +16,8 @@ const path = require('node:path');
  * bundled Node can strip types.
  */
 
-const ROOT = path.resolve(__dirname, '..');
-const CLI = path.join(ROOT, 'src', 'cli.ts');
+const ROOT = path.resolve(__dirname, '..', '..');
+const CLI = path.join(ROOT, 'engine', 'cli.ts');
 
 /**
  * A real node binary — NOT process.execPath, which inside Electron is the Electron
@@ -44,7 +44,7 @@ const NODE = (() => {
 
 const nodeArgs = (argv) => [...NODE.extraArgs, CLI, ...argv];
 const nodeEnv = () => ({ ...process.env, ...NODE.env });
-const DIST = path.join(__dirname, 'dist');
+const DIST = path.join(__dirname, '..', 'dist');
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
 /** Session state. `dir` is the codemap output dir; `repo` is what we analyse. */

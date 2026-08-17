@@ -1,3 +1,15 @@
+import type { FocusStack } from '../focus/types.ts';
+
+/**
+ * What the tree layout needs, and no more. It used to take the renderer's whole IPC
+ * payload, which is what forced this pure-geometry code to live in the renderer and made
+ * the engine depend on it backwards.
+ */
+export interface TreeInput {
+  stack: FocusStack | null;
+  fileEdges: Array<{ from: string; to: string; weight: number }>;
+}
+
 /** Shared shape so the scene renders graph and tree layouts through one path. */
 export interface SceneNode {
   key: string;

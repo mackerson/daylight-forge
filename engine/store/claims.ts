@@ -7,56 +7,10 @@ import { DatabaseSync } from 'node:sqlite';
  * Uses node:sqlite so there is no native dependency to rebuild.
  */
 
-export type SourceKind = 'static' | 'agent' | 'human';
-
-export interface Source {
-  kind: SourceKind;
-  /** Static tool name, or agent CLI name. */
-  tool?: string;
-  model?: string;
-  sessionId?: string;
-}
-
-export interface Evidence {
-  file: string;
-  line?: number;
-  endLine?: number;
-  /** Free text only when a span genuinely cannot express it (a reasoning trace). */
-  note?: string;
-}
-
-export interface ClaimInput {
-  subject: string;
-  predicate: string;
-  value: unknown;
-  source: Source;
-  confidence: number;
-  evidence: Evidence[];
-  observedHash?: string;
-}
-
-export interface Claim extends ClaimInput {
-  id: number;
-  at: number;
-}
-
-export type ClaimStatus =
-  | 'UNKNOWN'
-  | 'INFERRED'
-  | 'CORROBORATED'
-  | 'CONTRADICTED'
-  | 'CONFIRMED'
-  | 'STALE';
-
-export interface Belief {
-  subject: string;
-  predicate: string;
-  status: ClaimStatus;
-  /** Best-supported value, or undefined when sources contradict. */
-  value?: unknown;
-  confidence: number;
-  claims: Claim[];
-}
+export type {
+  SourceKind, Source, Evidence, ClaimInput, Claim, ClaimStatus, Belief,
+} from './types.ts';
+import type { Claim, ClaimInput, ClaimStatus, Belief, Evidence, Source } from './types.ts';
 
 /**
  * Predicate polarity.

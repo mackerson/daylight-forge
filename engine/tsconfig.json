@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // No DOM. The engine is headless, and a `document` reference here would typecheck
+    // clean under a shared config and then die at runtime in the CLI.
+    "lib": ["ES2023"],
+    "types": ["node"],
+    // Node strips types rather than compiling them, so nothing here may need emit.
+    "erasableSyntaxOnly": true
+  },
+  "include": ["."]
+}

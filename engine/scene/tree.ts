@@ -1,5 +1,5 @@
-import type { FocusStack, LoadPayload } from '../types.ts';
-import type { SceneLayout, SceneNode } from './types.ts';
+import type { FocusStack } from '../focus/types.ts';
+import type { SceneLayout, SceneNode, TreeInput } from './types.ts';
 
 /**
  * Cone tree — the hierarchy view.
@@ -86,7 +86,7 @@ function buildTree(files: string[], rootLabel: string): Build {
   return root;
 }
 
-export function layoutTree(data: LoadPayload, rootLabel: string): SceneLayout {
+export function layoutTree(data: TreeInput, rootLabel: string): SceneLayout {
   const stack = data.stack as FocusStack;
   const files = new Set<string>();
   for (const l of stack.levels) for (const n of l.nodes) for (const m of n.members) files.add(m);
