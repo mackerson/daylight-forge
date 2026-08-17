@@ -328,7 +328,10 @@ async function runAgent(args: Args): Promise<void> {
     mode: args.mode, timeoutMs: args.timeoutMs, model: args.model, session: args.session,
   });
 
-  console.log(`\nmode: ${args.mode} — ${report.assigned.length} frontier item(s)`);
+  console.log(
+    `\nmode: ${args.mode} — ${report.assigned.length} frontier item(s)` +
+      (report.skippedLeased ? ` · ${report.skippedLeased} held by other agents` : ''),
+  );
   console.log('─'.repeat(72));
   for (const item of report.assigned) {
     console.log(`  ${item.score.toFixed(3)}  [${item.kind}] ${item.subject}`);
@@ -392,6 +395,7 @@ function runQuery(args: Args): void {
   out.clusters = store.clusters().map((c) => ({ ...c, verdict: verdict(c.id, 'cluster_verdict') }));
   out.elisions = store.elisions().map((e) => ({ ...e, verdict: verdict(e.id, 'elision_verdict') }));
   out.defences = store.defences();
+  out.leases = store.activeLeases();
 
   const events = path.join(args.out, 'events.jsonl');
   out.events = fs.existsSync(events)

@@ -111,6 +111,13 @@ CREATE TABLE IF NOT EXISTS elisions (
   revoked  INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS leases (
+  subject   TEXT NOT NULL,
+  session   TEXT NOT NULL,
+  until     INTEGER NOT NULL,
+  PRIMARY KEY (subject)
+);
+
 CREATE TABLE IF NOT EXISTS defences (
   id       TEXT PRIMARY KEY,
   node     TEXT NOT NULL,
@@ -425,6 +432,46 @@ export class ClaimStore {
     }));
   }
 
+  /**
+   * Frontier leasing.
+   *
+   * `get_open_questions` used to be stateless, so every agent that asked got the identical
+   * top-ranked list and concurrent runs duplicated each other by construction. A lease
+   * records who is working where — the same trick the manual audit used when it
+   * "partitioned the stale set four ways so the areas did not overlap", except recorded in
+   * the shared environment rather than in someone's head.
+   *
+   * Leases expire rather than being released: an agent that dies mid-run must not hold work
+   * hostage, and the cost of occasionally handing the same item out twice is far lower than
+   * the cost of a frontier item nobody can ever be assigned.
+   */
+  lease(subjects: string[], session: string, ms = 15 * 60_000): void {
+    const until = this.now() + ms;
+    const stmt = this.db.prepare(
+      `INSERT INTO leases (subject, session, until) VALUES (?,?,?)
+       ON CONFLICT(subject) DO UPDATE SET session=excluded.session, until=excluded.until`,
+    );
+    for (const s of subjects) stmt.run(s, session, until);
+  }
+
+  /** Subjects currently leased to someone other than `session`. */
+  leasedElsewhere(session: string): Set<string> {
+    const rows = this.db
+      .prepare('SELECT subject FROM leases WHERE session != ? AND until > ?')
+      .all(session, this.now()) as Array<{ subject: string }>;
+    return new Set(rows.map((r) => r.subject));
+  }
+
+  releaseLeases(session: string): void {
+    this.db.prepare('DELETE FROM leases WHERE session = ?').run(session);
+  }
+
+  activeLeases(): Array<{ subject: string; session: string; until: number }> {
+    return this.db
+      .prepare('SELECT * FROM leases WHERE until > ? ORDER BY until')
+      .all(this.now()) as Array<{ subject: string; session: string; until: number }>;
+  }
+
   stats() {
     const one = (sql: string) => Number((this.db.prepare(sql).get() as any).n);
     return {
@@ -433,6 +480,9 @@ export class ClaimStore {
       clusters: one('SELECT COUNT(*) AS n FROM clusters'),
       elisions: one('SELECT COUNT(*) AS n FROM elisions WHERE revoked=0'),
       defences: one('SELECT COUNT(*) AS n FROM defences'),
+      leases: Number(
+        (this.db.prepare('SELECT COUNT(*) AS n FROM leases WHERE until > ?').get(this.now()) as any).n,
+      ),
     };
   }
 }

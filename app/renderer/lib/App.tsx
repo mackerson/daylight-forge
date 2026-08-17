@@ -277,7 +277,8 @@ export function App() {
               {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} />}
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} />}
               {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend}
-                  selected={selectedJob} onSelect={setSelectedJob} />}
+                  selected={selectedJob} onSelect={setSelectedJob}
+                  leases={query?.leases ?? []} />}
               {mapped && tab === 'invariants' && <Invariants data={data!} />}
             </aside>
           </>

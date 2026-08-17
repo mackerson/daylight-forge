@@ -115,6 +115,22 @@ console.log('\nclaim store');
   check('lone dismissal stays INFERRED, not settled',
     store.belief('src/c.ts', 'is_dead').status === 'INFERRED');
 
+  // Two agents asking at once must not be handed the same work.
+  store.lease(['src/a.ts', 'src/b.ts'], 'session-1');
+  check('leases are visible to other sessions',
+    store.leasedElsewhere('session-2').size === 2);
+  check('a session does not block itself',
+    store.leasedElsewhere('session-1').size === 0);
+
+  const expiring = new ClaimStore(path.join(tmp, 'lease.db'), () => 1_000_000);
+  expiring.lease(['src/x.ts'], 'gone', 10);
+  check('lease blocks while live', expiring.leasedElsewhere('other').size === 1);
+  expiring.close();
+  const later = new ClaimStore(path.join(tmp, 'lease.db'), () => 2_000_000);
+  check('lease expires rather than stranding work',
+    later.leasedElsewhere('other').size === 0);
+  later.close();
+
   const elId = store.putElision({ level: 3, members: ['x', 'y'], into: 'z', reason: 'r', source: { kind: 'agent' } });
   check('elision recorded', store.elisions(3).length === 1);
   store.revokeElision(elId);

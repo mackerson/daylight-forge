@@ -83,6 +83,7 @@ export interface QueryPayload {
     verdict: { status: ClaimStatus; value?: unknown } | null;
   }>;
   defences: Array<{ id: string; node: string; reason: string }>;
+  leases: Array<{ subject: string; session: string; until: number }>;
   events: VdsEvent[];
   error?: string;
 }

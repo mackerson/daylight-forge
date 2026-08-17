@@ -442,6 +442,21 @@ score = uncertainty(subject) × centrality(subject) × staleness_boost
 - Budget-aware: per-run token/cost ceiling, per-agent concurrency cap. Stop when the top score falls
   below a floor — that's the natural "the map has converged" signal.
 
+**Frontier leasing.** `get_open_questions` was stateless, so every agent that asked got the
+identical top-ranked list and concurrent runs duplicated each other *by construction* — the
+scheduler had no notion of who was already working where. Measured on a real two-session run:
+19% Jaccard overlap of touched nodes.
+
+An item handed out is now leased to that session, and other sessions are given the next
+unleased ones. This is the manual audit's trick — it "partitioned the stale set four ways so
+the areas did not overlap" — except recorded in the shared environment instead of in
+someone's head, which is the only version that works when agents are launched independently.
+
+Leases **expire rather than being released**. An agent that dies mid-run must not hold work
+hostage, and handing the same item out twice occasionally costs far less than a frontier item
+nobody can ever be assigned. The driver takes leases too, since it puts frontier items
+straight into the prompt and would otherwise collide before either agent starts.
+
 **Multi-model consensus is opt-in, not the default.** Fan the same question to a second and third CLI
 only for high-centrality nodes, dead-code calls, and anything the human is about to act on. Running
 every model on every question is 3–5× cost for correlated errors.

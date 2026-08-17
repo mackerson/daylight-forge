@@ -37,7 +37,7 @@ const since = (ms: number): string => {
 };
 
 export function Agents({
-  events, jobs, logs, spend, selected, onSelect,
+  events, jobs, logs, spend, selected, onSelect, leases,
 }: {
   events: VdsEvent[];
   jobs: Job[];
@@ -45,6 +45,7 @@ export function Agents({
   spend: Record<string, { cost: number; turns: number }>;
   selected: string | null;
   onSelect: (id: string | null) => void;
+  leases: Array<{ subject: string; session: string; until: number }>;
 }) {
   const feedRef = useRef<HTMLDivElement>(null);
   const running = jobs.filter((j) => j.status === 'running');
@@ -118,6 +119,13 @@ export function Agents({
           );
         })}
 
+        {leases.length > 0 && (
+          <p className="dim">
+            {leases.length} frontier item(s) leased across{' '}
+            {new Set(leases.map((l) => l.session)).size} session(s) — agents running together
+            are handed different work rather than repeating each other.
+          </p>
+        )}
         {selected && logs[selected] && (
           <pre className="log">{logs[selected].slice(-4000)}</pre>
         )}

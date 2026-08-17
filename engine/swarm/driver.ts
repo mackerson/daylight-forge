@@ -112,6 +112,8 @@ export interface DriveReport {
   statsAfter: ReturnType<ClaimStore['stats']>;
   unavailable: string[];
   registrationHints: string[];
+  /** Frontier items skipped because another live session holds them. */
+  skippedLeased: number;
 }
 
 export async function drive(options: DriveOptions): Promise<DriveReport> {
@@ -129,7 +131,17 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   const store = new ClaimStore(path.join(dir, 'claims.db'));
   const statsBefore = store.stats();
   const claimsBefore = statsBefore.claims;
-  const assigned = options.mode === 'focus' ? [] : frontier(graph, store, findings).slice(0, batch);
+  // The prompt carries frontier items directly, bypassing get_open_questions — so it has
+  // to respect and take leases too, or two launches collide before either agent starts.
+  const session = options.session ?? `vds-${Date.now()}`;
+  const taken = store.leasedElsewhere(session);
+  const assigned =
+    options.mode === 'focus'
+      ? []
+      : frontier(graph, store, findings)
+          .filter((item) => !taken.has(item.subject))
+          .slice(0, batch);
+  if (assigned.length) store.lease(assigned.map((a) => a.subject), session);
 
   let prompt: string;
   if (options.mode === 'focus') {
@@ -181,5 +193,6 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   return {
     assigned, prompt, results, claimsBefore, claimsAfter,
     statsBefore, statsAfter, unavailable, registrationHints,
+    skippedLeased: taken.size,
   };
 }

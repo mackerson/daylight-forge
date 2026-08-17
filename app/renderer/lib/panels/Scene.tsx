@@ -671,7 +671,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       line: THREE.Line;
     }
     const flyers = new Map<string, Flyer>();
-    const flyerGeo = new THREE.SphereGeometry(1, 16, 12);
+    // A cone, not a sphere: it points where the agent is heading, so direction of travel
+    // is readable at a glance and two markers on the same node stay distinguishable.
+    const flyerGeo = new THREE.ConeGeometry(0.62, 1.9, 6);
 
     const flyerFor = (session: string, label: string): Flyer => {
       const existing = flyers.get(session);
@@ -681,7 +683,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         flyerGeo,
         new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
       );
-      mesh.scale.setScalar(3.2);
+      mesh.scale.setScalar(3.4);
       const lineGeo = new THREE.BufferGeometry();
       lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(TRAIL * 3), 3));
       const line = new THREE.Line(
@@ -915,13 +917,24 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         for (const [session, f] of flyers) {
           // Ease toward the target rather than snapping: the movement is what makes the
           // swarm legible at a glance.
+          const prev = f.pos.clone();
           f.pos.lerp(f.target, Math.min(1, dt * 2.4));
           f.mesh.position.copy(f.pos);
+
+          // Point along travel; when parked, stand upright rather than freezing mid-turn.
+          const vel = f.pos.clone().sub(prev);
+          if (vel.lengthSq() > 1e-6) {
+            f.mesh.quaternion.setFromUnitVectors(
+              new THREE.Vector3(0, 1, 0), vel.normalize(),
+            );
+          } else {
+            f.mesh.quaternion.slerp(new THREE.Quaternion(), Math.min(1, dt * 2));
+          }
 
           const idle = nowMs - f.lastAt;
           const fade = idle > IDLE_MS ? 0 : 1 - idle / IDLE_MS;
           (f.mesh.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.6 * fade;
-          f.mesh.scale.setScalar(3.2 + Math.sin(nowMs / 260) * 0.5 * fade);
+          f.mesh.scale.setScalar(3.4 + Math.sin(nowMs / 260) * 0.5 * fade);
           (f.line.material as THREE.LineBasicMaterial).opacity = 0.4 * fade;
           f.mesh.visible = swarmRef.current;
           f.line.visible = swarmRef.current && f.trail.length > 1;

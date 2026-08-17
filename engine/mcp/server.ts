@@ -164,12 +164,21 @@ export function createServer(opts: ServerOptions) {
     {
       description:
         'Your assigned frontier: the highest-value unresolved things, scored by ' +
-        'uncertainty x centrality. Work these rather than picking your own targets.',
+        'uncertainty x centrality. Work these rather than picking your own targets. ' +
+        'Items you are given are leased to you, so other agents running at the same time ' +
+        'get different work — do not go looking for your own targets, you will duplicate them.',
       inputSchema: { limit: z.number().min(1).max(50).default(10) },
     },
     async ({ limit }) => {
-      emit('get_open_questions', { limit });
-      return ok(frontier(graph, store, findings).slice(0, limit));
+      // Skip whatever another live session already holds, then lease what we hand back so
+      // the next agent to ask gets different work.
+      const taken = store.leasedElsewhere(opts.session);
+      const mine = frontier(graph, store, findings)
+        .filter((item) => !taken.has(item.subject))
+        .slice(0, limit);
+      store.lease(mine.map((i) => i.subject), opts.session);
+      emit('get_open_questions', { limit, assigned: mine.length, skipped: taken.size });
+      return ok(mine);
     },
   );
 
