@@ -1,4 +1,5 @@
 import path from 'node:path';
+import ts from 'typescript';
 
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 
@@ -67,19 +68,17 @@ export class Resolver {
   }
 }
 
-/** Reads `compilerOptions.paths` out of a tsconfig without a full TS program. */
+/**
+ * Reads `compilerOptions.paths` out of a tsconfig.
+ *
+ * Uses TypeScript's own JSONC parser rather than stripping comments by regex. The
+ * hand-rolled version treated the `/*` inside a path pattern like `"@/*"` as a block-comment
+ * opener and ate the rest of the block, so path aliases silently never resolved — which made
+ * 127 live React components look like dead code on the calibration fixture.
+ */
 export function aliasesFromTsconfig(raw: string): PathAlias[] {
-  let parsed: any;
-  try {
-    // tsconfig allows comments and trailing commas; strip the common cases.
-    const stripped = raw
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/(^|[^:])\/\/.*$/gm, '$1')
-      .replace(/,(\s*[}\]])/g, '$1');
-    parsed = JSON.parse(stripped);
-  } catch {
-    return [];
-  }
+  const { config: parsed, error } = ts.parseConfigFileTextToJson('tsconfig.json', raw);
+  if (error || !parsed) return [];
 
   const opts = parsed?.compilerOptions;
   if (!opts?.paths) return [];

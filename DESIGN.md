@@ -114,6 +114,7 @@ something that looked like a finding and wasn't:
 | Phantom subsystems | an elision named `AgentTurnService.ts` sat in the architecture view as a peer of *Plugin Sandbox* | nothing — an unresolved elision target invented a bucket |
 | Fixture invariants | five RED invariants on every repo analysed | nothing — they were claims about *enclave*, compiled into the tool |
 | The fake trunk and phantom strata | a nexus every subsystem converged on, and three levels of depth | nothing — a hardcoded vertex at `(0,-30,0)`, and one partition drawn three times |
+| Unresolved path aliases | 127 live React components reported as unreachable | nothing — a regex comment-stripper ate the `/*` inside `"@/*"` and destroyed the `paths` block, so aliases never resolved and 2773 edges were missing |
 
 The failure mode is always the same and it is specific to this product: a tool whose
 output is a *picture of what is true* fails silently, because a confident-looking artifact
@@ -650,7 +651,11 @@ the fixture repo.**
    quiet at HEAD. Precision matters more than recall here — a noisy map is ignored.
 3. **Cross-agent session cost.** Four CLIs × repeated frontier passes gets expensive fast. Budget
    ceilings need to be real, visible, and enforced in the driver.
-4. **Dismissal is free.** Evidence enforcement makes a false claim expensive; it does nothing about
+4. **Hand-rolled parsing of other people's formats.** The tsconfig comment-stripper cost 2773
+   edges and a page of false dead code before anyone noticed, because the failure was silent and
+   the output still looked plausible. We depend on TypeScript already; its JSONC parser was
+   always right there. Treat any regex over a real grammar as a bug not yet found.
+5. **Dismissal is free.** Evidence enforcement makes a false claim expensive; it does nothing about
    an agent clearing frontier items by ruling them out cheaply. desloppify solves the analogous
    problem by widening its score gap on `wontfix`. We need something equivalent — perhaps a
    negative claim requires strictly more evidence than a positive one, or dismissals decay back onto

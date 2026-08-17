@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { detectDuplication } from './detect/duplication.ts';
+import { detectStructure } from './detect/structure.ts';
 import { extract } from './extract/index.ts';
 import type { Graph } from './graph/types.ts';
 import { mermaidStats, toMermaid } from './render/mermaid.ts';
@@ -93,12 +94,14 @@ function runExtract(args: Args): void {
 function emitExtract(args: Args, graph: Graph): void {
   const started = Date.now();
   const dup = detectDuplication(graph);
+  const structure = detectStructure(graph);
   const mermaid = toMermaid(graph, { depth: args.depth });
   const mstats = mermaidStats(graph, { depth: args.depth });
 
   fs.mkdirSync(args.out, { recursive: true });
   fs.writeFileSync(path.join(args.out, 'graph.json'), JSON.stringify(graph, null, 2));
   fs.writeFileSync(path.join(args.out, 'findings.json'), JSON.stringify(dup, null, 2));
+  fs.writeFileSync(path.join(args.out, 'structure.json'), JSON.stringify(structure, null, 2));
   fs.writeFileSync(path.join(args.out, 'map.mmd'), mermaid + '\n');
 
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
@@ -141,6 +144,26 @@ function emitExtract(args: Args, graph: Graph): void {
     if (fam.members.length > 4) console.log(`      … ${fam.members.length - 4} more`);
   }
 
+  const st = structure;
+  const tier = (t: string) => st.dead.filter((d) => d.tier === t).length;
+  console.log(
+    `\nStructure: ${st.stats.reachable}/${st.stats.files} reachable from ${st.entrypoints.length} entrypoint(s)`,
+  );
+  console.log(
+    `  dead candidates ${st.dead.length} (high ${tier('high')} · medium ${tier('medium')} · low ${tier('low')})` +
+      ` · cycles ${st.cycles.length} · limbs ${st.limbs.length} · gods ${st.gods.length} · orphan clusters ${st.orphans.length}`,
+  );
+  if (st.warning) console.log(`  ⚠ ${st.warning}`);
+  for (const d of st.dead.filter((x) => x.tier !== 'low').slice(0, args.top)) {
+    console.log(`  [${d.tier}] ${short(d.id)} — ${d.why}`);
+  }
+  for (const c of st.cycles.slice(0, 3)) {
+    console.log(`  cycle ${c.members.length} files, ${c.internalEdges} internal edges: ${c.members.slice(0, 3).map(short).join(' → ')}…`);
+  }
+  for (const l of st.limbs.slice(0, 3)) {
+    console.log(`  limb ${l.dir} — ${(l.leakage * 100).toFixed(0)}% of edges leave the subtree (${l.files} files)`);
+  }
+
   console.log(`\nTop D1 pairs:`);
   for (const p of dup.d1.slice(0, args.top)) {
     console.log(
@@ -151,7 +174,7 @@ function emitExtract(args: Args, graph: Graph): void {
     }
   }
 
-  console.log(`\nwrote ${args.out}/{graph.json,findings.json,map.mmd} in ${elapsed}s`);
+  console.log(`\nwrote ${args.out}/{graph.json,findings.json,structure.json,map.mmd} in ${elapsed}s`);
 }
 
 function runInvariants(args: Args): void {
