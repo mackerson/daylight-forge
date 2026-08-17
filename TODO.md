@@ -3,8 +3,29 @@
 Everything outstanding, in the order I would do it. Rationale for the phase ordering lives in
 [DESIGN.md](DESIGN.md); this is the working list.
 
-Status as of the last session: **P0–P9 built**, all gates passed except the two noted under
-P13. This repo maps itself clean — 0 duplication pairs, invariants 5/5 green, target passing.
+**Status:** P0–P13 built. Every gate passed except the one under P13 that will not be
+manufactured. This repo maps itself clean — 0 duplication families, 0 D4 body pairs,
+invariants 6/6 green, target passing. Suite is **269 assertions across 12 files**
+(`pnpm test:all`).
+
+### What is left, and why
+
+Nothing in the backlog is left because it was fiddly. Four things need **your decision**
+before code is the right move, and four are **genuinely large**:
+
+| Needs a decision | Why it is yours |
+| --- | --- |
+| Naming a parallel implementation (D5 vs a file-level name detector) | Calibration proved D1–D4 structurally cannot reach it. Two mechanisms, very different costs — DESIGN open problem 6. |
+| Packaging | Needs `electron-builder`. New dependency, and the build produces something you would sign and hand out. |
+| Replay scrubber | Deferred pending evidence anyone wants it. Still no evidence. |
+| Polyglot: tree-sitter provider **or** consume desloppify's findings | Two different products. The second makes us a consumer of theirs. |
+
+| Genuinely large | Size |
+| --- | --- |
+| Stable node identity across renames | DESIGN open problem 1. Touches identity everywhere; the longer it waits the worse it gets. |
+| Symbol-level depth in the tree | ~10× the nodes; needs the expand-on-demand path first. |
+| D5 embeddings | A model dependency and the hardest findings to evidence. |
+| A genuine cross-model disagreement (P13) | Cannot be built, only encountered. |
 
 ---
 
@@ -236,10 +257,15 @@ Ordered loosely by value, not scheduled.
 
 ### Operations
 - [ ] Packaging. `pnpm gui` needs the repo checked out; there is no distributable build.
+      Wants `electron-builder`, which is a new dependency and produces an artefact you would
+      sign and hand to someone — both your call, so it is not started.
 - [x] `engine/test/extract.ts` (38) and `engine/test/structure.ts` (15) close the gap.
       Both shipped bugs have a named regression case: the tsconfig `/*` that disabled every
       path alias, and the missing `NewExpression` that hid every instantiation.
-      Suite is now 142 assertions across 8 files, all run by `pnpm test:all`.
+      Suite is now **269 assertions across 12 files**, all run by `pnpm test:all`:
+      `extract` (38), `structure` (23), `duplication` (19), `calibrate` (16), `shapes` (39),
+      `providers` (22), `communities` (9), `smoke` (28), `scene` (11), `frontier` (18),
+      `share` (26), `budget` (8), `check` (12).
 - [x] `--include-tests` is still off by default — tests double the node count and duplicate
       each other by nature — but excluding them from the *map* no longer excludes them from
       *reachability*. It did, and the tool was confidently wrong because of it: on the fixture
