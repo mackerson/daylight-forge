@@ -17,7 +17,12 @@ const LABEL: Record<string, string> = {
  * Live agent activity, streamed from the MCP server's event log rather than parsed
  * out of each CLI's stdout — every adapter writes through that one boundary.
  */
-export function Agents({ events, jobs, logs }: { events: VdsEvent[]; jobs: Job[]; logs: Record<string, string> }) {
+export function Agents({ events, jobs, logs, spend }: {
+  events: VdsEvent[];
+  jobs: Job[];
+  logs: Record<string, string>;
+  spend: Record<string, { cost: number; turns: number }>;
+}) {
   const feedRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
@@ -34,6 +39,11 @@ export function Agents({ events, jobs, logs }: { events: VdsEvent[]; jobs: Job[]
           <div key={j.id} className="job">
             <span className={`pill ${j.status}`}>{j.status}</span>
             <code>{j.label}</code>
+            {spend[j.id] && (
+              <span className="dim">
+                ${spend[j.id].cost.toFixed(2)} · {spend[j.id].turns} turns
+              </span>
+            )}
             {j.status === 'running' && (
               <button className="link" onClick={() => window.vds.stopJob(j.id)}>stop</button>
             )}

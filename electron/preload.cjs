@@ -33,6 +33,16 @@ contextBridge.exposeInMainWorld('vds', {
     ipcRenderer.on('vds:job', h);
     return () => ipcRenderer.removeListener('vds:job', h);
   },
+  onJobStats: (fn) => {
+    const h = (_e, payload) => fn(payload);
+    ipcRenderer.on('vds:job-stats', h);
+    return () => ipcRenderer.removeListener('vds:job-stats', h);
+  },
+  onDerived: (fn) => {
+    const h = (_e, payload) => fn(payload);
+    ipcRenderer.on('vds:derived', h);
+    return () => ipcRenderer.removeListener('vds:derived', h);
+  },
   onJobOutput: (fn) => {
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on('vds:job-output', h);

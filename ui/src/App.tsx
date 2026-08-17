@@ -24,6 +24,7 @@ export function App() {
   const [events, setEvents] = useState<VdsEvent[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<Record<string, string>>({});
+  const [spend, setSpend] = useState<Record<string, { cost: number; turns: number }>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The scene is the point of the app, so it takes the space and the info pane is sized
@@ -65,12 +66,19 @@ export function App() {
       // A finished job usually changed the store, so pull fresh state.
       if (j.status !== 'running') void refresh();
     });
+    // The stack was re-derived because claims changed; pull the new one.
+    const offDerived = window.vds.onDerived(() => void refresh());
+    const offStats = window.vds.onJobStats(({ id, cost, turns }) =>
+      setSpend((prev) => ({ ...prev, [id]: { cost, turns } })),
+    );
     const offOut = window.vds.onJobOutput(({ id, text }) =>
       setLogs((prev) => ({ ...prev, [id]: (prev[id] ?? '') + text })),
     );
     return () => {
       offEvent();
       offJob();
+      offDerived();
+      offStats();
       offOut();
     };
   }, [refresh]);
@@ -79,6 +87,8 @@ export function App() {
   // Data can exist without a repo path (launched against an output dir directly), so the
   // panels key off whether a map was produced, not off the repo setting.
   const mapped = !!data?.stack;
+  const totalCost = Object.values(spend).reduce((sum, s) => sum + s.cost, 0);
+  const totalTurns = Object.values(spend).reduce((sum, s) => sum + s.turns, 0);
   const contradictions = query?.contradictions ?? [];
 
   const act = async (fn: () => Promise<{ error?: string } | unknown>) => {
@@ -135,6 +145,13 @@ export function App() {
         </button>
 
         <div className="spacer" />
+
+        {(totalCost > 0 || running.length > 0) && (
+          <div className="spend" title="spend and turns this session, parsed from agent output">
+            <strong>${totalCost.toFixed(2)}</strong>
+            <span className="dim">{totalTurns} turns</span>
+          </div>
+        )}
 
         <button disabled={!data?.repo || busy} onClick={() => act(() => window.vds.map())}>
           Map
@@ -217,7 +234,7 @@ export function App() {
               {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
               {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} />}
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} />}
-              {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} />}
+              {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend} />}
               {mapped && tab === 'invariants' && <Invariants data={data!} />}
             </aside>
           </>

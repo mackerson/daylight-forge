@@ -167,6 +167,8 @@ declare global {
       reveal(p: { file: string; line?: number }): Promise<{ ok: boolean }>;
       onEvent(fn: (e: VdsEvent) => void): () => void;
       onJob(fn: (j: Job) => void): () => void;
+      onDerived(fn: (p: { at: number }) => void): () => void;
+      onJobStats(fn: (p: { id: string; cost: number; turns: number }) => void): () => void;
       onJobOutput(fn: (o: { id: string; stream: string; text: string }) => void): () => void;
     };
   }

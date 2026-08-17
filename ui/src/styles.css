@@ -41,6 +41,13 @@ code, .mono { font-family: inherit; }
 .topbar button:disabled { opacity: .4; cursor: not-allowed; }
 .path { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.spend {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel-2); font-size: 12px;
+}
+.spend strong { color: var(--warn); }
+
 .banner {
   padding: 8px 12px; border-bottom: 1px solid var(--line);
   display: flex; gap: 12px; align-items: center;

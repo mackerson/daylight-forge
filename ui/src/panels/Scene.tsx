@@ -21,6 +21,63 @@ const COLORS = {
   hover: new THREE.Color('#6ea8fe'),
 };
 
+export type Channel = 'structure' | 'belief' | 'frontier' | 'agent';
+
+const CHANNEL_HELP: Record<Channel, string> = {
+  structure: 'agent-named, path group, or defended',
+  belief: 'how much is known, and what is disputed',
+  frontier: 'where the swarm is heading next',
+  agent: 'who has worked here',
+};
+
+/**
+ * Belief palette. Unknown is deliberately near-invisible: the design's whole point is that
+ * absence must look like absence, so an unexamined map should look unexamined.
+ */
+const BELIEF: Record<string, THREE.Color> = {
+  // Muted, but not invisible: absence should read as absence without erasing the form.
+  UNKNOWN: new THREE.Color('#3d4653'),
+  INFERRED: new THREE.Color('#8a7bd8'),
+  CORROBORATED: new THREE.Color('#7ee0a8'),
+  CONFIRMED: new THREE.Color('#6ea8fe'),
+  CONTRADICTED: new THREE.Color('#f07a7a'),
+  STALE: new THREE.Color('#f0a868'),
+};
+
+const COLD = new THREE.Color('#333b46');
+const HOT = new THREE.Color('#ffd479');
+
+/** Stable per-agent hue, so the same tool keeps its colour across sessions. */
+function agentColor(name: string): THREE.Color {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (Math.imul(31, h) + name.charCodeAt(i)) | 0;
+  return new THREE.Color().setHSL(((h >>> 0) % 360) / 360, 0.55, 0.62);
+}
+
+const scratch = new THREE.Color();
+
+/** Colour for a node under the active channel. */
+function channelColor(node: any, channel: Channel, maxHeat: number): THREE.Color {
+  if (channel === 'belief') {
+    const b = node.belief;
+    if (!b) return BELIEF.UNKNOWN;
+    const base = BELIEF[b.status] ?? BELIEF.UNKNOWN;
+    // Coverage drives the gradient: a node where half the members are unexamined should
+    // not look as settled as one where all of them are.
+    return scratch.copy(BELIEF.UNKNOWN).lerp(base, 0.25 + 0.75 * b.known).clone();
+  }
+  if (channel === 'frontier') {
+    const heat = node.belief?.heat ?? 0;
+    return scratch.copy(COLD).lerp(HOT, maxHeat > 0 ? Math.min(1, heat / maxHeat) : 0).clone();
+  }
+  if (channel === 'agent') {
+    const agents: string[] = node.belief?.agents ?? [];
+    if (!agents.length) return BELIEF.UNKNOWN;
+    return agentColor(agents[0]);
+  }
+  return node.defended ? COLORS.defended : node.purpose ? COLORS.named : COLORS.path;
+}
+
 export function Scene({ data }: { data: LoadPayload | null }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<any>(null);
@@ -41,6 +98,10 @@ export function Scene({ data }: { data: LoadPayload | null }) {
    */
   const [lod, setLod] = useState<'auto' | 'all'>('all');
   const [nodeCount, setNodeCount] = useState(0);
+  const [channel, setChannel] = useState<Channel>('structure');
+  const [pulses, setPulses] = useState(true);
+  const pulsesRef = useRef(true);
+  pulsesRef.current = pulses;
   const seededMode = useRef(false);
   const apiRef = useRef<{ setLevel: (n: number) => void } | null>(null);
   // Selection survives a layout switch: spot a tangle in the graph, then see where it
@@ -55,6 +116,8 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     if (data.initialMode !== 'graph') setMode(data.initialMode);
     const seedLod = (data as any).lodDefault;
     if (seedLod === 'auto') setLod('auto');
+    const seedChannel = (data as any).channelDefault as Channel | undefined;
+    if (seedChannel && seedChannel !== 'structure') setChannel(seedChannel);
   }, [data?.initialMode]);
 
   useEffect(() => {
@@ -76,6 +139,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#0a0c10');
+    // Fog has to follow the camera. A fixed range was tuned for the graph layout, and the
+    // tree of a 400-file repo sits far enough out that every node fell past `far` and
+    // rendered as pure background — the map looked empty while the DOM labels kept working.
     scene.fog = new THREE.Fog('#0a0c10', 320, 900);
 
     const camera = new THREE.PerspectiveCamera(52, 1, 0.5, 3000);
@@ -98,6 +164,13 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const LOD_THRESHOLD = 2500;
     const showAll = lod === 'all' && laid.nodes.size <= LOD_THRESHOLD;
     const defended = new Set((data.defended ?? []).map(String));
+
+    // Defined before anything paints: the mesh loop below colours through it.
+    const maxHeat = Math.max(
+      0,
+      ...[...laid.nodes.values()].map((n: any) => n.belief?.heat ?? 0),
+    );
+    const baseColor = (node: any) => channelColor(node, channel, maxHeat);
 
     const byLevel = new Map<number, any[]>();
     for (const lvl of distinct) byLevel.set(lvl, []);
@@ -132,7 +205,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         node.defended =
           !node.isRoot &&
           (node.members.some((mm: string) => defended.has(mm)) || defended.has(node.id));
-        mesh.setColorAt(i, node.defended ? COLORS.defended : node.purpose ? COLORS.named : COLORS.path);
+        mesh.setColorAt(i, baseColor(node));
         node.index = i;
         node.radius = s;
       });
@@ -258,7 +331,12 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const orbit = {
       theta: 0.7,
       phi: laid.mode === 'tree' ? 1.35 : 1.15,
-      distance: laid.mode === 'tree' ? Math.max(220, extent * 2.6, depthSpan * 2.2) : 300,
+      // Fit to the vertical FOV rather than a guessed multiple: a deep tree and a wide one
+      // need different distances, and the old constant framed both too far out.
+      distance:
+        laid.mode === 'tree'
+          ? Math.max(200, extent * 1.5, depthSpan * 1.15)
+          : 300,
       target: new THREE.Vector3(0, laid.mode === 'tree' ? -depthSpan / 2 : 0, 0),
     };
     // Framing to return to, so panning is always recoverable with one key.
@@ -451,6 +529,45 @@ export function Scene({ data }: { data: LoadPayload | null }) {
      * everything not incident to the hovered thing is dimmed — following one connection
      * by eye stops working the moment two of them cross, so the view has to do it.
      */
+    /**
+     * Pulses: a node flashes when an agent claims something about it, decaying over a
+     * couple of seconds. This is the swarm's work made visible on the map rather than
+     * only in a log — you watch it resolve.
+     */
+    const PULSE = new THREE.Color('#ffe9a8');
+    const pulseUntil = new Map<string, number>();
+    const PULSE_MS = 2200;
+
+    const nodeKeysForFile = new Map<string, string[]>();
+    for (const n of laid.nodes.values()) {
+      for (const m of n.members) {
+        const list = nodeKeysForFile.get(m);
+        if (list) list.push(n.key);
+        else nodeKeysForFile.set(m, [n.key]);
+      }
+    }
+
+    const pulseColor = (n: any): THREE.Color | null => {
+      const until = pulseUntil.get(n.key);
+      if (!until) return null;
+      const left = until - performance.now();
+      if (left <= 0) {
+        pulseUntil.delete(n.key);
+        return null;
+      }
+      return scratch.copy(baseColor(n)).lerp(PULSE, left / PULSE_MS).clone();
+    };
+
+    const offEvent = window.vds.onEvent((e) => {
+      if (!pulsesRef.current) return;
+      const subject = e.subject ?? e.node;
+      if (!subject) return;
+      const file = subject.split('#')[0];
+      for (const key of nodeKeysForFile.get(file) ?? []) {
+        pulseUntil.set(key, performance.now() + PULSE_MS);
+      }
+    });
+
     const HL_NODE = new THREE.Color('#6ea8fe');
     const HL_EDGE = new THREE.Color('#ffd479');
     const ropesByNode = new Map<string, number[]>();
@@ -540,6 +657,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         target.z + distance * Math.sin(phi) * Math.sin(theta),
       );
       camera.lookAt(target);
+      const fog = scene.fog as THREE.Fog;
+      fog.near = distance * 0.85;
+      fog.far = distance * 3.2;
 
       if (!showAll) {
         const band = bands.find((b: any) => distance >= b.minDistance) ?? bands[bands.length - 1];
@@ -564,7 +684,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
         const restore = (n: any) => {
           const m = meshes.get(n.level);
           if (!m) return;
-          m.setColorAt(n.index, n.defended ? COLORS.defended : n.purpose ? COLORS.named : COLORS.path);
+          m.setColorAt(n.index, pulseColor(n) ?? baseColor(n));
           if (m.instanceColor) m.instanceColor.needsUpdate = true;
         };
 
@@ -625,6 +745,19 @@ export function Scene({ data }: { data: LoadPayload | null }) {
           }
         }
       }
+      if (pulseUntil.size) {
+        for (const [key] of [...pulseUntil]) {
+          const node = laid.nodes.get(key) as any;
+          const mesh = node && meshes.get(node.level);
+          if (!mesh || node.index == null) {
+            pulseUntil.delete(key);
+            continue;
+          }
+          mesh.setColorAt(node.index, pulseColor(node) ?? baseColor(node));
+          if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        }
+      }
+
       const labelStart = perf ? performance.now() : 0;
       drawLabels();
       if (perf) labelWork += performance.now() - labelStart;
@@ -734,11 +867,12 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       removeEventListener('blur', onBlur);
       renderer.dispose();
       geo.dispose();
+      offEvent();
       canvas.remove();
       labelLayer.remove();
       tip.remove();
     };
-  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod]);
+  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel]);
 
   if (!data?.stack) {
     return <div className="scene-empty">Map a repo to see the tree.</div>;
@@ -764,6 +898,24 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             tree
           </button>
           <span className="sep" />
+          {(['structure', 'belief', 'frontier', 'agent'] as Channel[]).map((c) => (
+            <button
+              key={c}
+              className={channel === c ? 'chip active' : 'chip'}
+              onClick={() => setChannel(c)}
+              title={CHANNEL_HELP[c]}
+            >
+              {c}
+            </button>
+          ))}
+          <button
+            className={pulses ? 'chip active' : 'chip'}
+            onClick={() => setPulses(!pulses)}
+            title="flash a node when an agent claims something about it"
+          >
+            pulse
+          </button>
+          <span className="sep" />
           <button
             className={lod === 'all' ? 'chip active' : 'chip'}
             onClick={() => setLod(lod === 'all' ? 'auto' : 'all')}
@@ -785,7 +937,9 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             </button>
           ))}
           <span className="dim">
-            {lod === 'all'
+            {channel !== 'structure'
+              ? CHANNEL_HELP[channel]
+              : lod === 'all'
               ? `${nodeCount} nodes`
               : mode === 'tree'
                 ? 'camera distance = tree depth'

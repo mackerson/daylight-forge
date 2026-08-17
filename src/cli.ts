@@ -231,7 +231,11 @@ function emitFocus(
   store: ClaimStore,
   invariants: ReturnType<typeof evaluate>[],
 ): void {
-  const stack = buildStack(graph, store, invariants, { depth: args.depth });
+  const findingsPath = path.join(args.out, 'findings.json');
+  const findings = fs.existsSync(findingsPath)
+    ? JSON.parse(fs.readFileSync(findingsPath, 'utf8'))
+    : undefined;
+  const stack = buildStack(graph, store, invariants, { depth: args.depth, findings });
 
   console.log(`\nfocus stack — ${args.root}`);
   console.log('─'.repeat(72));
@@ -384,6 +388,37 @@ function runArbitrate(args: Args, argv: string[]): void {
   }
 }
 
+/**
+ * Re-derive the focus stack from the CACHED parse.
+ *
+ * `graph.json` is the expensive artefact; claims are cheap. So when only the claim store
+ * changed — which is what happens continuously while a swarm runs — there is no reason to
+ * re-parse the repo. This is what makes a live map affordable, and it is the same mechanism
+ * incremental re-analysis will use for code changes.
+ */
+function runDerive(args: Args): void {
+  const graphPath = path.join(args.out, 'graph.json');
+  if (!fs.existsSync(graphPath)) {
+    console.error(`no graph.json in ${args.out} — run map first`);
+    process.exit(2);
+  }
+  const started = Date.now();
+  const graph: Graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  const loaded = loadInvariants(graph.root, args.invariantsFile);
+  const invariants = loaded.invariants.map((inv) => evaluate(graph, inv));
+
+  emitFocus(args, graph, store, invariants);
+  if (invariants.length) {
+    fs.writeFileSync(
+      path.join(args.out, 'invariants.json'),
+      JSON.stringify({ commit: graph.commit, results: invariants }, null, 2),
+    );
+  }
+  store.close();
+  console.log(`derived in ${Date.now() - started}ms (no re-parse)`);
+}
+
 const args = parseArgs(process.argv.slice(2));
 
 switch (args.command) {
@@ -398,6 +433,9 @@ switch (args.command) {
     break;
   case 'map':
     runMap(args);
+    break;
+  case 'derive':
+    runDerive(args);
     break;
   case 'query':
     runQuery(args);
@@ -416,6 +454,7 @@ usage:
   node src/cli.ts extract    <path> [options]
   node src/cli.ts invariants <path> [options]
   node src/cli.ts focus      <path> [options]
+  node src/cli.ts derive     --out <dir>        # rebuild the stack from cached graph.json
   node src/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
 
 options:

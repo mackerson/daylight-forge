@@ -670,7 +670,34 @@ against the calibration fixture, because "we built it" is not the same as "it wo
 | **P3 Focus** | L1→L2→L3 by recorded, reversible, defended elisions | agents produce an L3 for the fixture comparable to the hand-drawn `README.md`, and its invariants pass | large |
 | **P4 Swarm** | four adapters, frontier scheduler, contradiction queue, budget caps | two models genuinely disagree on a real claim and arbitration resolves it | medium |
 | **P5 The view** | Electron + three.js festooned tree, semantic LOD, belief state | fly the fixture and spot a tangle you didn't already know about | large |
-| **P6 Target + plan** | target architecture, current-vs-target diff, task packets | generate the collapse plan for pre-collapse; compare against the real one | medium |
+| **P6 Live map** ◀ | the map re-derives when its inputs change — code *and* claims — with belief state driving node appearance | claims land mid-run and the scene updates without a Rebuild; re-deriving costs no re-parse | in progress |
+| **P7 Converge the focus** | L3 reaches a holdable size; clusters and elisions are arbitrable; dismissal costs something | L3 ≤ 12 nodes on enclave, every node agent-named or human-confirmed, invariants green | next |
+| **P8 The rest of the taxonomy** | dead code with confidence tiers, cycles, back-edges, weird limbs, god nodes, tree divergence | reproduce the stale-code audit's CONFIRMED set on `e946f57` | after |
+| **P9 Target + plan** | target architecture, current-vs-target diff, ordered plan, task packets | generate the collapse plan for `2a1645e`; compare against the real `collapse-plan.md` | after |
+
+### Why P6 is the live map
+
+Two things turned out to be the same feature: **re-analysing after a code change** and
+**showing the swarm's work as it happens**. Both are "re-derive when an input changes, without
+rebuilding from scratch" — one input is the code, the other is the claim store. `graph.json` is
+the cached parse, so re-deriving after a claim lands costs no re-extraction. That is the whole
+trick, and it is what makes a live view affordable.
+
+It also closes a hole in the stigmergy argument. The human is another participant reading the
+shared environment, and their read-back loop is currently the *slowest in the system*: agents
+update the store in seconds, the human sees it only after pressing Rebuild. The exact failure
+this tool exists to fix, reproduced inside the tool.
+
+Belief state finally becomes the primary visual channel the design always called for. Node
+appearance switches between four channels rather than overlaying them, because they answer
+different questions and showing all at once answers none:
+
+| Channel | Question it answers |
+| --- | --- |
+| structure | what kind of node is this — agent-named, path group, defended? |
+| belief | how much of this is actually known, and is any of it disputed? |
+| frontier | where is the swarm heading next? |
+| agent | who has been working here? |
 
 ### Why this order
 

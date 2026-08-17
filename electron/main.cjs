@@ -79,7 +79,46 @@ function readJson(name, fallback) {
  * robust than parsing four different CLI output formats, two of which we cannot even
  * point at our MCP server per-invocation.
  */
-let tail = { offset: 0, timer: null, partial: '' };
+let tail = { offset: 0, timer: null, partial: '', dbMtime: 0 };
+
+/**
+ * Re-derive the focus stack whenever the claim store changes.
+ *
+ * `graph.json` is the cached parse, so this costs no re-extraction — 17ms on a 23-file repo,
+ * 63ms on 404 files. Cheap enough to run continuously while a swarm works, which is what
+ * removes the manual Rebuild step and makes the human's read-back loop as fast as the
+ * agents' own.
+ */
+let deriveTimer = null;
+let deriving = false;
+let derivePending = false;
+
+function scheduleDerive() {
+  if (deriveTimer) clearTimeout(deriveTimer);
+  deriveTimer = setTimeout(runDerive, 500);
+}
+
+function runDerive() {
+  if (deriving) {
+    derivePending = true;
+    return;
+  }
+  deriving = true;
+  execFile(
+    NODE.bin,
+    nodeArgs(['derive', '--out', state.dir]),
+    { cwd: ROOT, env: nodeEnv(), timeout: 60_000 },
+    (err) => {
+      deriving = false;
+      if (!err) send('vds:derived', { at: Date.now() });
+      else console.error(`derive failed: ${err.message}`);
+      if (derivePending) {
+        derivePending = false;
+        scheduleDerive();
+      }
+    },
+  );
+}
 
 function startTail() {
   stopTail();
@@ -87,7 +126,24 @@ function startTail() {
   tail.offset = fs.existsSync(file) ? fs.statSync(file).size : 0;
   tail.partial = '';
 
+  const db = path.join(state.dir, 'claims.db');
+  tail.dbMtime = fs.existsSync(db) ? fs.statSync(db).mtimeMs : 0;
+
   tail.timer = setInterval(() => {
+    // The store changing is the signal to re-derive — claims can also arrive from a CLI
+    // run outside this process, so watch the file rather than only our own writes.
+    try {
+      if (fs.existsSync(db)) {
+        const m = fs.statSync(db).mtimeMs;
+        if (m !== tail.dbMtime) {
+          tail.dbMtime = m;
+          scheduleDerive();
+        }
+      }
+    } catch {
+      // A momentarily-locked db is not worth reporting.
+    }
+
     if (!fs.existsSync(file)) return;
     let size;
     try {
@@ -122,6 +178,8 @@ function startTail() {
 function stopTail() {
   if (tail.timer) clearInterval(tail.timer);
   tail.timer = null;
+  if (deriveTimer) clearTimeout(deriveTimer);
+  deriveTimer = null;
 }
 
 // ---- jobs -------------------------------------------------------------------
@@ -136,8 +194,34 @@ function runJob(label, argv, { onExit } = {}) {
   jobs.set(id, child);
   send('vds:job', { id, label, status: 'running', argv });
 
-  const push = (stream) => (d) =>
-    send('vds:job-output', { id, stream, text: d.toString() });
+  /**
+   * Cost and turn count are reported by each CLI in its own JSON, not through the MCP
+   * boundary, so this is the one place adapter-specific parsing is unavoidable. Scanning
+   * accumulated output is deliberately tolerant: an adapter that reports neither simply
+   * shows nothing rather than breaking the run.
+   */
+  let acc = '';
+  const stats = { cost: 0, turns: 0 };
+  const scan = () => {
+    let changed = false;
+    for (const m of acc.matchAll(/"total_cost_usd"\s*:\s*([0-9.]+)/g)) {
+      const v = Number(m[1]);
+      if (v > stats.cost) { stats.cost = v; changed = true; }
+    }
+    for (const m of acc.matchAll(/"num_turns"\s*:\s*([0-9]+)/g)) {
+      const v = Number(m[1]);
+      if (v > stats.turns) { stats.turns = v; changed = true; }
+    }
+    if (changed) send('vds:job-stats', { id, ...stats });
+  };
+
+  const push = (stream) => (d) => {
+    const text = d.toString();
+    // Bound the buffer: a long run can emit megabytes and we only need recent JSON.
+    acc = (acc + text).slice(-200_000);
+    scan();
+    send('vds:job-output', { id, stream, text });
+  };
   child.stdout.on('data', push('stdout'));
   child.stderr.on('data', push('stderr'));
 
@@ -261,6 +345,7 @@ ipcMain.handle('vds:load', () => {
     initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
     perf: !!process.env.VDS_PERF,
     lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
+    channelDefault: process.env.VDS_CHANNEL || 'structure',
     findings: readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] }),
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),
