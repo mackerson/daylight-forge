@@ -192,7 +192,8 @@ function runJob(label, argv, { onExit } = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   jobs.set(id, child);
-  send('vds:job', { id, label, status: 'running', argv });
+  const startedAt = Date.now();
+  send('vds:job', { id, label, status: 'running', argv, startedAt });
 
   /**
    * Cost and turn count are reported by each CLI in its own JSON, not through the MCP
@@ -227,7 +228,7 @@ function runJob(label, argv, { onExit } = {}) {
 
   child.on('close', (code) => {
     jobs.delete(id);
-    send('vds:job', { id, label, status: code === 0 ? 'done' : 'failed', code });
+    send('vds:job', { id, label, status: code === 0 ? 'done' : 'failed', code, startedAt });
     onExit?.(code);
   });
 

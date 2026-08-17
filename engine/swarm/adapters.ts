@@ -53,7 +53,12 @@ export const CLAUDE: Adapter = {
   perInvocationMcp: true,
   argv: (run) => [
     '-p', run.prompt,
-    '--output-format', 'json',
+    // Streaming, not buffered. `json` withholds everything until the process exits, so a
+    // ten-minute run shows no output at all and reads as a hang — and cost only lands at
+    // the end, which is exactly when it is too late to react to.
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    '--verbose',
     '--mcp-config', run.mcpConfigPath,
     '--strict-mcp-config',
     // Read-only allow-list. Anything else fails closed in non-interactive mode.
@@ -99,7 +104,12 @@ export const GROK: Adapter = {
   perInvocationMcp: false,
   argv: (run) => [
     '-p', run.prompt,
-    '--output-format', 'json',
+    // Streaming, not buffered. `json` withholds everything until the process exits, so a
+    // ten-minute run shows no output at all and reads as a hang — and cost only lands at
+    // the end, which is exactly when it is too late to react to.
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    '--verbose',
     '--cwd', run.cwd,
     // Allow-list of built-in tools; omit every write tool.
     '--tools', 'read,grep,glob,ls',

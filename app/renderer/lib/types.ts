@@ -51,6 +51,7 @@ export interface Job {
   label: string;
   status: 'running' | 'done' | 'failed';
   code?: number;
+  startedAt?: number;
 }
 
 export interface LoadPayload {
