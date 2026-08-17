@@ -338,6 +338,8 @@ closure runs through common signatures: one enclave run welded 107 unrelated sym
 specific:
 
 - **D1 alone qualifies.** Shape similarity over ≥3 named fields is specific.
+- **D4 alone qualifies.** It is the only detector whose evidence came from reading the code
+  rather than its label.
 - **D2 + D3 together qualify.** Two independent weak detectors agreeing on the same pair is
   corroboration.
 - **D2 or D3 alone does not.** They still surface as their own groups; they don't get to merge
@@ -351,6 +353,18 @@ evidence of a shared **role**, which makes them input to L2 clustering rather th
 
 Scaling: never compute the full N² similarity matrix. MinHash + LSH banding to get candidate pairs,
 exact scoring only within buckets.
+
+**D4's power and its failure mode are the same mechanism.** Erasing identifiers and literals is
+what lets a body survive being renamed — the whole point, since a copy that kept its name was
+already D2's finding. It also makes every declarative table look alike: the first fixture run
+matched four sibling menu definitions at 1.00, which share a shape only because they are all
+lists of the same kind of entry. A function whose entire body is one literal is *data*, not
+logic, and no longer carries a signature. That single rule removed 7 of 28 pairs, all noise.
+
+The signature is computed during the existing parse rather than by a second tool, which is why
+D4 costs nothing on a warm cache: an unchanged file's signatures come back with everything else
+it already cached. That is also the argument against wrapping `jscpd` — a second full pass over
+the tree, and a dependency, to re-derive what our own parser already has in hand.
 
 Adjudication asks: same concept, or coincidence? Which member is canonical? What's the union type or
 the extracted common function? What breaks if we merge — from the graph's blast radius, not a guess.
@@ -669,12 +683,53 @@ the fixture repo.**
 1. **Stable node identity across renames and moves.** Path+name is fragile and breaks time-travel,
    incremental caching, and any claim's survival across a refactor. Probably content-and-context
    fingerprinting with a similarity-matched rename detector. Expensive to retrofit — decide early.
-2. **Where similarity thresholds sit.** Every threshold across D1–D5 is currently a guess. Calibrate
-   against the three fixture points above: tune on pre-collapse until D1–D3 surface the ChatRepository
-   /ChannelRepository duplication that `collapse-plan.md` describes, then check the same thresholds go
-   quiet at HEAD. Precision matters more than recall here — a noisy map is ignored.
+2. **Where similarity thresholds sit.** ~~Every threshold is a guess.~~ **Measured.**
+   `engine/tools/calibrate.ts` sweeps them across all three fixture points and scores each setting on
+   what it finds versus how much it reports. Three results, one of them uncomfortable:
+
+   **The map does go quiet as the codebase is remediated.** Families per 100 files: 17.8 pre-collapse →
+   14.4 pre-remediation → 14.4 at HEAD. Raw counts would have said the opposite — HEAD has 404 files to
+   pre-collapse's 326, so a growing codebase has more of everything. Density is the number to read.
+
+   **The thresholds are staying where they are, and now that is a decision rather than an accident.**
+   Raising `minNameScore` from 0.6 to 0.8 cuts density by 23% and is what the sweep nominates, because
+   the one known pair survives it. But it also discards every D1 pair in the 0.6–0.8 band — 35 at
+   pre-collapse, 40 at HEAD — and that band *is* the "same but for a few fields" case this detector was
+   built for. With a single labelled pair the sweep cannot tell a quieter map from a blinder one. The
+   fix is more labelled pairs, not a different number. Separately, `minTypedScore` made no difference
+   at any value from 0.0 to 0.3 on any fixture point: it is a knob that does not turn.
+
+   **The ChatRepository/ChannelRepository duplication is not reachable at any threshold** — and this is
+   the useful finding, because it is not a tuning problem. D1 cannot fire: both classes expose two
+   fields (`db`, `logger`), because a repository's shape lives in SQL strings, not in its types. D4
+   cannot fire: the bodies genuinely differ, since `ChatRepository` grew search, tags and branch counts
+   that `ChannelRepository` never had. D2 and D3 do link them — via `delete` ×17, `getById` ×15,
+   `(string) => void` ×24 — every one of which is oversized and correctly reclassified as a *pattern*,
+   which is the same guard that stopped 107 symbols welding into one family in P0. The within-cap links
+   (`getParticipants` ×2, `addParticipant` ×2) have no D3 corroboration, so D2-alone does not qualify.
+
+   Every one of those refusals is individually right. Together they mean the tool cannot name a
+   duplication a human can see at a glance, because this one is **semantic, not syntactic**: two
+   hand-written stores over analogous tables whose feature sets have diverged. That is the D5 case, and
+   it is now the strongest argument for building D5 that we have — see open problem 6.
 3. **Cross-agent session cost.** Four CLIs × repeated frontier passes gets expensive fast. Budget
    ceilings need to be real, visible, and enforced in the driver.
+6. **Naming a parallel implementation.** Calibration (open problem 2) proved D1–D4 structurally
+   cannot reach `ChatRepository`/`ChannelRepository`, and that no threshold change gets there. Two
+   candidate mechanisms, not yet chosen:
+
+   - **D5 as specified** — embeddings over agent-written module summaries. Catches semantic redundancy
+     with no textual overlap at all, which is the general case. Costs an embedding model and a
+     round of agent summarisation per module, and its findings are the hardest to evidence.
+   - **A file-level name detector.** Each shared method name weighted by inverse document frequency,
+     so `delete` (17 files) counts for almost nothing and `getParticipants` (2 files) counts for a
+     lot. Purely syntactic, deterministic, no model. It would separate "both are repositories" from
+     "these two are the same repository written twice" — which is exactly the distinction that the
+     current per-name D2 cannot make, since it sees each name in isolation.
+
+   The second is far cheaper and would resolve the fixture's known case; the first is more general.
+   Building the cheap one first risks calling it done and never building D5. Not decided.
+
 4. **Hand-rolled parsing of other people's formats.** The tsconfig comment-stripper cost 2773
    edges and a page of false dead code before anyone noticed, because the failure was silent and
    the output still looked plausible. We depend on TypeScript already; its JSONC parser was

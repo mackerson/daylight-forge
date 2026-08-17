@@ -1,0 +1,21 @@
+{
+  "_": [
+    "Extract each point read-only before running — never check out or mutate the fixture:",
+    "  mkdir -p /tmp/fx-2a1645e && git -C <fixture> archive 2a1645e | tar -x -C /tmp/fx-2a1645e",
+    "mustFind names a duplication you know is there, as substringA~substringB.",
+    "mustNotFind names one that must be gone — usually because the refactor removed a side."
+  ],
+  "points": [
+    {
+      "name": "pre-collapse",
+      "repo": "/tmp/fx-2a1645e",
+      "mustFind": ["ChatMessageAttachmentRepository~MessageAttachmentRepository"]
+    },
+    { "name": "pre-remediation", "repo": "/tmp/fx-e946f57" },
+    {
+      "name": "head",
+      "repo": "/tmp/fx-27baaf2",
+      "mustNotFind": ["ChatRepository~ChannelRepository"]
+    }
+  ]
+}

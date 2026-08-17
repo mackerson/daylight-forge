@@ -173,8 +173,19 @@ Ordered loosely by value, not scheduled.
 - [x] God nodes rank by fan-in × churn where git history exists, degrading to fan-in where it
       does not rather than pretending. Puts `claims.ts` (10 × 5) above `graph/types.ts`
       (15 × 1), which is right — types barely change, so depending on them costs nothing.
-- [ ] Calibrate similarity thresholds against the fixture rather than the current guesses.
-      (DESIGN open problem 2.)
+- [x] Calibrate similarity thresholds against the fixture. `engine/tools/calibrate.ts` sweeps
+      every threshold across all three fixture points and scores each setting on what it finds
+      versus how much it reports. The map does get quieter as the codebase is remediated —
+      17.8 → 14.4 families per 100 files — which raw counts would have shown backwards, since
+      HEAD is a bigger repo. Thresholds are staying put, but now by decision: the quieter
+      setting the sweep nominates also discards the whole 0.6–0.8 band that D1 exists for, and
+      one labelled pair cannot tell quieter from blinder. `minTypedScore` turned out to be a
+      knob that does not turn. **Test:** `engine/test/calibrate.ts` (16), which caught the
+      scorer counting one symbol as both halves of a pair.
+- [ ] **Naming a parallel implementation.** Calibration proved D1–D4 cannot reach
+      `ChatRepository`/`ChannelRepository` at any threshold, and that each individual refusal
+      is correct — the duplication is semantic, not syntactic. Two candidate mechanisms with
+      very different costs, written up as DESIGN open problem 6. **Needs a decision, not code.**
 - [ ] Wrap `knip` / `dependency-cruiser` as optional providers to cross-check our native
       reachability.
 
