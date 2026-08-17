@@ -325,9 +325,20 @@ Ordered loosely by value, not scheduled.
       narrower, gate picks it up.
 
 ### Operations
-- [ ] Packaging. `pnpm gui` needs the repo checked out; there is no distributable build.
-      Wants `electron-builder`, which is a new dependency and produces an artefact you would
-      sign and hand to someone — both your call, so it is not started.
+- [x] **`pnpm package` builds a portable directory. An installer is still your call.** It
+      uses only what is already installed: Electron ships its own Node and the main process
+      already falls back to it, so the target machine needs nothing preinstalled. 347MB, one
+      second, launches with `./vds`. Verified by running the built directory outside the repo
+      — it came up and drew the map, 62 nodes with the agent-named clusters and the claim
+      store loaded.
+      That run is what caught the bug: the manifest declared `commonjs` because the entry is
+      `main.cjs`, and `.cjs` is CommonJS whatever a manifest says — so the entry loaded, the
+      window opened, and every engine operation failed, since the engine is ESM and the app
+      had said otherwise. The manifest is a function with a test now.
+      A `.deb`, `.dmg` or AppImage needs `electron-builder`, and a build anyone should trust
+      needs signing. **Both are decisions with consequences outside this repo.**
+      **Test:** `engine/test/package.ts` (13), including that the runtime dependency list
+      matches what the engine actually imports.
 - [x] `engine/test/extract.ts` (38) and `engine/test/structure.ts` (15) close the gap.
       Both shipped bugs have a named regression case: the tsconfig `/*` that disabled every
       path alias, and the missing `NewExpression` that hid every instantiation.
