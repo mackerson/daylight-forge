@@ -1,0 +1,23 @@
+{
+  "strict": false,
+  "layers": [
+    {
+      "name": "engine",
+      "include": ["src/**"],
+      "mayDependOn": ["renderer"],
+      "purpose": "headless analysis: Node, type-stripped, no build step, no DOM. May reach into renderer only to test layout logic without a browser"
+    },
+    {
+      "name": "shell",
+      "include": ["electron/**"],
+      "mayDependOn": [],
+      "purpose": "Electron main and preload, CommonJS. Shells out to the engine CLI rather than importing it, so Electron's bundled Node never has to strip types"
+    },
+    {
+      "name": "renderer",
+      "include": ["ui/**"],
+      "mayDependOn": [],
+      "purpose": "Chromium: React, three.js, bundled by Vite. Reaches the shell only through the preload bridge"
+    }
+  ]
+}
