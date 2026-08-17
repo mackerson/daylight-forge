@@ -153,7 +153,8 @@ function emitExtract(args: Args, graph: Graph): void {
   }
 
   console.log(
-    `\nD1 shape pairs ${dup.d1.length} · D2 name groups ${dup.d2.length} · D3 signature groups ${dup.d3.length}`,
+    `\nD1 shape pairs ${dup.d1.length} · D2 name groups ${dup.d2.length} · D3 signature groups ${dup.d3.length}` +
+      ` · D4 body pairs ${dup.d4.length}`,
   );
   console.log(
     `Patterns ${dup.patterns.length} (oversized groups — shared role, not copy-paste; input to L2 clustering)`,
@@ -204,6 +205,16 @@ function emitExtract(args: Args, graph: Graph): void {
     );
     if (p.onlyA.length || p.onlyB.length) {
       console.log(`      differs: -${p.onlyA.join(',') || '∅'}  +${p.onlyB.join(',') || '∅'}`);
+    }
+  }
+
+  if (dup.d4.length) {
+    console.log(`\nTop D4 body pairs (the only detector that read the code, not its label):`);
+    for (const p of dup.d4.slice(0, args.top)) {
+      console.log(
+        `  ${p.score.toFixed(2)} over ${p.tokens} tokens  ${short(p.a)}  ≈  ${short(p.b)}` +
+          (p.sameName ? '  (same name — D2 saw it too)' : ''),
+      );
     }
   }
 

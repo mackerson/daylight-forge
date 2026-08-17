@@ -17,7 +17,7 @@ export type {
   StructureReport, DeadCandidate, Cycle, Limb, GodNode, Tier,
 } from '../../../engine/detect/structure-types.ts';
 export type {
-  D1Pair, Family, D2Group, D3Group, Pattern,
+  D1Pair, Family, D2Group, D3Group, D4Pair, Pattern,
   // The renderer had its own `Findings`: the same five fields with the discriminants
   // dropped and `patterns` widened to plain string. The tool caught it on this repo, so
   // it is now the engine's type under the renderer's name rather than a restatement.

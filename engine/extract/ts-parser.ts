@@ -28,6 +28,68 @@ function isExported(decl: ts.Declaration): boolean {
   return (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0;
 }
 
+const SIGNATURE_WIDTH = 12;
+const SHINGLE = 5;
+/** Bodies shorter than this are boilerplate — a one-line arrow is not copy-paste. */
+const MIN_BODY_TOKENS = 24;
+
+/**
+ * A function whose whole body is one literal is *data*, not logic.
+ *
+ * Erasing identifiers and literals is what lets D4 see through a rename, but it also makes
+ * every declarative table look alike — on the fixture it matched four sibling menu
+ * definitions at 1.00, which share a shape only because they are all lists of the same kind
+ * of entry. Nothing is deduplicated by learning that.
+ */
+function isDataLiteral(body: ts.Node): boolean {
+  const literal = (n: ts.Node) =>
+    ts.isArrayLiteralExpression(n) || ts.isObjectLiteralExpression(n);
+  if (literal(body)) return true;
+  if (!ts.isBlock(body)) return false;
+  const only = body.statements.length === 1 ? body.statements[0] : undefined;
+  return !!only && ts.isReturnStatement(only) && !!only.expression && literal(only.expression);
+}
+
+/**
+ * A structural fingerprint of a function body.
+ *
+ * Identifiers, literals and comments are erased, leaving only the *shape* of the code —
+ * so a copy that renamed its variables still matches, which is the case that matters and
+ * the one a textual diff misses. Shingles of consecutive tokens preserve ordering, and
+ * MinHash reduces the set to a fixed-width signature that can be compared by counting
+ * equal positions.
+ */
+function bodySignature(node: ts.Node, sf: ts.SourceFile): { sig: number[]; tokens: number } | null {
+  if (isDataLiteral(node)) return null;
+
+  const tokens: string[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) || ts.isPrivateIdentifier(n)) tokens.push('id');
+    else if (ts.isStringLiteralLike(n)) tokens.push('str');
+    else if (ts.isNumericLiteral(n)) tokens.push('num');
+    else if (n.getChildCount(sf) === 0) tokens.push(ts.SyntaxKind[n.kind]);
+    n.forEachChild(walk);
+  };
+  node.forEachChild(walk);
+  if (tokens.length < MIN_BODY_TOKENS) return null;
+
+  const hash = (s: string, seed: number): number => {
+    let h = seed >>> 0;
+    for (let i = 0; i < s.length; i++) h = (Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0);
+    return h >>> 0;
+  };
+
+  const sig = new Array<number>(SIGNATURE_WIDTH).fill(0xffffffff);
+  for (let i = 0; i + SHINGLE <= tokens.length; i++) {
+    const shingle = tokens.slice(i, i + SHINGLE).join(',');
+    for (let k = 0; k < SIGNATURE_WIDTH; k++) {
+      const h = hash(shingle, k * 2654435761);
+      if (h < sig[k]) sig[k] = h;
+    }
+  }
+  return { sig, tokens: tokens.length };
+}
+
 /** Leftmost identifier of `a.b.c()` → `a`. Used to match callees against imports. */
 function leftmost(expr: ts.Expression): string | undefined {
   let cur: ts.Node = expr;
@@ -155,10 +217,12 @@ export class TypeScriptParser implements Parser {
         const name = node.name.text;
         const id = `${relPath}#${name}`;
         push(id, 'function', name, node, isExported(node));
+        const fnBody = node.body ? bodySignature(node.body, sf) : null;
         functions.push({
           nodeId: id, name, file: relPath, line: lineOf(node), kind: 'function',
           params: params(node.parameters), returnType: normalizeType(node.type, sf),
           exported: isExported(node),
+          ...(fnBody ? { body: fnBody.sig, bodyTokens: fnBody.tokens } : {}),
         });
         scope.push(id);
         pushedScope = true;
@@ -180,9 +244,11 @@ export class TypeScriptParser implements Parser {
             const mName = nameOf(m.name, sf);
             const mId = `${id}.${mName}`;
             push(mId, 'method', mName, m, false);
+            const mBody = m.body ? bodySignature(m.body, sf) : null;
             functions.push({
               nodeId: mId, name: mName, file: relPath, line: lineOf(m), kind: 'method',
               params: params(m.parameters), returnType: normalizeType(m.type, sf), exported: false,
+              ...(mBody ? { body: mBody.sig, bodyTokens: mBody.tokens } : {}),
             });
             // Walk the method body under its own scope, then skip it below.
             scope.push(mId);
@@ -234,10 +300,12 @@ export class TypeScriptParser implements Parser {
         const isCallable = init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
         push(id, isCallable ? 'function' : 'variable', name, node, isExported(node));
         if (isCallable) {
+          const arrowBody = init.body ? bodySignature(init.body, sf) : null;
           functions.push({
             nodeId: id, name, file: relPath, line: lineOf(node), kind: 'arrow',
             params: params(init.parameters), returnType: normalizeType(init.type, sf),
             exported: isExported(node),
+            ...(arrowBody ? { body: arrowBody.sig, bodyTokens: arrowBody.tokens } : {}),
           });
           scope.push(id);
           pushedScope = true;

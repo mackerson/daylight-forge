@@ -334,3 +334,11 @@ code, .mono { font-family: inherit; }
   padding: 7px 14px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
 }
+
+/* A pill that is also a control: same chip, but it announces it can be clicked. */
+.pill.as-button {
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+.pill.as-button:hover { filter: brightness(1.25); }

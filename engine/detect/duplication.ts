@@ -1,7 +1,7 @@
 import type { FunctionRecord, Graph, ShapeRecord } from '../graph/types.ts';
 
 /**
- * D1–D3. All three are deterministic and cheap — no LLM finds anything here.
+ * D1–D4. All four are deterministic and cheap — no LLM finds anything here.
  * Agents only adjudicate the families these produce. See DESIGN.md, "Duplication families".
  */
 
@@ -36,6 +36,26 @@ export interface D3Group extends DetectorGroup {
 }
 
 /**
+ * D4 — two function *bodies* that do the same work.
+ *
+ * D2 and D3 look at the outside of a function: its name and its signature. Neither sees
+ * the case that actually motivates a dedup — a body copied to a second file and lightly
+ * renamed, which by construction has a different name and often a different signature.
+ * D4 is the detector that reads the inside.
+ */
+export interface D4Pair {
+  detector: 'D4';
+  a: string;
+  b: string;
+  /** Estimated Jaccard over the bodies' token shingles, from the MinHash signatures. */
+  score: number;
+  /** Token count of the smaller body — how much code the finding is actually about. */
+  tokens: number;
+  /** True when the two also share a name, i.e. D2 already saw them. */
+  sameName: boolean;
+}
+
+/**
  * A D2/D3 group too large to be copy-paste. `getById` across 19 repositories is
  * the repository pattern, not duplication — it's evidence of a shared *role*, which
  * makes it input to clustering (L2) rather than a dedup finding. Kept, not discarded.
@@ -45,7 +65,7 @@ export type Pattern = DetectorGroup;
 export interface Family {
   id: string;
   members: string[];
-  detectors: Array<'D1' | 'D2' | 'D3'>;
+  detectors: Array<'D1' | 'D2' | 'D3' | 'D4'>;
   /** Highest D1 score in the family, when D1 contributed. */
   topScore?: number;
   evidence: string[];
@@ -55,6 +75,7 @@ export interface DuplicationReport {
   d1: D1Pair[];
   d2: D2Group[];
   d3: D3Group[];
+  d4: D4Pair[];
   patterns: Pattern[];
   families: Family[];
 }
@@ -75,6 +96,10 @@ export interface DuplicationOptions {
   minTypedScore?: number;
   /** D2/D3 groups larger than this are conventions; they become patterns, not families. */
   maxGroupSize?: number;
+  /** Report D4 pairs at or above this estimated body Jaccard. */
+  minBodyScore?: number;
+  /** Bodies smaller than this are too short for similarity to mean anything. */
+  minBodyTokens?: number;
 }
 
 const stop = (s: string) => s.replace(/^['"`]|['"`]$/g, '');
@@ -225,6 +250,73 @@ export function detectD3(functions: FunctionRecord[]): D3Group[] {
   return groups.sort((a, b) => b.members.length - a.members.length);
 }
 
+// ---- D4: duplicate bodies ----------------------------------------------------
+
+/**
+ * Candidates come from LSH banding rather than an N² sweep: two signatures that agree on
+ * a whole band of positions are very likely similar overall, and everything else is never
+ * compared. With 12 hashes in 4 bands this finds pairs above ~0.7 similarity reliably while
+ * comparing a small fraction of the matrix.
+ */
+export function detectD4(functions: FunctionRecord[], opts: DuplicationOptions = {}): D4Pair[] {
+  const minScore = opts.minBodyScore ?? 0.85;
+  const minTokens = opts.minBodyTokens ?? 40;
+  const BANDS = 4;
+
+  const eligible = functions.filter(
+    (f) => f.body && f.body.length && (f.bodyTokens ?? 0) >= minTokens,
+  );
+  const width = eligible[0]?.body?.length ?? 0;
+  if (!width) return [];
+  const rows = Math.max(1, Math.floor(width / BANDS));
+
+  const buckets = new Map<string, number[]>();
+  eligible.forEach((fn, i) => {
+    const sig = fn.body!;
+    for (let b = 0; b < BANDS; b++) {
+      const key = `${b}:${sig.slice(b * rows, (b + 1) * rows).join(',')}`;
+      const list = buckets.get(key);
+      if (list) list.push(i);
+      else buckets.set(key, [i]);
+    }
+  });
+
+  const seen = new Set<string>();
+  const pairs: D4Pair[] = [];
+  for (const bucket of buckets.values()) {
+    // A band shared by hundreds of functions is boilerplate shape, not a copy.
+    if (bucket.length < 2 || bucket.length > 60) continue;
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        const A = eligible[bucket[i]];
+        const B = eligible[bucket[j]];
+        if (A.nodeId === B.nodeId) continue;
+        // A body compared against itself in the same file is an overload, not a copy.
+        if (A.file === B.file && stop(A.name) === stop(B.name)) continue;
+        const key = pairKey(A.nodeId, B.nodeId);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        let same = 0;
+        for (let k = 0; k < width; k++) if (A.body![k] === B.body![k]) same++;
+        const score = same / width;
+        if (score < minScore) continue;
+
+        pairs.push({
+          detector: 'D4',
+          a: A.nodeId,
+          b: B.nodeId,
+          score,
+          tokens: Math.min(A.bodyTokens ?? 0, B.bodyTokens ?? 0),
+          sameName: stop(A.name) === stop(B.name),
+        });
+      }
+    }
+  }
+
+  return pairs.sort((x, y) => y.score - x.score || y.tokens - x.tokens);
+}
+
 // ---- families ---------------------------------------------------------------
 
 class UnionFind {
@@ -255,6 +347,7 @@ interface Link {
   d1?: number;
   d2?: string;
   d3?: string;
+  d4?: number;
 }
 
 /**
@@ -267,6 +360,8 @@ interface Link {
  * `(string) => Promise<void>`. So a link only qualifies when the evidence is specific:
  *
  *   - D1 alone qualifies. Shape similarity over >=3 named fields is specific.
+ *   - D4 alone qualifies. A body match is the most specific evidence any of these produce —
+ *     it is the only detector that has read the code rather than its label.
  *   - D2 + D3 together qualify. Two independent weak detectors agreeing on the same
  *     pair is corroboration.
  *   - D2 or D3 alone does not. Those still surface as their own groups; they just
@@ -279,6 +374,7 @@ export function buildFamilies(
   d1: D1Pair[],
   d2: D2Group[],
   d3: D3Group[],
+  d4: D4Pair[] = [],
   opts: DuplicationOptions = {},
 ): Family[] {
   const maxGroup = opts.maxGroupSize ?? 6;
@@ -293,6 +389,7 @@ export function buildFamilies(
   };
 
   for (const p of d1) link(p.a, p.b, (l) => (l.d1 = Math.max(l.d1 ?? 0, p.nameScore)));
+  for (const p of d4) link(p.a, p.b, (l) => (l.d4 = Math.max(l.d4 ?? 0, p.score)));
 
   for (const g of d2) {
     if (g.members.length > maxGroup) continue;
@@ -312,11 +409,11 @@ export function buildFamilies(
   }
 
   const uf = new UnionFind();
-  const detectors = new Map<string, Set<'D1' | 'D2' | 'D3'>>();
+  const detectors = new Map<string, Set<'D1' | 'D2' | 'D3' | 'D4'>>();
   const evidence = new Map<string, Set<string>>();
 
-  const note = (id: string, det: 'D1' | 'D2' | 'D3', why: string) => {
-    const d = detectors.get(id) ?? new Set<'D1' | 'D2' | 'D3'>();
+  const note = (id: string, det: 'D1' | 'D2' | 'D3' | 'D4', why: string) => {
+    const d = detectors.get(id) ?? new Set<'D1' | 'D2' | 'D3' | 'D4'>();
     d.add(det);
     detectors.set(id, d);
     const e = evidence.get(id) ?? new Set<string>();
@@ -325,7 +422,8 @@ export function buildFamilies(
   };
 
   for (const [key, l] of links) {
-    const qualifies = l.d1 !== undefined || (l.d2 !== undefined && l.d3 !== undefined);
+    const qualifies =
+      l.d1 !== undefined || l.d4 !== undefined || (l.d2 !== undefined && l.d3 !== undefined);
     if (!qualifies) continue;
 
     const [a, b] = key.split(SEP);
@@ -334,6 +432,7 @@ export function buildFamilies(
       if (l.d1 !== undefined) note(id, 'D1', `D1 shape ${l.d1.toFixed(2)} name-set Jaccard`);
       if (l.d2 !== undefined) note(id, 'D2', `D2 name ${l.d2}`);
       if (l.d3 !== undefined) note(id, 'D3', `D3 signature ${l.d3}`);
+      if (l.d4 !== undefined) note(id, 'D4', `D4 body ${l.d4.toFixed(2)} token-shingle Jaccard`);
     }
   }
 
@@ -348,7 +447,7 @@ export function buildFamilies(
   const families: Family[] = [];
   for (const [root, members] of byRoot) {
     if (members.length < 2) continue;
-    const dets = new Set<'D1' | 'D2' | 'D3'>();
+    const dets = new Set<'D1' | 'D2' | 'D3' | 'D4'>();
     const ev = new Set<string>();
     let top = 0;
     for (const m of members) {
@@ -383,6 +482,7 @@ export function detectDuplication(graph: Graph, opts: DuplicationOptions = {}): 
   const maxGroup = opts.maxGroupSize ?? 6;
 
   const d1 = detectD1(graph.shapes, opts);
+  const d4 = detectD4(graph.functions, opts);
   const allD2 = detectD2(graph.functions);
   const allD3 = detectD3(graph.functions);
 
@@ -393,5 +493,5 @@ export function detectDuplication(graph: Graph, opts: DuplicationOptions = {}): 
     .filter((g) => g.members.length > maxGroup)
     .sort((a, b) => b.members.length - a.members.length);
 
-  return { d1, d2, d3, patterns, families: buildFamilies(d1, d2, d3, opts) };
+  return { d1, d2, d3, d4, patterns, families: buildFamilies(d1, d2, d3, d4, opts) };
 }

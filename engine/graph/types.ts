@@ -73,6 +73,14 @@ export interface ShapeRecord {
 }
 
 /** A callable's signature, for D2 (duplicate names) and D3 (duplicate signatures). */
+/**
+ * A MinHash signature over a function body's token shingles.
+ *
+ * Storing the body itself would bloat graph.json for no benefit; storing a signature keeps
+ * D4 to a fixed cost per function and lets similarity be estimated by comparing integers.
+ */
+export type BodySignature = number[];
+
 export interface FunctionRecord {
   nodeId: string;
   name: string;
@@ -82,6 +90,10 @@ export interface FunctionRecord {
   params: Array<{ name: string; type: string }>;
   returnType: string;
   exported: boolean;
+  /** Absent for bodies too short to be worth comparing. */
+  body?: BodySignature;
+  /** Token count of the body, so trivial functions can be excluded by size. */
+  bodyTokens?: number;
 }
 
 export interface ParseDiagnostic {

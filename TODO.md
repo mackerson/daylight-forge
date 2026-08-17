@@ -151,8 +151,16 @@ Ordered loosely by value, not scheduled.
       is now `strict` and every file is claimed.
 
 ### Findings
-- [ ] **D4** — copy-paste bodies via token MinHash/winnowing. Specified in the taxonomy, never
-      built. `jscpd` is the obvious wrap.
+- [x] **D4** — copy-paste bodies via token-shingle MinHash. Built natively rather than
+      wrapping `jscpd`: we already parse every file, and a signature computed during that
+      parse rides the existing content-addressed cache instead of adding a second full pass
+      and a dependency. Identifiers and literals are erased, so a copy survives a rename —
+      which is the case D2 and D3 structurally cannot see. Candidate pairs come from LSH
+      banding, not an N² sweep. Clean on this repo; on the fixture it found 21 pairs,
+      including `getNewestMtime` copied verbatim between two build scripts and five
+      `add*Node` handlers in one file that want to be one parameterised function.
+      A D4 link alone forms a family — it is the only detector that read the code rather
+      than its label. **Test:** `engine/test/duplication.ts` (19).
 - [ ] **D5** — near-duplicate module purpose via embeddings. Deferred deliberately.
 - [x] Community detection via label propagation — deterministic by hash tie-break, because a
       map that reshuffles every run cannot be navigated from memory. Reports cohesive groups
@@ -184,7 +192,9 @@ Ordered loosely by value, not scheduled.
 - [x] Scene refits when the panel resizes, so dragging the splitter no longer silently
       zooms — which in graph mode would also have changed which level you were looking at.
 - [ ] Replay scrubber over `events.jsonl`. Deferred pending evidence anyone wants it.
-- [ ] Findings panel has no adjudication affordance — Review has one, Findings does not.
+- [x] Findings adjudicates in place: a verdict pill on a family or a dead candidate is now
+      the button that opens arbitration, so acting on a disagreement starts where the
+      evidence is rather than after finding the same subject again in Review.
 - [ ] Invariant authoring UI. They are hand-written JSON today.
 
 ### Operations

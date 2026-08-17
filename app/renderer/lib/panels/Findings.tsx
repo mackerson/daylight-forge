@@ -1,12 +1,23 @@
 import { useState } from 'react';
-import type { LoadPayload, QueryPayload } from '../types.ts';
+import type { Belief, LoadPayload, QueryPayload } from '../types.ts';
 
 /**
  * Duplication families first, then the raw detector output. Families exist so a human
  * (or an agent) adjudicates once per family rather than once per pair.
  */
-export function Findings({ data, query }: { data: LoadPayload; query: QueryPayload | null; onRefresh: () => void }) {
-  const [view, setView] = useState<'families' | 'pairs' | 'patterns' | 'structure'>('families');
+export function Findings({ data, query, onArbitrate }: {
+  data: LoadPayload;
+  query: QueryPayload | null;
+  onRefresh: () => void;
+  /**
+   * Findings is where a disagreement is *seen*; until this existed you had to go find the
+   * same subject again in Review to act on it. Adjudication now starts where the evidence is.
+   */
+  onArbitrate: (b: Belief) => void;
+}) {
+  const [view, setView] = useState<'families' | 'pairs' | 'bodies' | 'patterns' | 'structure'>(
+    'families',
+  );
   const f = data.findings;
   const st = data.structure;
 
@@ -34,6 +45,9 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
         <button className={view === 'pairs' ? 'chip active' : 'chip'} onClick={() => setView('pairs')}>
           D1 pairs ({f.d1.length})
         </button>
+        <button className={view === 'bodies' ? 'chip active' : 'chip'} onClick={() => setView('bodies')}>
+          D4 bodies ({f.d4?.length ?? 0})
+        </button>
         <button className={view === 'patterns' ? 'chip active' : 'chip'} onClick={() => setView('patterns')}>
           Patterns ({f.patterns.length})
         </button>
@@ -53,7 +67,15 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
                   <span className="pill">{fam.detectors.join('+')}</span>
                   {fam.topScore !== undefined && <span className="score">{fam.topScore.toFixed(2)}</span>}
                   <span className="dim">{fam.members.length} members</span>
-                  {belief && <span className={`pill ${belief.status.toLowerCase()}`}>{belief.status}</span>}
+                  {belief && (
+                    <button
+                      className={`pill ${belief.status.toLowerCase()} as-button`}
+                      onClick={() => onArbitrate(belief)}
+                      title="Open arbitration"
+                    >
+                      {belief.status}
+                    </button>
+                  )}
                 </h3>
                 <ul className="rows mono">
                   {fam.members.map((m) => (
@@ -95,6 +117,43 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
         </section>
       )}
 
+      {view === 'bodies' && (
+        <section className="card">
+          <p className="dim">
+            Bodies that do the same work, compared with identifiers and literals erased — so a
+            copy survives being renamed. This is the only detector that read the code rather
+            than its label, which is why a D4 link alone is enough to form a family.
+          </p>
+          {!f.d4?.length && <p className="dim">No duplicated bodies.</p>}
+          {!!f.d4?.length && (
+            <table className="grid">
+              <thead>
+                <tr><th>score</th><th>tokens</th><th>a</th><th>b</th><th /></tr>
+              </thead>
+              <tbody>
+                {f.d4.map((p, i) => (
+                  <tr key={i}>
+                    <td>{p.score.toFixed(2)}</td>
+                    <td className="dim">{p.tokens}</td>
+                    <td className="mono">
+                      <button className="link mono" onClick={() => window.vds.reveal({ file: p.a.split('#')[0] })}>
+                        {short(p.a)}
+                      </button>
+                    </td>
+                    <td className="mono">
+                      <button className="link mono" onClick={() => window.vds.reveal({ file: p.b.split('#')[0] })}>
+                        {short(p.b)}
+                      </button>
+                    </td>
+                    <td className="dim">{p.sameName ? 'same name' : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+
       {view === 'structure' && st && (
         <>
           {st.warning && <p className="hint">{st.warning}</p>}
@@ -121,7 +180,15 @@ export function Findings({ data, query }: { data: LoadPayload; query: QueryPaylo
                     <button className="link mono" onClick={() => window.vds.reveal({ file: d.id.split('#')[0] })}>
                       {d.id}
                     </button>
-                    {v && <span className={`pill ${v.status.toLowerCase()}`}>{v.status}</span>}
+                    {v && (
+                      <button
+                        className={`pill ${v.status.toLowerCase()} as-button`}
+                        onClick={() => onArbitrate(v)}
+                        title="Open arbitration"
+                      >
+                        {v.status}
+                      </button>
+                    )}
                     <div className="dim">{d.why}</div>
                   </li>
                 );

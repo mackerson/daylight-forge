@@ -310,7 +310,7 @@ export function App() {
             <aside className="info" style={{ width: infoWidth }}>
               {!mapped && <Empty hasRepo={!!data?.repo} />}
               {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
-              {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} />}
+              {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'agents' && <Agents events={events} jobs={jobs} logs={logs} spend={spend}
                   selected={selectedJob} onSelect={setSelectedJob}
