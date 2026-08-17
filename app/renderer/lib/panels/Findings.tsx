@@ -15,9 +15,9 @@ export function Findings({ data, query, onArbitrate }: {
    */
   onArbitrate: (b: Belief) => void;
 }) {
-  const [view, setView] = useState<'families' | 'pairs' | 'bodies' | 'patterns' | 'structure'>(
-    'families',
-  );
+  const [view, setView] = useState<
+    'families' | 'pairs' | 'bodies' | 'parallel' | 'patterns' | 'structure'
+  >('families');
   const f = data.findings;
   const st = data.structure;
 
@@ -47,6 +47,9 @@ export function Findings({ data, query, onArbitrate }: {
         </button>
         <button className={view === 'bodies' ? 'chip active' : 'chip'} onClick={() => setView('bodies')}>
           D4 bodies ({f.d4?.length ?? 0})
+        </button>
+        <button className={view === 'parallel' ? 'chip active' : 'chip'} onClick={() => setView('parallel')}>
+          D6 parallel ({f.d6?.length ?? 0})
         </button>
         <button className={view === 'patterns' ? 'chip active' : 'chip'} onClick={() => setView('patterns')}>
           Patterns ({f.patterns.length})
@@ -152,6 +155,45 @@ export function Findings({ data, query, onArbitrate }: {
             </table>
           )}
         </section>
+      )}
+
+      {view === 'parallel' && (
+        <>
+          <p className="dim">
+            Two files that are the same thing written twice, where nothing inside either is a
+            copy of anything inside the other. A shared method name counts for what it is
+            rare: <code>delete</code> in seventeen files is worth nothing,
+            {' '}<code>getParticipants</code> in two is worth a great deal — which is the
+            difference between “both are repositories” and “these two are the same repository
+            written twice”.
+          </p>
+          {!f.d6?.length && <p className="dim">No parallel implementations.</p>}
+          {f.d6?.map((p, i) => (
+            <section key={i} className="card">
+              <h3>
+                <span className="pill">{p.by}</span>
+                <span className="score">{p.rareMass.toFixed(1)}</span>
+                <span className="dim">overlap {p.score.toFixed(2)}</span>
+              </h3>
+              <ul className="rows mono">
+                <li>
+                  <button className="link mono" onClick={() => window.vds.reveal({ file: p.a })}>{p.a}</button>
+                </li>
+                <li>
+                  <button className="link mono" onClick={() => window.vds.reveal({ file: p.b })}>{p.b}</button>
+                </li>
+              </ul>
+              <p className="dim">
+                Shared and rare, rarest first: <code>{p.rare.join(', ')}</code>
+              </p>
+              <details>
+                <summary className="dim">what each has alone — this is the divergence</summary>
+                <p className="dim mono">− {p.onlyA.join(', ') || '∅'}</p>
+                <p className="dim mono">+ {p.onlyB.join(', ') || '∅'}</p>
+              </details>
+            </section>
+          ))}
+        </>
       )}
 
       {view === 'structure' && st && (

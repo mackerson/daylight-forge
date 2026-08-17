@@ -9,7 +9,10 @@
     {
       "name": "pre-collapse",
       "repo": "/tmp/fx-2a1645e",
-      "mustFind": ["ChatMessageAttachmentRepository~MessageAttachmentRepository"]
+      "mustFind": [
+        "ChatMessageAttachmentRepository~MessageAttachmentRepository",
+        "ChatRepository~ChannelRepository"
+      ]
     },
     { "name": "pre-remediation", "repo": "/tmp/fx-e946f57" },
     {

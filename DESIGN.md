@@ -283,8 +283,8 @@ What the app exists to surface. Ordered by how much the prior manual run suggest
 
 ### 1. Duplication families — the headline
 
-Five cheap, fully deterministic detectors. None needs an LLM to *find* anything; agents only
-adjudicate.
+Six cheap, fully deterministic detectors (five built; D5 is deferred). None needs an LLM to
+*find* anything; agents only adjudicate.
 
 | # | Detector | Signature | Catches |
 | --- | --- | --- | --- |
@@ -293,6 +293,7 @@ adjudicate.
 | D3 | Duplicate signatures | name-agnostic: arity + normalized param types + return type | the same function written four times under four names |
 | D4 | Repeated code blocks | token-stream MinHash / winnowing over bodies | copy-paste that drifted enough to hide from D2/D3 |
 | D5 | Near-duplicate purpose | embeddings over agent-written module summaries | semantically redundant subsystems with no textual overlap |
+| D6 | Parallel implementations | IDF-weighted method-name overlap between *files* | the same thing written twice, where nothing inside either is a copy of anything inside the other |
 
 ### Corrections the build forced on this design
 
@@ -699,8 +700,9 @@ the fixture repo.**
    fix is more labelled pairs, not a different number. Separately, `minTypedScore` made no difference
    at any value from 0.0 to 0.3 on any fixture point: it is a knob that does not turn.
 
-   **The ChatRepository/ChannelRepository duplication is not reachable at any threshold** — and this is
-   the useful finding, because it is not a tuning problem. D1 cannot fire: both classes expose two
+   **The ChatRepository/ChannelRepository duplication was not reachable at any threshold** — which
+   was the useful finding, because it was never a tuning problem. It is now found by D6; what
+   follows is why none of D1–D4 could get there. D1 cannot fire: both classes expose two
    fields (`db`, `logger`), because a repository's shape lives in SQL strings, not in its types. D4
    cannot fire: the bodies genuinely differ, since `ChatRepository` grew search, tags and branch counts
    that `ChannelRepository` never had. D2 and D3 do link them — via `delete` ×17, `getById` ×15,
@@ -708,27 +710,30 @@ the fixture repo.**
    which is the same guard that stopped 107 symbols welding into one family in P0. The within-cap links
    (`getParticipants` ×2, `addParticipant` ×2) have no D3 corroboration, so D2-alone does not qualify.
 
-   Every one of those refusals is individually right. Together they mean the tool cannot name a
-   duplication a human can see at a glance, because this one is **semantic, not syntactic**: two
-   hand-written stores over analogous tables whose feature sets have diverged. That is the D5 case, and
-   it is now the strongest argument for building D5 that we have — see open problem 6.
+   Every one of those refusals is individually right, and every one is a *symbol-level* judgement.
+   The signal was at the **file** level the whole time: not how many names the two files share, but
+   *which*. `delete` appears in seventeen files and means nothing; `getParticipants` appears in two.
+   D6 weights each shared name by how rare it is and the pair comes out first, by a wide margin,
+   at pre-collapse — and is gone at HEAD, where the collapse removed it. The stated goal of this
+   open problem is therefore met: the known duplication is surfaced before, and quiet after.
 3. **Cross-agent session cost.** Four CLIs × repeated frontier passes gets expensive fast. Budget
    ceilings need to be real, visible, and enforced in the driver.
-6. **Naming a parallel implementation.** Calibration (open problem 2) proved D1–D4 structurally
-   cannot reach `ChatRepository`/`ChannelRepository`, and that no threshold change gets there. Two
-   candidate mechanisms, not yet chosen:
+6. **~~Naming a parallel implementation.~~ Built as D6.** The cheap option won on evidence: a
+   file-level detector weighting each shared method name by inverse document frequency finds the
+   fixture's known pair first by a wide margin, costs nothing, needs no model, and is gone at HEAD.
 
-   - **D5 as specified** — embeddings over agent-written module summaries. Catches semantic redundancy
-     with no textual overlap at all, which is the general case. Costs an embedding model and a
-     round of agent summarisation per module, and its findings are the hardest to evidence.
-   - **A file-level name detector.** Each shared method name weighted by inverse document frequency,
-     so `delete` (17 files) counts for almost nothing and `getParticipants` (2 files) counts for a
-     lot. Purely syntactic, deterministic, no model. It would separate "both are repositories" from
-     "these two are the same repository written twice" — which is exactly the distinction that the
-     current per-name D2 cannot make, since it sees each name in isolation.
+   Two failure modes it had to survive, both real and both now regression-tested. Conventions:
+   twelve repositories sharing `create`/`delete` must produce zero pairs, or the map is worthless —
+   IDF handles that, since a name in every file scores exactly 0. And **inheritance**: a subclass
+   sharing its base class's method names is one implementation overridden, not two written twice.
+   That guard silently did nothing at first, because the pair key was built with a NUL separator in
+   one place and a space in the other. Two invisible characters that disagree look exactly like a
+   guard that is working — the same class of bug as the tsconfig `/*`, and the reason the separator
+   is now a named constant used everywhere.
 
-   The second is far cheaper and would resolve the fixture's known case; the first is more general.
-   Building the cheap one first risks calling it done and never building D5. Not decided.
+   The risk this leaves is the one flagged when it was still a fork: having the cheap detector makes
+   it easy never to build D5. D6 finds things that *share vocabulary*. Two subsystems that do the
+   same job under entirely different names remain invisible, and no amount of tuning D6 reaches them.
 
 4. **Hand-rolled parsing of other people's formats.** The tsconfig comment-stripper cost 2773
    edges and a page of false dead code before anyone noticed, because the failure was silent and

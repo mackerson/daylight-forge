@@ -21,10 +21,15 @@ export type {
   // The renderer had its own `Findings`: the same five fields with the discriminants
   // dropped and `patterns` widened to plain string. The tool caught it on this repo, so
   // it is now the engine's type under the renderer's name rather than a restatement.
-  DuplicationReport as Findings,
 } from '../../../engine/detect/duplication.ts';
 
+/** The map's findings file: the duplication report, plus the file-level detector. */
+export type Findings = DuplicationReport & { d6?: ParallelPair[] };
+
+export type { ParallelPair } from '../../../engine/detect/parallel.ts';
+
 import type { DuplicationReport } from '../../../engine/detect/duplication.ts';
+import type { ParallelPair } from '../../../engine/detect/parallel.ts';
 import type { FocusStack } from '../../../engine/focus/types.ts';
 import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
 import type { InvariantResult } from '../../../engine/invariants/engine.ts';
@@ -70,7 +75,7 @@ export interface LoadPayload {
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
-  findings: DuplicationReport;
+  findings: Findings;
   structure: StructureReport | null;
   invariants: { results: InvariantResult[] } | null;
   defended: string[];

@@ -203,10 +203,19 @@ Ordered loosely by value, not scheduled.
       one labelled pair cannot tell quieter from blinder. `minTypedScore` turned out to be a
       knob that does not turn. **Test:** `engine/test/calibrate.ts` (16), which caught the
       scorer counting one symbol as both halves of a pair.
-- [ ] **Naming a parallel implementation.** Calibration proved D1–D4 cannot reach
-      `ChatRepository`/`ChannelRepository` at any threshold, and that each individual refusal
-      is correct — the duplication is semantic, not syntactic. Two candidate mechanisms with
-      very different costs, written up as DESIGN open problem 6. **Needs a decision, not code.**
+- [x] **D6 — parallel implementations.** The detector calibration asked for. D1–D4 all work at
+      the symbol level and all correctly refuse the fixture's headline duplication; the signal
+      was at the file level, in *which* names two files share rather than how many. Each shared
+      name is weighted by how rare it is, so `delete` in seventeen files counts for nothing and
+      `getParticipants` in two counts for a great deal. Two scores, qualifying on either — a
+      weighted Jaccard for near-identical surfaces, and shared-rare-name mass for the case
+      where one side grew, which is what `ChatRepository` did and what sank its overlap to
+      0.24. The rare-mass score is expressed in units of the rarest name a codebase can have,
+      so it means the same thing in a repo of any size.
+      On the fixture the two known pairs rank first (6.7) and second (5.0) at pre-collapse
+      against a next-best of 3.7, and both are gone at HEAD. Silent on this repo.
+      **Test:** `engine/test/parallel.ts` (24), including twelve repositories sharing CRUD
+      producing zero pairs, and a class not pairing with its own subclass.
 - [x] `knip` and `dependency-cruiser` cross-check our reachability when the analysed repo
       already has them. **Nothing is ever installed** — a provider is used only if it resolves
       from that repo's own `node_modules/.bin`, never through `npx`, which would fetch and

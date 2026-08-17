@@ -22,6 +22,7 @@
  * commits you want with `git archive` first. See `calibration.example.json`.
  */
 import { detectDuplication, type DuplicationOptions } from '../detect/duplication.ts';
+import { detectParallel } from '../detect/parallel.ts';
 import type { Graph } from '../graph/types.ts';
 
 export interface Point {
@@ -66,7 +67,13 @@ export function grid(sweep: Partial<Record<string, number[]>>): DuplicationOptio
  * so families are what get measured.
  */
 export function reported(graph: Graph, opts: DuplicationOptions): string[][] {
-  return detectDuplication(graph, opts).families.map((f) => f.members);
+  // D6 pairs are findings a human is shown, so they count as reported alongside families —
+  // otherwise the sweep would still score the fixture's headline duplication as missed,
+  // which is exactly the blind spot that motivated building D6 in the first place.
+  return [
+    ...detectDuplication(graph, opts).families.map((f) => f.members),
+    ...detectParallel(graph).map((p) => [p.a, p.b]),
+  ];
 }
 
 /**

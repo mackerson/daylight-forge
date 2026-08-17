@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { detectDuplication } from './detect/duplication.ts';
+import { detectParallel } from './detect/parallel.ts';
 import { crossCheck, runProvider } from './detect/providers.ts';
 import { detectStructure } from './detect/structure.ts';
 import { collapseCandidates, detectCommunities } from './detect/communities.ts';
@@ -121,6 +122,7 @@ function runExtract(args: Args): void {
 function emitExtract(args: Args, graph: Graph): void {
   const started = Date.now();
   const dup = detectDuplication(graph);
+  const parallels = detectParallel(graph);
   const structure = detectStructure(graph);
   const communities = detectCommunities(graph);
   const collapses = collapseCandidates(communities);
@@ -129,7 +131,10 @@ function emitExtract(args: Args, graph: Graph): void {
 
   fs.mkdirSync(args.out, { recursive: true });
   fs.writeFileSync(path.join(args.out, 'graph.json'), JSON.stringify(graph, null, 2));
-  fs.writeFileSync(path.join(args.out, 'findings.json'), JSON.stringify(dup, null, 2));
+  fs.writeFileSync(
+    path.join(args.out, 'findings.json'),
+    JSON.stringify({ ...dup, d6: parallels }, null, 2),
+  );
   fs.writeFileSync(path.join(args.out, 'structure.json'), JSON.stringify(structure, null, 2));
   fs.writeFileSync(
     path.join(args.out, 'communities.json'),
@@ -162,7 +167,7 @@ function emitExtract(args: Args, graph: Graph): void {
 
   console.log(
     `\nD1 shape pairs ${dup.d1.length} · D2 name groups ${dup.d2.length} · D3 signature groups ${dup.d3.length}` +
-      ` · D4 body pairs ${dup.d4.length}`,
+      ` · D4 body pairs ${dup.d4.length} · D6 parallel files ${parallels.length}`,
   );
   console.log(
     `Patterns ${dup.patterns.length} (oversized groups — shared role, not copy-paste; input to L2 clustering)`,
@@ -241,6 +246,17 @@ function emitExtract(args: Args, graph: Graph): void {
         `  ${p.score.toFixed(2)} over ${p.tokens} tokens  ${short(p.a)}  ≈  ${short(p.b)}` +
           (p.sameName ? '  (same name — D2 saw it too)' : ''),
       );
+    }
+  }
+
+  if (parallels.length) {
+    console.log(`\nTop D6 parallel implementations (the same thing written twice):`);
+    for (const p of parallels.slice(0, args.top)) {
+      console.log(
+        `  ${short(p.a)}  ≈  ${short(p.b)}` +
+          `  [${p.by}] mass ${p.rareMass.toFixed(1)} · overlap ${p.score.toFixed(2)}`,
+      );
+      console.log(`      shared and rare: ${p.rare.slice(0, 6).join(', ')}`);
     }
   }
 
