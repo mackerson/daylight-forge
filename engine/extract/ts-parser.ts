@@ -111,6 +111,22 @@ export class TypeScriptParser implements Parser {
         if (ts.isExternalModuleReference(ref) && ref.expression && ts.isStringLiteral(ref.expression)) {
           imports.push(ref.expression.text);
         }
+      } else if (ts.isNewExpression(node)) {
+        // `new Foo()` is a call site. Recording only CallExpression missed every
+        // instantiation — including `throw new EvidenceRequired(...)`, which meant an
+        // invariant asserting that guard exists could not see it.
+        const callee = nameOf(node.expression, sf);
+        const line = lineOf(node);
+        calls.push({
+          from: here(), file: relPath, callee,
+          base: leftmost(node.expression),
+          member: undefined, line,
+        });
+        for (const arg of node.arguments ?? []) {
+          if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
+            literals.push({ from: here(), file: relPath, callee, value: arg.text, line });
+          }
+        }
       } else if (ts.isCallExpression(node)) {
         const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
         const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';

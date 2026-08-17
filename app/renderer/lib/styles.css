@@ -53,6 +53,7 @@ code, .mono { font-family: inherit; }
   display: flex; gap: 12px; align-items: center;
 }
 .banner.error { background: #2a1618; color: var(--bad); }
+.banner.toast { background: #14261c; color: var(--ok); }
 
 /* ---- layout ---- */
 .body { display: flex; flex: 1; min-height: 0; }
@@ -166,14 +167,14 @@ code, .mono { font-family: inherit; }
 }
 .feed { flex: 1; overflow: auto; margin-top: 8px; }
 .ev-row {
-  display: grid; grid-template-columns: 70px 110px 120px 1fr;
+  display: grid; grid-template-columns: 62px 90px 96px 1fr;
   gap: 8px; padding: 2px 0; font-size: 11px; border-bottom: 1px solid #151a23;
 }
 .ev-row.bad .ev-tool { color: var(--bad); }
 .ev-time { color: var(--dim); }
 .ev-agent { color: var(--accent); }
 .ev-tool { color: var(--ok); }
-.ev-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-what { overflow-wrap: anywhere; }
 .ev-err { grid-column: 1 / -1; color: var(--bad); }
 
 /* ---- scene ---- */

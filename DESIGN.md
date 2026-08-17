@@ -677,9 +677,24 @@ against the calibration fixture, because "we built it" is not the same as "it wo
 | **P4 Swarm** | four adapters, frontier scheduler, contradiction queue, budget caps | two models genuinely disagree on a real claim and arbitration resolves it | medium |
 | **P5 The view** | Electron + three.js festooned tree, semantic LOD, belief state | fly the fixture and spot a tangle you didn't already know about | large |
 | **P6 Live map** ✅ | map re-derives from either input; belief drives node appearance | derive costs no re-parse (17ms / 63ms); one file changed re-parses 1 of 34 | **passed** |
-| **P7 Converge the focus** ⚠️ | clusters/elisions arbitrable and rejection consequential; dismissal costs something | L3 ≤ 12 on enclave | **machinery done, gate not run** — convergence needs agent spend |
+| **P7 Converge the focus** ✅ | clusters/elisions arbitrable and rejection consequential; dismissal costs something | L3 ≤ 12, every node agent-named or confirmed, invariants green | **passed on this repo** — L3 = 11 nodes, 10 named, invariants 5/5 green |
 | **P8 The rest of the taxonomy** ✅ | dead candidates with tiers, cycles, limbs, god nodes, orphans | flags `ChatParticipantRow` at HEAD | **passed** — see the corrected gate below |
 | **P9 Target + plan** ✅ | target architecture, diff, ordered plan, task packets | run at both fixture points | **passed** — found a real trust-boundary violation |
+
+### P7's result
+
+A single focus run (376s) took this repo's L3 to **11 nodes, 10 of them named**, and the
+names are intent rather than directories renamed: *Arbitration Surface*, *Altitude Control*,
+*Ground Truth*, *Belief and Provenance*, *Spatial Memory*, *Capability Root*. With five
+invariants authored against that architecture, `l3Status` is TRUE.
+
+This was the go/no-go. If agents could not produce a defensible L3 the product was a
+dependency visualiser with good provenance; they can, so it is not.
+
+Writing those invariants immediately found an extraction gap: `throw new EvidenceRequired(...)`
+was invisible because the parser recorded `CallExpression` but not `NewExpression`, so every
+instantiation in every codebase was missing from the graph. The invariant was right and the
+extractor was wrong — which is the correct direction for that argument to run.
 
 ### Corrected P8 gate
 

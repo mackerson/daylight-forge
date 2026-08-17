@@ -1,0 +1,53 @@
+[
+  {
+    "id": "engine-has-no-dom",
+    "prose": "The engine is headless. It runs under plain Node with no bundler, so a DOM reference typechecks clean under a shared config and then dies at runtime in the CLI.",
+    "rationale": "This is why the tsconfigs are split; the invariant is the runtime half of that guarantee.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": { "file": "^engine/" },
+      "callee": "^(document|window|localStorage|navigator)\\."
+    }
+  },
+  {
+    "id": "renderer-never-imports-the-shell",
+    "prose": "The renderer reaches the Electron main process only through the preload bridge, never by importing it.",
+    "rationale": "Renderer code displays agent-authored text and is treated as untrusted; a direct import would put main-process capability in its bundle.",
+    "predicate": {
+      "type": "forbidden-call",
+      "from": { "file": "^app/renderer/" },
+      "to": { "file": "^app/main/" }
+    }
+  },
+  {
+    "id": "engine-depends-on-nothing-above-it",
+    "prose": "The engine is the product and the app is one consumer of it, so nothing in engine/ may reach into app/.",
+    "rationale": "It has to keep running standalone as a CLI with no Electron and no React present.",
+    "predicate": {
+      "type": "forbidden-call",
+      "from": { "file": "^engine/" },
+      "to": { "file": "^app/" }
+    }
+  },
+  {
+    "id": "evidence-is-enforced-at-the-store",
+    "prose": "Unevidenced claims are rejected where they are ingested, not at review time. The guard lives in the claim store.",
+    "rationale": "This is the single defence against a confabulated map; if it moves or disappears the whole design's honesty claim goes with it.",
+    "predicate": {
+      "type": "required-callee",
+      "within": { "file": "^engine/store/" },
+      "callee": "EvidenceRequired",
+      "min": 1
+    }
+  },
+  {
+    "id": "agents-run-read-only",
+    "prose": "The harness never passes an adapter flag that bypasses approvals or sandboxing.",
+    "rationale": "Agents observe and claim; they never write code. A bypass flag would silently remove the only thing keeping that true.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": { "file": "^engine/swarm/" },
+      "callee": "dangerously|always-approve"
+    }
+  }
+]

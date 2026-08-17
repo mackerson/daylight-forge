@@ -37,12 +37,17 @@ export function App() {
     () => localStorage.getItem('vds.infoOpen') !== 'false',
   );
   const dragRef = useRef<{ active: boolean }>({ active: false });
+  const [toast, setToast] = useState<string | null>(null);
+  // Snapshot of the store before a job, so completion can report the delta rather than
+  // making you read a log to find out what happened.
+  const statsRef = useRef<QueryPayload['stats'] | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const [d, q] = await Promise.all([window.vds.load(), window.vds.query()]);
       setData(d);
       setQuery(q);
+      if (!statsRef.current) statsRef.current = q.stats;
       if (q.events?.length) setEvents(q.events);
       setError(q.error ?? null);
     } catch (err) {
@@ -63,8 +68,30 @@ export function App() {
         const next = prev.filter((p) => p.id !== j.id);
         return [...next, j];
       });
-      // A finished job usually changed the store, so pull fresh state.
-      if (j.status !== 'running') void refresh();
+      if (j.status === 'running') {
+        statsRef.current = query?.stats ?? statsRef.current;
+        return;
+      }
+      // A finished job usually changed the store, so pull fresh state and say what moved.
+      void (async () => {
+        const before = statsRef.current;
+        const q = await window.vds.query();
+        setQuery(q);
+        setData(await window.vds.load());
+        const parts: string[] = [];
+        if (before) {
+          const d = (k: keyof typeof q.stats) => q.stats[k] - before[k];
+          for (const k of ['claims', 'clusters', 'elisions', 'defences'] as const) {
+            if (d(k) > 0) parts.push(`+${d(k)} ${k}`);
+          }
+        }
+        statsRef.current = q.stats;
+        setToast(
+          j.status === 'failed'
+            ? `${j.label} failed (exit ${j.code})`
+            : `${j.label} finished${parts.length ? ` — ${parts.join(', ')}` : ' — nothing changed'}`,
+        );
+      })();
     });
     // The stack was re-derived because claims changed; pull the new one.
     const offDerived = window.vds.onDerived(() => void refresh());
@@ -172,6 +199,13 @@ export function App() {
           Rebuild
         </button>
       </header>
+
+      {toast && (
+        <div className="banner toast">
+          {toast}
+          <button className="link" onClick={() => setToast(null)}>dismiss</button>
+        </div>
+      )}
 
       {error && (
         <div className="banner error">

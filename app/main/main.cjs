@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, dialog, shell } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, protocol, net, dialog, shell } = require('electron');
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -228,7 +228,25 @@ function runJob(label, argv, { onExit } = {}) {
 
   child.on('close', (code) => {
     jobs.delete(id);
-    send('vds:job', { id, label, status: code === 0 ? 'done' : 'failed', code, startedAt });
+    const ok = code === 0;
+    send('vds:job', { id, label, status: ok ? 'done' : 'failed', code, startedAt });
+
+    // A focus run takes minutes, so the likeliest thing is nobody is watching. Tell the
+    // desktop, not just the panel — otherwise you come back to a finished run and cannot
+    // tell whether it finished or died.
+    if (!win || !win.isFocused()) {
+      try {
+        new Notification({
+          title: ok ? `${label} finished` : `${label} failed`,
+          body: ok
+            ? `${Math.round((Date.now() - startedAt) / 1000)}s${stats.cost ? ` · $${stats.cost.toFixed(2)}` : ''}`
+            : `exit ${code}`,
+          silent: true,
+        }).show();
+      } catch {
+        // Notifications are a nicety; never let one break job completion.
+      }
+    }
     onExit?.(code);
   });
 
