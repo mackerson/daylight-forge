@@ -50,6 +50,20 @@ export function loadGraph(dir: string): Graph {
   return JSON.parse(fs.readFileSync(file, 'utf8')) as Graph;
 }
 
+/**
+ * Tool annotations, as MCP defines them.
+ *
+ * Not decoration: a host decides whether a call needs a human to approve it from these.
+ * Every read tool is `readOnlyHint`, and every write tool appends to a local claim store —
+ * nothing is overwritten and nothing leaves the machine, which is `destructiveHint: false`
+ * and `openWorldHint: false`. Stating that is the honest description of what these do, and
+ * it is what lets a non-interactive host run them without being handed a blanket bypass.
+ */
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
+const APPEND_ONLY = {
+  readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false,
+} as const;
+
 export function createServer(opts: ServerOptions) {
   const graph = loadGraph(opts.dir);
   const store = new ClaimStore(path.join(opts.dir, 'claims.db'));
@@ -117,6 +131,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'Top-level shape of the codebase: counts, directory groups, and how much is still ' +
         'unresolved. Start here to orient before pulling slices.',
+      annotations: READ_ONLY,
       inputSchema: {},
     },
     async () => {
@@ -141,6 +156,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'The n-hop neighbourhood around a node, with current claims. This is the ' +
         'context-budget primitive — pull a slice instead of reading the whole repo.',
+      annotations: READ_ONLY,
       inputSchema: {
         node: z.string().describe('file path or `file#Symbol`'),
         hops: z.number().min(1).max(3).default(1),
@@ -183,6 +199,7 @@ export function createServer(opts: ServerOptions) {
         'uncertainty x centrality. Work these rather than picking your own targets. ' +
         'Items you are given are leased to you, so other agents running at the same time ' +
         'get different work — do not go looking for your own targets, you will duplicate them.',
+      annotations: READ_ONLY,
       inputSchema: { limit: z.number().min(1).max(50).default(10) },
     },
     async ({ limit }) => {
@@ -204,6 +221,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'Current focus stack: what is collapsed where, on whose authority, and which ' +
         'invariants are green, red or unproven.',
+      annotations: READ_ONLY,
       inputSchema: {},
     },
     async () => {
@@ -234,6 +252,7 @@ export function createServer(opts: ServerOptions) {
         'Ruling something OUT (a verdict with value false) needs at least two pieces of ' +
         'evidence including one with a line number — asserting a thing means finding one ' +
         'place it is true, ruling it out means checking the places it could have been.',
+      annotations: APPEND_ONLY,
       inputSchema: {
         subject: z.string(),
         predicate: z.string().describe(
@@ -278,6 +297,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'Dispute an existing claim with counter-evidence. Disagreement is preserved, ' +
         'never auto-resolved — it becomes a human review item.',
+      annotations: APPEND_ONLY,
       inputSchema: {
         subject: z.string(),
         predicate: z.string(),
@@ -310,6 +330,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'Group members into a subsystem with a NAME and a PURPOSE. The purpose is an ' +
         'intent claim and needs evidence like any other. Promotes L1 to L2.',
+      annotations: APPEND_ONLY,
       inputSchema: {
         name: z.string(),
         purpose: z.string().describe('what this subsystem is FOR, not what files it holds'),
@@ -334,6 +355,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'Argue a set of nodes should collapse at a given altitude. Recorded, reversible ' +
         'and attributable — never a silent drop.',
+      annotations: APPEND_ONLY,
       inputSchema: {
         members: z.array(z.string()).min(1),
         into: z.string().describe('the surviving node these collapse into'),
@@ -356,6 +378,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'Argue something must SURVIVE focusing because it is load-bearing. The ' +
         'counterweight to elision — over-collapse and under-collapse are both failures.',
+      annotations: APPEND_ONLY,
       inputSchema: { node: z.string(), reason: z.string() },
     },
     async (a) => {
@@ -371,6 +394,7 @@ export function createServer(opts: ServerOptions) {
       description:
         'State a load-bearing fact in prose plus a compiled graph query, with evidence ' +
         'that it currently holds. Invariants are what make a focused map checkable.',
+      annotations: APPEND_ONLY,
       inputSchema: {
         id: z.string(),
         prose: z.string(),

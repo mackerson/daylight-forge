@@ -80,16 +80,23 @@ export const CLAUDE: Adapter = {
 };
 
 /**
- * codex cannot currently be driven headlessly against an MCP server.
+ * codex works headlessly against our MCP server. It did not used to, and the reason was
+ * ours.
  *
- * Verified two independent ways: a per-invocation `-c mcp_servers.*` override, and a
- * persistent `codex mcp add` registration in an isolated CODEX_HOME. In both cases codex
- * discovers the tools and then answers every call with `user cancelled MCP tool call`.
- * `approval_policy` values do not reach it. The only documented bypass is
- * `--dangerously-bypass-approvals-and-sandbox`, which also removes the read-only sandbox —
- * so the adapter stays as it is and codex is unusable for now rather than weakened.
+ * Every call came back `user cancelled MCP tool call` — with no user, and with no approval
+ * prompt reachable in `exec`. It read as a codex limitation and was documented as one. It
+ * was not: our tools carried no MCP `annotations`, so a non-interactive host had nothing to
+ * decide from and defaulted to refusing. Declaring `readOnlyHint` on the reads and
+ * `destructiveHint: false` on the writes is enough — codex then completes both, under its
+ * default approval policy, inside the `read-only` sandbox, with no `--dangerously-*` flag.
  *
- * The flags below are correct and the run itself works; only MCP is blocked.
+ * Verified end to end: `get_overview` returns, and a `submit_claim` lands in the store with
+ * `source_tool = codex`. Setting `approval_policy = "never"` was tried and is *not* needed,
+ * so it is not set — it would also stop codex asking about shell commands, which is a
+ * weakening we get nothing for.
+ *
+ * The lesson generalises past codex: a host can only be as permissive as our metadata lets
+ * it be, and "the other tool is broken" was a claim we had not evidenced.
  */
 export const CODEX: Adapter = {
   name: 'codex',
