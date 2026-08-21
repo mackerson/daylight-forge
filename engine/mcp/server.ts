@@ -64,6 +64,43 @@ const APPEND_ONLY = {
   readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false,
 } as const;
 
+/**
+ * Undo HTML escaping in agent-written prose.
+ *
+ * Measured, not anticipated: on one focus run `claude/opus` submitted
+ * `Client Boundary &amp; Bootstrap` while `claude/sonnet` submitted
+ * `Render & Input Pipeline`. Same character, two encodings, decided per model — so the text
+ * rendered wrong in the UI, and worse, two cluster names that should compare equal did not.
+ *
+ * That second half is the reason this lives at the boundary rather than in the renderer. The
+ * store already canonicalises predicates because "CONTRADICTED between two claims that agreed
+ * but spelled a JSON key differently" is a failure it refuses to have; escaping is the same
+ * failure for prose, and any future attempt to notice that three agents named one subsystem
+ * three ways has to compare strings that are actually comparable.
+ *
+ * Deliberately narrow: the five entities a model over-escapes, and numeric references. It is
+ * applied once, so text that genuinely means to say `&amp;` loses that — a trade taken
+ * knowingly, because prose about HTML entities is far rarer here than a model escaping an
+ * ampersand in a subsystem name.
+ */
+const ENTITIES: Record<string, string> = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&apos;': "'",
+};
+
+// Overloaded so a string in is a `string` out rather than the literal type it was called
+// with — otherwise every comparison against the decoded form looks impossible to the checker.
+export function unescapeText(value: string): string;
+export function unescapeText<T>(value: T): T;
+export function unescapeText(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(/&(?:amp|lt|gt|quot|#39|apos);/g, (m) => ENTITIES[m] ?? m)
+    .replace(/&#(\d{1,6});/g, (m, code) => {
+      const n = Number(code);
+      return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m;
+    });
+}
+
 export function createServer(opts: ServerOptions) {
   const graph = loadGraph(opts.dir);
   const store = new ClaimStore(path.join(opts.dir, 'claims.db'));
@@ -272,7 +309,10 @@ export function createServer(opts: ServerOptions) {
     async (a) => {
       try {
         const claim = store.submit({
-          subject: a.subject, predicate: a.predicate, value: a.value,
+          subject: a.subject, predicate: a.predicate,
+          // A narrative value is prose and gets the same normalisation as a cluster name.
+          // Booleans and everything else pass through untouched.
+          value: unescapeText(a.value),
           confidence: a.confidence, evidence: a.evidence, source,
           observedHash: nodesById.get(a.subject)?.contentHash,
         });
@@ -341,7 +381,8 @@ export function createServer(opts: ServerOptions) {
     async (a) => {
       if (!a.evidence?.length) return fail('a cluster purpose needs evidence');
       const id = store.putCluster({
-        level: 2, name: a.name, purpose: a.purpose, members: a.members,
+        level: 2, name: unescapeText(a.name), purpose: unescapeText(a.purpose),
+        members: a.members,
         source, evidence: a.evidence,
       });
       emit('propose_cluster', { ok: true, name: a.name, members: a.members.length, id });
@@ -365,7 +406,8 @@ export function createServer(opts: ServerOptions) {
     },
     async (a) => {
       const id = store.putElision({
-        level: a.level, members: a.members, into: a.into, reason: a.reason, source,
+        level: a.level, members: a.members, into: unescapeText(a.into),
+        reason: unescapeText(a.reason), source,
       });
       emit('propose_elision', { ok: true, into: a.into, members: a.members.length, id });
       return ok({ accepted: true, id });
@@ -382,7 +424,7 @@ export function createServer(opts: ServerOptions) {
       inputSchema: { node: z.string(), reason: z.string() },
     },
     async (a) => {
-      const id = store.putDefence({ node: a.node, reason: a.reason, source });
+      const id = store.putDefence({ node: a.node, reason: unescapeText(a.reason), source });
       emit('defend_node', { ok: true, node: a.node, id });
       return ok({ accepted: true, id });
     },

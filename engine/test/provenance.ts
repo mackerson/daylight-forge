@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseSpec, sourceDiversity, specKey } from '../swarm/adapters.ts';
+import { unescapeText } from '../mcp/server.ts';
 import { planRoster } from '../swarm/driver.ts';
 import { ClaimStore } from '../store/claims.ts';
 import { harness } from './harness.ts';
@@ -126,6 +127,29 @@ section('corroboration is reachable only across distinct sources');
   store.close();
   store2.close();
   store3.close();
+}
+
+section('agent prose is normalised at the boundary');
+{
+  // Measured on a real focus run: opus submitted `Client Boundary &amp; Bootstrap` and
+  // sonnet submitted `Render & Input Pipeline` in the same run. Two encodings of one
+  // character, chosen per model — which renders wrong and, worse, makes two names that
+  // should compare equal compare different.
+  check('an over-escaped ampersand is decoded',
+    unescapeText('Client Boundary &amp; Bootstrap') === 'Client Boundary & Bootstrap');
+  check('an unescaped one is left alone',
+    unescapeText('Render & Input Pipeline') === 'Render & Input Pipeline');
+  check('the two now compare equal after normalisation',
+    unescapeText('A &amp; B') === unescapeText('A & B'));
+  check('quotes and angle brackets too',
+    unescapeText('&lt;canvas&gt; &quot;x&quot; &#39;y&#39;') === '<canvas> "x" \'y\'');
+  check('numeric references decode',
+    unescapeText('caf&#233;') === 'café');
+  // Verdicts are booleans and must not be touched on the way through.
+  check('a boolean value passes through unchanged', unescapeText(false) === false);
+  check('a number passes through unchanged', unescapeText(3) === 3);
+  check('an unknown entity is left as written',
+    unescapeText('a &nbsp; b') === 'a &nbsp; b');
 }
 
 section('MCP tools declare what a host needs to decide');
