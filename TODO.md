@@ -3,9 +3,12 @@
 Everything outstanding, in the order I would do it. Rationale for the phase ordering lives in
 [DESIGN.md](DESIGN.md); this is the working list.
 
-**Status:** P0–P13 built, **every gate closed**, backlog empty. This repo maps itself clean:
-0 D4 pairs, 0 D6 pairs. Invariants 6/6 green, target passing. Suite is **462 assertions across
-19 files** (`pnpm test:all`).
+**Status:** P0–P14 built, **every gate closed**, backlog empty. This repo maps itself clean:
+0 D4 pairs, 0 D6 pairs. Invariants 6/6 green, target passing. Suite is **605 assertions across
+23 files** (`pnpm test:all`).
+
+P14 closed the last gate that could only be *encountered* rather than built — and found that
+the reason it had never been encountered was a bug in this tool, not a property of models.
 
 The last gate closed by running it rather than reasoning about it, and running it found three
 bugs that reading never would have — including one that had made the contradiction queue, the
@@ -13,6 +16,25 @@ screen this design calls its highest-value surface, unreachable for verdicts sin
 rule landed. See P13.
 
 ### Fixed since
+- [x] **`pnpm gui` showed you a map while insisting no repo was selected.** The window opens
+      on the default `./out`, which usually holds a perfectly good map — but `state.repo` was
+      null until someone used the file picker, and Map, Run agents, Rebuild and Watch are all
+      gated on it. So the whole action bar was dead in front of a map that had loaded fine,
+      and the only way out was to go and choose the repo it was already displaying.
+
+      It never needed asking. An output directory belongs to exactly one repository — an
+      invariant the tool enforces at `map` time and refuses to violate — and the map records
+      which one. The shell now reads it back from `view.json` on startup and whenever the
+      output directory changes. `view.json` specifically: it is the small file, and
+      `graph.json` is hundreds of megabytes on a large repo.
+
+      A root that is no longer on disk is *not* adopted, because that hands every agent a cwd
+      that is not there and fails several steps later as something unrecognisable. That case
+      says so in a banner naming the path, rather than leaving a dead button with no reason —
+      which was the original bug wearing a different hat.
+      **Test:** `engine/test/isolation.ts` +5, pinning the `view.json` contract the shell
+      depends on, since the shell itself cannot be reached from the suite.
+
 - [x] **Switching repos showed the previous repo's map**, because picking a repo left the
       output directory pointing at the old one. The visible half of a much worse bug: claims
       address files by repo-relative path with no repo in them, so one output directory across
@@ -434,3 +456,168 @@ Ordered loosely by value, not scheduled.
   mutate your agent config.
 - **Invariants belong to the analysed repo.** A repo with none reports `UNPROVEN` rather than
   failing, which is correct and not a gap.
+
+---
+
+## P14 — Launching and watching a swarm
+
+*The product could drive four agent CLIs and had only ever driven one, because the launch
+surface hardcoded it and the claim store could not tell them apart anyway.*
+
+- [x] **Every claim recorded the same source.** `drive()` wrote one MCP config per run with
+      `VDS_AGENT` hardcoded to the literal `'multi'`, and pointed every adapter at it. So
+      `source_tool` was `multi` for 100% of claims in a live store — and since
+      `ClaimStore.belief` counts independent sources as `kind:tool:model`, an entire swarm
+      collapsed into one source. Nothing could reach CORROBORATED, no two agents could ever
+      be seen to disagree, and `frontier` kept residual uncertainty on every belief forever.
+      It failed silently and expensively: claims landed, counters went up, the panel filled
+      with activity, and none of it could be checked. One config per roster entry now, with
+      that entry's own tool, model and session.
+      **Test:** `engine/test/provenance.ts` (23).
+
+- [x] **The roster is a list of `tool:model` pairs, not a set of tools.** The pair is the
+      provenance key, so claude-on-sonnet and claude-on-opus are two sources and two runs of
+      one model are one. `--tools claude:sonnet,claude:opus,codex`. Duplicate entries are
+      dropped and named as duplicates — a second identical entry costs a full agent run and
+      moves no belief.
+
+- [x] **A run that cannot corroborate says so before it spends anything.** `sourceDiversity`
+      is computed at plan time and surfaced in the launcher, the CLI and the ledger.
+
+- [x] **codex works.** It had been documented for months as unable to reach an MCP server
+      headlessly — every call returned `user cancelled MCP tool call`, with no user and no
+      approval prompt reachable in `exec`. The cause was ours: our tools carried no MCP
+      `annotations`, so a non-interactive host had nothing to decide from and defaulted to
+      refusing. Declaring `readOnlyHint` on the reads and `destructiveHint: false` on the
+      writes is enough. Verified end to end — reads return and a `submit_claim` lands with
+      `source_tool = codex` — under codex's *default* approval policy, inside its `read-only`
+      sandbox, with no `--dangerously-*` flag. `approval_policy = "never"` was tried and is
+      not needed, so it is not set.
+
+      Worth stating plainly, because it is the same mistake this tool exists to catch:
+      *"the other tool is broken" was a claim we had not evidenced.*
+
+- [x] **A launch panel instead of two buttons.** Roster rows with per-row model, mode, batch,
+      concurrency, cost ceiling, dry run. Adapter availability is measured rather than
+      assumed — `vds adapters` spawns each binary and asks it what models it has
+      (`grok models`, `opencode models`, and claude's own `--help`), and reports the ones
+      that cannot be asked as unknown rather than filling the gap in. An unauthenticated
+      binary is caught here rather than several minutes into a paid run.
+
+- [x] **`--max-cost` and `--concurrency` reach the GUI.** Both were parsed by the CLI and
+      dropped by the IPC handler, so the one control that stops a run costing more than you
+      meant was unreachable from the only surface that launches runs.
+
+- [x] **`--spread`.** Split the frontier across the roster instead of asking everyone the
+      same questions. Off by default and labelled with what it costs: it covers more ground
+      per dollar and corroborates nothing.
+
+- [x] **The live spend meter was watching for output that never arrived.** The engine buffers
+      each agent's stdout rather than forwarding it — correct, three interleaved streams are
+      unreadable — so the app scraped `total_cost_usd` from a pipe that by construction never
+      carried it. And had it carried it, the app took the *maximum*, which reads two agents
+      spending \$1.01 and \$1.75 concurrently as a \$1.75 run. There is now a per-source
+      progress channel, and the app sums it.
+
+- [x] **A run ledger that survives the app.** A finished run used to report itself in a toast
+      that vanished on the next one. `runs.jsonl` records what each run cost and what it
+      bought, so *was the third source worth it* is answerable after the fact. `costKnown` is
+      false when any CLI reported no spend at all — codex reports tokens and no price, which
+      makes a total a floor and makes a ceiling unenforceable against it.
+
+- [x] **A Quality panel, and `vds quality`.** The signals all existed on four different
+      screens, and every one of them goes up when work happens rather than when the work was
+      good. This is one surface that leads with **what is wrong with this map**: named
+      weaknesses, sorted by how badly each undermines acting on it, each with the fix where
+      there is an honest one. The headline number is not how many claims there are but how
+      many anything ever checked — and "checked twice" is reported separately from "agreed
+      twice", because a discovered disagreement is not a success.
+      **Test:** `engine/test/quality.ts` (28).
+
+**Gate:** ✅ **closed live, and it is the P13 gate too.** A three-source run
+(`claude:sonnet`, `claude:opus`, `codex`) on this repo produced a genuine cross-model
+disagreement on `engine/store/claims.ts` / `god_verdict` — the one thing DESIGN said could
+not be built, only encountered. codex says it *is* a god node that should be split;
+claude/sonnet and claude/opus say it is not; a later run added claude/haiku, which sides with
+codex. The store recorded it CONTRADICTED rather than taking the 2–1 majority.
+
+The split is not by vendor. haiku and codex count *responsibilities* — five tables, a lease
+API, a migration path, an explicit `---- focus operations (P3)` divider. sonnet and opus
+count *ownership* — one class, one `DatabaseSync` handle, one schema, and a `migrateSubject`
+that has to rewrite four tables together and therefore cannot live anywhere else. opus filed
+its verdict at 0.72 and named the strongest point against itself in its own evidence.
+
+Both sides cite the same lines: 150, 388, 504, 584. Per the design, same evidence and
+opposite conclusions is a judgement call a person has to make — which is exactly what the
+arbitration screen is for, and the first time it has had a real one to show.
+
+**This had never happened before, and the reason was not that models agree.** It was that
+every agent was recorded as the same source, so the store had nothing to compare.
+
+---
+
+## Driven end to end on a second repo
+
+*A Next.js incremental game, 23 files, 471 symbols, a store the tool had never seen.*
+
+Worth recording because it is the first time the whole loop ran on something unfamiliar, and
+because two of the three things it found were bugs in **this** tool rather than in the game.
+
+**The honesty machinery held.** 3 of 23 files reachable from 3 entrypoints — Next.js reaches
+`app/layout.tsx` and `app/page.tsx` by convention, not by import, which is exactly the trap the
+dead-code question names. All 20 candidates were capped to medium, zero high, with the
+reachability caveat attached. Three agents then read one of them and ruled it *alive* at
+0.97–0.99, corroborated three ways.
+
+**Corroboration works now, and the number says so.** From an empty store: 18 claims, 6 beliefs,
+**6 of 6 checked by more than one source** — 5 CORROBORATED, 1 CONTRADICTED. Before the
+provenance fix that figure could not have exceeded zero on any repo, ever.
+
+**The god-node disagreement reproduces.** codex called `src/lib/game/store.ts` a god node at
+0.90; claude/sonnet and claude/opus said it was not, at 0.75 and 0.78. The same split, on the
+same predicate, on an unrelated codebase — which makes it a systematic difference in how these
+models judge cohesion rather than a one-off about `claims.ts`.
+
+### Found, and fixed
+
+- [x] **Agent prose arrived HTML-escaped from some models and not others.** In one focus run
+      `claude/opus` submitted `Client Boundary &amp; Bootstrap` while `claude/sonnet` submitted
+      `Render & Input Pipeline`. It rendered wrong, and worse, two names that should compare
+      equal did not — the same failure the store already refuses to have for predicates.
+      Normalised at the MCP boundary, where agent text arrives. Ingest-time only, so claims
+      written before it keep the escaped form; the store is append-only and that is the point.
+      **Test:** `engine/test/provenance.ts` +8.
+
+- [x] **A dry run leased fifteen minutes of the best questions** for an agent it was never
+      going to spawn, and so did a run whose entire roster turned out to be uninstalled.
+
+### Found, and needs a decision
+
+- [ ] **Nothing reconciles clusters proposed by different sources.** Three agents produced 17
+      clusters describing roughly five subsystems. Eight cross-source pairs overlap at Jaccard
+      0.50–0.80:
+
+      | overlap | | |
+      | --- | --- | --- |
+      | 0.80 | `Render & Input Pipeline` (sonnet) | `Photography Surface` (opus) |
+      | 0.80 | `Meta-Progression & Session-Boundary UI` (sonnet) | `Between-Runs Layer` (opus) |
+      | 0.75 | `Persistent Progression UI` (codex) | `Between-Runs Layer` (opus) |
+      | 0.67 | `Balance & Cast Ledger` (opus) | `Sim Core` (sonnet) |
+      | 0.67 | `Web Application Entry` (codex) | `App Entry` (sonnet) |
+
+      The result inverts the stack: **L3 came out with 11 nodes against L2's 8**, when L3 is
+      supposed to be the collapsed architecture level. Focus was built for one focusing agent
+      and now has three, and more sources currently make the top of the map *worse*.
+
+      This is D5's own question — "two modules described as doing the same job in different
+      words" — asked about clusters instead of modules, and D5 does not run over them. The
+      decision is what to do once they are detected, and the options are not equivalent:
+      merge them automatically (fast, and averages away exactly the disagreement this design
+      preserves everywhere else); route the overlap to arbitration as a cluster-level
+      contradiction (consistent with the rest of the product, more human work); or run each
+      source's focus as a separate candidate stack and let a person pick one (honest, but
+      abandons the idea of a single shared map).
+
+      Until it is decided, **run Focus with one source and Explore with several.** Explore
+      corroborates because the questions are fixed and the answers are comparable. Focus
+      proposes, and three proposals are three maps.

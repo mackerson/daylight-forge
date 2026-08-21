@@ -54,9 +54,17 @@ without being told to look for it.
 | D5 | two modules described as doing the same job in different words |
 | D6 | two files that are the same thing written twice, sharing no copied code |
 
-**A swarm that leaves evidence.** Agents answer the highest-uncertainty questions first, and
-every claim goes through one boundary that rejects anything unevidenced. Work is leased so two
-agents do not duplicate it, and the run stops when nothing left is worth paying to answer.
+**A swarm of different models that leaves evidence.** Agents answer the highest-uncertainty
+questions first, and every claim goes through one boundary that rejects anything unevidenced.
+Work is leased so two agents do not duplicate it, and the run stops when nothing left is worth
+paying to answer.
+
+You pick a roster of `tool:model` pairs — `claude:sonnet,claude:opus,codex` — because that
+pair is the unit of independence. Two runs of one model are one source and can only ever
+agree with themselves; two different ones can corroborate a belief or be caught disagreeing
+about it. The launcher tells you how many independent sources a run has **before** you spend
+anything, since a run that cannot corroborate looks exactly like one that can until you go
+reading the store afterwards.
 
 **Invariants as a build gate.** Claims about *your* architecture — "the event bus is
 storage-only", "nothing under `scene/` calls a randomness source" — written as prose plus a
@@ -77,6 +85,23 @@ map records both, marks the belief CONTRADICTED, and routes it to the top of the
 arbitration screen shows what each side actually read and — the part that matters — whether
 they read *the same thing*. Same evidence and opposite conclusions is a judgement call someone
 has to make. Different evidence usually means neither looked hard enough.
+
+Here is one, on this repo, from a run of `claude:sonnet`, `claude:opus` and `codex`. Asked
+whether `engine/store/claims.ts` is a god node that should be split, codex said yes and both
+Claude models said no; a later run added `claude:haiku`, which sided with codex. Nothing
+resolved it to a 2–1 majority.
+
+The split is not by vendor. haiku and codex count *responsibilities* — five tables, a lease
+API, a migration path, an explicit `---- focus operations (P3)` divider in the file itself.
+sonnet and opus count *ownership* — one class over one database handle and one schema, with a
+`migrateSubject` that rewrites four tables together and therefore cannot live anywhere else.
+opus filed at 0.72 confidence and named the strongest point against its own position in its
+evidence. Both sides cite the same lines. That is a judgement call, and it is waiting for a
+person.
+
+**It took a bug fix to see any of this.** Every agent used to be recorded under the same
+source name, so the store had nothing to compare and no disagreement in this project's
+history could surface. The claims were all there. The provenance was not.
 
 **It says when it does not know.** On a 10,498-file monorepo it reported 10,485 dead-code
 candidates and then immediately capped every one of them to medium confidence:
@@ -126,11 +151,20 @@ pnpm gui                    # fly through it
 That is the whole read-only path. Everything below costs money or changes files.
 
 ```bash
-pnpm agent <repo> --tools claude --batch 5 --max-cost 2.00
+pnpm adapters                          # which agent CLIs are installed, and what models they have
+pnpm agent <repo> --tools claude:sonnet,claude:opus,codex --batch 5 --max-cost 2.00
+pnpm quality <repo>                    # how much of the map can be believed, and why not more
 ```
 
-Sends the highest-uncertainty questions to an agent, which answers through the MCP server.
-`--max-cost` is a hard ceiling. `--dry-run` shows what would be asked and spawns nothing.
+`agent` sends the highest-uncertainty questions to every agent in the roster, and they answer
+through the MCP server. `--max-cost` is a hard ceiling — with the caveat that it can only be
+enforced against a CLI that says what it charged, and codex does not. `--dry-run` shows what
+would be asked and spawns nothing.
+
+`quality` is the one to read before acting on a map, and before deciding another run is worth
+paying for. It leads with what is *wrong*: how much has never been checked by a second source,
+what is in dispute, what the detectors found and nobody adjudicated, and what the reachability
+numbers cannot support.
 
 ```bash
 pnpm check <repo>           # invariants + target architecture; exit 1 on red. For CI.
@@ -195,7 +229,9 @@ The working list: [TODO.md](TODO.md).
 | `pnpm invariants <repo>` | compile the repo's invariants to L0 queries and run them |
 | `pnpm focus <repo>` | rebuild the L1→L2→L3 stack from the claim store |
 | `pnpm check <repo>` | invariants + target architecture; exit 1 on red. `--warn-only` to adopt. |
-| `pnpm agent <repo>` | drive an agent CLI against the frontier |
+| `pnpm agent <repo>` | drive a roster of agent CLIs against the frontier |
+| `pnpm adapters` | which agent CLIs are installed, what models each reports, what still needs setup |
+| `pnpm quality <repo>` | how much of the map can be believed, and what is missing |
 | `pnpm plan <repo>` | diff the declared target architecture; writes task packets |
 | `pnpm export <repo>` | write the committed layer: `knowledge.json` + `ARCHITECTURE.md` |
 | `pnpm import <repo>` | merge someone else's exported knowledge |
@@ -218,8 +254,11 @@ The working list: [TODO.md](TODO.md).
 | `--include-tests` | off | put test files in the map. They are always read for reachability regardless. |
 | `--force` | off | overwrite an output directory belonging to a different repo |
 | `--max-cost <usd>` | — | hard ceiling on agent spend for the run |
-| `--tools <list>` | `claude` | which agent CLIs to drive |
+| `--tools <roster>` | `claude` | `tool` or `tool:model` entries, comma separated. A tool may appear twice on different models — that is how a run gets two independent sources. |
+| `--model <m>` | — | default model for roster entries that do not name one |
 | `--batch <n>` | `5` | frontier questions per agent |
+| `--spread` | off | split the frontier across the roster rather than asking everyone the same questions. Covers more; corroborates nothing. |
+| `--concurrency <n>` | `1` | how many agents run at once |
 | `--dry-run` | off | show what would be asked; spawn nothing |
 | `--depth <n>` | `3` | grouping depth for the Mermaid render |
 | `--top <n>` | `15` | rows per console table |
@@ -227,6 +266,11 @@ The working list: [TODO.md](TODO.md).
 **Invariants belong to the repo being analysed**, not to this tool — they are claims about one
 specific architecture, so a built-in set would mark every other codebase stale against facts
 that were never about it. A repo with none defined reports `UNPROVEN` rather than failing.
+
+**Every adapter runs read-only.** The harness never passes `--dangerously-*`,
+`--always-approve` or `--auto`. Repo access is read; graph access is through MCP only. `grok`
+and `opencode` register MCP servers into your own config rather than per invocation, so the
+tool prints the one-time command and leaves running it to you.
 
 **Vendored bundles are skipped** (over 200KB, or smaller but minified) and counted. Letting one
 through wrecks every downstream number: a single committed copy of three.js once contributed
