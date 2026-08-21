@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaimStore } from '../store/claims.ts';
-import { ADAPTERS, available, mcpConfig, run, type Adapter, type AgentResult } from './adapters.ts';
+import {
+  ADAPTERS, available, mcpConfig, parseSpec, run, sourceDiversity, specKey,
+  type Adapter, type AgentResult, type AgentSpec,
+} from './adapters.ts';
 import { converged, frontier, type FrontierItem } from './frontier.ts';
 import { buildStack } from '../focus/stack.ts';
 import type { Graph } from '../graph/types.ts';
@@ -18,6 +21,7 @@ export type DriveMode = 'explore' | 'focus';
 export interface DriveOptions {
   dir: string;
   repo: string;
+  /** Roster entries, each `tool` or `tool:model`. The same tool may appear twice. */
   tools: string[];
   /** How many frontier items to hand each agent. */
   batch?: number;
@@ -31,6 +35,23 @@ export interface DriveOptions {
   maxCost?: number;
   /** How many agents may run at once. Sequential by default. */
   concurrency?: number;
+  /**
+   * Split the frontier between the agents instead of giving all of them the same items.
+   *
+   * The default is the opposite, and deliberately: handing every agent the same questions is
+   * what produces a second independent answer on one subject, which is the only way a belief
+   * reaches CORROBORATED or a disagreement is ever discovered. Spreading covers more ground
+   * per dollar and corroborates nothing, so it is a choice with a real cost either way.
+   */
+  spread?: boolean;
+  /**
+   * Live per-source spend, as each CLI reports it.
+   *
+   * Per *source*, not per run: three agents in one job used to be one undifferentiated
+   * number, and the app took the maximum of whatever `total_cost_usd` values it happened to
+   * see — which reads a $1.01 and a $1.75 running together as a $1.75 run.
+   */
+  onProgress?: (p: { source: string; cost: number; turns: number }) => void;
 }
 
 const SYSTEM_RULES = `
@@ -162,10 +183,24 @@ export function buildPrompt(items: FrontierItem[]): string {
   }
   return lines.join('\n');
 }
+/** One roster entry that is actually going to run, with everything resolved for it. */
+export interface LaunchPlan {
+  spec: AgentSpec;
+  adapter: Adapter;
+  /** Its own MCP config, so its own tool and model reach the claim store. */
+  mcpConfigPath: string;
+  session: string;
+  /** The items this agent was handed. Identical across agents unless `spread` is set. */
+  items: FrontierItem[];
+  prompt: string;
+}
 
 export interface DriveReport {
   assigned: FrontierItem[];
+  /** Kept for callers that print one prompt; identical to `plans[0].prompt` when not spread. */
   prompt: string;
+  /** Exactly what would be, or was, launched — the dry-run surface. */
+  plans: LaunchPlan[];
   results: AgentResult[];
   claimsBefore: number;
   claimsAfter: number;
@@ -179,6 +214,57 @@ export interface DriveReport {
   converged: boolean;
   /** Adapters not launched because the run had spent its ceiling. */
   budgetStops: string[];
+  /** Distinct `tool:model` keys in the roster that actually ran. */
+  sourceDiversity: number;
+  /**
+   * Said out loud when a run cannot corroborate anything, because the failure is silent
+   * otherwise: the claims land, the numbers go up, and every belief stays INFERRED.
+   */
+  diversityWarning?: string;
+}
+
+/** A filename-safe form of a provenance key. */
+const slug = (s: string) => s.replace(/[^a-zA-Z0-9._-]+/g, '-');
+
+/**
+ * Resolve the roster, dropping entries we cannot run and collapsing exact duplicates.
+ *
+ * Two identical `tool:model` entries are not two sources — the belief calculus keys on the
+ * pair, so the second one costs money and moves nothing. Dropped, and said so.
+ */
+export function planRoster(
+  specs: AgentSpec[],
+): { runnable: Array<{ spec: AgentSpec; adapter: Adapter }>; unavailable: string[] } {
+  const runnable: Array<{ spec: AgentSpec; adapter: Adapter }> = [];
+  const unavailable: string[] = [];
+  const seen = new Set<string>();
+
+  for (const spec of specs) {
+    const adapter = ADAPTERS[spec.tool];
+    if (!adapter) {
+      unavailable.push(`${spec.tool} (no adapter)`);
+      continue;
+    }
+    if (!available(adapter)) {
+      unavailable.push(`${specKey(spec)} (not installed)`);
+      continue;
+    }
+    const key = specKey(spec);
+    if (seen.has(key)) {
+      unavailable.push(`${key} (duplicate roster entry — same source, would corroborate nothing)`);
+      continue;
+    }
+    seen.add(key);
+    runnable.push({ spec, adapter });
+  }
+  return { runnable, unavailable };
+}
+
+/** Deal items round-robin so every agent gets a share of the high-scoring head, not a tail. */
+function deal<T>(items: T[], ways: number): T[][] {
+  const out: T[][] = Array.from({ length: ways }, () => []);
+  items.forEach((item, i) => out[i % ways].push(item));
+  return out;
 }
 
 export async function drive(options: DriveOptions): Promise<DriveReport> {
@@ -203,87 +289,121 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   const store = new ClaimStore(path.join(dir, 'claims.db'));
   const statsBefore = store.stats();
   const claimsBefore = statsBefore.claims;
+  const session = options.session ?? `vds-${Date.now()}`;
+
+  const { runnable, unavailable } = planRoster(tools.map((t) => parseSpec(t, model)));
+
   // The prompt carries frontier items directly, bypassing get_open_questions — so it has
   // to respect and take leases too, or two launches collide before either agent starts.
-  const session = options.session ?? `vds-${Date.now()}`;
   const taken = store.leasedElsewhere(session);
+  // Spreading needs enough items to give every agent a full batch; corroborating needs one
+  // batch that all of them answer.
+  const want = options.spread ? batch * Math.max(1, runnable.length) : batch;
   const assigned =
     options.mode === 'focus'
       ? []
       : frontier(graph, store, findings, structure)
           .filter((item) => !taken.has(item.subject))
-          .slice(0, batch);
-  if (assigned.length) store.lease(assigned.map((a) => a.subject), session);
+          .slice(0, want);
+  // Nothing is reserved unless something is actually going to answer it. A dry run held 15
+  // minutes of the highest-scoring work for an agent that was never going to be spawned, and
+  // so did a run whose entire roster turned out to be uninstalled — both quietly starving the
+  // next real run of exactly the questions worth asking.
+  const willRun = !dryRun && runnable.length > 0;
+  if (assigned.length && willRun) store.lease(assigned.map((a) => a.subject), session);
 
-  let prompt: string;
-  if (options.mode === 'focus') {
+  const focusPrompt = () => {
     const stack = buildStack(graph, store, undefined);
-    prompt = buildFocusPrompt(
+    return buildFocusPrompt(
       stack.levels[0].nodes.map((n) => ({ id: n.id, files: n.fileCount })),
       (findings as { patterns?: Array<{ key: string; members: string[] }> }).patterns ?? [],
     );
-  } else {
-    prompt = buildPrompt(assigned);
-  }
+  };
+
+  const shares =
+    options.mode === 'focus'
+      ? runnable.map(() => [] as FrontierItem[])
+      : options.spread
+        ? deal(assigned, Math.max(1, runnable.length))
+        : runnable.map(() => assigned);
 
   const cmd = serverCommand();
-  const cfgPath = path.join(dir, 'mcp.json');
-  fs.writeFileSync(cfgPath, JSON.stringify(mcpConfig(cmd, dir, 'multi', model, options.session), null, 2));
-
-  const results: AgentResult[] = [];
-  const unavailable: string[] = [];
   const registrationHints: string[] = [];
-  const budgetStops: string[] = [];
 
-  const runnable: Adapter[] = [];
-  for (const name of tools) {
-    const adapter = ADAPTERS[name];
-    if (!adapter) {
-      unavailable.push(`${name} (no adapter)`);
-      continue;
-    }
-    if (!available(adapter)) {
-      unavailable.push(`${name} (not installed)`);
-      continue;
-    }
+  /**
+   * One MCP config per roster entry, carrying that entry's own tool and model.
+   *
+   * This used to be a single file written once with the tool hardcoded to "multi", which
+   * meant every claim in the store recorded the same source no matter which CLI made it.
+   * The belief calculus counts independent sources as `kind:tool:model`, so a whole swarm
+   * collapsed into one source: nothing could reach CORROBORATED, nothing could contradict
+   * anything, and the frontier never converged. The provenance is the product.
+   */
+  const plans: LaunchPlan[] = runnable.map(({ spec, adapter }, i) => {
+    const key = specKey(spec);
+    const agentSession = `${session}:${key}`;
+    const cfgPath = path.join(dir, `mcp.${slug(key)}.json`);
+    fs.writeFileSync(
+      cfgPath,
+      JSON.stringify(mcpConfig(cmd, dir, spec.tool, spec.model, agentSession), null, 2),
+    );
     if (!adapter.perInvocationMcp && adapter.registrationHint) {
       // We never mutate the user's agent config. Surface the command instead.
       registrationHints.push(adapter.registrationHint(cfgPath, cmd));
     }
-    runnable.push(adapter);
-  }
+    return {
+      spec,
+      adapter,
+      mcpConfigPath: cfgPath,
+      session: agentSession,
+      items: shares[i],
+      prompt: options.mode === 'focus' ? focusPrompt() : buildPrompt(shares[i]),
+    };
+  });
 
-  if (!dryRun && runnable.length) {
+  const diversity = sourceDiversity(plans.map((p) => p.spec));
+  const diversityWarning =
+    plans.length > 0 && diversity < 2
+      ? `roster has ${diversity} independent source (${plans.map((p) => specKey(p.spec)).join(', ')}). ` +
+        'Corroboration counts distinct tool:model pairs, so nothing this run claims can rise ' +
+        'above INFERRED and no disagreement can be discovered. Add a second tool, or the same ' +
+        'tool on a different model.'
+      : undefined;
+
+  const results: AgentResult[] = [];
+  const budgetStops: string[] = [];
+
+  if (!dryRun && plans.length) {
     let spent = 0;
-    const launch = (adapter: Adapter) =>
-      run(adapter, {
-        prompt,
+    const launch = (plan: LaunchPlan) =>
+      run(plan.adapter, {
+        prompt: plan.prompt,
         cwd: repo,
-        mcpConfigPath: cfgPath,
-        session: options.session
-          ? `${options.session}:${adapter.name}`
-          : `vds-${adapter.name}-${claimsBefore}`,
-        model,
+        mcpConfigPath: plan.mcpConfigPath,
+        session: plan.session,
+        model: plan.spec.model,
         timeoutMs,
         maxTurns: 40,
+        onProgress: (sp) =>
+          options.onProgress?.({ source: specKey(plan.spec), cost: sp.cost, turns: sp.turns }),
         maxCost: options.maxCost ? Math.max(0, options.maxCost - spent) : undefined,
       });
 
     const limit = Math.max(1, options.concurrency ?? 1);
-    const queue = [...runnable];
+    const queue = [...plans];
 
     while (queue.length) {
       // The ceiling is enforced *between* launches as well as during one, because most CLIs
       // only report cost when they finish — by which point a mid-run kill is moot.
       if (options.maxCost && spent >= options.maxCost) {
         budgetStops.push(
-          `stopped before ${queue.map((a) => a.name).join(', ')}: ` +
+          `stopped before ${queue.map((p) => specKey(p.spec)).join(', ')}: ` +
             `spent $${spent.toFixed(2)} of $${options.maxCost.toFixed(2)}`,
         );
         break;
       }
-      const batch = queue.splice(0, limit);
-      const done = await Promise.all(batch.map(launch));
+      const wave = queue.splice(0, limit);
+      const done = await Promise.all(wave.map(launch));
       for (const r of done) {
         results.push(r);
         spent += r.cost;
@@ -296,10 +416,15 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   store.close();
 
   return {
-    assigned, prompt, results, claimsBefore, claimsAfter,
+    assigned,
+    prompt: plans[0]?.prompt ?? '',
+    plans,
+    results, claimsBefore, claimsAfter,
     statsBefore, statsAfter, unavailable, registrationHints,
     skippedLeased: taken.size,
     budgetStops,
+    sourceDiversity: diversity,
+    diversityWarning,
     converged: options.mode !== 'focus' && converged(assigned),
   };
 }

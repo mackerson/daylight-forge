@@ -1,5 +1,8 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import type { AdapterStatus, AgentSpec, Probe } from './types.ts';
+
+export type { AdapterStatus, AgentSpec, Probe } from './types.ts';
 
 /**
  * Agent CLI adapters — the control plane.
@@ -27,10 +30,22 @@ export interface AgentRun {
   model?: string;
   timeoutMs?: number;
   maxTurns?: number;
+  /**
+   * Called whenever the CLI's reported spend or turn count moves.
+   *
+   * The harness buffers each agent's stdout rather than forwarding it, which is right — the
+   * streams of three concurrent agents interleaved into one pipe are unreadable. But it
+   * meant nothing downstream ever saw a cost until the whole run ended, so the app's live
+   * spend meter watched for JSON that by construction never reached it. This is the seam
+   * that carries the number out without the noise.
+   */
+  onProgress?: (spend: { cost: number; turns: number }) => void;
 }
 
 export interface AgentResult {
   tool: string;
+  /** The model this run was pinned to, if any. Half of the provenance key. */
+  model?: string;
   /** Spend the CLI reported, when it reports any. */
   cost: number;
   turns: number;
@@ -52,6 +67,27 @@ export interface Adapter {
   perInvocationMcp: boolean;
   argv(run: AgentRun): string[];
   registrationHint?(mcpConfigPath: string, serverCmd: string[]): string;
+  /**
+   * Ask the installed binary what it can do, for adapters that have a way to answer.
+   *
+   * Model ids are not ours to remember. They change under us, they differ per account, and
+   * a list compiled from memory is exactly the kind of unevidenced claim this tool rejects
+   * everywhere else. Where the CLI can be asked, ask it; where it cannot, say so rather
+   * than filling the gap in.
+   */
+  probe?(): Probe;
+}
+
+/**
+ * Run a CLI's own introspection subcommand. Never allowed to break the caller.
+ *
+ * Both streams, whatever the exit code. grok exits zero, prints its model list on stdout and
+ * says "You are not authenticated" on stderr — read only one of them and the launcher offers
+ * a tool that is going to fail several minutes into a paid run.
+ */
+function ask(bin: string, args: string[], timeout = 15_000): string {
+  const r = spawnSync(bin, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+  return `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
 }
 
 export const CLAUDE: Adapter = {
@@ -77,6 +113,16 @@ export const CLAUDE: Adapter = {
     ...(run.model ? ['--model', run.model] : []),
     ...(run.maxTurns ? ['--max-turns', String(run.maxTurns)] : []),
   ],
+  probe: () => {
+    // claude has no `models` subcommand, but its own --help names the aliases it accepts.
+    // Parsed from the binary rather than recalled, so it tracks whatever is installed.
+    const help = ask('claude', ['--help']);
+    const line = help.match(/--model <model>[\s\S]{0,400}/)?.[0] ?? '';
+    const models = [...line.matchAll(/'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]);
+    return models.length
+      ? { models: [...new Set(models)], source: 'documented' }
+      : { models: [], source: 'unknown' };
+  },
 };
 
 /**
@@ -145,6 +191,16 @@ export const GROK: Adapter = {
   ],
   registrationHint: (_cfg, cmd) =>
     `grok mcp add vds -- ${cmd.join(' ')}`,
+  probe: () => {
+    const out = ask('grok', ['models']);
+    const models = [...out.matchAll(/^\s*[*-]\s+(\S+)/gm)].map((m) => m[1]);
+    // Installed is not the same as usable. An unauthenticated binary fails a whole run
+    // several minutes in, which is the most expensive place to find out.
+    const note = /not authenticated|not logged in/i.test(out)
+      ? 'installed but not authenticated — run `grok login`'
+      : undefined;
+    return { models, source: models.length ? 'listed' : 'unknown', note };
+  },
 };
 
 /**
@@ -162,6 +218,13 @@ export const OPENCODE: Adapter = {
     ...(run.model ? ['--model', run.model] : []),
   ],
   registrationHint: (_cfg, cmd) => `opencode mcp add vds -- ${cmd.join(' ')}`,
+  probe: () => {
+    const models = ask('opencode', ['models'])
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /^[a-z0-9-]+\/\S+$/.test(l));
+    return { models, source: models.length ? 'listed' : 'unknown' };
+  },
 };
 
 export const ADAPTERS: Record<string, Adapter> = {
@@ -171,6 +234,26 @@ export const ADAPTERS: Record<string, Adapter> = {
   opencode: OPENCODE,
 };
 
+/** `claude` or `claude:sonnet`. Split on the first colon only — model ids contain slashes. */
+export function parseSpec(entry: string, defaultModel?: string): AgentSpec {
+  const at = entry.indexOf(':');
+  if (at < 0) return { tool: entry.trim(), model: defaultModel };
+  return { tool: entry.slice(0, at).trim(), model: entry.slice(at + 1).trim() || defaultModel };
+}
+
+/** How the pair is written wherever one string is needed: a filename, a session, a label. */
+export const specKey = (s: AgentSpec): string => `${s.tool}:${s.model ?? 'default'}`;
+
+/**
+ * Distinct provenance keys in a roster.
+ *
+ * A run of one source cannot corroborate anything it claims, however many agents are in it —
+ * every belief it produces tops out at INFERRED and the frontier keeps residual uncertainty
+ * on all of them forever. Worth saying before the money is spent, not after.
+ */
+export const sourceDiversity = (roster: AgentSpec[]): number =>
+  new Set(roster.map(specKey)).size;
+
 export function available(adapter: Adapter): boolean {
   try {
     // No shell: the binary name is ours, but keeping the shell out avoids the whole class.
@@ -179,6 +262,33 @@ export function available(adapter: Adapter): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Survey the installed agent CLIs.
+ *
+ * The launcher offered `claude` and nothing else because nothing ever asked what was on the
+ * machine. Everything here is measured at call time: whether the binary exists, what models
+ * it says it has, and whether it is going to refuse the moment it is handed real work.
+ */
+export function inspect(serverCmd: string[], cfgPath = '<out>/mcp.json'): AdapterStatus[] {
+  return Object.values(ADAPTERS).map((adapter) => {
+    const installed = available(adapter);
+    const probe = installed && adapter.probe ? adapter.probe() : undefined;
+    return {
+      name: adapter.name,
+      bin: adapter.bin,
+      installed,
+      perInvocationMcp: adapter.perInvocationMcp,
+      models: probe?.models ?? [],
+      modelSource: probe?.source ?? 'unknown',
+      note: probe?.note,
+      registrationHint:
+        !adapter.perInvocationMcp && adapter.registrationHint
+          ? adapter.registrationHint(cfgPath, serverCmd)
+          : undefined,
+    };
+  });
 }
 
 /**
@@ -231,8 +341,14 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
     }, options.timeoutMs ?? 300_000);
 
+    let reported = { cost: 0, turns: 0 };
     child.stdout.on('data', (d) => {
       stdout += d;
+      const now = readSpend(stdout);
+      if (now.cost !== reported.cost || now.turns !== reported.turns) {
+        reported = now;
+        options.onProgress?.(now);
+      }
       // Mid-run enforcement only works when the CLI reports cost as it goes. When it only
       // reports at the end, the between-runs ceiling in the driver is what actually holds.
       if (options.maxCost && !overBudget && readSpend(stdout).cost > options.maxCost) {
@@ -246,8 +362,13 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
       const spend = readSpend(stdout);
+      // A CLI that only reports at the end reports here, and nowhere else.
+      if (spend.cost !== reported.cost || spend.turns !== reported.turns) {
+        options.onProgress?.(spend);
+      }
       resolve({
         tool: adapter.name,
+        model: options.model,
         ok: exitCode === 0 && !timedOut && !overBudget,
         exitCode, signal,
         stdout, stderr,
@@ -260,7 +381,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
     child.on('error', (err) => {
       clearTimeout(timer);
       resolve({
-        tool: adapter.name, ok: false, exitCode: null, signal: null,
+        tool: adapter.name, model: options.model, ok: false, exitCode: null, signal: null,
         stdout, stderr: String(err), durationMs: Date.now() - started,
         timedOut, overBudget, cost: 0, turns: 0,
       });

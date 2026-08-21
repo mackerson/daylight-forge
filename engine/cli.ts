@@ -17,7 +17,9 @@ import { saveInvariant } from './invariants/save.ts';
 import type { Invariant } from './invariants/engine.ts';
 import { buildStack } from './focus/stack.ts';
 import { canonicalise, ClaimStore } from './store/claims.ts';
-import { drive } from './swarm/driver.ts';
+import { drive, serverCommand } from './swarm/driver.ts';
+import { history, record } from './swarm/ledger.ts';
+import { inspect } from './swarm/adapters.ts';
 import { evaluate, evaluateAll } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
 import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/share.ts';
@@ -46,6 +48,8 @@ interface Args {
   confirmedOnly: boolean;
   maxCost?: number;
   concurrency?: number;
+  /** Split the frontier across the roster instead of asking all of them the same thing. */
+  spread: boolean;
   /** Overwrite an output directory that belongs to a different repository. */
   force: boolean;
   /** `try-invariant`: a candidate predicate, as JSON, evaluated but never saved. */
@@ -95,6 +99,7 @@ function parseArgs(argv: string[]): Args {
     confirmedOnly: flags.get('confirmed-only') === 'true',
     maxCost: flags.get('max-cost') ? Number(flags.get('max-cost')) : undefined,
     concurrency: flags.get('concurrency') ? Number(flags.get('concurrency')) : undefined,
+    spread: flags.get('spread') === 'true',
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
     force: flags.get('force') === 'true',
@@ -701,7 +706,11 @@ async function runAgent(args: Args): Promise<void> {
   const report = await drive({
     dir: args.out, repo, tools: args.tools, batch: args.batch, dryRun: args.dryRun,
     mode: args.mode, timeoutMs: args.timeoutMs, model: args.model, session: args.session,
-    maxCost: args.maxCost, concurrency: args.concurrency,
+    maxCost: args.maxCost, concurrency: args.concurrency, spread: args.spread,
+    // One machine-readable line per spend update, on our own stdout. The GUI's live meter
+    // reads these; a terminal reader sees them as noise, so they are prefixed and terse
+    // rather than dumped as the agents' raw streams would be.
+    onProgress: (p) => process.stdout.write(`##vds ${JSON.stringify({ spend: p })}\n`),
   });
 
   console.log(
@@ -713,6 +722,20 @@ async function runAgent(args: Args): Promise<void> {
     console.log(`  ${item.score.toFixed(3)}  [${item.kind}] ${item.subject}`);
     console.log(`         ${item.why}`);
   }
+
+  // The roster, named as the claim store will record it. A run whose provenance you cannot
+  // predict is a run whose corroboration you cannot reason about afterwards.
+  console.log(
+    `\nroster — ${report.plans.length} agent(s), ${report.sourceDiversity} independent source(s)` +
+      (args.spread ? ' · frontier split between them' : ' · all answering the same questions'),
+  );
+  for (const p of report.plans) {
+    console.log(
+      `  ${p.spec.tool}/${p.spec.model ?? 'default'}`.padEnd(28) +
+        `${p.items.length} item(s) · session ${p.session}`,
+    );
+  }
+  if (report.diversityWarning) console.log(`\nwarning: ${report.diversityWarning}`);
 
   for (const hint of report.registrationHints) {
     console.log(`\nnote: this adapter needs a one-time MCP registration you must run yourself:`);
@@ -729,15 +752,26 @@ async function runAgent(args: Args): Promise<void> {
 
   if (args.dryRun) {
     console.log(`\n(dry run — no agent spawned)`);
-    fs.writeFileSync(path.join(args.out, 'prompt.txt'), report.prompt);
-    console.log(`wrote ${args.out}/prompt.txt`);
+    // One file per agent when they differ, because with --spread they genuinely do and a
+    // single prompt.txt would misrepresent what was going to be sent.
+    if (report.plans.length <= 1 || !args.spread) {
+      fs.writeFileSync(path.join(args.out, 'prompt.txt'), report.prompt);
+      console.log(`wrote ${args.out}/prompt.txt`);
+    } else {
+      for (const p of report.plans) {
+        const file = path.join(args.out, `prompt.${p.spec.tool}-${p.spec.model ?? 'default'}.txt`);
+        fs.writeFileSync(file, p.prompt);
+        console.log(`wrote ${file}`);
+      }
+    }
     return;
   }
 
   console.log('');
   for (const r of report.results) {
     console.log(
-      `${r.tool}: ${r.ok ? 'ok' : 'FAILED'} exit=${r.exitCode} ${(r.durationMs / 1000).toFixed(1)}s` +
+      `${r.tool}/${r.model ?? 'default'}: ${r.ok ? 'ok' : 'FAILED'} exit=${r.exitCode} ` +
+        `${(r.durationMs / 1000).toFixed(1)}s` +
         (r.cost ? ` · $${r.cost.toFixed(2)}` : '') +
         (r.turns ? ` · ${r.turns} turns` : '') +
         (r.timedOut ? ' (timed out)' : '') +
@@ -747,11 +781,92 @@ async function runAgent(args: Args): Promise<void> {
   }
   const a = report.statsAfter;
   const b = report.statsBefore;
+
+  // Bookkeeping, written before it is printed, so a run that is read about later is the same
+  // run that was watched live.
+  const noCost = report.results.some((r) => r.ok && r.cost === 0);
+  record(args.out, {
+    at: new Date().toISOString(),
+    session: args.session ?? 'cli',
+    mode: args.mode,
+    sources: report.plans.map((p) => `${p.spec.tool}:${p.spec.model ?? 'default'}`),
+    diversity: report.sourceDiversity,
+    spread: args.spread,
+    assigned: report.assigned.length,
+    results: report.results.map((r) => ({
+      source: `${r.tool}:${r.model ?? 'default'}`,
+      ok: r.ok,
+      seconds: Math.round(r.durationMs / 1000),
+      cost: r.cost,
+      turns: r.turns,
+      failure: r.ok
+        ? undefined
+        : r.timedOut ? 'timed out' : r.overBudget ? 'over budget' : `exit ${r.exitCode}`,
+    })),
+    costKnown: !noCost,
+    cost: report.results.reduce((sum, r) => sum + r.cost, 0),
+    delta: {
+      claims: a.claims - b.claims,
+      clusters: a.clusters - b.clusters,
+      elisions: a.elisions - b.elisions,
+      defences: a.defences - b.defences,
+    },
+    converged: report.converged,
+    notes: [
+      ...(report.diversityWarning ? [report.diversityWarning] : []),
+      ...report.budgetStops,
+      ...report.unavailable.map((u) => `skipped: ${u}`),
+    ],
+  });
+
   const d = (k: keyof typeof a) => `${b[k]} → ${a[k]} (+${a[k] - b[k]})`;
   console.log(`\nclaims    ${d('claims')}`);
   console.log(`clusters  ${d('clusters')}`);
   console.log(`elisions  ${d('elisions')}`);
   console.log(`defences  ${d('defences')}`);
+  if (noCost) {
+    console.log(
+      '\nnote: at least one CLI reported no spend, so the total above is a floor. The cost ' +
+        'ceiling cannot be enforced against a tool that never says what it charged.',
+    );
+  }
+}
+
+/**
+ * What agent CLIs are on this machine, and what each can actually do.
+ *
+ * JSON for the launcher, a table for a terminal. Spawns each binary's own introspection
+ * command, so it is a measurement rather than a list someone maintained by hand.
+ */
+function runAdapters(args: Args): void {
+  const status = inspect(serverCommand(), path.join(args.out, 'mcp.<tool>.json'));
+  if (args.json) {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  console.log('\nagent CLIs');
+  console.log('─'.repeat(72));
+  for (const a of status) {
+    const state = !a.installed ? 'not installed' : a.note ? a.note : 'ready';
+    console.log(`  ${a.name.padEnd(10)} ${state}`);
+    if (!a.installed) continue;
+    if (a.models.length) {
+      const how = a.modelSource === 'listed' ? 'reported by the binary' : 'from its own --help';
+      // opencode reports several hundred. The whole list is in --format json for the
+      // launcher to filter; a terminal wants to know it exists and roughly what is in it.
+      const shown = a.models.slice(0, args.top || 8);
+      console.log(
+        `             models (${how}): ${shown.join(', ')}` +
+          (a.models.length > shown.length ? ` … +${a.models.length - shown.length} more` : ''),
+      );
+    } else {
+      console.log('             models: this CLI has no way to be asked — pass one you know is valid');
+    }
+    if (a.registrationHint) {
+      console.log('             needs a one-time MCP registration you must run yourself:');
+      console.log(`               ${a.registrationHint}`);
+    }
+  }
 }
 
 /**
@@ -782,6 +897,9 @@ function runQuery(args: Args): void {
   out.elisions = store.elisions().map((e) => ({ ...e, verdict: verdict(e.id, 'elision_verdict') }));
   out.defences = store.defences();
   out.leases = store.activeLeases();
+  // What previous runs cost and bought. Cheap to read and the only record that survives a
+  // restart, so it goes with every query rather than behind its own channel.
+  out.runs = history(args.out);
 
   const events = path.join(args.out, 'events.jsonl');
   out.events = fs.existsSync(events)
@@ -1221,6 +1339,9 @@ switch (args.command) {
   case 'agent':
     await runAgent(args);
     break;
+  case 'adapters':
+    runAdapters(args);
+    break;
   default:
     console.log(`visual-desloppify — get all the data, then focus it down.
 
@@ -1232,7 +1353,8 @@ usage:
   node engine/cli.ts derive     --out <dir>        # rebuild the stack from cached graph.json
   node engine/cli.ts plan    <path> [options]   # diff the declared target architecture
   node engine/cli.ts check   <path> [--warn-only] [--format json]   # CI gate
-  node engine/cli.ts agent      <path> --out <dir> [--tools claude,codex] [--batch 5] [--dry-run]
+  node engine/cli.ts agent      <path> --out <dir> [--tools <roster>] [--batch 5] [--dry-run]
+  node engine/cli.ts adapters   [--format json]    # which agent CLIs are installed and usable
 
 options:
   --out <dir>            output directory (default: ./out)
@@ -1243,6 +1365,20 @@ options:
   --include-tests    include test files (excluded from the map, but always read for reachability)
   --predicate <json> try-invariant: the candidate predicate to evaluate
   --top <n>          rows per console table (default: 15)
+
+agent options:
+  --tools <roster>   comma-separated 'tool' or 'tool:model' entries. A tool may appear more
+                     than once on different models — that is how a run gets two independent
+                     sources, which is what corroboration counts.
+                       --tools claude:sonnet,claude:opus,codex,grok
+  --model <m>        default model for roster entries that do not name one
+  --batch <n>        frontier items per agent (default: 5)
+  --spread           split the frontier across the roster instead of asking every agent the
+                     same questions. Covers more ground; corroborates nothing.
+  --concurrency <n>  how many agents run at once (default: 1)
+  --max-cost <usd>   hard ceiling on spend for the run
+  --mode focus       propose clusters and elisions instead of answering frontier questions
+  --dry-run          print the plan and write the prompt(s); spawn nothing
 `);
     process.exit(args.command === 'help' ? 0 : 1);
 }
