@@ -27,6 +27,7 @@ export type {
 export type Findings = DuplicationReport & { d6?: ParallelPair[] };
 
 export type { ParallelPair } from '../../../engine/detect/parallel.ts';
+export type { Candidate, CandidateKind } from '../../../engine/detect/candidates.ts';
 
 import type { DuplicationReport } from '../../../engine/detect/duplication.ts';
 import type { ParallelPair } from '../../../engine/detect/parallel.ts';

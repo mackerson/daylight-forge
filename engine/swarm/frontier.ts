@@ -1,5 +1,9 @@
 import type { Graph } from '../graph/types.ts';
 import type { ClaimStore } from '../store/claims.ts';
+// A cycle and a limb have no natural id, so their subject is synthesised. Both this file
+// and the Detect screen have to spell it the same way or a verdict lands on a subject
+// nothing ever asks about again — so neither of them spells it, and this does.
+import { cycleSubject, limbSubject } from '../detect/candidates.ts';
 
 /**
  * The frontier scheduler.
@@ -168,7 +172,7 @@ export function frontier(
   }
 
   for (const cyc of structure.cycles ?? []) {
-    const id = `cycle:${cyc.members[0]}`;
+    const id = cycleSubject(cyc.members);
     const { u, why } = uncertaintyOf(id, 'cycle_verdict');
     if (u === 0) continue;
     const c = Math.max(...cyc.members.map((m) => cent.get(m) ?? 0), 0.05);
@@ -188,7 +192,7 @@ export function frontier(
   }
 
   for (const limb of structure.limbs ?? []) {
-    const id = `limb:${limb.dir}`;
+    const id = limbSubject(limb.dir);
     const { u, why } = uncertaintyOf(id, 'limb_verdict');
     if (u === 0) continue;
     const c = Math.max(...[...cent].filter(([f]) => f.startsWith(limb.dir + '/')).map(([, v]) => v), 0.05);
