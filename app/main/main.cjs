@@ -74,6 +74,9 @@ const state = {
  */
 let dirExplicit = !!process.env.VDS_DIR;
 
+/** Set when the map in `state.dir` names a repo that is no longer on disk. */
+let missingRepo = null;
+
 /**
  * A stable per-repo output directory.
  *
@@ -103,6 +106,46 @@ function readJson(name, fallback) {
   } catch (err) {
     return fallback;
   }
+}
+
+/**
+ * Adopt the repository the map in `state.dir` was made from.
+ *
+ * `pnpm gui` opens on the default `./out`, which usually holds a perfectly good map — and
+ * every action was disabled anyway, because `state.repo` was null until someone used the file
+ * picker. So the window showed you a map of a repo while insisting no repo was selected, and
+ * Map, Run agents and Watch were all dead. Choosing the repo it was already displaying was
+ * the only way out, which is not a thing anyone should have to guess.
+ *
+ * This is not inference. An output directory belongs to exactly one repository — that is an
+ * invariant the tool enforces at `map` time and refuses to violate — and the map records which
+ * one in `view.json`. Reading it back is the same fact travelling in the other direction.
+ *
+ * `state.dir` is deliberately left alone: the repo was learned *from* this directory, so this
+ * directory is by construction the right one for it, and re-deriving would move the map away
+ * from the claims that belong to it.
+ *
+ * Returns why it could not, when it could not, so the UI can say so rather than presenting a
+ * dead button with no explanation.
+ */
+function adoptRepoFromDir() {
+  if (state.repo) return null;
+  const root = readJson('view.json', null)?.root ?? readJson('graph.json', null)?.root;
+  if (!root) return null;
+  try {
+    if (!fs.statSync(root).isDirectory()) return { missingRepo: root };
+  } catch {
+    // Mapped once, then moved or deleted. Adopting it would hand every agent a cwd that is
+    // not there and fail several steps later with something unrecognisable.
+    return { missingRepo: root };
+  }
+  state.repo = root;
+  return null;
+}
+
+/** Adopt, and remember why if it could not. */
+function syncRepoFromDir() {
+  missingRepo = adoptRepoFromDir()?.missingRepo ?? null;
 }
 
 // ---- live event tail --------------------------------------------------------
@@ -485,6 +528,7 @@ function createWindow() {
 ipcMain.handle('vds:state', () => ({
   ...state,
   hasGraph: fs.existsSync(path.join(state.dir, 'graph.json')),
+  missingRepo,
 }));
 
 /**
@@ -646,6 +690,9 @@ ipcMain.handle('vds:load', () => {
     invariants: readJson('invariants.json', null),
     defended: readJson('defended.json', []),
     graphStats,
+    // Why the actions are disabled, when they are. A dead button with no reason is the bug
+    // this replaced; a dead button that says the repo has moved is a different thing.
+    missingRepo,
   };
 });
 
@@ -750,6 +797,9 @@ ipcMain.handle('vds:set-dir', async () => {
   if (res.canceled || !res.filePaths[0]) return state;
   state.dir = res.filePaths[0];
   dirExplicit = true;
+  // An output directory belongs to one repository, so pointing at a new one may tell us which
+  // repository that is — and if the app had none, that is the answer.
+  syncRepoFromDir();
   startTail();
   return state;
 });
@@ -919,6 +969,7 @@ app.whenReady().then(() => {
     if (!resolved.startsWith(DIST)) return new Response('forbidden', { status: 403 });
     return net.fetch(`file://${resolved}`);
   });
+  syncRepoFromDir();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

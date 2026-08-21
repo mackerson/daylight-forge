@@ -55,6 +55,9 @@ code, .mono { font-family: inherit; }
   display: flex; gap: 12px; align-items: center;
 }
 .banner.error { background: #2a1618; color: var(--bad); }
+.banner > span { flex: 1; min-width: 0; }
+/* An absolute path is one long unbroken token; let it break rather than widen the banner. */
+.banner code.wrap { overflow-wrap: anywhere; }
 .banner.toast { background: #14261c; color: var(--ok); }
 
 /* ---- layout ---- */

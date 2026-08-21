@@ -264,6 +264,21 @@ export function App() {
         </button>
       </header>
 
+      {data?.missingRepo && (
+        <div className="banner error">
+          {/* One flowing sentence: the banner is a flex row, so a bare <code> holding an
+              absolute path becomes its own column and pushes the prose into a third. */}
+          <span>
+            This map was made from <code className="wrap">{data.missingRepo}</code>, which is no
+            longer there. The map still reads, but nothing that has to open the source can
+            run — choose the repo if it moved.
+          </span>
+          <button className="link" onClick={() => act(async () => window.vds.pickRepo())}>
+            choose repo
+          </button>
+        </div>
+      )}
+
       {toast && (
         <div className="banner toast">
           {toast}

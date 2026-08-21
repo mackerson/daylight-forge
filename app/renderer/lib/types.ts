@@ -93,6 +93,14 @@ export interface Job {
 
 export interface LoadPayload {
   repo: string | null;
+  /**
+   * Set when the map in `dir` names a repo that is no longer on disk.
+   *
+   * The map still draws — it is a file, and it is fine — but nothing that needs to read the
+   * source can run, and saying which path went missing is the difference between a button
+   * that is broken and a button that is correctly refusing.
+   */
+  missingRepo?: string | null;
   dir: string;
   stack: FocusStack | null;
   /** Aggregated file→file edges; the hierarchy view's leaves are files. */
@@ -135,7 +143,9 @@ export interface QueryPayload {
 declare global {
   interface Window {
     vds: {
-      state(): Promise<{ repo: string | null; dir: string; hasGraph: boolean }>;
+      state(): Promise<{
+        repo: string | null; dir: string; hasGraph: boolean; missingRepo?: string | null;
+      }>;
       load(): Promise<LoadPayload>;
       query(): Promise<QueryPayload>;
       pickRepo(): Promise<{ repo: string | null; dir: string }>;

@@ -91,6 +91,38 @@ console.log('\nthe guard');
     /means? something else/.test(forced.out), forced.out.slice(-300));
 }
 
+/**
+ * The map says which repository it came from, in the small file.
+ *
+ * The Electron shell reads this back: `pnpm gui` opens on the default output directory with
+ * no repo selected, and rather than showing a map while insisting no repo is chosen — which
+ * left Map, Run agents and Watch all dead — it adopts the repo the map names. That only works
+ * because `view.json` carries `root`, and `view.json` is the small one; `graph.json` is
+ * hundreds of megabytes on a large repo and must not be parsed to answer this.
+ *
+ * Asserted here because the shell cannot be reached from this suite, so the contract it
+ * depends on is the thing to pin.
+ */
+console.log('\nthe map names its own repository');
+{
+  const dir = path.join(tmp, 'names-itself');
+  run(['map', repoA, '--out', dir, '--top', '0']);
+
+  const view = JSON.parse(fs.readFileSync(path.join(dir, 'view.json'), 'utf8'));
+  check('view.json carries the repo root', view.root === repoA, String(view.root));
+  check('and it is the small file, not the exhaustive one',
+    fs.statSync(path.join(dir, 'view.json')).size <
+      fs.statSync(path.join(dir, 'graph.json')).size);
+
+  const graph = JSON.parse(fs.readFileSync(path.join(dir, 'graph.json'), 'utf8'));
+  check('graph.json agrees, as the fallback', graph.root === repoA);
+
+  // Adopting a root that is no longer on disk would hand every agent a cwd that is not there,
+  // so the shell stats it first. Same check, asserted against the same field.
+  check('a root that still exists is a directory', fs.statSync(view.root).isDirectory());
+  check('a root that has moved does not', !fs.existsSync(path.join(tmp, 'repoA-moved')));
+}
+
 console.log('\nclaims do not cross repositories');
 {
   // The failure exactly as it happened: repo A mapped, a human confirms something, then the
