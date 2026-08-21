@@ -833,6 +833,12 @@ ipcMain.handle('vds:agent', (_e, opts = {}) => {
   if (opts.maxCost) argv.push('--max-cost', String(opts.maxCost));
   if (opts.concurrency) argv.push('--concurrency', String(opts.concurrency));
   if (opts.spread) argv.push('--spread');
+  // Subjects the user picked on the map or in the candidate list. Validated as a list of
+  // plain strings before it reaches an argv: the renderer is not trusted to shape it.
+  if (Array.isArray(opts.only) && opts.only.length) {
+    const only = opts.only.filter((s) => typeof s === 'string' && s.length && !s.includes(','));
+    if (only.length) argv.push('--only', only.join(','));
+  }
   if (opts.dryRun) argv.push('--dry-run');
   const roster = opts.tools || 'claude';
   const label =

@@ -45,6 +45,19 @@ export interface DriveOptions {
    */
   spread?: boolean;
   /**
+   * Restrict the run to these subjects.
+   *
+   * Absent means the frontier decides, which is the right default: it ranks by uncertainty
+   * x centrality and knows things a person scrolling a list does not. This exists for the
+   * other direction — you looked at the map, or at the candidate list, and you want *those*
+   * answered rather than whatever scored highest. Ranking still applies within the set, so a
+   * scoped run is the same scheduler on a smaller pool, not a different one.
+   *
+   * A subject named here that the frontier has nothing to ask about is simply absent from
+   * the result; a scope that matches nothing produces an empty run rather than a full one.
+   */
+  only?: string[];
+  /**
    * Live per-source spend, as each CLI reports it.
    *
    * Per *source*, not per run: three agents in one job used to be one undifferentiated
@@ -299,11 +312,15 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   // Spreading needs enough items to give every agent a full batch; corroborating needs one
   // batch that all of them answer.
   const want = options.spread ? batch * Math.max(1, runnable.length) : batch;
+  // Scoping filters the ranked list rather than replacing it, so "explore these 31" still
+  // asks the most valuable question about them first.
+  const scope = options.only?.length ? new Set(options.only) : null;
   const assigned =
     options.mode === 'focus'
       ? []
       : frontier(graph, store, findings, structure)
           .filter((item) => !taken.has(item.subject))
+          .filter((item) => !scope || scope.has(item.subject))
           .slice(0, want);
   // Nothing is reserved unless something is actually going to answer it. A dry run held 15
   // minutes of the highest-scoring work for an agent that was never going to be spawned, and

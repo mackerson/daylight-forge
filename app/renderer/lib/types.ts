@@ -161,6 +161,8 @@ declare global {
         tools?: string; mode?: 'explore' | 'focus'; batch?: number;
         model?: string; timeout?: number; dryRun?: boolean;
         maxCost?: number; concurrency?: number; spread?: boolean;
+        /** Restrict the run to these subjects; empty lets the frontier choose. */
+        only?: string[];
       }): Promise<{ id?: string; error?: string }>;
       stopJob(id: string): Promise<{ ok: boolean }>;
       arbitrate(p: {

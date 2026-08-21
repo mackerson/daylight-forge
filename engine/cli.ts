@@ -51,6 +51,8 @@ interface Args {
   concurrency?: number;
   /** Split the frontier across the roster instead of asking all of them the same thing. */
   spread: boolean;
+  /** Restrict the run to these subjects. Empty means the frontier chooses freely. */
+  only: string[];
   /** Overwrite an output directory that belongs to a different repository. */
   force: boolean;
   /** `try-invariant`: a candidate predicate, as JSON, evaluated but never saved. */
@@ -101,6 +103,7 @@ function parseArgs(argv: string[]): Args {
     maxCost: flags.get('max-cost') ? Number(flags.get('max-cost')) : undefined,
     concurrency: flags.get('concurrency') ? Number(flags.get('concurrency')) : undefined,
     spread: flags.get('spread') === 'true',
+    only: (flags.get('only') ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     invariantsFile: flags.get('invariants-file'),
     targetFile: flags.get('target-file'),
     force: flags.get('force') === 'true',
@@ -708,6 +711,7 @@ async function runAgent(args: Args): Promise<void> {
     dir: args.out, repo, tools: args.tools, batch: args.batch, dryRun: args.dryRun,
     mode: args.mode, timeoutMs: args.timeoutMs, model: args.model, session: args.session,
     maxCost: args.maxCost, concurrency: args.concurrency, spread: args.spread,
+    only: args.only,
     // One machine-readable line per spend update, on our own stdout. The GUI's live meter
     // reads these; a terminal reader sees them as noise, so they are prefixed and terse
     // rather than dumped as the agents' raw streams would be.
@@ -1449,6 +1453,8 @@ agent options:
   --batch <n>        frontier items per agent (default: 5)
   --spread           split the frontier across the roster instead of asking every agent the
                      same questions. Covers more ground; corroborates nothing.
+  --only <subjects>  comma-separated subjects to restrict the run to. Ranking still applies
+                     within them, so this narrows the pool rather than bypassing the queue.
   --concurrency <n>  how many agents run at once (default: 1)
   --max-cost <usd>   hard ceiling on spend for the run
   --mode focus       propose clusters and elisions instead of answering frontier questions
