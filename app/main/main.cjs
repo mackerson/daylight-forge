@@ -279,31 +279,55 @@ function runJob(label, argv, { onExit } = {}) {
   send('vds:job', { id, label, status: 'running', argv, startedAt });
 
   /**
-   * Cost and turn count are reported by each CLI in its own JSON, not through the MCP
-   * boundary, so this is the one place adapter-specific parsing is unavoidable. Scanning
-   * accumulated output is deliberately tolerant: an adapter that reports neither simply
-   * shows nothing rather than breaking the run.
+   * Per-source spend, as the engine reports it on `##vds` lines.
+   *
+   * This used to scrape `total_cost_usd` out of whatever crossed this pipe and take the
+   * maximum, which was wrong twice over: the engine buffers each agent's stdout rather than
+   * forwarding it, so those values never arrived at all — and had they arrived, a maximum
+   * reads two agents spending $1.01 and $1.75 concurrently as a $1.75 run. The engine now
+   * names the source with each figure and this sums them.
    */
+  const bySource = new Map();
   let acc = '';
   const stats = { cost: 0, turns: 0 };
-  const scan = () => {
+  const scan = (text) => {
     let changed = false;
-    for (const m of acc.matchAll(/"total_cost_usd"\s*:\s*([0-9.]+)/g)) {
-      const v = Number(m[1]);
-      if (v > stats.cost) { stats.cost = v; changed = true; }
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('##vds ')) continue;
+      try {
+        const msg = JSON.parse(line.slice(6));
+        if (!msg.spend) continue;
+        bySource.set(msg.spend.source, { cost: msg.spend.cost, turns: msg.spend.turns });
+        changed = true;
+      } catch {
+        // A partial line at a chunk boundary is normal; the next chunk carries the whole one.
+      }
     }
-    for (const m of acc.matchAll(/"num_turns"\s*:\s*([0-9]+)/g)) {
-      const v = Number(m[1]);
-      if (v > stats.turns) { stats.turns = v; changed = true; }
+    if (!changed) return;
+    stats.cost = 0;
+    stats.turns = 0;
+    for (const v of bySource.values()) {
+      stats.cost += v.cost;
+      stats.turns += v.turns;
     }
-    if (changed) send('vds:job-stats', { id, ...stats });
+    send('vds:job-stats', {
+      id, ...stats,
+      sources: [...bySource.entries()].map(([source, v]) => ({ source, ...v })),
+    });
   };
 
+  let partial = '';
   const push = (stream) => (d) => {
     const text = d.toString();
-    // Bound the buffer: a long run can emit megabytes and we only need recent JSON.
+    // Bound the buffer: a long run can emit megabytes and we only need recent output.
     acc = (acc + text).slice(-200_000);
-    scan();
+    // Scan on line boundaries so a `##vds` envelope split across two chunks still parses.
+    partial += text;
+    const at = partial.lastIndexOf('\n');
+    if (at >= 0) {
+      scan(partial.slice(0, at));
+      partial = partial.slice(at + 1);
+    }
     send('vds:job-output', { id, stream, text });
   };
   child.stdout.on('data', push('stdout'));
@@ -644,6 +668,34 @@ ipcMain.handle('vds:query', () =>
   }),
 );
 
+/**
+ * What agent CLIs are on this machine, and what each can actually do.
+ *
+ * Cached, because answering it spawns every installed binary to ask what models it has.
+ * `refresh` is there for after a `grok login` or an install, which is the only time the
+ * answer changes while the app is open.
+ */
+let adapterCache = null;
+ipcMain.handle('vds:adapters', (_e, { refresh } = {}) => {
+  if (adapterCache && !refresh) return adapterCache;
+  return new Promise((resolve) => {
+    execFile(
+      NODE.bin,
+      nodeArgs(['adapters', '--out', state.dir, '--format', 'json']),
+      { cwd: ROOT, env: nodeEnv(), timeout: 60_000 },
+      (err, stdout) => {
+        if (err) return resolve({ error: err.message, adapters: [] });
+        try {
+          adapterCache = { adapters: JSON.parse(stdout) };
+          resolve(adapterCache);
+        } catch (e) {
+          resolve({ error: `bad adapters output: ${e.message}`, adapters: [] });
+        }
+      },
+    );
+  });
+});
+
 ipcMain.handle('vds:pick-repo', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Choose a repository to map',
@@ -702,8 +754,19 @@ ipcMain.handle('vds:agent', (_e, opts = {}) => {
   if (opts.batch) argv.push('--batch', String(opts.batch));
   if (opts.model) argv.push('--model', opts.model);
   if (opts.timeout) argv.push('--timeout', String(opts.timeout));
+  // The ceiling was parsed by the CLI and never passed by the GUI, so the one control that
+  // stops a run costing more than you meant was unreachable from the only surface that
+  // launches runs. Same for concurrency, which is why every launch was sequential.
+  if (opts.maxCost) argv.push('--max-cost', String(opts.maxCost));
+  if (opts.concurrency) argv.push('--concurrency', String(opts.concurrency));
+  if (opts.spread) argv.push('--spread');
   if (opts.dryRun) argv.push('--dry-run');
-  return { id: runJob(`agent:${opts.tools || 'claude'}${opts.mode === 'focus' ? ':focus' : ''}`, argv) };
+  const roster = opts.tools || 'claude';
+  const label =
+    `agent:${roster}` +
+    (opts.mode === 'focus' ? ':focus' : '') +
+    (opts.dryRun ? ':dry' : '');
+  return { id: runJob(label, argv) };
 });
 
 ipcMain.handle('vds:stop-job', (_e, id) => {

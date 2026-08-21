@@ -369,3 +369,46 @@ code, .mono { font-family: inherit; }
 
 .scene-fps .fps-hint { color: #f0a868; }
 .scene-fps .fps-hint code { background: none; padding: 0; }
+
+/* ---- launch ---- */
+.launch .toolbar { margin-bottom: 10px; }
+
+.roster { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.roster-row { display: flex; gap: 8px; align-items: center; }
+/* A duplicate row is not an error, it is a row that will be dropped for costing money and
+   moving no belief. Marked rather than refused, so the reason stays visible. */
+.roster-row.dupe select, .roster-row.dupe input { border-color: var(--warn); opacity: 0.7; }
+
+.roster select, .roster input, .fields input {
+  background: var(--panel-2); color: inherit; font: inherit;
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
+}
+.roster select { min-width: 110px; }
+.roster input { flex: 1; min-width: 0; }
+.roster select:focus, .roster input:focus, .fields input:focus {
+  outline: none; border-color: var(--accent);
+}
+
+.fields { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+.fields label { display: flex; gap: 6px; align-items: center; color: var(--dim); }
+.fields input { width: 72px; }
+.fields input:disabled { opacity: 0.4; }
+
+.check { display: block; margin-top: 10px; }
+.check input { margin-right: 6px; vertical-align: middle; }
+
+.actions button.secondary { background: none; color: var(--dim); }
+.actions button:disabled { opacity: 0.4; cursor: default; }
+
+.hint-cmd {
+  display: block; margin-top: 4px; padding: 4px 8px;
+  background: var(--panel-2); border-radius: 4px;
+  overflow-x: auto; white-space: pre; color: var(--text);
+}
+
+.setup { margin: 6px 0; }
+.setup summary { cursor: pointer; color: var(--warn); }
+.setup p { margin: 6px 0 4px; }
+
+.grid.sources { margin: 8px 0; }
+.grid.sources td:first-child { color: var(--text); }

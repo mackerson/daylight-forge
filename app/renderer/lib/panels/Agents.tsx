@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Job, VdsEvent } from '../types.ts';
+import type { Job, RunRecord, VdsEvent } from '../types.ts';
+
+/** Tool calls that put something in the store, as opposed to reading it. */
+const WRITES = new Set([
+  'submit_claim', 'flag_contradiction', 'propose_cluster', 'propose_elision',
+  'defend_node', 'propose_invariant',
+]);
 
 const LABEL: Record<string, string> = {
   get_overview: 'oriented',
@@ -37,15 +43,19 @@ const since = (ms: number): string => {
 };
 
 export function Agents({
-  events, jobs, logs, spend, selected, onSelect, leases,
+  events, jobs, logs, spend, selected, onSelect, leases, runs,
 }: {
   events: VdsEvent[];
   jobs: Job[];
   logs: Record<string, string>;
-  spend: Record<string, { cost: number; turns: number }>;
+  spend: Record<
+    string,
+    { cost: number; turns: number; sources?: Array<{ source: string; cost: number; turns: number }> }
+  >;
   selected: string | null;
   onSelect: (id: string | null) => void;
   leases: Array<{ subject: string; session: string; until: number }>;
+  runs: RunRecord[];
 }) {
   const feedRef = useRef<HTMLDivElement>(null);
   const running = jobs.filter((j) => j.status === 'running');
@@ -61,6 +71,29 @@ export function Agents({
   useEffect(() => {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
   }, [shown.length]);
+
+  /**
+   * Which sources have actually written during a run, and how much each has done.
+   *
+   * Every agent used to record itself as the same "multi" source, so a three-agent run was
+   * one undifferentiated stream and there was no way to see that one of them had gone quiet
+   * or was doing nothing. Now the events name their own tool and model, which is the same
+   * key the belief calculus counts independence by — so this is a live view of whether the
+   * run is producing corroboration or three copies of one opinion.
+   */
+  const sourcesIn = (id: string | null) => {
+    const list = id ? events.filter((e) => (e.session ?? '').startsWith(id)) : events;
+    const by = new Map<string, { calls: number; writes: number; last: number }>();
+    for (const e of list) {
+      const key = `${e.agent ?? '?'}/${e.model ?? 'default'}`;
+      const at = by.get(key) ?? { calls: 0, writes: 0, last: 0 };
+      at.calls++;
+      if (WRITES.has(e.tool)) at.writes++;
+      at.last = Math.max(at.last, e.at);
+      by.set(key, at);
+    }
+    return [...by.entries()].sort((a, b) => b[1].writes - a[1].writes);
+  };
 
   const lastFor = (id: string | null) => {
     const list = id ? events.filter((e) => (e.session ?? '').startsWith(id)) : events;
@@ -126,10 +159,15 @@ export function Agents({
             are handed different work rather than repeating each other.
           </p>
         )}
+        {selected && (
+          <Sources rows={sourcesIn(selected)} now={now} spend={spend[selected]?.sources} />
+        )}
         {selected && logs[selected] && (
           <pre className="log">{logs[selected].slice(-4000)}</pre>
         )}
       </section>
+
+      <Ledger runs={runs} />
 
       <section className="card grow">
         <h3>
@@ -165,5 +203,92 @@ export function Agents({
         </div>
       </section>
     </div>
+  );
+}
+
+/** Per-source activity inside one run. Reads/writes split, because they are not the same. */
+function Sources({ rows, now, spend }: {
+  rows: Array<[string, { calls: number; writes: number; last: number }]>;
+  now: number;
+  spend?: Array<{ source: string; cost: number; turns: number }>;
+}) {
+  if (!rows.length) return null;
+  // Two halves of one picture that arrive by different routes: what an agent wrote comes
+  // over the MCP boundary, what it charged only ever exists in its own CLI's output. The
+  // key is the same `tool:model` pair either way, which is what lets them be joined at all.
+  const cost = new Map((spend ?? []).map((s) => [s.source.replace(':', '/'), s]));
+  return (
+    <table className="grid sources">
+      <tbody>
+        {rows.map(([key, s]) => {
+          const paid = cost.get(key);
+          return (
+            <tr key={key}>
+              <td><code>{key}</code></td>
+              <td>{s.writes} written</td>
+              <td className="dim">{s.calls} call{s.calls === 1 ? '' : 's'}</td>
+              <td className="dim">{paid?.cost ? `$${paid.cost.toFixed(2)}` : ''}</td>
+              <td className="dim">{s.last ? `${since(now - s.last)} ago` : ''}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * What earlier runs cost and what they bought.
+ *
+ * The question a swarm makes expensive to answer — *was the third source worth it* — needs
+ * the run before it to still exist. This is the only part of a finished run that survives
+ * closing the app.
+ */
+function Ledger({ runs }: { runs: RunRecord[] }) {
+  if (!runs.length) return null;
+  return (
+    <section className="card">
+      <h3>Previous runs</h3>
+      <table className="grid">
+        <thead>
+          <tr>
+            <th>when</th><th>sources</th><th>bought</th><th>cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((r, i) => {
+            const bought = (['claims', 'clusters', 'elisions', 'defences'] as const)
+              .filter((k) => r.delta[k] > 0)
+              .map((k) => `+${r.delta[k]} ${k}`)
+              .join(', ');
+            const failed = r.results.filter((x) => !x.ok);
+            return (
+              <tr key={`${r.at}-${i}`}>
+                <td className="dim">{new Date(r.at).toLocaleString()}</td>
+                <td>
+                  <span className={r.diversity < 2 ? 'hint' : ''}>{r.diversity}</span>
+                  <span className="dim"> · {r.sources.join(', ')}</span>
+                  {r.spread && <span className="dim"> · split</span>}
+                </td>
+                <td className={bought ? '' : 'dim'}>
+                  {bought || 'nothing'}
+                  {failed.length > 0 && (
+                    <span className="bad"> · {failed.length} failed</span>
+                  )}
+                </td>
+                <td title={r.costKnown ? undefined : 'a CLI reported no spend, so this is a floor'}>
+                  ${r.cost.toFixed(2)}
+                  {!r.costKnown && <span className="dim">+</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="dim">
+        A run with one source cannot corroborate anything it claims, whatever it cost.
+        <span className="dim"> A “+” on a cost means a tool in that run never said what it charged.</span>
+      </p>
+    </section>
   );
 }

@@ -37,6 +37,31 @@ import type { RunEvent } from '../../../engine/replay/types.ts';
 import type { RenderSettings } from '../../../engine/render/settings.ts';
 export type { RenderSettings, FrameStats } from '../../../engine/render/settings.ts';
 import type { StructureReport } from '../../../engine/detect/structure-types.ts';
+import type { AdapterStatus } from '../../../engine/swarm/types.ts';
+export type { AdapterStatus } from '../../../engine/swarm/types.ts';
+import type { RunRecord } from '../../../engine/swarm/types.ts';
+export type { RunRecord } from '../../../engine/swarm/types.ts';
+
+/**
+ * One row of the launch roster: a tool and the model it runs on.
+ *
+ * The pair, not the tool, is what the claim store records as a source and what corroboration
+ * counts — which is why the launcher edits pairs and lets the same tool appear twice.
+ */
+export interface RosterEntry {
+  tool: string;
+  model: string;
+}
+
+export interface RunShape {
+  roster: RosterEntry[];
+  mode: 'explore' | 'focus';
+  batch: number;
+  concurrency: number;
+  maxCost: number;
+  /** Split the frontier across the roster instead of asking everyone the same questions. */
+  spread: boolean;
+}
 
 /**
  * One recorded agent action, as the renderer reads it.
@@ -99,6 +124,8 @@ export interface QueryPayload {
   }>;
   defences: Array<{ id: string; node: string; reason: string }>;
   leases: Array<{ subject: string; session: string; until: number }>;
+  /** What previous runs cost and bought; survives a restart, unlike a toast. */
+  runs: RunRecord[];
   events: VdsEvent[];
   error?: string;
 }
@@ -113,9 +140,13 @@ declare global {
       setDir(): Promise<{ repo: string | null; dir: string }>;
       map(): Promise<{ id?: string; error?: string }>;
       refocus(): Promise<{ id?: string; error?: string }>;
+      adapters(opts?: { refresh?: boolean }): Promise<{
+        adapters: AdapterStatus[]; error?: string;
+      }>;
       agent(opts: {
         tools?: string; mode?: 'explore' | 'focus'; batch?: number;
         model?: string; timeout?: number; dryRun?: boolean;
+        maxCost?: number; concurrency?: number; spread?: boolean;
       }): Promise<{ id?: string; error?: string }>;
       stopJob(id: string): Promise<{ ok: boolean }>;
       arbitrate(p: {
@@ -141,7 +172,11 @@ declare global {
       onEvent(fn: (e: VdsEvent) => void): () => void;
       onJob(fn: (j: Job) => void): () => void;
       onDerived(fn: (p: { at: number }) => void): () => void;
-      onJobStats(fn: (p: { id: string; cost: number; turns: number }) => void): () => void;
+      onJobStats(fn: (p: {
+        id: string; cost: number; turns: number;
+        /** Per tool:model, because a run's total tells you nothing about which agent spent it. */
+        sources?: Array<{ source: string; cost: number; turns: number }>;
+      }) => void): () => void;
       onJobOutput(fn: (o: { id: string; stream: string; text: string }) => void): () => void;
     };
   }

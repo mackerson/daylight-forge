@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('vds', {
   pickRepo: () => invoke('vds:pick-repo'),
   setDir: () => invoke('vds:set-dir'),
 
+  adapters: (opts) => invoke('vds:adapters', opts),
+
   map: () => invoke('vds:map'),
   refocus: () => invoke('vds:refocus'),
   agent: (opts) => invoke('vds:agent', opts),

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Agents } from './panels/Agents.tsx';
 import { Findings } from './panels/Findings.tsx';
+import { Launch } from './panels/Launch.tsx';
 import { Invariants } from './panels/Invariants.tsx';
 import { Overview } from './panels/Overview.tsx';
 import { Arbitrate } from './panels/Arbitrate.tsx';
@@ -27,7 +28,9 @@ export function App() {
   const [events, setEvents] = useState<VdsEvent[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<Record<string, string>>({});
-  const [spend, setSpend] = useState<Record<string, { cost: number; turns: number }>>({});
+  const [spend, setSpend] = useState<
+    Record<string, { cost: number; turns: number; sources?: Array<{ source: string; cost: number; turns: number }> }>
+  >({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The scene is the point of the app, so it takes the space and the info pane is sized
@@ -133,8 +136,8 @@ export function App() {
     });
     // The stack was re-derived because claims changed; pull the new one.
     const offDerived = window.vds.onDerived(() => void refresh());
-    const offStats = window.vds.onJobStats(({ id, cost, turns }) =>
-      setSpend((prev) => ({ ...prev, [id]: { cost, turns } })),
+    const offStats = window.vds.onJobStats(({ id, cost, turns, sources }) =>
+      setSpend((prev) => ({ ...prev, [id]: { cost, turns, sources } })),
     );
     const offOut = window.vds.onJobOutput(({ id, text }) =>
       setLogs((prev) => ({ ...prev, [id]: (prev[id] ?? '') + text })),
@@ -228,17 +231,18 @@ export function App() {
         <button disabled={!data?.repo || busy} onClick={() => act(() => window.vds.map())}>
           Map
         </button>
+        {/* These used to be Explore and Focus, each hardcoded to a single claude on its
+            default model — which is why nothing in the store had ever been corroborated.
+            Both live in the launcher now, where the roster is a decision rather than a
+            default nobody was shown. */}
         <button
           disabled={!data?.repo || busy}
-          onClick={() => act(() => window.vds.agent({ tools: 'claude', batch: 5 }))}
+          onClick={() => {
+            setTab('agents');
+            setInfoOpen(true);
+          }}
         >
-          Explore
-        </button>
-        <button
-          disabled={!data?.repo || busy}
-          onClick={() => act(() => window.vds.agent({ tools: 'claude', mode: 'focus' }))}
-        >
-          Focus
+          Run agents…
         </button>
         <button disabled={!data?.repo || busy} onClick={() => act(() => window.vds.refocus())}>
           Rebuild
@@ -339,10 +343,15 @@ export function App() {
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'agents' && (
                 <>
+                  <Launch
+                    busy={busy}
+                    disabled={!data?.repo}
+                    onLaunch={(opts) => act(() => window.vds.agent(opts))}
+                  />
                   <Scrubber events={events} active={replaying} onActiveChange={setReplaying} />
                   <Agents events={events} jobs={jobs} logs={logs} spend={spend}
                     selected={selectedJob} onSelect={setSelectedJob}
-                    leases={query?.leases ?? []} />
+                    leases={query?.leases ?? []} runs={query?.runs ?? []} />
                 </>
               )}
               {mapped && tab === 'invariants' && <Invariants data={data!} onRefresh={refresh} />}
