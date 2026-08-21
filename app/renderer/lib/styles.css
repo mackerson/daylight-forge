@@ -1,15 +1,80 @@
+/**
+ * The design system, retargeted onto the mockups' palette.
+ *
+ * Two deliberate departures from the source. The mockups pull IBM Plex from Google Fonts;
+ * this app is Electron and often offline, and fetching a stylesheet from a third party at
+ * window-open is a trust boundary the renderer does not need — so Plex is used when it is
+ * installed and falls back to the platform's own faces when it is not.
+ *
+ * Second: the old sheet set every surface in monospace. The mockups pair a sans for prose
+ * with a mono for identifiers, which is the distinction that makes a claim readable — so
+ * `body` is sans now and anything that names a file, symbol or number opts back in.
+ */
+
 :root {
-  --bg: #0a0c10;
-  --panel: #11151c;
-  --panel-2: #151a23;
-  --line: #1e2530;
-  --text: #d8dee9;
-  --dim: #7c8798;
-  --accent: #6ea8fe;
-  --ok: #7ee0a8;
-  --warn: #f0a868;
-  --bad: #f07a7a;
-  --violet: #8a5cf6;
+  /* Surfaces, darkest to lightest. Chrome sits below the canvas, cards above it. */
+  --chrome: #0a0c0f;
+  --band: #0f1216;
+  --bg: #0d0f13;
+  --panel: #11141a;
+  --panel-2: #12161c;
+
+  /* Rules, faintest to strongest. */
+  --line: #1a1e24;
+  --line-2: #1e2229;
+  --line-3: #23272f;
+  --line-4: #2b323b;
+
+  /* Text, strongest to faintest. */
+  --text-hi: #f2f5f8;
+  --text: #d7dce3;
+  --text-2: #c6cdd6;
+  --dim: #8a929d;
+  --dim-2: #6f7883;
+  --dim-3: #5e666f;
+  --faint: #4f5761;
+  --mark: #3c444e;
+
+  /* Accents. Each is a mark (fill), a text tone, a border and a tinted ground. */
+  --ok: #8fd4ab;
+  --ok-mark: #62c08a;
+  --ok-line: #2e4a38;
+  --ok-bg: #0f1613;
+  --ok-bg-2: #16211b;
+  --ok-dim: #5e7a68;
+
+  --accent: #9dbde4;
+  --accent-mark: #6098d6;
+  --accent-line: #2f4160;
+  --accent-bg: #101419;
+  --accent-bg-2: #141a21;
+  --accent-dim: #5b7091;
+  --path: #8fa8c9;
+
+  --warn: #e3b878;
+  --warn-mark: #d99a4e;
+  --warn-line: #5d4a26;
+  --warn-bg: #17140f;
+  --warn-bg-2: #2a2113;
+  --warn-dim: #8a7343;
+
+  --bad: #e08b80;
+  --bad-mark: #d1685f;
+  --bad-bright: #f0a49c;
+  --bad-line: #4a2a2c;
+  --bad-bg: #141017;
+  --bad-bg-2: #241618;
+  --bad-bg-3: #3a1f1f;
+
+  --violet: #9b8cd8;
+  --violet-bright: #b3a8e4;
+  --violet-line: #4a3a5e;
+
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+  /* The uppercase micro-label the mockups use to title every region. */
+  --label: 500 10px/1.4 var(--mono);
 }
 
 * { box-sizing: border-box; }
@@ -17,178 +82,600 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.55 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font: 400 12.5px/1.55 var(--sans);
   overflow: hidden;
 }
 button { font: inherit; color: inherit; }
-code, .mono { font-family: inherit; }
+code, .mono, kbd { font-family: var(--mono); }
 
 .app { display: flex; flex-direction: column; height: 100%; }
 
-/* ---- top bar ---- */
-.topbar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 12px; border-bottom: 1px solid var(--line);
-  background: var(--panel);
+/* ---- titlebar ---- */
+.titlebar {
+  height: 36px; flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 0 14px; background: var(--chrome); border-bottom: 1px solid #1c2027;
 }
-.brand { font-weight: 600; letter-spacing: .03em; margin-right: 6px; }
-.spacer { flex: 1; }
-.topbar button {
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 6px; padding: 5px 11px; cursor: pointer;
+.titlebar .dot { width: 9px; height: 9px; border-radius: 2px; background: var(--warn-mark); flex: none; }
+.titlebar .dot.busy { background: var(--ok-mark); }
+.titlebar .name { font: 500 11.5px var(--mono); color: var(--dim); }
+.titlebar .spacer { flex: 1; }
+.titlebar .where {
+  font: 400 11px var(--mono); color: var(--faint);
+  background: none; border: 0; padding: 0; cursor: pointer;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.topbar button:hover:not(:disabled) { border-color: var(--accent); }
-.topbar button:disabled { opacity: .4; cursor: not-allowed; }
-.path { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titlebar .where:hover { color: var(--dim); }
 
-.topbar button.watching { border-color: var(--ok); color: var(--ok); }
-
-.spend {
-  display: flex; gap: 8px; align-items: baseline;
-  padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--panel-2); font-size: 12px;
+/* ---- stage strip ----
+   The loop, persistent on every screen. It owns navigation: a stage is a place, and its
+   subtitle is the live answer to "where does this stand", not a label. */
+.stages {
+  height: 46px; flex: none; display: flex; align-items: stretch;
+  background: var(--band); border-bottom: 1px solid var(--line);
 }
-.spend strong { color: var(--warn); }
-
-.banner {
-  padding: 8px 12px; border-bottom: 1px solid var(--line);
-  display: flex; gap: 12px; align-items: center;
+.stage {
+  flex: none;
+  display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  cursor: pointer; text-align: left; white-space: nowrap;
 }
-.banner.error { background: #2a1618; color: var(--bad); }
-.banner > span { flex: 1; min-width: 0; }
-/* An absolute path is one long unbroken token; let it break rather than widen the banner. */
-.banner code.wrap { overflow-wrap: anywhere; }
-.banner.toast { background: #14261c; color: var(--ok); }
+.stage:hover { background: #12161c; }
+.stage[aria-current="true"] { background: #12161c; border-bottom-color: var(--warn-mark); }
+.stage .tick { width: 7px; height: 7px; border-radius: 50%; background: var(--mark); flex: none; }
+.stage .tick.done { background: var(--ok-mark); }
+.stage .tick.ready { background: var(--warn-mark); }
+.stage .tick.live { background: var(--accent-mark); animation: pulse 1.4s ease-in-out infinite; }
+.stage .tick.blocked { background: var(--bad-mark); }
+.stage .stage-text { display: flex; align-items: baseline; gap: 9px; }
+.stage .what { font: 500 11.5px var(--mono); color: var(--text-2); }
+.stage[aria-current="true"] .what { color: var(--text-hi); }
+.stage .state { font: 400 10.5px var(--mono); color: var(--dim-2); }
+.stage:disabled { opacity: .45; cursor: not-allowed; }
+.stage:disabled:hover { background: none; }
+@keyframes pulse { 50% { opacity: .35; } }
 
-/* ---- layout ---- */
-.body { display: flex; flex: 1; min-height: 0; }
-.tabs {
-  width: 168px; flex: none; border-right: 1px solid var(--line);
-  background: var(--panel); display: flex; flex-direction: column; padding: 8px 0;
+.stages .spacer { flex: 1; }
+.stages .aside {
+  display: flex; align-items: center; gap: 14px; padding: 0 16px;
 }
-.tab {
-  display: flex; justify-content: space-between; align-items: center;
+.stages .aside button {
+  background: none; border: 0; cursor: pointer;
+  font: 400 10.5px var(--mono); color: var(--dim-2);
+}
+.stages .aside button:hover { color: var(--text-2); }
+.stages .aside button.red { color: var(--bad); }
+.stages .aside .money { color: var(--warn); }
+
+/* ---- workspace: lens rail · canvas · inspector ----
+   Named `workspace`, not `body`: rows in half the screens have a `.body` of their own, and a
+   bare `.body { display: flex }` reached every one of them. */
+.workspace { display: flex; flex: 1; min-height: 0; }
+
+.lens {
+  width: 236px; flex: none; display: flex; flex-direction: column; min-height: 0;
+  background: var(--chrome); border-right: 1px solid var(--line);
+  padding: 14px 0 0;
+}
+.rail-label {
+  font: var(--label); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--dim-3); padding: 0 16px 10px;
+}
+.lens-opt {
+  display: block; width: 100%; text-align: left; cursor: pointer;
   background: none; border: 0; border-left: 2px solid transparent;
-  padding: 7px 14px; cursor: pointer; text-align: left;
+  padding: 9px 16px;
 }
-.tab:hover { background: var(--panel-2); }
-.tab.active { border-left-color: var(--accent); color: var(--accent); background: var(--panel-2); }
-.tabs-foot { margin-top: auto; padding: 10px 14px; }
-.running { color: var(--warn); font-size: 11px; display: flex; flex-direction: column; gap: 4px; }
+.lens-opt:hover { background: #0f1216; }
+.lens-opt[aria-current="true"] { background: #12161c; border-left-color: var(--warn-mark); }
+.lens-opt .lens-name {
+  display: flex; align-items: center; gap: 8px;
+  font: 500 12.5px var(--sans); color: var(--text-2);
+}
+.lens-opt[aria-current="true"] .lens-name { color: var(--text-hi); }
+.lens-opt .lens-q { font: 400 10.5px/1.45 var(--sans); color: var(--dim-2); margin-top: 3px; }
+.lens-opt .count {
+  margin-left: auto; font: 400 10.5px var(--mono); color: var(--dim-2);
+}
+.lens-sep { height: 1px; background: var(--line); margin: 12px 16px; }
+.lens-foot {
+  margin-top: auto; padding: 14px 16px;
+  border-top: 1px solid var(--line);
+  font: 400 10.5px/1.6 var(--mono); color: var(--faint);
+}
 
-/* The scene is the product, so it takes whatever space is left. */
-.scene { flex: 1; min-width: 480px; position: relative; }
+.canvas { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 
-.info {
-  flex: none; min-width: 280px; overflow: auto; padding: 16px;
-  background: var(--bg); border-left: 1px solid var(--line);
+/* Filters stack inside the lens: the mode is the question, these narrow the answer. */
+.filters {
+  flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--band);
+}
+.filters .rail-label { padding: 0; }
+.filters .spacer { flex: 1; }
+.filters .shown { font: 400 10.5px var(--mono); color: var(--dim-2); }
+
+.filter {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border-radius: 5px;
+  border: 1px solid var(--line-3); background: var(--panel-2);
+  font: 400 11px var(--mono); color: var(--text-2);
+}
+.filter button {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--dim-2); line-height: 1;
+}
+.filter button:hover { color: var(--bad); }
+.filter.add { cursor: pointer; border-style: dashed; color: var(--dim-2); }
+.filter.add:hover { color: var(--text-2); border-color: var(--line-4); }
+
+/* The scene keeps its own absolute HUD, so it needs a positioned box of its own. */
+.stage-view { flex: 1; min-height: 0; position: relative; overflow: auto; }
+.stage-view.scene { overflow: hidden; }
+
+.inspector {
+  width: 320px; flex: none; overflow: auto; min-height: 0;
+  background: var(--chrome); border-left: 1px solid var(--line);
+  padding: 18px 18px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.inspector .foot {
+  margin-top: auto; padding-top: 14px;
+  font: 400 10.5px/1.6 var(--mono); color: var(--faint);
 }
 
 .splitter {
-  flex: none; width: 6px; cursor: col-resize; background: var(--line);
+  flex: none; width: 5px; cursor: col-resize; background: var(--line);
   position: relative; touch-action: none;
 }
-.splitter::after {
-  content: ''; position: absolute; inset: 0 -4px;
-}
-.splitter:hover { background: var(--accent); }
+.splitter::after { content: ''; position: absolute; inset: 0 -4px; }
+.splitter:hover { background: var(--accent-mark); }
 
-/* ---- cards ---- */
-.panel { padding: 16px; }
-.stack { display: flex; flex-direction: column; gap: 14px; }
+/* ---- screens ----
+   Every stage that is not the map renders a document rather than a canvas: a header band
+   that says what you are looking at, a scrolling body, and — where there is a decision to
+   make — a rail on the right that costs it. */
+.screen { display: flex; flex-direction: column; min-height: 100%; min-width: 0; }
+.screen-head {
+  flex: none; padding: 20px 28px 16px;
+  border-bottom: 1px solid var(--line); background: var(--band);
+}
+.screen-head h2 { margin: 0; font: 600 18px/1.35 var(--sans); color: var(--text-hi); }
+.screen-head .sub { margin: 6px 0 0; font: 400 11.5px/1.6 var(--sans); color: var(--dim); max-width: 70ch; }
+.screen-head .row { display: flex; align-items: flex-end; gap: 20px; }
+.screen-head .row .spacer { flex: 1; }
+.screen-body { flex: 1; padding: 20px 28px 28px; display: flex; flex-direction: column; gap: 12px; }
+.screen-cols { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
+.screen-cols > .screen-body { min-width: 0; }
+.rail {
+  border-left: 1px solid var(--line); background: var(--chrome);
+  padding: 20px 20px 24px; display: flex; flex-direction: column; gap: 13px;
+}
+.rail .spacer { flex: 1; }
+
+/* ---- primitives ---- */
 .card {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 14px;
+  background: var(--panel); border: 1px solid var(--line-2);
+  border-radius: 8px; padding: 13px 15px;
 }
+.card > h3 {
+  margin: 0 0 8px; font: 500 12.5px var(--sans); color: var(--text-hi);
+  display: flex; align-items: center; gap: 8px;
+}
+.card > h4 { margin: 12px 0 6px; font: var(--label); letter-spacing: .1em; text-transform: uppercase; color: var(--dim-3); }
+.card.ok { border-color: var(--ok-line); background: var(--ok-bg); }
+.card.warn { border-color: var(--warn-line); background: var(--warn-bg); }
+.card.bad, .card.bad-border { border-color: var(--bad-line); background: var(--bad-bg); }
+.card.accent { border-color: var(--accent-line); background: var(--accent-bg); }
+.card.quiet { border-style: dashed; border-color: #2f3641; background: none; }
 .card.grow { display: flex; flex-direction: column; min-height: 340px; }
-.card.bad-border { border-color: #4a2226; }
-.card h3 { margin: 0 0 10px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
-.card h4 { margin: 14px 0 6px; font-size: 12px; color: var(--dim); }
 
-.grid { width: 100%; border-collapse: collapse; }
-.grid td, .grid th { padding: 3px 10px 3px 0; text-align: left; font-weight: normal; }
-.grid th { color: var(--dim); border-bottom: 1px solid var(--line); }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.panel { padding: 16px; }
+
+/* One button shape, five tones. Tone carries the consequence, not the emphasis. */
+.btn {
+  padding: 9px 14px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line-4); background: var(--panel-2);
+  font: 500 11.5px var(--mono); color: var(--dim);
+  text-align: center; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { color: var(--text-2); border-color: var(--dim-3); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn.ok { border-color: var(--ok-line); background: var(--ok-bg-2); color: var(--ok); }
+.btn.accent { border-color: var(--accent-line); background: var(--accent-bg-2); color: var(--accent); }
+.btn.warn { border-color: var(--warn-line); background: var(--warn-bg-2); color: var(--warn); }
+.btn.bad { border-color: var(--bad-line); background: #1c1214; color: var(--bad); }
+.btn.wide { width: 100%; }
+.btn.ok:hover:not(:disabled) { color: var(--text-hi); border-color: var(--ok-mark); }
+.btn.accent:hover:not(:disabled) { color: var(--text-hi); border-color: var(--accent-mark); }
+.btn.warn:hover:not(:disabled) { color: var(--text-hi); border-color: var(--warn-mark); }
+.btn.bad:hover:not(:disabled) { color: var(--text-hi); border-color: var(--bad-mark); }
+
+.chip {
+  background: none; border: 1px solid var(--line-3); border-radius: 5px;
+  padding: 6px 11px; cursor: pointer;
+  font: 400 11px var(--mono); color: var(--dim);
+}
+.chip:hover { color: var(--text-2); border-color: var(--line-4); }
+.chip.active { background: var(--panel-2); border-color: var(--dim-3); color: var(--text-hi); }
+.chip.active.bad { background: var(--bad-bg-2); border-color: var(--bad-line); color: var(--bad); }
+.chip.active.ok { background: var(--ok-bg-2); border-color: var(--ok-line); color: var(--ok); }
+
+.pill {
+  display: inline-block; padding: 3px 8px; border-radius: 4px;
+  background: var(--line-3); color: var(--dim);
+  font: 500 9.5px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+}
+.pill.ok, .pill.green, .pill.done, .pill.corroborated { background: var(--ok-bg-2); color: var(--ok); }
+.pill.bad, .pill.red, .pill.failed, .pill.contradicted, .pill.contested { background: var(--bad-bg-3); color: var(--bad); }
+.pill.running, .pill.inferred { background: var(--warn-bg-2); color: var(--warn); }
+.pill.confirmed { background: var(--accent-bg-2); color: var(--accent); }
+.pill.stale { background: var(--warn-bg-2); color: var(--warn); }
+.pill.as-button { border: none; font: inherit; cursor: pointer; }
+.pill.as-button:hover { filter: brightness(1.25); }
+
+.badge {
+  background: var(--line-3); border-radius: 999px;
+  padding: 0 6px; font: 400 10.5px var(--mono); color: var(--dim-2);
+}
+.badge.warn { background: var(--bad-bg-3); color: var(--bad); }
+
+.link {
+  background: none; border: 0; color: var(--accent);
+  cursor: pointer; padding: 0; text-align: left; font: inherit;
+}
+.link:hover { text-decoration: underline; }
+.link.mono { font-family: var(--mono); font-size: 11px; }
+
+.meter { height: 6px; background: var(--line-3); border-radius: 3px; overflow: hidden; margin: 6px 0; }
+.meter-fill { height: 100%; background: var(--ok-mark); }
+.meter-fill.warn { background: var(--warn-mark); }
+.meter-fill.bad { background: var(--bad-mark); }
+
+.grid { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.grid td, .grid th { padding: 4px 12px 4px 0; text-align: left; font-weight: normal; }
+.grid th { color: var(--dim-3); border-bottom: 1px solid var(--line); font: var(--label); letter-spacing: .1em; text-transform: uppercase; }
 .grid td:first-child { color: var(--dim); }
+.grid.sources td:first-child { color: var(--text); }
 
 .rows { margin: 6px 0 0; padding-left: 16px; }
 .rows li { padding: 1px 0; }
 
 .dim { color: var(--dim); }
+.dimmer { color: var(--dim-2); }
 .ok { color: var(--ok); }
 .bad { color: var(--bad); }
 .hint { color: var(--warn); }
-.prose { margin: 8px 0; }
+.prose { margin: 8px 0; line-height: 1.6; }
 .score { color: var(--accent); }
+.num { font: 400 10.5px var(--mono); color: var(--dim-2); }
+.path { font: 400 11px var(--mono); color: var(--path); }
+.subject { font: 400 11px var(--mono); color: var(--dim-2); overflow-wrap: anywhere; }
+.toolbar { display: flex; gap: 8px; align-items: center; }
+.toolbar.wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
 
-.pill {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  background: var(--line); font-size: 11px;
+.empty { max-width: 620px; margin: 40px auto; color: var(--text); padding: 0 20px; }
+.empty h2 { font: 600 15px var(--sans); margin: 0 0 10px; color: var(--text-hi); }
+.empty p { margin: 8px 0; line-height: 1.65; }
+
+/* ---- banners ---- */
+.banner {
+  padding: 9px 16px; border-bottom: 1px solid var(--line);
+  display: flex; gap: 12px; align-items: center; font-size: 11.5px;
 }
-.pill.ok, .pill.green, .pill.done, .pill.corroborated { background: #17301f; color: var(--ok); }
-.pill.bad, .pill.red, .pill.failed, .pill.contradicted { background: #331a1c; color: var(--bad); }
-.pill.running, .pill.inferred { background: #2a2418; color: var(--warn); }
-.pill.confirmed { background: #1b2740; color: var(--accent); }
+.banner > span { flex: 1; min-width: 0; }
+.banner code.wrap { overflow-wrap: anywhere; }
+.banner.error { background: var(--bad-bg-2); color: var(--bad); }
+.banner.toast { background: var(--ok-bg-2); color: var(--ok); }
 
-.toolbar { display: flex; gap: 8px; }
-.chip {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 999px; padding: 4px 12px; cursor: pointer;
+.overlay {
+  position: fixed; inset: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  overflow: auto;
 }
-.chip.active { border-color: var(--accent); color: var(--accent); }
 
-.link {
-  background: none; border: 0; color: var(--accent);
-  cursor: pointer; padding: 0; text-align: left;
+/* ---- detect (2b) ----
+   A candidate is a question with evidence attached. The styling refuses to let one read as
+   a verdict: no status colour on the row, and the machine's confidence is a measurement in
+   the corner rather than a judgement in the title. */
+.cand {
+  display: flex; gap: 13px; align-items: flex-start;
+  padding: 13px 15px; border: 1px solid var(--line-2); border-radius: 8px;
+  background: var(--panel); cursor: pointer; text-align: left; width: 100%;
 }
-.link:hover { text-decoration: underline; }
+.cand:hover { border-color: var(--line-4); }
+.cand[aria-pressed="true"] { border-color: var(--accent-line); background: var(--accent-bg); }
+.cand .box {
+  width: 14px; height: 14px; border-radius: 3px; flex: none; margin-top: 2px;
+  border: 1px solid var(--line-4); background: var(--chrome);
+}
+.cand[aria-pressed="true"] .box { border-color: var(--accent-mark); background: var(--accent-mark); }
+.cand .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cand .top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cand .kind { font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim-3); }
+.cand .where { font: 400 11px var(--mono); color: var(--path); overflow-wrap: anywhere; }
+.cand .measure { margin-left: auto; font: 400 10.5px var(--mono); color: var(--dim-2); }
+.cand .q { display: block; margin: 7px 0 0; font: 500 12.5px/1.45 var(--sans); color: var(--text-hi); }
+.cand .ev { display: block; margin: 6px 0 0; font: 400 10.5px/1.5 var(--mono); color: var(--dim-2); }
 
-.meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 6px 0; }
-.meter-fill { height: 100%; background: var(--ok); }
+/* ---- explore (2c) ----
+   The work order. Each agent gets a card you can read as instructions, because "what will
+   they actually do" is the question the old two-button launcher never answered. */
+.order { border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.order + .order { margin-top: 10px; }
+.order.reserve { border-style: dashed; background: none; }
+.order-head {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 11px 14px; background: var(--panel-2); border-bottom: 1px solid var(--line-2);
+}
+.order-head .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.order-head .who { font: 500 11.5px var(--mono); color: var(--text-hi); }
+.order-head .trait { font: 400 10.5px var(--sans); color: var(--dim-2); }
+.order-head .cost { margin-left: auto; font: 400 10.5px var(--mono); color: var(--dim); }
+/* The tool and model are editable in place, so they have to look editable — a bare select
+   on a dark ground is a rectangle you cannot see. */
+.order-head select, .order-head input {
+  background: var(--chrome); color: var(--text-hi); font: 500 11.5px var(--mono);
+  border: 1px solid var(--line-3); border-radius: 5px; padding: 4px 8px;
+}
+.order-head select:focus, .order-head input:focus { outline: none; border-color: var(--accent-mark); }
+.order-head input::placeholder { color: var(--dim-3); }
+.order-steps { padding: 11px 14px; display: flex; flex-direction: column; gap: 6px; }
+.order-steps li { font: 400 11.5px/1.55 var(--sans); color: var(--text-2); list-style: none; }
+.order-steps code { font-size: 10.5px; color: var(--path); }
+.order-note { padding: 11px 14px; font: 400 11.5px/1.55 var(--sans); color: var(--dim); }
 
-/* ---- review ---- */
+.outcome { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; }
+.outcome + .outcome { border-top: 1px solid var(--line); }
+.outcome .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; margin-top: 4px; }
+.outcome .t { font: 500 11.5px var(--sans); color: var(--text-hi); }
+.outcome .d { font: 400 11px/1.5 var(--sans); color: var(--dim); margin-top: 2px; }
+
+/* ---- monitor (2d) ---- */
+.lane { padding: 10px 0; }
+.lane + .lane { border-top: 1px solid var(--line); }
+.lane-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.lane-head .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.lane-head .who { font: 500 11.5px var(--mono); color: var(--text-hi); }
+.lane-head .tally { font: 400 10.5px var(--mono); color: var(--dim-2); }
+.lane-head .now { margin-left: auto; font: 400 10.5px var(--mono); color: var(--dim); }
+.lane-bar { display: flex; gap: 3px; margin-top: 7px; }
+.lane-bar span { flex: 1; height: 4px; border-radius: 2px; background: var(--line-3); }
+
+.landing { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; }
+.landing + .landing { border-top: 1px solid var(--line); }
+.landing .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-top: 4px; }
+.landing .t { font: 400 11.5px/1.45 var(--sans); color: var(--text-2); }
+.landing .d { font: 400 10.5px var(--mono); color: var(--dim-2); margin-top: 2px; }
+
+.stream { display: flex; flex-direction: column; gap: 3px; font: 400 10.5px/1.55 var(--mono); }
+.stream-row { display: grid; grid-template-columns: 46px 74px 1fr; gap: 8px; }
+.stream-row .t { color: var(--faint); }
+.stream-row .who { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+.stream-row .what { color: var(--dim); overflow-wrap: anywhere; }
+.stream-row.bad .who { color: var(--bad); }
+
+/* ---- beliefs (2e) ----
+   The ladder made literal. Four tiles that are also the filter, because the state a belief
+   is in *is* the reason to look at it. */
+.ladder { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.ladder-tile {
+  border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel);
+  padding: 12px 14px; cursor: pointer; text-align: left;
+}
+.ladder-tile:hover { border-color: var(--line-4); }
+.ladder-tile[aria-pressed="true"] { border-color: var(--dim-3); background: var(--panel-2); }
+.ladder-tile .top { display: flex; align-items: center; gap: 8px; }
+.ladder-tile .swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.ladder-tile .name { font: 500 11.5px var(--mono); color: var(--text-2); }
+.ladder-tile .n { font: 600 22px/1.2 var(--sans); color: var(--text-hi); margin: 7px 0 3px; }
+.ladder-tile .why { font: 400 10.5px/1.45 var(--sans); color: var(--dim-2); }
+.ladder-tile.contested[aria-pressed="true"] { border-color: var(--bad-line); background: var(--bad-bg); }
+
+.belief-row {
+  display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  padding: 12px 15px; border: 1px solid var(--line-2); border-radius: 8px;
+  background: var(--panel); cursor: pointer;
+}
+.belief-row:hover { border-color: var(--line-4); }
+.belief-row.contested { border-left: 2px solid var(--bad-mark); background: var(--bad-bg); }
+.belief-row .body { flex: 1; min-width: 0; }
+.belief-row .claim-line { font: 500 12.5px/1.4 var(--sans); color: var(--text-hi); }
+.belief-row .meta { font: 400 10.5px var(--mono); color: var(--dim-2); margin-top: 4px; overflow-wrap: anywhere; }
+.belief-row .sources { display: flex; gap: 4px; flex: none; }
+.belief-row .sources i { width: 8px; height: 8px; border-radius: 2px; display: block; }
+
+.group-label {
+  font: var(--label); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--dim-3); margin: 8px 0 2px;
+}
+
+/* ---- belief detail · the 3a field diff ----
+   The point of the screen. Fields both claims assert identically collapse to a single
+   full-width row; only a field they actually differ on earns two columns. A wall of JSON
+   printed twice was the bug this replaces. */
+.agreement {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding: 9px 13px; border-radius: 6px;
+  border: 1px solid var(--ok-line); background: var(--ok-bg-2);
+}
+.agreement.split { border-color: var(--accent-line); background: var(--accent-bg-2); }
+.agreement.none { border-color: var(--bad-line); background: var(--bad-bg); }
+.agreement .verdict {
+  font: var(--label); letter-spacing: .1em; text-transform: uppercase; color: var(--ok);
+}
+.agreement.split .verdict { color: var(--accent); }
+.agreement.none .verdict { color: var(--bad); }
+.agreement .detail { font: 400 12px/1.5 var(--sans); color: var(--text-2); }
+
+.diff-head {
+  display: grid; gap: 12px; padding: 0 2px;
+  font: var(--label); letter-spacing: .1em; text-transform: uppercase; color: var(--dim-3);
+}
+.diff-head .col { display: flex; gap: 8px; align-items: center; }
+.diff-head .swatch { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+
+.diff-row {
+  display: grid; gap: 12px; padding: 12px 14px;
+  border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel);
+}
+.diff-row .field { font: 400 11.5px var(--mono); color: var(--dim); }
+.diff-row .val { font: 400 12px/1.6 var(--sans); color: #dfe4ea; overflow-wrap: anywhere; }
+.diff-row .val.mono { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
+.diff-row .val.absent { color: var(--dim-2); }
+/* Agreement is a collapse, not a comparison: one value, and a note saying it was identical. */
+.diff-row.same { border-color: var(--ok-line); background: var(--ok-bg); align-items: center; }
+.diff-row.same .agree-note { font: 400 11px var(--mono); color: var(--ok-dim); }
+.diff-row.same .val { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.diff-row.same .val strong { font: 600 12.5px var(--mono); color: var(--ok); }
+/* The one field they differ on, which is the whole reason you are on this screen. */
+.diff-row.only { border-color: var(--warn-line); background: var(--warn-bg); }
+.diff-row.only .field { color: var(--warn); }
+.diff-row.only .field .why { font: 400 10px var(--mono); color: var(--warn-dim); margin-top: 4px; }
+.diff-row.only .val { color: var(--text-hi); }
+.diff-row.only .val.absent { color: var(--dim-2); }
+
+.diff-ev { border-color: var(--line-2); background: var(--band); }
+.diff-ev .lines { display: flex; flex-direction: column; gap: 5px; font: 400 11px/1.5 var(--mono); }
+.diff-ev .lines button {
+  display: flex; gap: 8px; align-items: baseline; background: none; border: 0;
+  padding: 0; cursor: pointer; text-align: left; font: inherit;
+}
+.diff-ev .lines button:hover .where { text-decoration: underline; }
+.diff-ev .tag { font-size: 9.5px; letter-spacing: .06em; flex: none; }
+.diff-ev .tag.both { color: var(--ok); }
+.diff-ev .where { color: var(--path); flex: none; }
+.diff-ev .note { color: var(--dim-2); overflow-wrap: anywhere; }
+.diff-ev .note.warn { color: var(--warn); }
+
+.decide {
+  flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 16px 28px; border-top: 1px solid var(--line); background: var(--chrome);
+}
+.decide .read { font: 400 11.5px/1.5 var(--sans); color: var(--dim-2); max-width: 44ch; }
+.decide input {
+  flex: 1; min-width: 200px; padding: 9px 12px;
+  background: var(--panel); border: 1px solid var(--line-3);
+  border-radius: 6px; color: var(--text); font: 400 11.5px var(--sans);
+}
+.decide input:focus { outline: none; border-color: var(--accent-mark); }
+
+/* ---- plan (2h) ---- */
+.step { display: flex; gap: 13px; align-items: flex-start; padding: 12px 0; }
+.step + .step { border-top: 1px solid var(--line); }
+.step .n {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; background: var(--line-3);
+  font: 500 11px var(--mono); color: var(--dim);
+}
+.step.blocked .n { background: var(--bad-bg-3); color: var(--bad); }
+.step.blocked .t { color: var(--dim); }
+.step .t { font: 400 12.5px/1.5 var(--sans); color: var(--text-hi); }
+.step .why { font: 400 10.5px/1.5 var(--mono); color: var(--dim-2); margin-top: 4px; }
+
+.facts { display: flex; flex-direction: column; gap: 6px; }
+.facts .fact { display: flex; align-items: baseline; gap: 10px; font-size: 11.5px; }
+.facts .fact .k { color: var(--dim-2); }
+.facts .fact .v { margin-left: auto; font: 400 11px var(--mono); color: var(--text-2); }
+.facts .fact .v.ok { color: var(--ok); }
+.facts .fact .v.bad { color: var(--bad); }
+.facts .fact .v.warn { color: var(--warn); }
+
+/* ---- runs (2i) ---- */
+.run-row {
+  display: grid; grid-template-columns: 54px 1fr 150px 74px 76px;
+  gap: 12px; align-items: center; padding: 11px 12px;
+  border: 1px solid transparent; border-radius: 7px;
+  background: none; cursor: pointer; text-align: left; width: 100%;
+}
+.run-row:hover { background: var(--panel); }
+.run-row[aria-pressed="true"] { border-color: var(--accent-line); background: var(--accent-bg); }
+.run-row .id { font: 500 12px var(--mono); color: var(--text-hi); }
+.run-row .moved { display: flex; gap: 6px; flex-wrap: wrap; }
+.run-row .who, .run-row .cost, .run-row .per { font: 400 10.5px var(--mono); color: var(--dim-2); }
+.run-row .cost { color: var(--text-2); }
+.run-head {
+  display: grid; grid-template-columns: 54px 1fr 150px 74px 76px; gap: 12px;
+  padding: 0 12px 8px; border-bottom: 1px solid var(--line);
+  font: var(--label); letter-spacing: .1em; text-transform: uppercase; color: var(--dim-3);
+}
+.moved-pill {
+  padding: 2px 7px; border-radius: 4px; font: 400 10px var(--mono);
+  background: var(--line-3); color: var(--dim);
+}
+.moved-pill.ok { background: var(--ok-bg-2); color: var(--ok); }
+.moved-pill.bad { background: var(--bad-bg-3); color: var(--bad); }
+.moved-pill.warn { background: var(--warn-bg-2); color: var(--warn); }
+
+/* ---- invariants (2g) ---- */
+.inv {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 13px 15px; border: 1px solid var(--line-2); border-radius: 8px;
+  background: var(--panel);
+}
+.inv.violated { border-color: var(--bad-line); background: var(--bad-bg); }
+.inv .body { flex: 1; min-width: 0; }
+.inv .title { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.inv .rule { font: 500 12.5px/1.4 var(--sans); color: var(--text-hi); }
+.inv .checks { font: 400 10.5px/1.5 var(--mono); color: var(--dim-2); margin-top: 5px; }
+.inv .origin { flex: none; font: 400 10.5px var(--mono); color: var(--faint); }
+
+/* ---- claims and evidence (shared) ---- */
 .claims { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
-.claim { border-left: 2px solid var(--line); padding-left: 10px; }
-.claim-head { display: flex; gap: 10px; align-items: center; }
-.src { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--line); }
-.src.human { background: #1b2740; color: var(--accent); }
-.value { margin: 4px 0; }
-.ev { margin: 4px 0 0; padding-left: 14px; font-size: 11px; color: var(--dim); }
-.actions { display: flex; gap: 12px; align-items: center; margin-top: 10px; }
-.actions button {
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 6px; padding: 4px 12px; cursor: pointer;
+.claim { border-left: 2px solid var(--line-3); padding-left: 11px; }
+.claim-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.src {
+  font: 400 10.5px var(--mono); padding: 2px 7px; border-radius: 4px;
+  background: var(--line-3); color: var(--text-2);
 }
+.src.human { background: var(--accent-bg-2); color: var(--accent); }
+.value { margin: 5px 0; line-height: 1.6; }
+.ev { margin: 5px 0 0; padding-left: 14px; font: 400 10.5px/1.55 var(--mono); color: var(--dim-2); }
+.actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 11px; }
+.actions button.secondary { background: none; color: var(--dim-2); }
+.actions button:disabled { opacity: .4; cursor: default; }
 
-/* ---- agents ---- */
+/* ---- agents feed ---- */
 .job { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 3px 0; }
+.job-row {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.job-row:hover { background: var(--panel-2); }
+.job-row.selected { border-color: var(--accent-line); background: var(--accent-bg); }
 .log {
   width: 100%; max-height: 160px; overflow: auto; margin: 4px 0 8px;
-  background: #0d1116; border: 1px solid var(--line); border-radius: 6px;
-  padding: 8px; font-size: 11px; color: var(--dim); white-space: pre-wrap;
+  background: var(--chrome); border: 1px solid var(--line-2); border-radius: 6px;
+  padding: 8px; font: 400 10.5px/1.5 var(--mono); color: var(--dim-2); white-space: pre-wrap;
 }
 .live {
-  font-size: 10px; color: var(--warn); border: 1px solid var(--warn);
-  border-radius: 999px; padding: 0 6px;
+  font: 400 10px var(--mono); color: var(--warn);
+  border: 1px solid var(--warn-line); border-radius: 999px; padding: 1px 7px;
 }
 .feed { flex: 1; overflow: auto; margin-top: 8px; }
 .ev-row {
   display: grid; grid-template-columns: 62px 90px 96px 1fr;
-  gap: 8px; padding: 2px 0; font-size: 11px; border-bottom: 1px solid #151a23;
+  gap: 8px; padding: 2px 0; font: 400 10.5px var(--mono);
+  border-bottom: 1px solid var(--line);
 }
 .ev-row.bad .ev-tool { color: var(--bad); }
-.ev-time { color: var(--dim); }
+.ev-time { color: var(--faint); }
 .ev-agent { color: var(--accent); }
 .ev-tool { color: var(--ok); }
-.ev-what { overflow-wrap: anywhere; }
+.ev-what { overflow-wrap: anywhere; color: var(--dim); }
 .ev-err { grid-column: 1 / -1; color: var(--bad); }
 
-/* ---- scene ---- */
+/* ---- scene ----
+   Unchanged geometry: the canvas keeps its own HUD, key and inspector, which now sit inside
+   the stage view rather than the window. */
 .scene-wrap { position: absolute; inset: 0; }
 .scene-canvas { position: absolute; inset: 0; }
 .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .label {
   position: absolute; transform: translate(-50%, -50%);
-  white-space: nowrap; font-size: 11px; color: var(--text);
+  white-space: nowrap; font: 400 11px var(--mono); color: var(--text);
   text-shadow: 0 0 6px var(--bg), 0 0 3px var(--bg);
 }
 .label.dim { color: var(--dim); font-size: 10px; }
@@ -202,223 +689,147 @@ code, .mono { font-family: inherit; }
 }
 
 .legend {
-  position: absolute; left: 10px; bottom: 10px; z-index: 4;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--line); border-radius: 8px;
-  font-size: 11px; max-width: 260px;
+  position: absolute; right: 12px; bottom: 12px; z-index: 4;
+  background: color-mix(in srgb, var(--chrome) 92%, transparent);
+  border: 1px solid var(--line-2); border-radius: 8px;
+  font-size: 10.5px; max-width: 260px;
 }
 .legend-head {
   background: none; border: 0; width: 100%; text-align: left; cursor: pointer;
-  padding: 6px 10px; color: var(--dim); font: inherit;
+  padding: 7px 11px; color: var(--dim-3); font: var(--label);
+  letter-spacing: .14em; text-transform: uppercase;
 }
-.legend-body { padding: 0 10px 8px; }
-.legend .key { display: flex; align-items: baseline; gap: 7px; padding: 1px 0; }
-.legend .key em { color: var(--dim); font-style: normal; }
+.legend-body { padding: 0 11px 9px; }
+.legend .key { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.legend .key em { color: var(--dim-2); font-style: normal; }
 .legend .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; align-self: center; }
-.legend-sep { height: 1px; background: var(--line); margin: 6px 0; }
-.legend-note { color: var(--dim); margin: 5px 0 0; }
-
-.job-row {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  padding: 4px 6px; border-radius: 6px; cursor: pointer;
-  border: 1px solid transparent;
-}
-.job-row:hover { background: var(--panel-2); }
-.job-row.selected { border-color: var(--accent); background: var(--panel-2); }
+.legend-sep { height: 1px; background: var(--line); margin: 7px 0; }
+.legend-note { color: var(--dim-2); margin: 5px 0 0; line-height: 1.5; }
 
 .scene-tip {
   position: absolute; z-index: 5; pointer-events: none;
-  max-width: 260px; padding: 7px 10px;
+  max-width: 260px; padding: 8px 11px;
   background: color-mix(in srgb, var(--panel) 96%, transparent);
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--line-2); border-radius: 6px;
   font-size: 11px; line-height: 1.45;
   box-shadow: 0 6px 20px rgba(0, 0, 0, .55);
 }
-.scene-tip strong { color: var(--text); }
+.scene-tip strong { color: var(--text-hi); }
 .scene-tip .arrow { color: #ffd479; }
-.scene-tip .tip-path { color: var(--dim); word-break: break-all; }
-.scene-tip .tip-meta { color: var(--dim); margin-top: 2px; }
-.scene-tip .tip-purpose { color: var(--text); margin-top: 5px; font-style: italic; }
+.scene-tip .tip-path { color: var(--dim-2); word-break: break-all; font-family: var(--mono); }
+.scene-tip .tip-meta { color: var(--dim-2); margin-top: 3px; }
+.scene-tip .tip-purpose { color: var(--text); margin-top: 6px; font-style: italic; }
 
-.scene-empty { display: grid; place-items: center; height: 100%; color: var(--dim); }
-.scene-hud { position: absolute; inset: 10px 10px auto 10px; pointer-events: none; }
+.scene-empty { display: grid; place-items: center; height: 100%; color: var(--dim-2); }
+.scene-hud { position: absolute; inset: 12px 12px auto 12px; pointer-events: none; }
 .scene-hud > * { pointer-events: auto; }
 .lod { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
+.lod .chip { padding: 4px 9px; }
+.sep { width: 1px; height: 16px; background: var(--line-3); margin: 0 4px; }
 .scene-keys {
-  margin-top: 8px; font-size: 11px; color: var(--dim);
+  margin-top: 9px; font: 400 10.5px var(--mono); color: var(--faint);
   display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
 }
 .scene-keys kbd {
-  background: var(--line); border-radius: 3px; padding: 0 5px;
-  font: inherit; color: var(--text);
+  background: var(--line-3); border-radius: 3px; padding: 0 5px;
+  font: inherit; color: var(--text-2);
 }
 
 .scene-inspect {
   margin-top: 10px; max-width: 340px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  background: color-mix(in srgb, var(--chrome) 92%, transparent);
+  border: 1px solid var(--line-2); border-radius: 8px; padding: 11px 13px;
 }
-
-.empty { max-width: 620px; margin: 40px auto; color: var(--text); }
-.empty h2 { font-size: 15px; margin: 0 0 10px; }
-.empty p { margin: 8px 0; }
-
-.badge {
-  background: var(--line); border-radius: 999px;
-  padding: 0 6px; font-size: 11px; color: var(--dim);
-}
-.badge.warn { background: #331a1c; color: var(--bad); }
-
-/* ---- arbitration ---- */
-.overlay {
-  position: fixed; inset: 0; z-index: 20;
-  background: color-mix(in srgb, var(--bg) 94%, transparent);
-  overflow: auto; padding: 20px;
-}
-.arb { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
-.arb-head {
-  display: flex; justify-content: space-between; align-items: center;
-  gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
-}
-.arb-head > div { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-
-/* The screen's whole point: name which kind of disagreement this is. */
-.arb-verdict {
-  padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
-  background: var(--panel);
-}
-.arb-verdict.judgement { border-color: #4a3a1c; background: #211c12; }
-.arb-verdict.incomplete { border-color: #1c3a4a; background: #121c21; }
-.arb-verdict.mixed { border-color: #3a2f4a; background: #1a1621; }
-
-.arb-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
-.arb-side {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 14px;
-}
-.arb-side h3 { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; font-size: 13px; }
-.arb-side h4 { margin: 12px 0 6px; font-size: 11px; color: var(--dim); }
-.arb-side > button {
-  margin-top: 12px; width: 100%; padding: 7px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 6px; cursor: pointer;
-}
-.arb-side > button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-
-.arb-diff { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
-.arb-diff h3 { margin: 0 0 10px; font-size: 13px; }
-.arb-diff .same { color: var(--dim); }
-.arb-diff .only { color: var(--warn); }
-
-.snip { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
-/* Shared spans are what both sides read; unique spans are what only one did. */
-.snip.shared { border-left: 3px solid var(--warn); }
-.snip.unique { border-left: 3px solid var(--line); }
-.snip-head {
-  width: 100%; text-align: left; background: var(--panel-2); border: 0;
-  padding: 5px 9px; cursor: pointer; font: inherit; color: var(--text);
-  display: flex; gap: 8px; flex-wrap: wrap;
-}
-.snip-head em { color: var(--dim); font-style: normal; }
-.snip-err { padding: 6px 9px; color: var(--bad); font-size: 11px; }
-.snip-code { margin: 0; padding: 6px 0; font-size: 11px; overflow-x: auto; background: #0d1116; }
-.snip-line { padding: 0 9px; white-space: pre; }
-.snip-line.hit { background: #1e2740; }
-.snip-n { display: inline-block; width: 42px; color: var(--dim); user-select: none; }
-
-.arb-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.arb-foot input {
-  flex: 1; min-width: 240px; padding: 7px 10px;
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 6px; color: var(--text); font: inherit;
-}
-.arb-foot button {
-  padding: 7px 14px; background: var(--panel-2);
-  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
-}
-
-/* A pill that is also a control: same chip, but it announces it can be clicked. */
-.pill.as-button {
-  border: none;
-  font: inherit;
-  cursor: pointer;
-}
-.pill.as-button:hover { filter: brightness(1.25); }
-
-/* Invariant authoring: a form, not a wall of JSON. */
-.author .fields { display: grid; gap: 0.5rem; margin: 0.75rem 0; }
-.author .fields label { display: grid; grid-template-columns: 11rem 1fr; align-items: center; gap: 0.6rem; }
-.author .fields label span { font-size: 0.85em; opacity: 0.75; }
-.author .fields input { padding: 0.35rem 0.5rem; font: inherit; }
-.toolbar.wrap { flex-wrap: wrap; }
-
-/* Replay scrubber: a timeline over events.jsonl, driving the same map the live feed does. */
-.scrub { display: grid; gap: 0.5rem; margin-bottom: 0.75rem; }
-.scrub.active { padding: 0.6rem; border: 1px solid var(--line, #2a2f3a); border-radius: 6px; }
-.scrub-range { width: 100%; }
-.scrub-read { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85em; }
+.scene-inspect strong { color: var(--text-hi); }
 
 /* Frame meter. Sits with the key rather than over the scene, so it never hides a node. */
 .scene-fps {
-  display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline;
-  padding: 0.3rem 0.5rem; margin-bottom: 0.25rem;
-  border: 1px solid var(--line, #2a2f3a); border-radius: 5px;
-  font-size: 0.82em; font-family: ui-monospace, monospace;
+  display: flex; flex-wrap: wrap; gap: .75rem; align-items: baseline;
+  padding: .3rem .5rem; margin-bottom: .25rem;
+  border: 1px solid var(--line-2); border-radius: 5px;
+  font: 400 10.5px var(--mono); color: var(--dim-2);
 }
-.scene-fps.over { border-color: #a86a5a; }
-.scene-fps .fps-headline strong { font-size: 1.25em; }
-.scene-fps.over .fps-headline strong { color: #f0a868; }
-
-.scene-fps .fps-hint { color: #f0a868; }
+.scene-fps.over { border-color: var(--warn-line); }
+.scene-fps .fps-headline strong { font-size: 1.25em; color: var(--text-2); }
+.scene-fps.over .fps-headline strong { color: var(--warn); }
+.scene-fps .fps-hint { color: var(--warn); }
 .scene-fps .fps-hint code { background: none; padding: 0; }
 
-/* ---- launch ---- */
-.launch .toolbar { margin-bottom: 10px; }
+/* ---- code snippets (arbitration evidence) ---- */
+.snip { border: 1px solid var(--line-2); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+.snip.shared { border-left: 3px solid var(--ok-mark); }
+.snip.unique { border-left: 3px solid var(--line-3); }
+.snip-head {
+  width: 100%; text-align: left; background: var(--panel-2); border: 0;
+  padding: 6px 10px; cursor: pointer; font: 400 11px var(--mono); color: var(--text-2);
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.snip-head em { color: var(--dim-2); font-style: normal; font-family: var(--sans); font-size: 11px; }
+.snip-err { padding: 6px 10px; color: var(--bad); font-size: 11px; }
+.snip-code { margin: 0; padding: 6px 0; font: 400 10.5px/1.6 var(--mono); overflow-x: auto; background: var(--chrome); }
+.snip-line { padding: 0 10px; white-space: pre; }
+.snip-line.hit { background: var(--accent-bg-2); }
+.snip-n { display: inline-block; width: 42px; color: var(--faint); user-select: none; }
 
-.roster { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+/* ---- launcher form controls ---- */
+.roster { display: flex; flex-direction: column; gap: 6px; }
 .roster-row { display: flex; gap: 8px; align-items: center; }
 /* A duplicate row is not an error, it is a row that will be dropped for costing money and
    moving no belief. Marked rather than refused, so the reason stays visible. */
-.roster-row.dupe select, .roster-row.dupe input { border-color: var(--warn); opacity: 0.7; }
+.roster-row.dupe select, .roster-row.dupe input { border-color: var(--warn-line); opacity: .7; }
 
 .roster select, .roster input, .fields input {
-  background: var(--panel-2); color: inherit; font: inherit;
-  border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
+  background: var(--panel-2); color: inherit; font: 400 11px var(--mono);
+  border: 1px solid var(--line-3); border-radius: 6px; padding: 5px 9px;
 }
 .roster select { min-width: 110px; }
 .roster input { flex: 1; min-width: 0; }
 .roster select:focus, .roster input:focus, .fields input:focus {
-  outline: none; border-color: var(--accent);
+  outline: none; border-color: var(--accent-mark);
 }
 
 .fields { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
-.fields label { display: flex; gap: 6px; align-items: center; color: var(--dim); }
+.fields label { display: flex; gap: 7px; align-items: center; color: var(--dim-2); font-size: 11px; }
 .fields input { width: 72px; }
-.fields input:disabled { opacity: 0.4; }
+.fields input:disabled { opacity: .4; }
 
-.check { display: block; margin-top: 10px; }
-.check input { margin-right: 6px; vertical-align: middle; }
-
-.actions button.secondary { background: none; color: var(--dim); }
-.actions button:disabled { opacity: 0.4; cursor: default; }
+.check { display: block; margin-top: 10px; color: var(--dim); font-size: 11.5px; }
+.check input { margin-right: 7px; vertical-align: middle; }
 
 .hint-cmd {
-  display: block; margin-top: 4px; padding: 4px 8px;
+  display: block; margin-top: 5px; padding: 5px 9px;
   background: var(--panel-2); border-radius: 4px;
-  overflow-x: auto; white-space: pre; color: var(--text);
+  overflow-x: auto; white-space: pre; color: var(--text-2);
+  font: 400 10.5px var(--mono);
 }
 
 .setup { margin: 6px 0; }
 .setup summary { cursor: pointer; color: var(--warn); }
 .setup p { margin: 6px 0 4px; }
 
-/* ---- quality ---- */
-.weakness { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+/* Invariant authoring: a form, not a wall of JSON. */
+.author .fields { display: grid; gap: .5rem; margin: .75rem 0; }
+.author .fields label { display: grid; grid-template-columns: 11rem 1fr; align-items: center; gap: .6rem; }
+.author .fields label span { font-size: .85em; opacity: .75; }
+.author .fields input { padding: .35rem .5rem; }
+
+/* Replay scrubber: a timeline over events.jsonl, driving the same map the live feed does. */
+.scrub { display: grid; gap: .5rem; }
+.scrub.active { padding: .6rem; border: 1px solid var(--line-2); border-radius: 6px; }
+.scrub-range { width: 100%; }
+.scrub-read { display: flex; gap: 1rem; flex-wrap: wrap; font: 400 10.5px var(--mono); color: var(--dim-2); }
+
+/* ---- quality (believability report) ---- */
+.weakness { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; }
 .weakness + .weakness { border-top: 1px solid var(--line); }
 .weakness > div { flex: 1; }
 .weakness p { margin: 0 0 2px; }
-.pill.stale { background: #2a2418; color: var(--warn); }
 
-.grid.sources { margin: 8px 0; }
-.grid.sources td:first-child { color: var(--text); }
+/* ---- disclosure for the raw detector output ---- */
+.raw { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 10px; }
+.raw > summary {
+  cursor: pointer; color: var(--dim-2);
+  font: var(--label); letter-spacing: .14em; text-transform: uppercase;
+}
+.raw > summary:hover { color: var(--text-2); }
+.raw > div { margin-top: 14px; }

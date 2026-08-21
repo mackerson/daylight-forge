@@ -10,7 +10,7 @@ export type {
   FocusNode, FocusEdge, FocusLevel, FocusStack, NodeBelief,
 } from '../../../engine/focus/types.ts';
 export type {
-  Claim, ClaimStatus, Belief, Evidence,
+  Claim, ClaimStatus, Belief, Evidence, Source,
 } from '../../../engine/store/types.ts';
 export type { InvariantResult } from '../../../engine/invariants/engine.ts';
 export type {

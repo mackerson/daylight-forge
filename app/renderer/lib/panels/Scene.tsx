@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { layout } from '../../../../engine/scene/layout.ts';
 import { layoutTree } from '../../../../engine/scene/tree.ts';
 import { applyMoved } from '../../../../engine/scene/types.ts';
-import type { LoadPayload } from '../types.ts';
+import type { LoadPayload, NodeBelief } from '../types.ts';
 import { onReplayEvent, onReplayReset } from '../replay.ts';
 import {
   DEFAULT_SETTINGS, limitAfterSlowdown, normaliseSettings, SLOW_FRAME_MS, summarise,
@@ -28,13 +28,36 @@ const COLORS = {
   symbol: new THREE.Color('#8f7fd0'),
 };
 
-export type Channel = 'structure' | 'belief' | 'frontier' | 'agent';
+/**
+ * What the scene hands out when you click something.
+ *
+ * A narrow read of the laid-out node — the fields an inspector can be written against —
+ * rather than the layout record itself, which carries meshes and positions the shell has
+ * no business seeing.
+ */
+export interface SceneNode {
+  id: string;
+  label: string;
+  level: number;
+  fileCount: number;
+  origin: string;
+  purpose?: string;
+  members?: string[];
+  belief?: NodeBelief;
+  isFile?: boolean;
+  isSymbol?: boolean;
+}
+
+export type Channel =
+  | 'structure' | 'belief' | 'candidates' | 'agent' | 'change' | 'frontier';
 
 const CHANNEL_HELP: Record<Channel, string> = {
   structure: 'agent-named, path group, or defended',
   belief: 'how much is known, and what is disputed',
-  frontier: 'where the swarm is heading next',
+  candidates: 'what the static tools flagged, and how densely',
   agent: 'who has worked here',
+  change: 'which beliefs their own evidence has moved out from under',
+  frontier: 'what nobody has looked at yet, by uncertainty x centrality',
 };
 
 /**
@@ -53,6 +76,10 @@ const BELIEF: Record<string, THREE.Color> = {
 
 const COLD = new THREE.Color('#333b46');
 const HOT = new THREE.Color('#ffd479');
+/** A static detector pointed at this. Suspicion, not judgement — so amber, never red. */
+const FLAGGED = new THREE.Color('#d99a4e');
+/** Examined and not moved since. Present, but deliberately quiet. */
+const SETTLED = new THREE.Color('#4a5560');
 
 /** Stable per-agent hue, so the same tool keeps its colour across sessions. */
 function agentColor(name: string): THREE.Color {
@@ -64,7 +91,9 @@ function agentColor(name: string): THREE.Color {
 const scratch = new THREE.Color();
 
 /** Colour for a node under the active channel. */
-function channelColor(node: any, channel: Channel, maxHeat: number): THREE.Color {
+function channelColor(
+  node: any, channel: Channel, maxHeat: number, flagged: ReadonlySet<string>,
+): THREE.Color {
   // A symbol has no belief, no heat and no agents of its own — every channel would paint it
   // "unknown", which reads as a finding rather than as a level of detail. One colour, so an
   // opened file is legible as structure regardless of what the rest of the map is showing.
@@ -76,6 +105,22 @@ function channelColor(node: any, channel: Channel, maxHeat: number): THREE.Color
     // Coverage drives the gradient: a node where half the members are unexamined should
     // not look as settled as one where all of them are.
     return scratch.copy(BELIEF.UNKNOWN).lerp(base, 0.25 + 0.75 * b.known).clone();
+  }
+  if (channel === 'candidates') {
+    // A detector flagged some of this node's files. Density, not a verdict: one suspicious
+    // file in forty is a different thing from forty in forty, and the colour should say so.
+    const members: string[] = node.members ?? [];
+    if (!members.length || !flagged.size) return BELIEF.UNKNOWN;
+    const hit = members.reduce((n, m) => n + (flagged.has(m) ? 1 : 0), 0);
+    if (!hit) return BELIEF.UNKNOWN;
+    return scratch.copy(BELIEF.UNKNOWN).lerp(FLAGGED, 0.35 + 0.65 * (hit / members.length)).clone();
+  }
+  if (channel === 'change') {
+    // Staleness is the only movement the store actually records: a claim whose file has
+    // changed since it was asserted. Everything else here is standing still.
+    const b = node.belief;
+    if (!b) return BELIEF.UNKNOWN;
+    return b.status === 'STALE' ? BELIEF.STALE : scratch.copy(BELIEF.UNKNOWN).lerp(SETTLED, 0.5).clone();
   }
   if (channel === 'frontier') {
     const heat = node.belief?.heat ?? 0;
@@ -128,10 +173,27 @@ function Legend({ channel, agents, mode }: { channel: Channel; agents: string[];
               <p className="legend-note">Brightness tracks how many members carry a claim.</p>
             </>
           )}
+          {channel === 'candidates' && (
+            <>
+              {swatch(FLAGGED, 'flagged', 'a static tool pointed here')}
+              {swatch(BELIEF.UNKNOWN, 'nothing flagged')}
+              <p className="legend-note">
+                Brightness tracks how many of the node's files were flagged, not how bad it is.
+                A candidate is a question, never a verdict.
+              </p>
+            </>
+          )}
+          {channel === 'change' && (
+            <>
+              {swatch(BELIEF.STALE, 'stale', 'the file changed under the claim')}
+              {swatch(SETTLED, 'still standing')}
+              {swatch(BELIEF.UNKNOWN, 'nothing claimed here')}
+            </>
+          )}
           {channel === 'frontier' && (
             <>
-              {swatch(COLD, 'cold', 'settled or unimportant')}
-              {swatch(HOT, 'hot', 'next, by uncertainty x centrality')}
+              {swatch(COLD, 'looked at, or peripheral')}
+              {swatch(HOT, 'unexamined and central')}
             </>
           )}
           {channel === 'agent' && (
@@ -153,9 +215,34 @@ function Legend({ channel, agents, mode }: { channel: Channel; agents: string[];
   );
 }
 
-export function Scene({ data }: { data: LoadPayload | null }) {
+export function Scene({ data, channel, onChannel, flagged, onSelect }: {
+  data: LoadPayload | null;
+  /**
+   * Controlled, because the lens is a mode in the shell rather than a chip on the canvas.
+   * The scene renders a colouring; it does not decide which question is being asked.
+   */
+  channel: Channel;
+  onChannel: (c: Channel) => void;
+  /** Files a static detector pointed at, for the candidates lens. */
+  flagged: ReadonlySet<string>;
+  /**
+   * Selection is reported outward because the inspector is a region of the shell now, not
+   * a box floating over the canvas. Held here as well as there: the scene needs it to
+   * re-select the same node across a layout switch.
+   */
+  onSelect: (node: SceneNode | null) => void;
+}) {
   const mountRef = useRef<HTMLDivElement>(null);
-  const [selected, setSelected] = useState<any>(null);
+  /**
+   * Selection lives in the shell now, so this only forwards it.
+   *
+   * Through a ref rather than calling the prop directly: the click handler is installed once,
+   * inside the effect that builds the scene, and would otherwise keep calling whichever
+   * `onSelect` existed when the scene was built.
+   */
+  const selectRef = useRef(onSelect);
+  selectRef.current = onSelect;
+  const select = useCallback((n: SceneNode | null) => selectRef.current(n), []);
   const [level, setLevel] = useState(3);
   const [levels, setLevels] = useState<number[]>([3, 2, 1]);
   const [mode, setMode] = useState<'graph' | 'tree'>('graph');
@@ -208,7 +295,6 @@ export function Scene({ data }: { data: LoadPayload | null }) {
   const showFpsRef = useRef(false);
   showFpsRef.current = settings.showFps;
   const [nodeCount, setNodeCount] = useState(0);
-  const [channel, setChannel] = useState<Channel>('structure');
   const [agents, setAgents] = useState<string[]>([]);
   const [pulses, setPulses] = useState(true);
   const pulsesRef = useRef(true);
@@ -248,7 +334,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     const seedLod = (data as any).lodDefault;
     if (seedLod === 'auto') setLod('auto');
     const seedChannel = (data as any).channelDefault as Channel | undefined;
-    if (seedChannel && seedChannel !== 'structure') setChannel(seedChannel);
+    if (seedChannel && seedChannel !== 'structure') onChannel(seedChannel);
   }, [data?.initialMode]);
 
   useEffect(() => {
@@ -350,7 +436,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       0,
       ...[...laid.nodes.values()].map((n: any) => n.belief?.heat ?? 0),
     );
-    const baseColor = (node: any) => channelColor(node, channel, maxHeat);
+    const baseColor = (node: any) => channelColor(node, channel, maxHeat, flagged);
 
     const byLevel = new Map<number, any[]>();
     for (const lvl of distinct) byLevel.set(lvl, []);
@@ -635,7 +721,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     if (keepId.current) {
       for (const n of laid.nodes.values()) {
         if (n.id === keepId.current) {
-          setSelected({ ...n });
+          select({ ...n });
           break;
         }
       }
@@ -815,7 +901,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
     }
     const onClick = (e: MouseEvent) => {
       keepId.current = hovered ? hovered.id : null;
-      setSelected(hovered ? { ...hovered } : null);
+      select(hovered ? { ...hovered } : null);
 
       // Alt-click opens a file to its symbols, or shuts it again. On the modifier rather
       // than on a plain click because selecting a file is the common act and relaying out
@@ -1514,7 +1600,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
       labelLayer.remove();
       tip.remove();
     };
-  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, expanded, symbols,
+  }, [data?.stack, data?.defended, data?.repo, data?.fileEdges, mode, lod, channel, flagged, expanded, symbols,
       settings.allLevelsLimit, moved]);
 
   if (!data?.stack) {
@@ -1541,16 +1627,6 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             tree
           </button>
           <span className="sep" />
-          {(['structure', 'belief', 'frontier', 'agent'] as Channel[]).map((c) => (
-            <button
-              key={c}
-              className={channel === c ? 'chip active' : 'chip'}
-              onClick={() => setChannel(c)}
-              title={CHANNEL_HELP[c]}
-            >
-              {c}
-            </button>
-          ))}
           <button
             className={pulses ? 'chip active' : 'chip'}
             onClick={() => setPulses(!pulses)}
@@ -1590,7 +1666,7 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             {channel !== 'structure'
               ? CHANNEL_HELP[channel]
               : lod === 'all'
-              ? `${nodeCount} nodes`
+              ? ''
               : mode === 'tree'
                 ? 'camera distance = tree depth'
                 : levels.length === 1
@@ -1666,21 +1742,6 @@ export function Scene({ data }: { data: LoadPayload | null }) {
             </>
           )}
         </div>
-        {selected && (
-          <div className="scene-inspect">
-            <strong>{selected.label}</strong>
-            <div className="dim">
-              L{selected.level} · {selected.fileCount} files · {selected.origin}
-            </div>
-            {selected.purpose ? (
-              <p className="prose">{selected.purpose}</p>
-            ) : (
-              <p className="dim">
-                No agent-written purpose — a path grouping, i.e. filing, not intent.
-              </p>
-            )}
-          </div>
-        )}
       </div>
       <Legend channel={channel} agents={agents} mode={mode} />
     </div>
