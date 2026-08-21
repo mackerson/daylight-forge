@@ -18,6 +18,7 @@ import type { Invariant } from './invariants/engine.ts';
 import { buildStack } from './focus/stack.ts';
 import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive, serverCommand } from './swarm/driver.ts';
+import { qualityReport } from './quality/report.ts';
 import { history, record } from './swarm/ledger.ts';
 import { inspect } from './swarm/adapters.ts';
 import { evaluate, evaluateAll } from './invariants/engine.ts';
@@ -833,6 +834,75 @@ async function runAgent(args: Args): Promise<void> {
 }
 
 /**
+ * How much of this map can be believed, and why not more.
+ *
+ * The same report the Quality panel renders. Worth having in a terminal too — it is the
+ * thing to read before acting on a map, and before deciding another agent run is worth it.
+ */
+function runQuality(args: Args): void {
+  const store = new ClaimStore(path.join(args.out, 'claims.db'));
+  const r = qualityReport(args.out, store);
+  store.close();
+
+  if (args.json) {
+    console.log(JSON.stringify(r, null, 2));
+    return;
+  }
+
+  console.log(`\nmap quality — ${args.out}`);
+  console.log('─'.repeat(72));
+  const b = r.beliefs;
+  console.log(
+    `beliefs    ${b.total}  ` +
+      (['CONFIRMED', 'CORROBORATED', 'INFERRED', 'CONTRADICTED', 'STALE'] as const)
+        .filter((k) => b.byStatus[k])
+        .map((k) => `${k.toLowerCase()} ${b.byStatus[k]}`)
+        .join(' · '),
+  );
+  console.log(
+    `           ${b.multiSource} looked at by more than one source, ${b.singleSource} by one`,
+  );
+
+  console.log(`\nsources    ${r.sources.diversity} distinct agent tool:model pair(s)`);
+  for (const s of r.sources.used) {
+    const who = s.kind === 'human' ? 'human' : `${s.tool ?? '?'}/${s.model ?? 'default'}`;
+    console.log(`  ${who.padEnd(28)} ${s.claims} claim(s)`);
+  }
+
+  console.log(
+    `\nfrontier   ${r.frontier.open} open · top score ${r.frontier.topScore.toFixed(3)}` +
+      (r.frontier.converged ? ' · converged' : ''),
+  );
+  const kinds = Object.entries(r.frontier.byKind).sort((x, y) => y[1] - x[1]);
+  if (kinds.length) console.log(`  ${kinds.map(([k, n]) => `${k} ${n}`).join(' · ')}`);
+
+  console.log(
+    `\nfocus      L2 ${r.focus.named}/${r.focus.l2Nodes} named · ${r.focus.elisions} elision(s)` +
+      (r.focus.rejected ? ` · ${r.focus.rejected} rejected` : '') +
+      ` · L3 ${r.focus.l3Status}`,
+  );
+  console.log(
+    `invariants ${r.invariants.green}/${r.invariants.total} green` +
+      (r.invariants.red ? ` · ${r.invariants.red} RED` : ''),
+  );
+  console.log(
+    `detectors  ${r.detectors.families} famil(ies) (${r.detectors.adjudicatedFamilies} adjudicated) · ` +
+      `${r.detectors.dead} dead candidate(s) · ${r.detectors.cycles} cycle(s) · ` +
+      `${r.detectors.gods} god node(s) · ${r.detectors.limbs} limb(s)`,
+  );
+
+  // The part with teeth. A map that cannot say what is wrong with it is asking to be
+  // trusted rather than earning it.
+  console.log(`\nwhat is wrong with this map (${r.warnings.length})`);
+  console.log('─'.repeat(72));
+  if (!r.warnings.length) console.log('  nothing outstanding.');
+  for (const w of r.warnings) {
+    console.log(`  [${w.severity}] ${w.message}`);
+    if (w.fix) console.log(`             → ${w.fix}`);
+  }
+}
+
+/**
  * What agent CLIs are on this machine, and what each can actually do.
  *
  * JSON for the launcher, a table for a terminal. Spawns each binary's own introspection
@@ -1342,6 +1412,9 @@ switch (args.command) {
   case 'adapters':
     runAdapters(args);
     break;
+  case 'quality':
+    runQuality(args);
+    break;
   default:
     console.log(`visual-desloppify — get all the data, then focus it down.
 
@@ -1355,6 +1428,7 @@ usage:
   node engine/cli.ts check   <path> [--warn-only] [--format json]   # CI gate
   node engine/cli.ts agent      <path> --out <dir> [--tools <roster>] [--batch 5] [--dry-run]
   node engine/cli.ts adapters   [--format json]    # which agent CLIs are installed and usable
+  node engine/cli.ts quality    --out <dir> [--format json]   # how much of the map can be believed
 
 options:
   --out <dir>            output directory (default: ./out)

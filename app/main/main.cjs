@@ -696,6 +696,29 @@ ipcMain.handle('vds:adapters', (_e, { refresh } = {}) => {
   });
 });
 
+/**
+ * The believability report. Its own channel rather than part of `vds:query` because it
+ * re-reads graph.json and recomputes the frontier, which is fine on demand and far too
+ * expensive to do on every job event the way `query` is called.
+ */
+ipcMain.handle('vds:quality', () =>
+  new Promise((resolve) => {
+    execFile(
+      NODE.bin,
+      nodeArgs(['quality', '--out', state.dir, '--format', 'json']),
+      { cwd: ROOT, env: nodeEnv(), maxBuffer: 64 * 1024 * 1024, timeout: 120_000 },
+      (err, stdout) => {
+        if (err) return resolve({ error: err.message });
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (e) {
+          resolve({ error: `bad quality output: ${e.message}` });
+        }
+      },
+    );
+  }),
+);
+
 ipcMain.handle('vds:pick-repo', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Choose a repository to map',

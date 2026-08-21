@@ -39,8 +39,10 @@ export type { RenderSettings, FrameStats } from '../../../engine/render/settings
 import type { StructureReport } from '../../../engine/detect/structure-types.ts';
 import type { AdapterStatus } from '../../../engine/swarm/types.ts';
 export type { AdapterStatus } from '../../../engine/swarm/types.ts';
+import type { QualityReport } from '../../../engine/quality/types.ts';
 import type { RunRecord } from '../../../engine/swarm/types.ts';
 export type { RunRecord } from '../../../engine/swarm/types.ts';
+export type { QualityReport, QualityWarning, SourceUse } from '../../../engine/quality/types.ts';
 
 /**
  * One row of the launch roster: a tool and the model it runs on.
@@ -140,6 +142,7 @@ declare global {
       setDir(): Promise<{ repo: string | null; dir: string }>;
       map(): Promise<{ id?: string; error?: string }>;
       refocus(): Promise<{ id?: string; error?: string }>;
+      quality(): Promise<QualityReport & { error?: string }>;
       adapters(opts?: { refresh?: boolean }): Promise<{
         adapters: AdapterStatus[]; error?: string;
       }>;

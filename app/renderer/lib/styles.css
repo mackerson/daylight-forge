@@ -410,5 +410,12 @@ code, .mono { font-family: inherit; }
 .setup summary { cursor: pointer; color: var(--warn); }
 .setup p { margin: 6px 0 4px; }
 
+/* ---- quality ---- */
+.weakness { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+.weakness + .weakness { border-top: 1px solid var(--line); }
+.weakness > div { flex: 1; }
+.weakness p { margin: 0 0 2px; }
+.pill.stale { background: #2a2418; color: var(--warn); }
+
 .grid.sources { margin: 8px 0; }
 .grid.sources td:first-child { color: var(--text); }

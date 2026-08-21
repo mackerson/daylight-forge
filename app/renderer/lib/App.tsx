@@ -4,6 +4,7 @@ import { Findings } from './panels/Findings.tsx';
 import { Launch } from './panels/Launch.tsx';
 import { Invariants } from './panels/Invariants.tsx';
 import { Overview } from './panels/Overview.tsx';
+import { Quality } from './panels/Quality.tsx';
 import { Arbitrate } from './panels/Arbitrate.tsx';
 import { Scrubber } from './panels/Scrubber.tsx';
 import { emitEvent } from './replay.ts';
@@ -11,10 +12,13 @@ import { Review } from './panels/Review.tsx';
 import { Scene } from './panels/Scene.tsx';
 import type { Belief, Job, LoadPayload, QueryPayload, VdsEvent } from './types.ts';
 
-type Tab = 'overview' | 'findings' | 'review' | 'agents' | 'invariants';
+type Tab = 'overview' | 'quality' | 'findings' | 'review' | 'agents' | 'invariants';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'overview', label: 'Map' },
+  // Second, because "can I believe this?" is the question you have before any of the
+  // findings below it mean anything.
+  { id: 'quality', label: 'Quality' },
   { id: 'findings', label: 'Findings' },
   { id: 'review', label: 'Review' },
   { id: 'agents', label: 'Agents' },
@@ -339,6 +343,7 @@ export function App() {
             <aside className="info" style={{ width: infoWidth }}>
               {!mapped && <Empty hasRepo={!!data?.repo} />}
               {mapped && tab === 'overview' && <Overview data={data!} query={query} />}
+              {mapped && tab === 'quality' && <Quality active={tab === 'quality'} />}
               {mapped && tab === 'findings' && <Findings data={data!} query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'review' && <Review query={query} onRefresh={refresh} onArbitrate={setArbitrating} />}
               {mapped && tab === 'agents' && (

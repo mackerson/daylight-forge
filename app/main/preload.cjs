@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('vds', {
   setDir: () => invoke('vds:set-dir'),
 
   adapters: (opts) => invoke('vds:adapters', opts),
+  quality: () => invoke('vds:quality'),
 
   map: () => invoke('vds:map'),
   refocus: () => invoke('vds:refocus'),
