@@ -507,10 +507,14 @@ function createWindow() {
            * may be late. Assert against this.
            */
           if (process.env.VDS_SHOT_ASSERT) {
-            const text = await win.webContents.executeJavaScript(
-              'document.body.innerText.replace(/\\s+/g, " ").slice(0, 600)',
-            );
-            console.log(`DOM: ${text}`);
+            // "1" dumps the page's text. Anything else is evaluated as an expression, so a
+            // layout question — how wide did this actually end up — can be answered against
+            // the live DOM instead of by squinting at a PNG that may be a frame behind.
+            const expr = process.env.VDS_SHOT_ASSERT === '1'
+              ? 'document.body.innerText.replace(/\\s+/g, " ").slice(0, 600)'
+              : process.env.VDS_SHOT_ASSERT;
+            const out = await win.webContents.executeJavaScript(expr);
+            console.log(`DOM: ${typeof out === 'string' ? out : JSON.stringify(out)}`);
           }
           fs.writeFileSync(process.env.VDS_SHOT, (await win.webContents.capturePage()).toPNG());
           console.log(`wrote ${process.env.VDS_SHOT}`);
