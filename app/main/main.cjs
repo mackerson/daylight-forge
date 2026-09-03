@@ -2,7 +2,10 @@ const { app, BrowserWindow, Notification, ipcMain, protocol, net, dialog, shell 
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { sameRepo, repoOfDir, dirForRepo, ownershipConflict } = require('./session.cjs');
+const {
+  sameRepo, repoOfDir, dirForRepo, ownershipConflict,
+  readJsonIn, readJsonRaw, forgetCachedJson,
+} = require('./session.cjs');
 
 /**
  * Electron main — the control plane.
@@ -100,14 +103,15 @@ const send = (channel, payload) => {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 };
 
-function readJson(name, fallback) {
-  const p = path.join(state.dir, name);
-  if (!fs.existsSync(p)) return fallback;
-  try {
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch (err) {
-    return fallback;
-  }
+const readJson = (name, fallback) => readJsonIn(state.dir, name, fallback);
+
+/** Everything keyed to the output directory, dropped when the output directory changes. */
+function resetDirCaches() {
+  forgetCachedJson();
+  symbolIndex = { mtime: 0, byFile: null };
+  // The registration hints in here are read out of `mcp.<tool>.json` in the output
+  // directory, so they belong to that directory and not to the machine.
+  adapterCache = null;
 }
 
 /**
@@ -132,7 +136,7 @@ function readJson(name, fallback) {
  */
 function adoptRepoFromDir() {
   if (state.repo) return null;
-  const root = readJson('view.json', null)?.root ?? readJson('graph.json', null)?.root;
+  const root = readJson('view.json', null)?.root ?? readJsonRaw(state.dir, 'graph.json', null)?.root;
   if (!root) return null;
   try {
     if (!fs.statSync(root).isDirectory()) return { missingRepo: root };
@@ -664,7 +668,7 @@ ipcMain.handle('vds:load', () => {
   if (!view) {
     // An output directory written before view.json existed. Slow, but correct, and it only
     // happens once because the next map writes one.
-    const graph = readJson('graph.json', null);
+    const graph = readJsonRaw(state.dir, 'graph.json', null);
     graphStats = graph?.stats ?? null;
     const acc = new Map();
     const fileOf = (id) => (id.includes('#') ? id.slice(0, id.indexOf('#')) : id);
@@ -813,6 +817,7 @@ ipcMain.handle('vds:pick-repo', async () => {
   if (next !== state.dir) {
     state.dir = next;
     fs.mkdirSync(state.dir, { recursive: true });
+    resetDirCaches();
     startTail();
   }
   return state;
@@ -845,6 +850,7 @@ ipcMain.handle('vds:set-dir', async () => {
   }
 
   state.dir = picked;
+  resetDirCaches();
   unclaimedDir = null;
   // An output directory belongs to one repository, so pointing at a new one may tell us which
   // repository that is — and if the app had none, that is the answer.

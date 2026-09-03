@@ -18,7 +18,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaimStore } from '../store/claims.ts';
-import { dirForRepo, ownershipConflict, repoOfDir, sameRepo } from '../../app/main/session.cjs';
+import {
+  dirForRepo, forgetCachedJson, ownershipConflict, readJsonIn, readJsonRaw, repoOfDir, sameRepo,
+} from '../../app/main/session.cjs';
 import { harness } from './harness.ts';
 
 const { check, done } = harness();
@@ -288,6 +290,59 @@ console.log('\nevery command that writes is guarded, not just map');
 
   const ownFocus = run(['focus', repoA, '--out', out, '--top', '0']);
   check('the repo that owns the directory still runs', ownFocus.code === 0, ownFocus.out.slice(-300));
+}
+
+/**
+ * `vds:load` reads five files out of the output directory and is called on mount, on every
+ * action, on every finished job and on every derive — which fires whenever `claims.db` moves.
+ * A running swarm had the process that draws the window re-parsing all of them twice a
+ * second. Cached by mtime, which only helps if a rewritten file is still re-read: serving the
+ * previous parse would show the previous map, which is the bug next door.
+ */
+console.log('\nthe shell re-reads the output directory when it changes, and not otherwise');
+{
+  const dir = path.join(tmp, 'cache-dir');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'findings.json');
+  // Two writes inside one millisecond are indistinguishable by mtime, and the point here is
+  // the behaviour on either side of a change, not the resolution of the clock.
+  let stamp = Date.now();
+  const write = (body: string) => {
+    fs.writeFileSync(file, body);
+    stamp += 5000;
+    fs.utimesSync(file, new Date(stamp), new Date(stamp));
+  };
+  type Findings = { families?: string[] } | null;
+
+  check('a file that is not there gives the fallback',
+    readJsonIn(dir, 'absent.json', 'none') === 'none');
+
+  write(JSON.stringify({ families: ['first'] }));
+  const first = readJsonIn<Findings>(dir, 'findings.json', null);
+  check('a file that is there parses', first?.families?.[0] === 'first');
+  check('and unchanged bytes come back without a second parse',
+    readJsonIn<Findings>(dir, 'findings.json', null) === first);
+
+  write(JSON.stringify({ families: ['second'] }));
+  check('a rewritten file is re-read, so a remap is not hidden behind the cache',
+    readJsonIn<Findings>(dir, 'findings.json', null)?.families?.[0] === 'second');
+
+  const second = readJsonIn<Findings>(dir, 'findings.json', null);
+  forgetCachedJson();
+  check('and forgetting the directory drops what was held for it',
+    readJsonIn<Findings>(dir, 'findings.json', null) !== second);
+
+  write('{ not json');
+  check('an unparseable file gives the fallback rather than throwing',
+    readJsonIn(dir, 'findings.json', 'fallback') === 'fallback');
+
+  // graph.json is hundreds of megabytes; holding it resident would trade one problem for
+  // a worse one, so that read is deliberately not cached.
+  fs.writeFileSync(path.join(dir, 'graph.json'), JSON.stringify({ root: '/somewhere' }));
+  check('the uncached read hands back a fresh parse every time',
+    readJsonRaw(dir, 'graph.json') !== readJsonRaw(dir, 'graph.json'));
+  check('and still reads what is there',
+    readJsonRaw<{ root?: string }>(dir, 'graph.json', {})?.root === '/somewhere');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

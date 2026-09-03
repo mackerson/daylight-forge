@@ -3,13 +3,65 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 
 /**
- * Which repository an output directory belongs to, and where a repository's output goes.
+ * What the Electron shell reads out of an output directory: which repository it belongs to,
+ * where a repository's output goes, and the cached JSON in between.
  *
  * Lifted out of main.cjs so these rules can be tested. An output directory belongs to one
  * repository — `claims.db` in it addresses files by repo-relative path with no repo in the
  * subject — and until now the shell's half of that invariant was asserted only indirectly,
  * through the CLI contract it reads. The shell's half is where it was actually broken.
  */
+
+/**
+ * JSON out of an output directory, re-parsed only when the file changes.
+ *
+ * `vds:load` reads five of these, and it is called on mount, on every action, on every
+ * finished job and on every derive — and derive fires whenever `claims.db` moves, so a
+ * running swarm had the process that draws the window re-parsing the whole output directory
+ * every couple of seconds to hand back bytes it had already seen. Keyed by mtime, which is
+ * the same fix already made for `symbols.json` and for the `graph.json`→`view.json` split.
+ */
+const cache = new Map();
+
+function readJsonIn(dir, name, fallback = null) {
+  const file = path.join(dir, name);
+  let mtime;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+  } catch {
+    cache.delete(file);
+    return fallback;
+  }
+  const hit = cache.get(file);
+  if (hit && hit.mtime === mtime) return hit.value;
+  let value = fallback;
+  try {
+    value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    // Cached as the fallback anyway: a file we cannot parse does not become parseable by
+    // being read again a second later, and some of these are hundreds of megabytes.
+  }
+  cache.set(file, { mtime, value });
+  return value;
+}
+
+/**
+ * The same, uncached, for `graph.json` — the exhaustive record, 322MB on a ten-thousand-file
+ * repo. Holding that resident to save a read nobody makes twice trades one problem for a
+ * worse one.
+ */
+function readJsonRaw(dir, name, fallback = null) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+/** Drop everything read out of a directory; the shell calls this when the directory moves. */
+function forgetCachedJson() {
+  cache.clear();
+}
 
 /** Paths compare resolved: `~/api` and `~/api/` are one repository, not two. */
 function sameRepo(a, b) {
@@ -23,15 +75,10 @@ function sameRepo(a, b) {
  * hundreds on a large repo and must not be parsed to answer a question this small.
  */
 function repoOfDir(dir) {
-  for (const name of ['view.json', 'graph.json']) {
-    try {
-      const raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
-      if (raw && typeof raw.root === 'string') return raw.root;
-    } catch {
-      // Absent or unreadable is not evidence of ownership in either direction.
-    }
-  }
-  return null;
+  const view = readJsonIn(dir, 'view.json');
+  if (view && typeof view.root === 'string') return view.root;
+  const graph = readJsonRaw(dir, 'graph.json');
+  return graph && typeof graph.root === 'string' ? graph.root : null;
 }
 
 /**
@@ -75,4 +122,7 @@ function ownershipConflict(repo, dir) {
   return { dir, holds, repo };
 }
 
-module.exports = { sameRepo, repoOfDir, derivedDirFor, dirForRepo, ownershipConflict };
+module.exports = {
+  sameRepo, repoOfDir, derivedDirFor, dirForRepo, ownershipConflict,
+  readJsonIn, readJsonRaw, forgetCachedJson,
+};
