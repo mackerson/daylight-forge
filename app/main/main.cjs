@@ -539,6 +539,7 @@ ipcMain.handle('vds:state', () => ({
   ...state,
   hasGraph: fs.existsSync(path.join(state.dir, 'graph.json')),
   missingRepo,
+  watching: !!watcher,
 }));
 
 /**
@@ -703,6 +704,15 @@ ipcMain.handle('vds:load', () => {
     // Why the actions are disabled, when they are. A dead button with no reason is the bug
     // this replaced; a dead button that says the repo has moved is a different thing.
     missingRepo,
+    /**
+     * Whether a watcher is actually running.
+     *
+     * The renderer used to hold this by itself, set only from what `vds:watch` returned — so
+     * choosing a new repo, which stops the watcher here, left the button reading "watching"
+     * and needing two presses to start again. The process that owns the watcher is the one
+     * that can answer.
+     */
+    watching: !!watcher,
   };
 });
 

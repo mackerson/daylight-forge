@@ -119,6 +119,8 @@ export interface LoadPayload {
   invariants: { results: InvariantResult[] } | null;
   defended: string[];
   graphStats: Record<string, number> | null;
+  /** Whether a file watcher is running. Owned by main, which is what can stop one. */
+  watching?: boolean;
 }
 
 export interface QueryPayload {
@@ -146,6 +148,7 @@ declare global {
     vds: {
       state(): Promise<{
         repo: string | null; dir: string; hasGraph: boolean; missingRepo?: string | null;
+        watching?: boolean;
       }>;
       load(): Promise<LoadPayload>;
       query(): Promise<QueryPayload>;

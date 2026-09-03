@@ -75,7 +75,6 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [replaying, setReplaying] = useState(false);
-  const [watchingFiles, setWatchingFiles] = useState(false);
 
   // The inspector is sized to taste and persisted, because re-dragging it every launch
   // would be its own annoyance.
@@ -94,17 +93,38 @@ export function App() {
   // making you read a log to find out what happened.
   const statsRef = useRef<QueryPayload['stats'] | null>(null);
 
-  const refresh = useCallback(async () => {
+  /**
+   * Refresh fires from mount, from every action, from every finished job and from every
+   * derive — and `vds:query` shells out to the CLI, so two are routinely in flight at once.
+   * Without a generation the slower earlier answer lands last and repaints stale state; across
+   * a repo switch that is the previous repo's beliefs under the new repo's name.
+   */
+  const refreshSeq = useRef(0);
+
+  /**
+   * Returns what it pulled. `applied` is false when a later refresh overtook this one and
+   * has already painted a newer answer — the caller still gets its numbers, because a job
+   * that finished has something to report either way.
+   */
+  const refresh = useCallback(async (): Promise<
+    { data: LoadPayload; query: QueryPayload; applied: boolean } | null
+  > => {
+    const gen = ++refreshSeq.current;
     try {
       const [d, q] = await Promise.all([window.vds.load(), window.vds.query()]);
-      setData(d);
-      setQuery(q);
+      const applied = gen === refreshSeq.current;
+      if (applied) {
+        setData(d);
+        setQuery(q);
+        if (q.events?.length) setEvents(q.events);
+        setError(q.error ?? null);
+      }
       if (!statsRef.current) statsRef.current = q.stats;
-      if (q.events?.length) setEvents(q.events);
-      setError(q.error ?? null);
+      return { data: d, query: q, applied };
     } catch (err) {
       console.error('refresh failed', err);
-      setError(String(err));
+      if (gen === refreshSeq.current) setError(String(err));
+      return null;
     }
   }, []);
 
@@ -152,17 +172,15 @@ export function App() {
       // A finished job usually changed the store, so pull fresh state and say what moved.
       void (async () => {
         const before = statsRef.current;
-        const q = await window.vds.query();
-        setQuery(q);
-        setData(await window.vds.load());
+        const q = (await refresh())?.query;
         const parts: string[] = [];
-        if (before) {
+        if (before && q) {
           const d = (k: keyof typeof q.stats) => q.stats[k] - before[k];
           for (const k of ['claims', 'clusters', 'elisions', 'defences'] as const) {
             if (d(k) > 0) parts.push(`+${d(k)} ${k}`);
           }
         }
-        statsRef.current = q.stats;
+        if (q) statsRef.current = q.stats;
         setToast(
           j.status === 'failed'
             ? `${j.label} failed (exit ${j.code})`
@@ -189,6 +207,8 @@ export function App() {
 
   const running = jobs.filter((j) => j.status === 'running');
   const mapped = !!data?.stack;
+  // Main owns the watcher and stops it when the repo changes, so main is what reports it.
+  const watchingFiles = !!data?.watching;
   const beliefs = query?.beliefs ?? [];
   const contradictions = query?.contradictions ?? [];
 
@@ -339,7 +359,7 @@ export function App() {
           disabled={!data?.repo}
           style={watchingFiles ? { color: 'var(--ok)' } : undefined}
           title="re-map automatically when the code changes; only changed files re-parse"
-          onClick={async () => setWatchingFiles((await window.vds.watch(!watchingFiles)).watching)}
+          onClick={() => act(async () => window.vds.watch(!watchingFiles))}
         >
           {watchingFiles ? 'watching' : 'watch'}
         </button>
