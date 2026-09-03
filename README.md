@@ -70,6 +70,24 @@ reading the store afterwards.
 storage-only", "nothing under `scene/` calls a randomness source" — written as prose plus a
 query, living in the repo they constrain. `vds check` exits non-zero when one goes red.
 
+**An app shaped like the loop.** The map is the window, not a tab. Above it sits the loop —
+**map → detect → explore → beliefs → plan** — and each stage carries its own live state, so
+"what needs me" is answered without clicking anything. On the left, one lens at a time decides
+what question the map is answering: how it is organised, what we believe and how firmly, what
+the static tools flagged, which source said what, what has moved, what nobody has looked at.
+Filters stack inside the active lens and *remove* nodes rather than dimming them, so the count
+beside the map is a count of what is drawn.
+
+The screen that matters is the one where sources disagree. Two agents answering the same
+question with the same five keys used to print as two walls of near-identical JSON under a red
+banner; now the keys are the rows, anything they assert identically collapses to one line
+saying so, and only a real difference gets space. Every cited line can be read in place.
+
+Nothing in the app writes to your repository. The plan it produces is ordered work, each step
+traced to the belief or invariant that justifies it, and steps whose justification is still
+inferred or still contested are shown *blocked* rather than quietly included. You apply it
+yourself.
+
 ---
 
 ## Why you can believe the output
@@ -176,7 +194,7 @@ the integrated chip and says nothing about it — 93fps against 143 on the same 
 frame meter (the `fps` chip) names whichever GPU actually rendered.
 
 Other useful bits: `pnpm package` builds a portable directory that runs without a checkout;
-`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 540 assertions across 23
+`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 653 assertions across 27
 files.
 
 ---
@@ -188,6 +206,7 @@ engine/     headless. parse -> detect -> focus -> claims. no DOM, no Electron.
   extract/    TypeScript compiler API behind a Parser interface, content-addressed cache
   detect/     D1-D6, dead code, cycles, limbs, god nodes, communities
   focus/      the L0 -> L3 stack: every elision recorded and reversible
+  plan/       the declared target architecture, and the remediation plan derived from beliefs
   store/      SQLite claim store — provenance, evidence, contradiction
   mcp/        the boundary every agent writes through
   swarm/      frontier scheduling, leasing, budget ceilings
@@ -244,7 +263,7 @@ The working list: [TODO.md](TODO.md).
 | `pnpm bench` | measure frame time headlessly and print one line |
 | `pnpm package` | build a portable directory that runs without a checkout |
 | `pnpm calibrate <spec>` | sweep similarity thresholds against labelled fixture points |
-| `pnpm test:all` | 540 assertions across 23 files |
+| `pnpm test:all` | 653 assertions across 27 files |
 | `pnpm typecheck` | `tsc --noEmit` over engine and renderer |
 
 | Flag | Default | Meaning |
@@ -258,6 +277,7 @@ The working list: [TODO.md](TODO.md).
 | `--model <m>` | — | default model for roster entries that do not name one |
 | `--batch <n>` | `5` | frontier questions per agent |
 | `--spread` | off | split the frontier across the roster rather than asking everyone the same questions. Covers more; corroborates nothing. |
+| `--only <subjects>` | — | restrict the run to these subjects, comma separated. Ranking still applies inside them, so it narrows the pool rather than jumping the queue. |
 | `--concurrency <n>` | `1` | how many agents run at once |
 | `--dry-run` | off | show what would be asked; spawn nothing |
 | `--depth <n>` | `3` | grouping depth for the Mermaid render |
