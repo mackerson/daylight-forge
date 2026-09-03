@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Channel } from '../panels/Scene.tsx';
-import { LENSES, availableFilters, filterKey, filterLabel } from './lens.ts';
+import { LENSES, availableFilters, filterKey, filterLabel, filterSetName } from './lens.ts';
 import type { Filter, Filtered } from './lens.ts';
 import type { FocusStack } from '../types.ts';
 
@@ -12,14 +12,15 @@ import type { FocusStack } from '../types.ts';
  * each name because the name alone is not enough to choose by: "Belief" and "Change" are
  * both plausible until you read what they are for.
  */
-export function LensRail({ lens, onLens, counts, saved, onSaved }: {
+export function LensRail({ lens, onLens, counts, saved, onApply, onForget }: {
   lens: Channel;
   onLens: (c: Channel) => void;
   /** Badge counts, where a lens has something countable to show. */
   counts: Partial<Record<Channel, number>>;
   /** Filter sets worth keeping. Stored as filters, applied inside whatever lens is on. */
   saved: Array<{ name: string; filters: Filter[] }>;
-  onSaved: (filters: Filter[]) => void;
+  onApply: (filters: Filter[]) => void;
+  onForget: (name: string) => void;
 }) {
   return (
     <nav className="lens">
@@ -44,9 +45,14 @@ export function LensRail({ lens, onLens, counts, saved, onSaved }: {
           <div className="lens-sep" />
           <div className="rail-label">saved</div>
           {saved.map((s) => (
-            <button key={s.name} className="lens-opt" onClick={() => onSaved(s.filters)}>
-              <div className="lens-name">{s.name}</div>
-            </button>
+            <div className="lens-opt saved" key={s.name}>
+              <button className="lens-name" onClick={() => onApply(s.filters)}>
+                {s.name}
+              </button>
+              <button className="forget" onClick={() => onForget(s.name)} title="forget this set">
+                ×
+              </button>
+            </div>
           ))}
         </>
       )}
@@ -63,13 +69,18 @@ export function LensRail({ lens, onLens, counts, saved, onSaved }: {
  * these decide which nodes are in shot. The count on the right is load-bearing — it is the
  * difference between "the map is small" and "you are looking at a slice of it".
  */
-export function FilterBar({ filters, onFilters, stack, flagged, result, onExplore }: {
+export function FilterBar({
+  filters, onFilters, stack, flagged, result, onExplore, saved, onSave,
+}: {
   filters: Filter[];
   onFilters: (f: Filter[]) => void;
   stack: FocusStack | null;
   flagged: ReadonlySet<string>;
   result: Filtered;
   onExplore: (files: string[]) => void;
+  /** Whether this exact set is already in the rail. */
+  saved: boolean;
+  onSave: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const active = new Set(filters.map(filterKey));
@@ -95,6 +106,17 @@ export function FilterBar({ filters, onFilters, stack, flagged, result, onExplor
       <span className="filter add" onClick={() => setOpen(!open)} role="button" tabIndex={0}>
         + filter
       </span>
+
+      {filters.length > 0 && (
+        <button
+          className="filter add"
+          disabled={saved}
+          onClick={onSave}
+          title={saved ? 'already in the rail' : `keep this view as "${filterSetName(filters)}"`}
+        >
+          {saved ? 'saved' : 'save this view'}
+        </button>
+      )}
 
       {open && offer.length > 0 && (
         <select

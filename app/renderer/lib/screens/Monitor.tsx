@@ -233,6 +233,9 @@ export function Monitor({
               }} />
               <div>
                 <div className="t">{l.belief ? summarise(l.belief) : l.subject}</div>
+                {/* Which file it was about. Two rows reading "god_verdict: no" are two
+                    different findings, and without this they are indistinguishable. */}
+                <div className="d">{l.subject}</div>
                 <div className="d">
                   {st ? st.name : 'landing'}
                   {l.belief ? ` · ${[...new Set(l.belief.claims.map((c) => c.source.tool ?? c.source.kind))].join(' + ')}` : ''}
@@ -248,12 +251,16 @@ export function Monitor({
           stream
           {running.length > 0 && <span className="live" style={{ marginLeft: 8 }}>live</span>}
         </div>
-        <div className="stream" ref={feedRef} style={{ maxHeight: 220, overflow: 'auto' }}>
+        <div className="stream" ref={feedRef}>
           {!shown.length && <p className="dim">No tool calls yet.</p>}
-          {shown.slice(-40).map((e, i) => (
+          {shown.slice(-40).map((e, i, list) => {
+            const who = `${e.agent ?? '?'}${e.model ? `/${e.model}` : ''}`;
+            const prev = list[i - 1];
+            const repeat = prev && `${prev.agent ?? '?'}${prev.model ? `/${prev.model}` : ''}` === who;
+            return (
             <div key={i} className={e.ok === false ? 'stream-row bad' : 'stream-row'}>
               <span className="t">{new Date(e.at).toLocaleTimeString(undefined, { hour12: false }).slice(3)}</span>
-              <span className="who">{e.agent}{e.model ? `/${e.model}` : ''}</span>
+              <span className="who" title={who}>{repeat ? '' : who}</span>
               <span className="what">
                 {LABEL[e.tool] ?? e.tool}
                 {e.subject ? ` ${e.subject}` : e.node ? ` ${e.node}` : ''}
@@ -261,7 +268,8 @@ export function Monitor({
                 {e.error ? ` — ${e.error}` : ''}
               </span>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

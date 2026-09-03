@@ -16,12 +16,15 @@ import type { DuplicationReport } from './duplication.ts';
 import type { StructureReport } from './structure-types.ts';
 
 export type CandidateKind =
-  | 'duplication' | 'unreachable' | 'overlap' | 'divergence' | 'tangle' | 'hub';
+  | 'duplication' | 'unreachable' | 'unused-export' | 'overlap' | 'divergence' | 'tangle' | 'hub';
 
 /** The verdict predicate each kind expects back. Agents are told these by name. */
 export const PREDICATE: Record<CandidateKind, string> = {
   duplication: 'duplication_verdict',
   unreachable: 'liveness_verdict',
+  // The same predicate: the question "is this reached" is the same question whether it is
+  // asked about a file or about one export. Only the framing and the blast radius differ.
+  'unused-export': 'liveness_verdict',
   overlap: 'limb_verdict',
   divergence: 'divergence_verdict',
   tangle: 'cycle_verdict',
@@ -67,6 +70,14 @@ export interface Candidate {
   evidence: string[];
   /** Files implicated, for lighting them up on the map. */
   files: string[];
+  /**
+   * Whether the tool pointed at the file or at something inside it.
+   *
+   * Load-bearing for the map. A file nothing imports and a file with one unused export are
+   * not the same finding, and colouring both identically is what made the candidates lens
+   * light up two thirds of this repo — at which point the lens answers nothing.
+   */
+  scope: 'file' | 'symbol';
   /** How much of this an agent could plausibly settle. The list sorts by it. */
   weight: number;
 }
@@ -101,38 +112,82 @@ export function candidates(
         : `${fam.detectors.join('+')}`,
       evidence: [...fam.evidence, `members: ${fam.members.join(', ')}`],
       files,
+      scope: 'file',
       weight: fam.members.length * (fam.topScore ?? 0.5),
     });
   }
 
-  // Dead files, one row per directory.
-  const byDir = new Map<string, StructureReport['dead']>();
-  for (const d of structure?.dead ?? []) {
-    const dir = dirOf(fileOf(d.id));
-    const list = byDir.get(dir) ?? [];
-    list.push(d);
-    byDir.set(dir, list);
-  }
-  for (const [dir, dead] of byDir) {
-    const tier = dead.some((d) => d.tier === 'high') ? 'high'
+  /**
+   * Dead things, grouped by directory — but never mixing the two kinds of dead.
+   *
+   * `structure.dead` reports files nothing imports and exported symbols nothing imports in
+   * one list, distinguished only by `kind`. On this repo that is 1 file and 174 symbols, and
+   * grouping them together produced a row reading "nothing imports these 30 · 9 files, 0
+   * importers" about a directory whose files are all imported — the symbols were unused, not
+   * the files. A tool that exists to stop people over-claiming cannot ship that sentence.
+   *
+   * They are also different questions. A file nothing reaches is probably deletable. An
+   * export nothing reaches is often deliberate — it is API surface, or a type consumed
+   * structurally — so it asks whether the export should exist, not whether the file should.
+   */
+  const deadFiles = (structure?.dead ?? []).filter((d) => d.kind === 'file');
+  const deadSymbols = (structure?.dead ?? []).filter((d) => d.kind !== 'file');
+
+  const group = (list: StructureReport['dead']) => {
+    const byDir = new Map<string, StructureReport['dead']>();
+    for (const d of list) {
+      const dir = dirOf(fileOf(d.id));
+      (byDir.get(dir) ?? byDir.set(dir, []).get(dir)!).push(d);
+    }
+    return byDir;
+  };
+  const worstTier = (dead: StructureReport['dead']) =>
+    dead.some((d) => d.tier === 'high') ? 'high'
       : dead.some((d) => d.tier === 'medium') ? 'medium' : 'low';
+  // The caveats are the point: a file "unreachable" because the pass cannot see a dynamic
+  // import is a different claim from one nothing mentions anywhere. Keep them distinct.
+  const whysOf = (dead: StructureReport['dead']) => [...new Set(dead.map((d) => d.why))];
+
+  for (const [dir, dead] of group(deadFiles)) {
     const files = [...new Set(dead.map((d) => fileOf(d.id)))];
-    // The caveats are the point: a file "unreachable" because the pass cannot see a dynamic
-    // import is a different claim from one nothing mentions anywhere. Keep them distinct.
-    const whys = [...new Set(dead.map((d) => d.why))];
     out.push({
       id: `unreachable:${dir}`,
       kind: 'unreachable',
       subjects: dead.map((d) => d.id),
       predicate: PREDICATE.unreachable,
+      where: files.length === 1 ? files[0] : `${dir}/*`,
+      question: files.length === 1
+        ? 'Nothing imports this file. Dead, or reached in a way the static pass cannot see?'
+        : `Nothing imports these ${files.length} files. Dead, or an entry point the static pass cannot see?`,
+      measure: `${files.length} file${files.length === 1 ? '' : 's'}, 0 importers`,
+      evidence: whysOf(dead),
+      files,
+      scope: 'file',
+      weight: dead.length * (TIER_WEIGHT[worstTier(dead)] ?? 0.25),
+    });
+  }
+
+  for (const [dir, dead] of group(deadSymbols)) {
+    const files = [...new Set(dead.map((d) => fileOf(d.id)))];
+    out.push({
+      id: `unused-export:${dir}`,
+      kind: 'unused-export',
+      subjects: dead.map((d) => d.id),
+      predicate: PREDICATE['unused-export'],
       where: `${dir}/*`,
       question: dead.length === 1
-        ? 'Nothing imports this. Dead, or reached in a way the static pass cannot see?'
-        : `Nothing imports these ${dead.length}. Dead, or an entry point the static pass cannot see?`,
-      measure: `${files.length} file${files.length === 1 ? '' : 's'}, 0 importers`,
-      evidence: whys,
+        ? 'One export nothing imports. Dead, or surface someone is meant to use?'
+        : `${dead.length} exports nothing imports. Dead, or surface someone is meant to use?`,
+      measure: `${dead.length} export${dead.length === 1 ? '' : 's'} across ${files.length} file${files.length === 1 ? '' : 's'}`,
+      evidence: [
+        ...whysOf(dead),
+        `the files themselves are imported — this is about what they expose: ${dead.slice(0, 4).map((d) => d.id.split('#')[1] ?? d.id).join(', ')}`,
+      ],
       files,
-      weight: dead.length * (TIER_WEIGHT[tier] ?? 0.25),
+      // Symbol-scoped, so it does not colour the map: two thirds of a repo lit amber because
+      // its type modules export types is a lens that has stopped distinguishing anything.
+      scope: 'symbol',
+      weight: dead.length * (TIER_WEIGHT[worstTier(dead)] ?? 0.25) * 0.4,
     });
   }
 
@@ -150,6 +205,7 @@ export function candidates(
         'a utils or types directory legitimately leaks — that is what makes this a question',
       ],
       files: [],
+      scope: 'file',
       weight: limb.leakage * limb.files,
     });
   }
@@ -165,6 +221,7 @@ export function candidates(
       measure: `${Math.round(d.share * 100)}% of neighbours in ${d.pull}`,
       evidence: [`lives in ${d.home}`, `${d.neighbours} neighbours, most of them elsewhere`],
       files: [d.file],
+      scope: 'file',
       weight: d.share * d.neighbours,
     });
   }
@@ -180,6 +237,7 @@ export function candidates(
       measure: `${cyc.internalEdges} edges inside the cycle`,
       evidence: [cyc.members.join(', ')],
       files: cyc.members,
+      scope: 'file',
       weight: cyc.internalEdges,
     });
   }
@@ -198,6 +256,7 @@ export function candidates(
         god.pain ? `fan-in x churn = ${god.pain}, which is what hurts day to day` : 'no git history to weigh churn',
       ],
       files: [god.id],
+      scope: 'file',
       weight: (god.pain ?? god.fanIn) / 20,
     });
   }
@@ -205,6 +264,12 @@ export function candidates(
   return out.sort((a, b) => b.weight - a.weight);
 }
 
-/** Every file any candidate points at — the map's "what did the tools flag" colouring. */
+/**
+ * Every file a candidate points *at* — the map's "what did the tools flag" colouring.
+ *
+ * Symbol-scoped candidates are excluded on purpose. They are real findings and they belong
+ * in the list, but a file is not suspicious because one of its exports is unused, and
+ * colouring it as though it were is how the lens came to light two thirds of this repo.
+ */
 export const flaggedFiles = (list: Candidate[]): Set<string> =>
-  new Set(list.flatMap((c) => c.files));
+  new Set(list.filter((c) => c.scope === 'file').flatMap((c) => c.files));

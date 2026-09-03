@@ -7,7 +7,7 @@ import type { Channel, SceneNode } from './panels/Scene.tsx';
 import { StageStrip, TitleBar } from './shell/StageStrip.tsx';
 import type { Stage, StageState, View } from './shell/StageStrip.tsx';
 import { FilterBar, LensRail } from './shell/LensRail.tsx';
-import { applyFilters } from './shell/lens.ts';
+import { applyFilters, filterSetName } from './shell/lens.ts';
 import type { Filter } from './shell/lens.ts';
 import { Inspector } from './shell/Inspector.tsx';
 import { Detect } from './screens/Detect.tsx';
@@ -55,12 +55,37 @@ export function App() {
   const [view, setView] = useState<View>('map');
   const [lens, setLens] = useState<Channel>('structure');
   const [filters, setFilters] = useState<Filter[]>([]);
+  /**
+   * Filter sets worth keeping, named after what they narrow to.
+   *
+   * Auto-named on purpose: a dialog asking for a name is a dialog most people cancel, and
+   * "contested · engine" describes the view better than anything anyone would type.
+   */
+  const [saved, setSaved] = useState<Array<{ name: string; filters: Filter[] }>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('vds.savedFilters') ?? '[]');
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem('vds.savedFilters', JSON.stringify(saved));
+  }, [saved]);
   const [node, setNode] = useState<SceneNode | null>(null);
   const [openBelief, setOpenBelief] = useState<Belief | null>(null);
   const [pickedCandidates, setPickedCandidates] = useState<ReadonlySet<string>>(() => new Set());
   const [scope, setScope] = useState<string[]>([]);
   /** Explore is two screens: the work order, and the run it launched. */
   const [watching, setWatchingRun] = useState(false);
+  /**
+   * The ceiling the last launch was given.
+   *
+   * Held here rather than read back out of the launcher's saved shape, because the number the
+   * monitor has to meter against is the one *this* run was started with — editing the form
+   * mid-run must not move the line the run is being measured against.
+   */
+  const [ceiling, setCeiling] = useState(0);
 
   const [data, setData] = useState<LoadPayload | null>(null);
   const [query, setQuery] = useState<QueryPayload | null>(null);
@@ -354,6 +379,17 @@ export function App() {
         >
           {mapped ? 'remap' : 'map it'}
         </button>
+        {/* Re-derive the stack from the cached graph. Far cheaper than a remap, and the
+            thing you want after arbitrating: the map is stale with respect to your decision,
+            not with respect to the source. */}
+        <button
+          className="where"
+          disabled={!mapped || busy}
+          onClick={() => act(() => window.vds.refocus())}
+          title="rebuild the focus stack from the cached graph — no re-extraction, nothing spent"
+        >
+          rebuild
+        </button>
         <button
           className="where"
           disabled={!data?.repo}
@@ -415,8 +451,9 @@ export function App() {
             lens={lens}
             onLens={setLens}
             counts={{ candidates: candidates.length, belief: beliefs.length }}
-            saved={[]}
-            onSaved={setFilters}
+            saved={saved}
+            onApply={setFilters}
+            onForget={(name) => setSaved((s) => s.filter((x) => x.name !== name))}
           />
         )}
 
@@ -429,13 +466,22 @@ export function App() {
               flagged={flagged}
               result={filtered}
               onExplore={scopeRun}
+              saved={saved.some((s) => s.name === filterSetName(filters))}
+              onSave={() => {
+                const name = filterSetName(filters);
+                setSaved((s) => (s.some((x) => x.name === name) ? s : [...s, { name, filters }]));
+              }}
             />
           )}
 
           <div className={onMap ? 'stage-view scene' : 'stage-view'}>
-            {onMap && <Scene data={sceneData} channel={lens} onChannel={setLens} flagged={flagged} onSelect={setNode} />}
+            {onMap && mapped && (
+              <Scene data={sceneData} channel={lens} onChannel={setLens} flagged={flagged} onSelect={setNode} />
+            )}
 
-            {!mapped && view !== 'map' && <Empty hasRepo={!!data?.repo} />}
+            {/* One owner for the unmapped moment. The scene has an empty state of its own and
+                it used to print underneath this one. */}
+            {!mapped && <Empty hasRepo={!!data?.repo} />}
 
             {mapped && data && view === 'detect' && (
               <Detect
@@ -446,6 +492,7 @@ export function App() {
                 onSelected={setPickedCandidates}
                 onExplore={scopeRun}
                 onRefresh={refresh}
+                onOpenBelief={(b) => { setOpenBelief(b); setView('beliefs'); }}
               />
             )}
 
@@ -458,7 +505,10 @@ export function App() {
                 disabled={!data?.repo}
                 running={running.length}
                 onMonitor={() => setWatchingRun(true)}
-                onLaunch={(opts) => act(() => window.vds.agent(opts))}
+                onLaunch={(opts) => {
+                  setCeiling(opts.maxCost);
+                  return act(() => window.vds.agent(opts));
+                }}
               />
             )}
 
@@ -510,7 +560,6 @@ export function App() {
               />
             )}
 
-            {!mapped && view === 'map' && <Empty hasRepo={!!data?.repo} />}
           </div>
         </div>
 
@@ -535,7 +584,7 @@ export function App() {
                   onSelect={setSelectedJob}
                   leases={query?.leases ?? []}
                   beliefs={beliefs}
-                  ceiling={0}
+                  ceiling={ceiling}
                 />
               ) : (
                 <Inspector

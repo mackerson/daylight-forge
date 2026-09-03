@@ -35,6 +35,58 @@ const evKey = (e: Evidence) => `${e.file}:${e.line ?? ''}`;
 /** A side that said nothing about this field, as distinct from one that said "no". */
 const absent = (v: unknown): boolean => v === undefined || v === null || v === '';
 
+/**
+ * The cited lines, in the app.
+ *
+ * A claim's evidence is a list of file:line, and a list of file:line is not evidence you can
+ * weigh — it is a promise that evidence exists somewhere else. The screen this replaced
+ * inlined the source around every span, and losing that in the redesign meant checking a
+ * claim required leaving for an editor and coming back, which is exactly the friction that
+ * stops anyone checking. Collapsed by default, because the diff above is the reading order
+ * and this is what you open when you want to argue with it.
+ */
+function Snippet({ ev }: { ev: Evidence }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<{ lines?: string[]; start?: number; error?: string }>({});
+
+  useEffect(() => {
+    if (!open || state.lines || state.error || !ev.file) return;
+    let live = true;
+    void window.vds.snippet({ file: ev.file, line: ev.line, context: 3 }).then((r) => {
+      if (live) setState(r);
+    });
+    return () => { live = false; };
+  }, [open, ev.file, ev.line, state.lines, state.error]);
+
+  if (!open) {
+    return (
+      <button className="ev-open" onClick={() => setOpen(true)} title="read the cited lines here">
+        read it
+      </button>
+    );
+  }
+  return (
+    <div className="ev-snip">
+      <button className="ev-open" onClick={() => setOpen(false)}>hide</button>
+      {state.error && <div className="snip-err">{state.error}</div>}
+      {state.lines && (
+        <pre className="snip-code">
+          {state.lines.map((l, i) => {
+            const n = (state.start ?? 1) + i;
+            return (
+              <div key={n} className={n === ev.line ? 'snip-line hit' : 'snip-line'}>
+                <span className="snip-n">{n}</span>
+                {l || ' '}
+              </div>
+            );
+          })}
+        </pre>
+      )}
+      {!state.lines && !state.error && <div className="snip-err dim">reading…</div>}
+    </div>
+  );
+}
+
 /** Stable stringify, so key order in the JSON does not read as a disagreement. */
 function canon(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
@@ -382,13 +434,20 @@ export function BeliefDetail({
                 .map((s, i) => (s.has(k) ? i + 1 : 0))
                 .filter(Boolean);
               return (
-                <button key={k} onClick={() => window.vds.reveal({ file: e.file, line: e.line })}>
+                <div className="ev-line" key={k}>
                   <span className={shared.has(k) ? 'tag both' : 'tag'}>
                     {shared.has(k) ? 'BOTH' : `${owners.join('&')} ONLY`}
                   </span>
-                  <span className="where">{e.file}{e.line ? `:${e.line}` : ''}</span>
+                  <button
+                    className="where"
+                    onClick={() => window.vds.reveal({ file: e.file, line: e.line })}
+                    title="open it in your editor"
+                  >
+                    {e.file}{e.line ? `:${e.line}` : ''}
+                  </button>
                   {e.note && <span className="note">{e.note}</span>}
-                </button>
+                  <Snippet ev={e} />
+                </div>
               );
             })}
           </div>

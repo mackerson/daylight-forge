@@ -176,6 +176,17 @@ code, .mono, kbd { font-family: var(--mono); }
 .lens-opt .count {
   margin-left: auto; font: 400 10.5px var(--mono); color: var(--dim-2);
 }
+.lens-opt.saved { display: flex; align-items: center; gap: 8px; }
+.lens-opt.saved .lens-name {
+  flex: 1; min-width: 0; background: none; border: 0; padding: 0; cursor: pointer;
+  text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lens-opt.saved .forget {
+  background: none; border: 0; cursor: pointer; color: var(--dim-3);
+  font: 400 12px var(--mono); padding: 0 2px;
+}
+.lens-opt.saved .forget:hover { color: var(--bad); }
+.filter.add:disabled { cursor: default; color: var(--dim-3); border-style: solid; }
 .lens-sep { height: 1px; background: var(--line); margin: 12px 16px; }
 .lens-foot {
   margin-top: auto; padding: 14px 16px;
@@ -213,11 +224,14 @@ code, .mono, kbd { font-family: var(--mono); }
 .stage-view.scene { overflow: hidden; }
 
 .inspector {
-  width: 320px; flex: none; overflow: auto; min-height: 0;
+  width: 320px; flex: none; overflow-y: auto; overflow-x: hidden; min-height: 0;
   background: var(--chrome); border-left: 1px solid var(--line);
   padding: 18px 18px 22px;
   display: flex; flex-direction: column; gap: 14px;
 }
+/* Column flex items default to min-width:auto, which is how a single long file path ends up
+   deciding the width of the whole rail. */
+.inspector > * { min-width: 0; }
 .inspector .foot {
   margin-top: auto; padding-top: 14px;
   font: 400 10.5px/1.6 var(--mono); color: var(--faint);
@@ -438,7 +452,7 @@ code, .mono, kbd { font-family: var(--mono); }
 .lane-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .lane-head .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .lane-head .who { font: 500 11.5px var(--mono); color: var(--text-hi); }
-.lane-head .tally { font: 400 10.5px var(--mono); color: var(--dim-2); }
+.lane-head .tally { font: 400 10.5px var(--mono); color: var(--dim-2); overflow-wrap: anywhere; }
 .lane-head .now { margin-left: auto; font: 400 10.5px var(--mono); color: var(--dim); }
 .lane-bar { display: flex; gap: 3px; margin-top: 7px; }
 .lane-bar span { flex: 1; height: 4px; border-radius: 2px; background: var(--line-3); }
@@ -446,11 +460,24 @@ code, .mono, kbd { font-family: var(--mono); }
 .landing { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; }
 .landing + .landing { border-top: 1px solid var(--line); }
 .landing .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-top: 4px; }
-.landing .t { font: 400 11.5px/1.45 var(--sans); color: var(--text-2); }
+.landing > div { min-width: 0; }
+/* A claim's value can be a whole paragraph. This is a feed, not the detail screen. */
+.landing .t {
+  font: 400 11.5px/1.45 var(--sans); color: var(--text-2); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
 .landing .d { font: 400 10.5px var(--mono); color: var(--dim-2); margin-top: 2px; }
 
-.stream { display: flex; flex-direction: column; gap: 3px; font: 400 10.5px/1.55 var(--mono); }
-.stream-row { display: grid; grid-template-columns: 46px 74px 1fr; gap: 8px; }
+/* Scrolls on one axis only. `overflow: auto` gave it a horizontal bar as well, inside a rail
+   that already scrolls — three nested scroll regions in three hundred pixels. */
+.stream {
+  display: flex; flex-direction: column; gap: 3px;
+  font: 400 10.5px/1.55 var(--mono);
+  max-height: 240px; overflow-y: auto; overflow-x: hidden;
+}
+/* `minmax(0, 1fr)` rather than `1fr`: a track sized to its longest unbreakable subject id
+   widens the row, then the block, then the rail. */
+.stream-row { display: grid; grid-template-columns: 46px 72px minmax(0, 1fr); gap: 8px; }
 .stream-row .t { color: var(--faint); }
 .stream-row .who { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
 .stream-row .what { color: var(--dim); overflow-wrap: anywhere; }
@@ -538,11 +565,16 @@ code, .mono, kbd { font-family: var(--mono); }
 
 .diff-ev { border-color: var(--line-2); background: var(--band); }
 .diff-ev .lines { display: flex; flex-direction: column; gap: 5px; font: 400 11px/1.5 var(--mono); }
+.diff-ev .ev-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .diff-ev .lines button {
-  display: flex; gap: 8px; align-items: baseline; background: none; border: 0;
-  padding: 0; cursor: pointer; text-align: left; font: inherit;
+  background: none; border: 0; padding: 0; cursor: pointer; text-align: left; font: inherit;
 }
-.diff-ev .lines button:hover .where { text-decoration: underline; }
+.diff-ev .lines button.where:hover { text-decoration: underline; }
+.diff-ev .ev-open { color: var(--dim-3); font-size: 10px; }
+.diff-ev .ev-open:hover { color: var(--text-2); }
+.diff-ev .ev-snip { flex-basis: 100%; margin: 4px 0 8px; }
+.diff-ev .ev-snip .snip-code { border: 1px solid var(--line-2); border-radius: 6px; margin-top: 4px; }
+.diff-ev .snip-err { padding: 4px 0; font-size: 10.5px; }
 .diff-ev .tag { font-size: 9.5px; letter-spacing: .06em; flex: none; }
 .diff-ev .tag.both { color: var(--ok); }
 .diff-ev .where { color: var(--path); flex: none; }
@@ -648,7 +680,10 @@ code, .mono, kbd { font-family: var(--mono); }
 .log {
   width: 100%; max-height: 160px; overflow: auto; margin: 4px 0 8px;
   background: var(--chrome); border: 1px solid var(--line-2); border-radius: 6px;
-  padding: 8px; font: 400 10.5px/1.5 var(--mono); color: var(--dim-2); white-space: pre-wrap;
+  padding: 8px; font: 400 10.5px/1.5 var(--mono); color: var(--dim-2);
+  /* Agent stdout is one long JSON line more often than not, and `pre-wrap` alone will not
+     break a token that has no spaces in it. */
+  white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden;
 }
 .live {
   font: 400 10px var(--mono); color: var(--warn);
