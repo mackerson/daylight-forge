@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaimStore } from '../store/claims.ts';
+import { dirForRepo, ownershipConflict, repoOfDir, sameRepo } from '../../app/main/session.cjs';
 import { harness } from './harness.ts';
 
 const { check, done } = harness();
@@ -204,6 +205,89 @@ console.log('\nfingerprints say which repo they describe');
   const legacy = run(['map', repoA, '--out', out, '--top', '0']);
   check('an unattributable fingerprint file is ignored rather than guessed at',
     legacy.code === 0 && !/Followed/.test(legacy.out), legacy.out.slice(-200));
+}
+
+/**
+ * The shell's half of the same invariant.
+ *
+ * The Electron main process could not be reached from this suite, so its rules were asserted
+ * only through the CLI contract it reads — and the shell was where the invariant was actually
+ * broken. Choosing an output directory by hand used to latch one boolean, after which every
+ * repository picked inherited that directory: the mild half is that choosing a new repo
+ * changed nothing on screen, the severe half is that `agent` then wrote into a store
+ * belonging to a different codebase. Those rules now live in a module both sides can load.
+ */
+console.log('\nthe shell pairs a repo with its own output directory');
+{
+  const base = path.join(tmp, 'maps');
+  const dirA = path.join(tmp, 'shell-a');
+  run(['map', repoA, '--out', dirA, '--top', '0']);
+
+  check('a directory holding a map names its repository', repoOfDir(dirA) === repoA,
+    String(repoOfDir(dirA)));
+  check('an empty directory names none', repoOfDir(path.join(tmp, 'shell-empty')) === null);
+
+  check('a repo with no directory of its own gets a derived one',
+    dirForRepo(repoA, { chosen: new Map(), base }).startsWith(path.join(base, 'repoA-')));
+  check('two checkouts of one name do not collide',
+    dirForRepo(path.join(tmp, 'x', 'repoA'), { chosen: new Map(), base }) !==
+      dirForRepo(path.join(tmp, 'y', 'repoA'), { chosen: new Map(), base }));
+  check('and a trailing slash is not a second checkout',
+    dirForRepo(`${repoA}/`, { chosen: new Map(), base }) ===
+      dirForRepo(repoA, { chosen: new Map(), base }));
+
+  // The reported bug: pick a directory for one repo, then choose another repo.
+  const chosen = new Map([[repoA, dirA]]);
+  check('a hand-picked directory follows the repo it was picked for',
+    dirForRepo(repoA, { chosen, base }) === dirA);
+  check('and does NOT follow the next repo chosen',
+    dirForRepo(repoB, { chosen, base }) !== dirA, dirForRepo(repoB, { chosen, base }));
+  check('which is what makes choosing a new repo visibly change the map',
+    repoOfDir(dirForRepo(repoB, { chosen, base })) !== repoA);
+
+  check('repos compare by resolved path', sameRepo(repoA, `${repoA}/`) && !sameRepo(repoA, repoB));
+}
+
+console.log('\nthe shell refuses a directory that belongs to someone else');
+{
+  const dirA = path.join(tmp, 'refuse-a');
+  run(['map', repoA, '--out', dirA, '--top', '0']);
+
+  const clash = ownershipConflict(repoB, dirA);
+  check('pointing repo B at repo A\'s directory is a conflict', clash !== null);
+  check('and the conflict names what the directory already holds', clash?.holds === repoA);
+  check('the same repo at the same path is not', ownershipConflict(repoA, dirA) === null);
+  check('nor is the same repo named with a trailing slash',
+    ownershipConflict(`${repoA}/`, dirA) === null);
+  check('an empty directory belongs to nobody yet',
+    ownershipConflict(repoB, path.join(tmp, 'refuse-empty')) === null);
+  check('and with no repo chosen there is nothing to conflict with',
+    ownershipConflict(null, dirA) === null);
+}
+
+/**
+ * `agent` is the run that writes claims, so it is the run that must not be mispaired. It was
+ * the only one of the three the guard did not cover.
+ */
+console.log('\nevery command that writes is guarded, not just map');
+{
+  const out = path.join(tmp, 'guarded-out');
+  run(['map', repoA, '--out', out, '--top', '0']);
+
+  const focus = run(['focus', repoB, '--out', out, '--top', '0']);
+  check('focus into another repo\'s directory is refused', focus.code === 2, `exit ${focus.code}`);
+
+  const agent = run(['agent', repoB, '--out', out, '--dry-run', 'true']);
+  check('so is an agent run', agent.code === 2, `exit ${agent.code}`);
+  check('and the refusal names both repositories',
+    agent.out.includes(repoA) && agent.out.includes(repoB), agent.out.slice(-400));
+
+  check('the guarded runs left the map alone',
+    (JSON.parse(fs.readFileSync(path.join(out, 'graph.json'), 'utf8')) as { root: string })
+      .root === repoA);
+
+  const ownFocus = run(['focus', repoA, '--out', out, '--top', '0']);
+  check('the repo that owns the directory still runs', ownFocus.code === 0, ownFocus.out.slice(-300));
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

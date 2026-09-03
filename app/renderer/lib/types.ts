@@ -150,7 +150,8 @@ declare global {
       load(): Promise<LoadPayload>;
       query(): Promise<QueryPayload>;
       pickRepo(): Promise<{ repo: string | null; dir: string }>;
-      setDir(): Promise<{ repo: string | null; dir: string }>;
+      /** Refuses, with a reason, when the directory holds a different repository's map. */
+      setDir(): Promise<{ repo: string | null; dir: string; error?: string }>;
       map(): Promise<{ id?: string; error?: string }>;
       refocus(): Promise<{ id?: string; error?: string }>;
       quality(): Promise<QualityReport & { error?: string }>;

@@ -147,6 +147,11 @@ function runExtract(args: Args): void {
  * Refused rather than merged, because there is no sensible merge. `--force` is there for the
  * one legitimate case — the same repo at a new path, after a move or a fresh checkout — where
  * the paths inside are unchanged and the claims still mean what they said.
+ *
+ * Every command that arrives with a repository in one hand and an output directory in the
+ * other calls this. It used to sit on the `map` path alone, which guarded the writes that
+ * merely get overwritten and left unguarded the one that does the damage: `agent` writes
+ * *claims*, and a mispaired run puts one codebase's conclusions in the other's store.
  */
 function guardOutputDirectory(args: Args, root: string): void {
   const graphPath = path.join(args.out, 'graph.json');
@@ -158,7 +163,7 @@ function guardOutputDirectory(args: Args, root: string): void {
   } catch {
     return; // Unreadable output is not evidence of anything; the run rewrites it.
   }
-  if (!previous || previous === root) return;
+  if (!previous || path.resolve(previous) === path.resolve(root)) return;
 
   if (args.force) {
     console.log(
@@ -635,6 +640,7 @@ function runMap(args: Args): void {
 }
 
 function runFocus(args: Args): void {
+  guardOutputDirectory(args, args.root);
   const graph: Graph = extract({
     root: args.root,
     includeTests: args.includeTests,
@@ -707,6 +713,7 @@ function emitFocus(
 
 async function runAgent(args: Args): Promise<void> {
   const repo = args.repo ?? args.root;
+  guardOutputDirectory(args, repo);
   const report = await drive({
     dir: args.out, repo, tools: args.tools, batch: args.batch, dryRun: args.dryRun,
     mode: args.mode, timeoutMs: args.timeoutMs, model: args.model, session: args.session,

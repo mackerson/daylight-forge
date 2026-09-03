@@ -2,7 +2,7 @@ const { app, BrowserWindow, Notification, ipcMain, protocol, net, dialog, shell 
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { sameRepo, repoOfDir, dirForRepo, ownershipConflict } = require('./session.cjs');
 
 /**
  * Electron main — the control plane.
@@ -59,36 +59,38 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 app.setName('visual-desloppify');
 
 const state = {
-  repo: process.env.VDS_REPO || null,
-  dir: process.env.VDS_DIR || path.resolve(ROOT, 'out'),
+  repo: process.env.VDS_REPO ? path.resolve(process.env.VDS_REPO) : null,
+  dir: process.env.VDS_DIR ? path.resolve(process.env.VDS_DIR) : path.resolve(ROOT, 'out'),
 };
 
 /**
- * Whether the user picked the output directory themselves.
+ * Output directories the user picked themselves, by the repository each was picked for.
  *
- * If they did, it is theirs and nothing moves it. If they did not, it follows the repo —
- * because an output directory belongs to one repository and sharing one across two is not a
- * tidiness problem, it is a correctness one: `claims.db` addresses files by repo-relative
- * path, so repo A's confirmed knowledge silently re-indexes onto repo B's identically-named
- * files. Choosing a repo and seeing the previous repo's map is the visible half of that.
+ * This was one boolean latch: pressing `out …` once made that directory permanent, so every
+ * repository chosen afterwards inherited it. Sharing one output directory across two repos is
+ * not a tidiness problem, it is a correctness one — `claims.db` addresses files by
+ * repo-relative path, so repo A's confirmed knowledge silently re-indexes onto repo B's
+ * identically-named files. Choosing a repo and seeing the previous repo's map is the visible
+ * half of that, and is how it was reported.
+ *
+ * A choice of directory is a statement about one repository, so it is remembered against one.
  */
-let dirExplicit = !!process.env.VDS_DIR;
+const chosenDirs = new Map();
+
+/**
+ * A VDS_DIR that no map has claimed yet.
+ *
+ * Launching with an explicit empty output directory and then choosing a repo should still put
+ * that repo's map where it was asked to go; the first repository picked claims it.
+ */
+let unclaimedDir = process.env.VDS_DIR && !repoOfDir(state.dir) ? state.dir : null;
 
 /** Set when the map in `state.dir` names a repo that is no longer on disk. */
 let missingRepo = null;
 
-/**
- * A stable per-repo output directory.
- *
- * Basename first so it is recognisable in a file manager, plus a hash of the full path so two
- * checkouts of the same project — `~/work/api` and `~/scratch/api` — do not collide and
- * inherit each other's claims.
- */
-function derivedDirFor(repo) {
-  const slug = path.basename(repo).replace(/[^\w.-]+/g, '-').slice(0, 40) || 'repo';
-  const hash = createHash('sha256').update(path.resolve(repo)).digest('hex').slice(0, 8);
-  return path.join(app.getPath('userData'), 'maps', `${slug}-${hash}`);
-}
+/** Where a repository's output goes, honouring a directory picked for that repository. */
+const dirFor = (repo) =>
+  dirForRepo(repo, { chosen: chosenDirs, base: path.join(app.getPath('userData'), 'maps') });
 
 let win = null;
 const jobs = new Map();
@@ -139,7 +141,11 @@ function adoptRepoFromDir() {
     // not there and fail several steps later with something unrecognisable.
     return { missingRepo: root };
   }
-  state.repo = root;
+  state.repo = path.resolve(root);
+  // This directory demonstrably holds this repo's map, so it is that repo's directory — and
+  // stays its directory across a switch away and back.
+  chosenDirs.set(state.repo, state.dir);
+  unclaimedDir = null;
   return null;
 }
 
@@ -776,17 +782,26 @@ ipcMain.handle('vds:pick-repo', async () => {
     properties: ['openDirectory'],
   });
   if (res.canceled || !res.filePaths[0]) return state;
-  const picked = res.filePaths[0];
-  if (picked === state.repo) return state;
+  const picked = path.resolve(res.filePaths[0]);
+  if (sameRepo(picked, state.repo)) return state;
 
   state.repo = picked;
   stopWatch();
+  // Whatever repo had gone missing, this is the answer to it. Left set, the banner offering
+  // "choose repo" stayed up after choosing one — its own instruction, still complaining.
+  missingRepo = null;
+
+  if (unclaimedDir) {
+    chosenDirs.set(picked, unclaimedDir);
+    unclaimedDir = null;
+  }
 
   // The map, the findings and the claim store all belong to the repo that produced them, so
   // they move together with it. Without this, choosing a new repo showed the old one's map
   // and then wrote the new one's on top of the old one's claims.
-  if (!dirExplicit) {
-    state.dir = derivedDirFor(picked);
+  const next = dirFor(picked);
+  if (next !== state.dir) {
+    state.dir = next;
     fs.mkdirSync(state.dir, { recursive: true });
     startTail();
   }
@@ -799,11 +814,33 @@ ipcMain.handle('vds:set-dir', async () => {
     properties: ['openDirectory', 'createDirectory'],
   });
   if (res.canceled || !res.filePaths[0]) return state;
-  state.dir = res.filePaths[0];
-  dirExplicit = true;
+  const picked = path.resolve(res.filePaths[0]);
+
+  /**
+   * This is the one place a person can hand the app an output directory belonging to a
+   * different repository, so it is refused here rather than several steps later. `map` would
+   * refuse anyway — but `agent` would not, and it would write this repo's conclusions into
+   * that repo's store, addressed by paths that mean something else there.
+   */
+  const clash = ownershipConflict(state.repo, picked);
+  if (clash) {
+    return {
+      ...state,
+      error:
+        `${picked} already holds a map of ${clash.holds}, not ${clash.repo}. An output ` +
+        'directory belongs to one repository: the claims in it name files by repo-relative ' +
+        'path, so one repo\'s reviewed knowledge would present as the other\'s. Choose a ' +
+        'different directory, or choose that repository first.',
+    };
+  }
+
+  state.dir = picked;
+  unclaimedDir = null;
   // An output directory belongs to one repository, so pointing at a new one may tell us which
   // repository that is — and if the app had none, that is the answer.
   syncRepoFromDir();
+  if (state.repo) chosenDirs.set(state.repo, picked);
+  else unclaimedDir = picked;
   startTail();
   return state;
 });
