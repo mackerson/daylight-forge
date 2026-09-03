@@ -10,3 +10,4 @@ export declare function ownershipConflict(
 export declare function readJsonIn<T = unknown>(dir: string, name: string, fallback?: T): T;
 export declare function readJsonRaw<T = unknown>(dir: string, name: string, fallback?: T): T;
 export declare function forgetCachedJson(): void;
+export declare function readJsonlIn<T = unknown>(dir: string, name: string): T[];

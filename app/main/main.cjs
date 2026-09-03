@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   sameRepo, repoOfDir, dirForRepo, ownershipConflict,
-  readJsonIn, readJsonRaw, forgetCachedJson,
+  readJsonIn, readJsonRaw, readJsonlIn, forgetCachedJson,
 } = require('./session.cjs');
 
 /**
@@ -349,6 +349,17 @@ function runJob(label, argv, { onExit } = {}) {
       if (!line.startsWith('##vds ')) continue;
       try {
         const msg = JSON.parse(line.slice(6));
+        /**
+         * A campaign samples itself after every round and says so here.
+         *
+         * Forwarded rather than accumulated: the same samples are appended to
+         * campaigns.jsonl, so a window that opens mid-run reads the series it missed off
+         * disk and only needs the live channel for what happens next.
+         */
+        if (msg.campaign) {
+          send('vds:campaign', { id, sample: msg.campaign });
+          continue;
+        }
         if (!msg.spend) continue;
         bySource.set(msg.spend.source, { cost: msg.spend.cost, turns: msg.spend.turns });
         changed = true;
@@ -709,6 +720,15 @@ ipcMain.handle('vds:load', () => {
     // this replaced; a dead button that says the repo has moved is a different thing.
     missingRepo,
     /**
+     * Every campaign sample in this directory, oldest first.
+     *
+     * Handed over whole rather than filtered to the current one: which samples belong to the
+     * campaign on screen is a question about campaigns, and the renderer answers it with the
+     * engine's own `seriesOf`. The shell shells out to the engine and never imports it, so
+     * anything it decided here would be a second opinion.
+     */
+    campaign: readJsonlIn(state.dir, 'campaigns.jsonl'),
+    /**
      * Whether a watcher is actually running.
      *
      * The renderer used to hold this by itself, set only from what `vds:watch` returned — so
@@ -903,6 +923,25 @@ ipcMain.handle('vds:agent', (_e, opts = {}) => {
     (opts.mode === 'focus' ? ':focus' : '') +
     (opts.dryRun ? ':dry' : '');
   return { id: runJob(label, argv) };
+});
+
+/**
+ * The whole loop as one job: map, agents until a stop fires, plan.
+ *
+ * The same `vds run` a terminal would use — the ceilings are the only thing a person is for,
+ * so they are the only thing the window passes.
+ */
+ipcMain.handle('vds:run', (_e, opts = {}) => {
+  if (!state.repo) return { error: 'no repo selected' };
+  const argv = ['run', state.repo, '--out', state.dir, '--tools', opts.tools || 'claude'];
+  if (opts.rounds) argv.push('--rounds', String(opts.rounds));
+  if (opts.maxCost) argv.push('--max-cost', String(opts.maxCost));
+  if (opts.batch) argv.push('--batch', String(opts.batch));
+  if (opts.concurrency) argv.push('--concurrency', String(opts.concurrency));
+  if (opts.spread) argv.push('--spread', 'true');
+  if (opts.skipMap) argv.push('--skip-map', 'true');
+  if (opts.only?.length) argv.push('--only', opts.only.join(','));
+  return { id: runJob('run', argv) };
 });
 
 ipcMain.handle('vds:stop-job', (_e, id) => {

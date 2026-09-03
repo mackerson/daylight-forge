@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('vds', {
   map: () => invoke('vds:map'),
   refocus: () => invoke('vds:refocus'),
   agent: (opts) => invoke('vds:agent', opts),
+  run: (opts) => invoke('vds:run', opts),
   stopJob: (id) => invoke('vds:stop-job', id),
 
   arbitrate: (payload) => invoke('vds:arbitrate', payload),
@@ -36,6 +37,12 @@ contextBridge.exposeInMainWorld('vds', {
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on('vds:watch', h);
     return () => ipcRenderer.removeListener('vds:watch', h);
+  },
+
+  onCampaign: (fn) => {
+    const h = (_e, payload) => fn(payload);
+    ipcRenderer.on('vds:campaign', h);
+    return () => ipcRenderer.removeListener('vds:campaign', h);
   },
 
   onEvent: (fn) => {

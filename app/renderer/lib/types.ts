@@ -14,6 +14,9 @@ export type {
 } from '../../../engine/store/types.ts';
 export type { InvariantResult } from '../../../engine/invariants/engine.ts';
 export type {
+  CampaignEntry, CampaignLimits, CampaignSample, Progress, StopProgress, StopReason,
+} from '../../../engine/swarm/progress.ts';
+export type {
   StructureReport, DeadCandidate, Cycle, Limb, GodNode, Tier,
 } from '../../../engine/detect/structure-types.ts';
 export type {
@@ -35,6 +38,7 @@ import type { FocusStack } from '../../../engine/focus/types.ts';
 import type { Belief, ClaimStatus } from '../../../engine/store/types.ts';
 import type { InvariantResult } from '../../../engine/invariants/engine.ts';
 import type { RunEvent } from '../../../engine/replay/types.ts';
+import type { CampaignEntry, CampaignSample } from '../../../engine/swarm/progress.ts';
 import type { RenderSettings } from '../../../engine/render/settings.ts';
 export type { RenderSettings, FrameStats } from '../../../engine/render/settings.ts';
 import type { StructureReport } from '../../../engine/detect/structure-types.ts';
@@ -64,6 +68,13 @@ export interface RunShape {
   maxCost: number;
   /** Split the frontier across the roster instead of asking everyone the same questions. */
   spread: boolean;
+  /**
+   * Round cap for a campaign. Ignored by a single launch, which is one round by definition.
+   *
+   * Always set, because an unbounded loop over paid agents is not a feature — convergence is
+   * a property of the codebase, not a promise about how long this will take.
+   */
+  rounds: number;
 }
 
 /**
@@ -121,6 +132,14 @@ export interface LoadPayload {
   graphStats: Record<string, number> | null;
   /** Whether a file watcher is running. Owned by main, which is what can stop one. */
   watching?: boolean;
+  /**
+   * Every campaign sample in the output directory, oldest first and unfiltered.
+   *
+   * Which of them belong to the run on screen is `seriesOf`'s answer, not the shell's — one
+   * definition, so the chart cannot end up plotting a different campaign from the one the
+   * live channel is feeding.
+   */
+  campaign?: CampaignEntry[];
 }
 
 export interface QueryPayload {
@@ -161,6 +180,15 @@ declare global {
       adapters(opts?: { refresh?: boolean }): Promise<{
         adapters: AdapterStatus[]; error?: string;
       }>;
+      /**
+       * The whole loop as one job. The ceilings are all a person is for; everything else
+       * the frontier already knows.
+       */
+      run(opts: {
+        tools?: string; rounds?: number; maxCost?: number; batch?: number;
+        concurrency?: number; spread?: boolean; skipMap?: boolean; only?: string[];
+      }): Promise<{ id?: string; error?: string }>;
+      onCampaign(fn: (p: { id: string; sample: CampaignSample }) => void): () => void;
       agent(opts: {
         tools?: string; mode?: 'explore' | 'focus'; batch?: number;
         model?: string; timeout?: number; dryRun?: boolean;

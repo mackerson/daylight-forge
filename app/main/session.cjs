@@ -58,6 +58,49 @@ function readJsonRaw(dir, name, fallback = null) {
   }
 }
 
+/**
+ * The same, for a `.jsonl` ledger: one object per line, oldest first.
+ *
+ * A corrupt line loses one entry rather than the file — these are appended to while a run is
+ * in flight, so a half-written last line is an ordinary thing to read, not a failure.
+ */
+function readJsonlIn(dir, name) {
+  const text = readTextIn(dir, name);
+  if (text === null) return [];
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      // Appended to live; a torn final line is expected, not exceptional.
+    }
+  }
+  return out;
+}
+
+/** Raw text, cached by mtime the same way the parsed reads are. */
+function readTextIn(dir, name) {
+  const file = path.join(dir, name);
+  let mtime;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+  } catch {
+    cache.delete(file);
+    return null;
+  }
+  const hit = cache.get(file);
+  if (hit && hit.mtime === mtime) return hit.value;
+  let value = null;
+  try {
+    value = fs.readFileSync(file, 'utf8');
+  } catch {
+    // Unreadable is the same as absent for everything that calls this.
+  }
+  cache.set(file, { mtime, value });
+  return value;
+}
+
 /** Drop everything read out of a directory; the shell calls this when the directory moves. */
 function forgetCachedJson() {
   cache.clear();
@@ -124,5 +167,5 @@ function ownershipConflict(repo, dir) {
 
 module.exports = {
   sameRepo, repoOfDir, derivedDirFor, dirForRepo, ownershipConflict,
-  readJsonIn, readJsonRaw, forgetCachedJson,
+  readJsonIn, readJsonRaw, readJsonlIn, forgetCachedJson,
 };

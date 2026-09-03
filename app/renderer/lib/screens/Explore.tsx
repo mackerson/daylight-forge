@@ -25,6 +25,7 @@ const DEFAULT_SHAPE: RunShape = {
   concurrency: 2,
   maxCost: 2,
   spread: false,
+  rounds: 8,
 };
 
 const STORAGE_KEY = 'vds.runShape';
@@ -83,7 +84,7 @@ function estimates(runs: RunRecord[]): Map<string, Estimate> {
 }
 
 export function Explore({
-  scope, onClearScope, runs, busy, disabled, onLaunch, onMonitor, running,
+  scope, onClearScope, runs, busy, disabled, onLaunch, onRun, onMonitor, running,
 }: {
   /** Subjects a selection on the map or in detect asked for. Empty lets the frontier choose. */
   scope: string[];
@@ -97,6 +98,17 @@ export function Explore({
     only: string[];
   }) => void;
   onMonitor: () => void;
+  /**
+   * The whole loop, unattended: rounds until the frontier converges or a ceiling stops it.
+   *
+   * Separate from `onLaunch` rather than a flag on it, because they are different decisions.
+   * One round is "answer these questions"; a campaign is "keep going until it is not worth
+   * it any more", and the ceiling stops being a per-run cap and becomes the whole budget.
+   */
+  onRun: (opts: {
+    tools: string; rounds: number; maxCost: number; batch: number;
+    concurrency: number; spread: boolean; only: string[];
+  }) => void;
   running: number;
 }) {
   const [shape, setShape] = useState<RunShape>(loadShape);
@@ -136,6 +148,17 @@ export function Explore({
     .map((t) => byName.get(t))
     .filter((a): a is AdapterStatus => !!a);
   const blocking = rostered.filter((a) => !a.installed || a.note || !a.perInvocationMcp);
+
+  const campaign = () =>
+    onRun({
+      tools: rosterArg(shape.roster),
+      rounds: shape.rounds,
+      maxCost: shape.maxCost,
+      batch: shape.batch,
+      concurrency: shape.concurrency,
+      spread: shape.spread,
+      only: scope,
+    });
 
   const go = (dryRun: boolean) =>
     onLaunch({
@@ -393,6 +416,13 @@ export function Explore({
                   onChange={(e) => patch({ batch: Number(e.target.value) })}
                 />
               </label>
+              <label title="most rounds a campaign may run before it gives up regardless">
+                rounds
+                <input
+                  type="number" min={1} max={50} value={shape.rounds}
+                  onChange={(e) => patch({ rounds: Math.max(1, Number(e.target.value) || 1) })}
+                />
+              </label>
               <label title="how many agents run at once">
                 at once
                 <input
@@ -434,9 +464,27 @@ export function Explore({
 
           <div className="spacer" />
 
-          <button className="btn ok wide" disabled={disabled || busy} onClick={() => go(false)}>
-            Run {shape.roster.length} agent{shape.roster.length === 1 ? '' : 's'} on {askCount}{' '}
-            question{askCount === 1 ? '' : 's'}
+          <p className="dim" style={{ fontSize: 11 }}>
+            {/* The ceilings are the one thing the frontier cannot decide for you, and the
+                only reason an unattended loop is safe to start. */}
+            A campaign stops at whichever comes first: the frontier converges, {' '}
+            {money(shape.maxCost)} is spent, {shape.rounds} round
+            {shape.rounds === 1 ? '' : 's'} have run, or two rounds change nothing.
+          </p>
+
+          {/* The ceilings are in the sentence above; repeating them here overflowed the card. */}
+          <button
+            className="btn ok wide"
+            disabled={disabled || busy}
+            onClick={campaign}
+            title={`up to ${shape.rounds} rounds, ${money(shape.maxCost)} ceiling`}
+          >
+            Run to convergence
+          </button>
+
+          <button className="btn wide" disabled={disabled || busy} onClick={() => go(false)}>
+            One round: {shape.roster.length} agent{shape.roster.length === 1 ? '' : 's'} on{' '}
+            {askCount} question{askCount === 1 ? '' : 's'}
           </button>
           <button
             className="btn wide"

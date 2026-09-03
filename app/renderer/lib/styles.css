@@ -868,3 +868,24 @@ code, .mono, kbd { font-family: var(--mono); }
 }
 .raw > summary:hover { color: var(--text-2); }
 .raw > div { margin-top: 14px; }
+
+/* ---- burndown (campaign progress) ----
+   The bar tracks whichever stop is nearest, so it is coloured by that stop's meaning rather
+   than by how full it is: converging is good news at 90%, stalling is not. */
+.meter-fill.ok { background: var(--ok-mark); }
+
+.burn-head { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+.burn-pct { font: 600 19px/1 var(--mono); letter-spacing: -.01em; }
+.burn-pct.ok { color: var(--ok); }
+.burn-pct.warn { color: var(--warn); }
+.burn-pct.bad { color: var(--bad); }
+.burn-what { flex: 1; font: 400 11px/1.35 var(--sans); color: var(--text-2); }
+
+.burn-stops {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px;
+  font: 400 10.5px var(--mono); color: var(--dim-2);
+}
+
+/* Scaled to its own peak: pinned to zero, a repo with four thousand open questions draws a
+   flat line whatever the run does. */
+.burn-spark { display: block; width: 100%; height: 46px; margin: 10px 0 4px; }

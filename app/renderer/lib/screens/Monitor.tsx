@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Belief, Job, VdsEvent } from '../types.ts';
+import type { Belief, CampaignEntry, Job, VdsEvent } from '../types.ts';
+import { Burndown } from '../panels/Burndown.tsx';
 import { money, sourceColor, state } from '../vocab.ts';
 import { summarise } from '../shell/Inspector.tsx';
 
@@ -61,7 +62,7 @@ export type Spend = Record<string, {
 }>;
 
 export function Monitor({
-  events, jobs, logs, spend, selected, onSelect, leases, beliefs, ceiling,
+  events, jobs, logs, spend, selected, onSelect, leases, beliefs, ceiling, campaign,
 }: {
   events: VdsEvent[];
   jobs: Job[];
@@ -72,6 +73,14 @@ export function Monitor({
   leases: Array<{ subject: string; session: string; until: number }>;
   beliefs: Belief[];
   ceiling: number;
+  /**
+   * Every campaign sample in the output directory, unfiltered.
+   *
+   * A campaign is the only run that has an end anyone can point at, so it is the only run
+   * with a burndown. A single agent launch has none and the panel says so rather than
+   * drawing an empty chart.
+   */
+  campaign: CampaignEntry[];
 }) {
   const feedRef = useRef<HTMLDivElement>(null);
   const running = jobs.filter((j) => j.status === 'running');
@@ -148,6 +157,8 @@ export function Monitor({
 
   return (
     <aside className="inspector">
+      <Burndown entries={campaign} />
+
       <div>
         <div className="rail-label">
           {running.length ? `${running.length} running · ${since(now - started)}` : 'run finished'}

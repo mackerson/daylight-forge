@@ -43,6 +43,10 @@ const TAB_ALIASES: Record<string, View> = {
   detect: 'detect',
   agents: 'explore',
   explore: 'explore',
+  // The monitor is explore-with-a-run-on-screen rather than a view of its own, so it needs
+  // its own alias to be reachable headlessly — which is the only way the shot harness can
+  // answer a layout question about the burndown.
+  monitor: 'explore',
   review: 'beliefs',
   beliefs: 'beliefs',
   plan: 'plan',
@@ -165,6 +169,7 @@ export function App() {
     if (v) {
       seededTab.current = true;
       setView(v);
+      if (data.initialTab === 'monitor') setWatchingRun(true);
     }
   }, [data?.initialTab]);
 
@@ -215,6 +220,15 @@ export function App() {
     });
     // The stack was re-derived because claims changed; pull the new one.
     const offDerived = window.vds.onDerived(() => void refresh());
+    /**
+     * A campaign round finished. The sample is already on disk by the time this arrives, so
+     * the payload is a signal rather than the data — pulling it back with everything else
+     * keeps one source of truth for what the burndown draws.
+     */
+    const offCampaign = window.vds.onCampaign(({ sample }) => {
+      setToast(`round ${sample.round} — ${sample.open} open, ${sample.settled} settled`);
+      void refresh();
+    });
     const offStats = window.vds.onJobStats(({ id, cost, turns, sources }) =>
       setSpend((prev) => ({ ...prev, [id]: { cost, turns, sources } })),
     );
@@ -225,6 +239,7 @@ export function App() {
       offEvent();
       offJob();
       offDerived();
+      offCampaign();
       offStats();
       offOut();
     };
@@ -509,6 +524,10 @@ export function App() {
                   setCeiling(opts.maxCost);
                   return act(() => window.vds.agent(opts));
                 }}
+                onRun={(opts) => {
+                  setCeiling(opts.maxCost);
+                  void act(() => window.vds.run(opts));
+                }}
               />
             )}
 
@@ -585,6 +604,7 @@ export function App() {
                   leases={query?.leases ?? []}
                   beliefs={beliefs}
                   ceiling={ceiling}
+                  campaign={data?.campaign ?? []}
                 />
               ) : (
                 <Inspector
