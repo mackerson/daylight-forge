@@ -19,7 +19,10 @@ import { buildStack } from './focus/stack.ts';
 import { canonicalise, ClaimStore } from './store/claims.ts';
 import { drive, serverCommand } from './swarm/driver.ts';
 import { qualityReport } from './quality/report.ts';
-import { history, record } from './swarm/ledger.ts';
+import { history, record, runRecordFrom } from './swarm/ledger.ts';
+import { campaign, DEFAULT_LIMITS, series } from './swarm/campaign.ts';
+import { progress } from './swarm/progress.ts';
+import type { CampaignLimits, CampaignSample } from './swarm/progress.ts';
 import { inspect } from './swarm/adapters.ts';
 import { evaluate, evaluateAll } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
@@ -57,6 +60,12 @@ interface Args {
   force: boolean;
   /** `try-invariant`: a candidate predicate, as JSON, evaluated but never saved. */
   predicate?: string;
+  /** `run`: the stops a campaign races. Every one of them is bounded on purpose. */
+  rounds: number;
+  stallRounds: number;
+  floor: number;
+  /** `run`: work from the map already in the output directory rather than re-reading source. */
+  skipMap: boolean;
   invariantId?: string;
   prose?: string;
 }
@@ -112,6 +121,10 @@ function parseArgs(argv: string[]): Args {
     prose: flags.get('prose'),
     mode: (flags.get('mode') ?? 'explore') as 'explore' | 'focus',
     timeoutMs: flags.get('timeout') ? Number(flags.get('timeout')) * 1000 : undefined,
+    rounds: Number(flags.get('rounds') ?? DEFAULT_LIMITS.rounds),
+    stallRounds: Number(flags.get('stall') ?? DEFAULT_LIMITS.stallRounds),
+    floor: Number(flags.get('floor') ?? DEFAULT_LIMITS.floor),
+    skipMap: flags.get('skip-map') === 'true',
   };
 }
 
@@ -796,40 +809,13 @@ async function runAgent(args: Args): Promise<void> {
 
   // Bookkeeping, written before it is printed, so a run that is read about later is the same
   // run that was watched live.
-  const noCost = report.results.some((r) => r.ok && r.cost === 0);
-  record(args.out, {
-    at: new Date().toISOString(),
+  const entry = runRecordFrom(report, {
     session: args.session ?? 'cli',
     mode: args.mode,
-    sources: report.plans.map((p) => `${p.spec.tool}:${p.spec.model ?? 'default'}`),
-    diversity: report.sourceDiversity,
     spread: args.spread,
-    assigned: report.assigned.length,
-    results: report.results.map((r) => ({
-      source: `${r.tool}:${r.model ?? 'default'}`,
-      ok: r.ok,
-      seconds: Math.round(r.durationMs / 1000),
-      cost: r.cost,
-      turns: r.turns,
-      failure: r.ok
-        ? undefined
-        : r.timedOut ? 'timed out' : r.overBudget ? 'over budget' : `exit ${r.exitCode}`,
-    })),
-    costKnown: !noCost,
-    cost: report.results.reduce((sum, r) => sum + r.cost, 0),
-    delta: {
-      claims: a.claims - b.claims,
-      clusters: a.clusters - b.clusters,
-      elisions: a.elisions - b.elisions,
-      defences: a.defences - b.defences,
-    },
-    converged: report.converged,
-    notes: [
-      ...(report.diversityWarning ? [report.diversityWarning] : []),
-      ...report.budgetStops,
-      ...report.unavailable.map((u) => `skipped: ${u}`),
-    ],
   });
+  const noCost = !entry.costKnown;
+  record(args.out, entry);
 
   const d = (k: keyof typeof a) => `${b[k]} → ${a[k]} (+${a[k] - b[k]})`;
   console.log(`\nclaims    ${d('claims')}`);
@@ -850,6 +836,130 @@ async function runAgent(args: Args): Promise<void> {
  * The same report the Quality panel renders. Worth having in a terminal too — it is the
  * thing to read before acting on a map, and before deciding another agent run is worth it.
  */
+const BLOCKS = '▁▂▃▄▅▆▇█';
+
+/** A sparkline of the open frontier, scaled to its own peak rather than to zero. */
+const spark = (values: number[]): string => {
+  const max = Math.max(1, ...values);
+  return values.map((v) => BLOCKS[Math.min(7, Math.floor((v / max) * 7.999))]).join('');
+};
+
+const bar = (fraction: number, width = 24): string => {
+  const on = Math.max(0, Math.min(width, Math.round(fraction * width)));
+  return `${'█'.repeat(on)}${'░'.repeat(width - on)}`;
+};
+
+/**
+ * The burndown, as a terminal can draw it.
+ *
+ * The bar tracks whichever stop is nearest, named — because a frontier has no honest fixed
+ * denominator. Agents discover questions as they answer them, so "N of M settled" has to be
+ * rebased mid-run to stay true, while "closest to the budget, 36% of the way there" is a
+ * fact about a limit that was set before the run began.
+ */
+function burndown(samples: CampaignSample[], limits: CampaignLimits): string {
+  const p = progress(samples, limits);
+  const last = samples[samples.length - 1];
+  const others = p.stops.filter((x) => x.reason !== p.nearest.reason);
+  const lines = [
+    `\nround ${last.round} of ${limits.rounds}` +
+      (limits.maxCost > 0
+        ? `   ${'$'}${last.spent.toFixed(2)}${last.costKnown ? '' : '+'} / ${'$'}${limits.maxCost.toFixed(2)}`
+        : `   ${'$'}${last.spent.toFixed(2)}${last.costKnown ? '' : '+'} spent`),
+    `[${bar(p.nearest.fraction)}]  ${Math.round(p.nearest.fraction * 100)}%  ← ${p.nearest.reason}` +
+      (p.nearest.exact ? '' : ' (estimate)'),
+    `     ${others.map((x) => `${x.reason} ${Math.round(x.fraction * 100)}%`).join('  ·  ')}`,
+    `\nopen frontier  ${samples[0].open} ${spark(samples.map((x) => x.open))} ${last.open}` +
+      `   ·  ${last.settled} settled, ${last.discovered} discovered` +
+      (last.tail ? `, ${last.tail} below the floor` : ''),
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * The loop, end to end: map, then rounds of agents until the map stops being worth another
+ * one, then the plan that falls out of what they settled.
+ *
+ * Everything here existed as a separate command and a person deciding between them. That is
+ * the wrong place for the decision: the frontier already knows when it has converged, and a
+ * round that settles nothing twice running will not settle anything on the third try. What
+ * a person is actually for is choosing the ceilings, which is what the flags are.
+ *
+ * Mapping first is unconditional rather than a staleness heuristic. The parse cache means
+ * only changed files re-parse — half a second on this repo, warm — so guessing whether the
+ * source moved would cost more in wrong answers than it saves in work. `--skip-map` is there
+ * for the case where you know it has not.
+ */
+async function runRun(args: Args): Promise<void> {
+  const limits: CampaignLimits = {
+    rounds: args.rounds,
+    maxCost: args.maxCost ?? 0,
+    stallRounds: args.stallRounds,
+    floor: args.floor,
+  };
+
+  if (args.skipMap) {
+    if (!fs.existsSync(path.join(args.out, 'graph.json'))) {
+      console.error(`no graph.json in ${args.out}, and --skip-map says not to make one`);
+      process.exit(2);
+    }
+  } else {
+    // --top 0 because the candidate listing is noise here; the campaign prints its own.
+    runMap({ ...args, top: 0 });
+  }
+
+  const report = await campaign({
+    dir: args.out,
+    repo: args.repo ?? args.root,
+    tools: args.tools,
+    batch: args.batch,
+    timeoutMs: args.timeoutMs,
+    model: args.model,
+    dryRun: args.dryRun,
+    concurrency: args.concurrency,
+    spread: args.spread,
+    only: args.only,
+    limits,
+    afterRound: (sample) => {
+      // The stack is what the map draws, so it is rebuilt between rounds rather than once at
+      // the end: a campaign you cannot watch converge is a campaign you have to trust.
+      runDerive(args);
+      // One machine-readable line per round, on our own stdout. The GUI meters the burndown
+      // from these; a terminal reader gets the drawn version below.
+      process.stdout.write(`##vds ${JSON.stringify({ campaign: sample })}\n`);
+      // The series on disk, which already includes the round-0 sample the callback is not
+      // handed — and round 0 is what the convergence estimate measures the fall from.
+      console.log(burndown(series(args.out), limits));
+    },
+  });
+
+  if (args.json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(`\n${'─'.repeat(72)}`);
+  console.log(`campaign ${report.id} stopped on: ${report.stopped}`);
+  console.log(burndown(report.samples, limits));
+  for (const note of report.notes) console.log(`  note: ${note}`);
+
+  /**
+   * The plan is the end of the loop, but only where there is a target to plan against.
+   *
+   * `vds plan` exits non-zero without one, which is right when a plan is what you asked for
+   * and wrong here: the rounds happened, they cost money, and reporting the whole campaign as
+   * failed because the repo has not declared an architecture would throw that away.
+   */
+  if (!loadTarget(args.root, args.targetFile)) {
+    console.log(
+      '\nno target architecture in this repo, so there is no plan to derive. The campaign ' +
+        'itself is done — run `vds plan` after writing vds.target.json.',
+    );
+    return;
+  }
+  runPlan(args);
+}
+
 function runQuality(args: Args): void {
   const store = new ClaimStore(path.join(args.out, 'claims.db'));
   const r = qualityReport(args.out, store);
@@ -1420,6 +1530,9 @@ switch (args.command) {
   case 'agent':
     await runAgent(args);
     break;
+  case 'run':
+    await runRun(args);
+    break;
   case 'adapters':
     runAdapters(args);
     break;
@@ -1438,6 +1551,9 @@ usage:
   node engine/cli.ts plan    <path> [options]   # diff the declared target architecture
   node engine/cli.ts check   <path> [--warn-only] [--format json]   # CI gate
   node engine/cli.ts agent      <path> --out <dir> [--tools <roster>] [--batch 5] [--dry-run]
+  node engine/cli.ts run        <path> --out <dir> [--rounds 12] [--max-cost <usd>]
+                                                   # the whole loop: map, agents until it
+                                                   # converges or a ceiling stops it, plan
   node engine/cli.ts adapters   [--format json]    # which agent CLIs are installed and usable
   node engine/cli.ts quality    --out <dir> [--format json]   # how much of the map can be believed
 
@@ -1457,6 +1573,11 @@ agent options:
                      sources, which is what corroboration counts.
                        --tools claude:sonnet,claude:opus,codex,grok
   --model <m>        default model for roster entries that do not name one
+  --rounds <n>       run: cap on campaign rounds (default: 12)
+  --stall <n>        run: consecutive rounds that may change nothing before giving up
+                     (default: 2)
+  --floor <n>        run: the score the frontier's top item is racing down to (default: 0.05)
+  --skip-map         run: work from the map already in the out dir instead of re-reading source
   --batch <n>        frontier items per agent (default: 5)
   --spread           split the frontier across the roster instead of asking every agent the
                      same questions. Covers more ground; corroborates nothing.

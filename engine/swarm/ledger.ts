@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { DriveReport } from './driver.ts';
 import type { RunRecord } from './types.ts';
 
 export type { RunRecord } from './types.ts';
@@ -19,6 +20,56 @@ export type { RunRecord } from './types.ts';
  */
 
 const FILE = 'runs.jsonl';
+
+/**
+ * The ledger entry a drive report earns.
+ *
+ * Assembled here rather than at the call site, because `agent` writes one of these and so
+ * does every round of a campaign — and two hand-built copies of one record is how a run
+ * watched live comes to disagree with the same run read back afterwards.
+ */
+export function runRecordFrom(
+  report: DriveReport,
+  meta: { session: string; mode: string; spread: boolean; at?: string },
+): RunRecord {
+  const a = report.statsAfter;
+  const b = report.statsBefore;
+  // An adapter that finishes reporting no price makes the total a floor rather than a figure.
+  const noCost = report.results.some((r) => r.ok && r.cost === 0);
+  return {
+    at: meta.at ?? new Date().toISOString(),
+    session: meta.session,
+    mode: meta.mode,
+    sources: report.plans.map((p) => `${p.spec.tool}:${p.spec.model ?? 'default'}`),
+    diversity: report.sourceDiversity,
+    spread: meta.spread,
+    assigned: report.assigned.length,
+    results: report.results.map((r) => ({
+      source: `${r.tool}:${r.model ?? 'default'}`,
+      ok: r.ok,
+      seconds: Math.round(r.durationMs / 1000),
+      cost: r.cost,
+      turns: r.turns,
+      failure: r.ok
+        ? undefined
+        : r.timedOut ? 'timed out' : r.overBudget ? 'over budget' : `exit ${r.exitCode}`,
+    })),
+    costKnown: !noCost,
+    cost: report.results.reduce((sum, r) => sum + r.cost, 0),
+    delta: {
+      claims: a.claims - b.claims,
+      clusters: a.clusters - b.clusters,
+      elisions: a.elisions - b.elisions,
+      defences: a.defences - b.defences,
+    },
+    converged: report.converged,
+    notes: [
+      ...(report.diversityWarning ? [report.diversityWarning] : []),
+      ...report.budgetStops,
+      ...report.unavailable.map((u) => `skipped: ${u}`),
+    ],
+  };
+}
 
 export function record(dir: string, run: RunRecord): void {
   fs.mkdirSync(dir, { recursive: true });
