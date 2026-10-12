@@ -37,3 +37,24 @@ fixture, as repository-reported measurements. The run above saw 9,833 visible of
 86.5 fps in tree mode with `showAll: false`, which is a different view of the same map; the
 numbers are not directly comparable and neither is treated as the target. The P0 guardrail is
 "no regression from this file's p95 without an explanation".
+
+## After DL-04 (scene controller) — A/B on the same machine, same session
+
+The first post-merge bench read 58 fps / p95 20.9 ms against the 187 fps / 8.4 ms above. That
+was the machine, not the change: the desktop session had locked and unlocked in between, after
+which every windowed Electron run — including the pre-change renderer rebuilt from `a44bc36` —
+sits at a 60 Hz cap (mean ≈ 17.2 ms is one vsync). Interleaved runs, this repo's map (85 nodes,
+279 ropes), integrated Radeon:
+
+| Renderer | Mode | fps | mean ms | p95 ms | worst ms |
+| --- | --- | --- | --- | --- | --- |
+| before DL-04 (`a44bc36`) | windowed | 58.1 / 58.9 | 17.21 / 16.97 | 20.9 / 21.0 | 29.2 / 33.5 |
+| after DL-04 (`1c8d30e`) | windowed | 57.9 / 57.9 | 17.26 / 17.27 | 20.9 / 20.9 | 29.2 / 21.0 |
+| before DL-04 | `--headless=new --use-angle=swiftshader` | 56.3 / 56.3 | 17.77 / 17.76 | 21.0 / 20.9 | 25.0 / 21.0 |
+| after DL-04 | headless swiftshader | 57.0 / 55.8 | 17.54 / 17.93 | 21.0 / 21.0 | 75.2 / 71.0 |
+
+p95 is identical to the tenth of a millisecond in every pairing. The one difference is a single
+worst-frame spike in both headless runs of the new renderer (71–75 ms once per ~500 frames),
+not seen in the two base runs; too few samples to call it real, noted for DL-07b to re-measure
+with the cap lifted. The uncapped number in the first table remains the baseline for anyone who
+can reproduce an uncapped session.
