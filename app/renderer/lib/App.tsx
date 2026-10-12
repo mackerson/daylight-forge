@@ -18,8 +18,14 @@ import { BeliefDetail } from './screens/BeliefDetail.tsx';
 import { Invariants } from './screens/Invariants.tsx';
 import { Plan } from './screens/Plan.tsx';
 import { Runs } from './screens/Runs.tsx';
-import type { Belief, Job, LoadPayload, QueryPayload, VdsEvent } from './types.ts';
-import { shorten } from './vocab.ts';
+import { Missions } from './screens/Missions.tsx';
+import { MissionDetail } from './screens/MissionDetail.tsx';
+import { SAMPLE_ARTIFACTS, SAMPLE_INSPECT, SAMPLE_LIST } from './fixtures/mission-inspect.sample.ts';
+import type {
+  Belief, DaylightEvent, Job, LoadPayload, Mission, MissionCreateOptions, MissionInspect,
+  MissionList, QueryPayload, VdsEvent,
+} from './types.ts';
+import { fileOf, shorten } from './vocab.ts';
 
 /**
  * The shell.
@@ -53,7 +59,11 @@ const TAB_ALIASES: Record<string, View> = {
   quality: 'runs',
   runs: 'runs',
   invariants: 'invariants',
+  missions: 'missions',
 };
+
+/** Events held per open mission. Enough to read a run back; bounded so a long one cannot grow the window. */
+const MAX_MISSION_EVENTS = 2000;
 
 export function App() {
   const [view, setView] = useState<View>('map');
@@ -104,6 +114,22 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [replaying, setReplaying] = useState(false);
+
+  /**
+   * Mission Control state.
+   *
+   * The list and the open mission are re-read from the CLI rather than patched locally: the
+   * database is the truth, and every push from main (`vds:mission-update`, a finished job) is a
+   * signal to read it again. Events are the one thing accumulated here, because they arrive as
+   * a stream and the pane that shows them wants the whole sequence.
+   */
+  const [missions, setMissions] = useState<MissionList | null>(null);
+  const [missionError, setMissionError] = useState<string | null>(null);
+  const [openMission, setOpenMission] = useState<string | null>(null);
+  const [inspect, setInspect] = useState<MissionInspect | null>(null);
+  const [missionEvents, setMissionEvents] = useState<DaylightEvent[]>([]);
+  /** Which job is running which mission, so the detail can show its output and stop it. */
+  const [missionJobs, setMissionJobs] = useState<Record<string, string>>({});
 
   // The inspector is sized to taste and persisted, because re-dragging it every launch
   // would be its own annoyance.
@@ -160,6 +186,117 @@ export function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Sample mode: the bundled document stands in for the CLI, and every screen says so.
+  const sample = !!data?.missionSample;
+
+  const loadMissions = useCallback(async () => {
+    if (sample) {
+      setMissions(SAMPLE_LIST);
+      setMissionError(null);
+      return;
+    }
+    const r = await window.vds.missions();
+    if (r.error) {
+      setMissionError(r.error);
+      setMissions((prev) => prev ?? { project: null, missions: [] });
+    } else {
+      setMissionError(null);
+      setMissions({ project: r.project, missions: r.missions ?? [] });
+    }
+  }, [sample]);
+
+  const loadMission = useCallback(async (id: string) => {
+    if (sample) {
+      setInspect(SAMPLE_INSPECT);
+      setMissionEvents(SAMPLE_INSPECT.events);
+      return;
+    }
+    const r = await window.vds.mission({ id });
+    if (r.error) {
+      setMissionError(r.error);
+      return;
+    }
+    setInspect(r);
+    // The inspect carries the recent tail; the poller continues from its last sequence.
+    setMissionEvents((prev) => {
+      const seen = new Set(prev.map((e) => e.sequence));
+      const merged = [...prev, ...(r.events ?? []).filter((e) => !seen.has(e.sequence))];
+      merged.sort((a, b) => a.sequence - b.sequence);
+      return merged.slice(-MAX_MISSION_EVENTS);
+    });
+  }, [sample]);
+
+  // Open the list when the view is entered; open the mission when one is chosen.
+  useEffect(() => {
+    if (view !== 'missions' || !data) return;
+    void loadMissions();
+  }, [view, data, loadMissions]);
+
+  useEffect(() => {
+    if (!openMission) {
+      setInspect(null);
+      setMissionEvents([]);
+      if (!sample) void window.vds.missionWatch(null);
+      return;
+    }
+    setInspect(null);
+    setMissionEvents([]);
+    void loadMission(openMission);
+    if (!sample) void window.vds.missionWatch(openMission);
+    return () => { if (!sample) void window.vds.missionWatch(null); };
+  }, [openMission, loadMission, sample]);
+
+  // Live: events for the open mission, and state changes a running mission job reports.
+  useEffect(() => {
+    const offDl = window.vds.onDlEvent(({ missionId, events: incoming }) => {
+      if (missionId !== openMission) return;
+      setMissionEvents((prev) => {
+        const seen = new Set(prev.map((e) => e.sequence));
+        const merged = [...prev, ...incoming.filter((e) => !seen.has(e.sequence))];
+        merged.sort((a, b) => a.sequence - b.sequence);
+        return merged.slice(-MAX_MISSION_EVENTS);
+      });
+    });
+    const offUpdate = window.vds.onMissionUpdate(({ mission }) => {
+      setMissions((prev) => prev
+        ? { ...prev, missions: [...prev.missions.filter((m) => m.id !== mission.id), mission] }
+        : prev);
+      if (mission.id === openMission) void loadMission(mission.id);
+    });
+    // A finished job of any kind may have moved a mission: a run, an experiment, a demo.
+    const offJob = window.vds.onJob((j) => {
+      if (j.status === 'running') return;
+      if (view === 'missions') void loadMissions();
+      if (openMission && Object.values(missionJobs).includes(j.id)) void loadMission(openMission);
+    });
+    return () => { offDl(); offUpdate(); offJob(); };
+  }, [openMission, view, loadMission, loadMissions, missionJobs]);
+
+  /** Artifact text, from the sample when the sample is on screen. */
+  const readArtifact = useCallback(async (id: string, maxBytes?: number) => {
+    if (sample) {
+      const text = SAMPLE_ARTIFACTS[id];
+      return text === undefined ? { error: 'not in the sample' } : { text };
+    }
+    const r = await window.vds.artifact({ id, maxBytes });
+    return r.error ? { error: r.error } : { text: r.text ?? '', truncated: r.truncated };
+  }, [sample]);
+
+  /**
+   * Select a node by id from outside the map — an experiment's subject, a dispute's.
+   *
+   * The inspector and the lens follow `node`, so this is enough for "show on map" to mean
+   * something; highlighting the node on the canvas itself is the scene's job and lands with
+   * the scene controller rather than here.
+   */
+  const selectSubject = (id: string) => {
+    setNode({
+      id, label: id, level: 0, fileCount: 1, origin: 'path', members: [fileOf(id)],
+      isFile: !id.includes('#'), isSymbol: id.includes('#'),
+    });
+    setView('map');
+  };
 
   // Open on a named screen when asked. Screenshots need it; so does a link into a finding.
   const seededTab = useRef(false);
@@ -247,6 +384,9 @@ export function App() {
 
   const running = jobs.filter((j) => j.status === 'running');
   const mapped = !!data?.stack;
+  const missionList = missions?.missions ?? [];
+  const missionsRunning = missionList.filter((m) => m.state === 'running').length;
+  const missionsBlocked = missionList.filter((m) => m.state === 'blocked').length;
   // Main owns the watcher and stops it when the repo changes, so main is what reports it.
   const watchingFiles = !!data?.watching;
   const beliefs = query?.beliefs ?? [];
@@ -321,6 +461,27 @@ export function App() {
         : 'none yet',
       enabled: mapped,
     },
+    missions: {
+      tick: missionsBlocked ? 'blocked' : missionsRunning ? 'live' : missionList.length ? 'done' : 'idle',
+      state: missions
+        ? `${missionsRunning} running · ${missionsBlocked} need you`
+        : sample ? 'sample' : 'none yet',
+      // A mission needs a repository, not a map: creating one records the question before
+      // anything is spent, and the fixture button maps for itself.
+      enabled: !!data?.repo || sample,
+    },
+  };
+
+  const startMissionJob = async (missionId: string, start: () => Promise<{ id?: string; error?: string }>) => {
+    setBusy(true);
+    setMissionError(null);
+    const res = await start();
+    if (res.error) setMissionError(res.error);
+    if (res.id) {
+      setMissionJobs((prev) => ({ ...prev, [missionId]: res.id! }));
+      setSelectedJob(res.id);
+    }
+    setBusy(false);
   };
 
   const act = async (fn: () => Promise<{ error?: string } | unknown>) => {
@@ -565,6 +726,69 @@ export function App() {
                 beliefs={beliefs}
                 onOpen={(b) => { setOpenBelief(b); setView('beliefs'); }}
                 onExplore={scopeRun}
+              />
+            )}
+
+            {view === 'missions' && !openMission && (
+              <Missions
+                list={missions}
+                error={missionError}
+                sample={sample}
+                scopeDefault={node ? fileOf(node.id) : null}
+                busy={busy}
+                onOpen={(m: Mission) => setOpenMission(m.id)}
+                onRefresh={() => void loadMissions()}
+                onCreate={async (opts: MissionCreateOptions) => {
+                  setBusy(true);
+                  const r = await window.vds.missionCreate(opts);
+                  setBusy(false);
+                  if (r.error) setMissionError(r.error);
+                  else {
+                    await loadMissions();
+                    setOpenMission(r.id);
+                  }
+                }}
+                onDemoPrepare={() => void startMissionJob('demo', () => window.vds.demoPrepare())}
+                onDemoReplay={() => void startMissionJob('demo', () => window.vds.demoReplay())}
+              />
+            )}
+
+            {view === 'missions' && openMission && (
+              <MissionDetail
+                inspect={inspect}
+                events={missionEvents}
+                job={jobs.find((j) => j.id === missionJobs[openMission] && j.status === 'running') ?? null}
+                jobLog={missionJobs[openMission] ? logs[missionJobs[openMission]] ?? null : null}
+                username={data?.username ?? 'user'}
+                sample={sample}
+                busy={busy}
+                read={readArtifact}
+                replaying={replaying}
+                onReplaying={setReplaying}
+                onBack={() => { setReplaying(false); setOpenMission(null); }}
+                onRefresh={() => void loadMission(openMission)}
+                onRun={(tools, maxCost, dryRun) =>
+                  void startMissionJob(openMission, () => window.vds.missionRun({ id: openMission, tools, maxCost, dryRun }))}
+                onStop={() => { const j = missionJobs[openMission]; if (j) void window.vds.stopJob(j); }}
+                onRunExperiment={(id) =>
+                  void startMissionJob(openMission, () => window.vds.experimentRun({ id, runs: 2 }))}
+                onDecide={async (p) => {
+                  setBusy(true);
+                  const r = await window.vds.missionDecide({ id: openMission, ...p });
+                  setBusy(false);
+                  if (r.error) return r.error;
+                  await Promise.all([loadMission(openMission), refresh()]);
+                  return null;
+                }}
+                onClose={async (outcome, reason) => {
+                  setBusy(true);
+                  const r = await window.vds.missionClose({ id: openMission, outcome, reason });
+                  setBusy(false);
+                  if (r.error) return r.error;
+                  await Promise.all([loadMission(openMission), loadMissions()]);
+                  return null;
+                }}
+                onShowOnMap={selectSubject}
               />
             )}
 
