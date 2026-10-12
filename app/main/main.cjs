@@ -1110,10 +1110,17 @@ function cliJson(argv, { timeout = 60_000, maxBuffer = 64 * 1024 * 1024 } = {}) 
           const why = String(stderr || '').trim().split('\n').filter(Boolean).pop();
           return resolve({ error: why || err.message });
         }
+        // The mission commands print one document, pretty-printed across many lines; a
+        // command that chats first and prints its JSON last is read from its last line.
+        const text = String(stdout).trim();
         try {
-          resolve(JSON.parse(String(stdout).trim().split('\n').pop()));
-        } catch (e) {
-          resolve({ error: `bad ${argv[0]} output: ${e.message}` });
+          resolve(JSON.parse(text));
+        } catch {
+          try {
+            resolve(JSON.parse(text.split('\n').pop()));
+          } catch (e) {
+            resolve({ error: `bad ${argv[0]} output: ${e.message}` });
+          }
         }
       },
     );
