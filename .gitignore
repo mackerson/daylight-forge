@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 out/
 *.db
 app/dist/
@@ -9,3 +9,6 @@ app/dist/
 
 # Portable builds. 347MB of Electron runtime, reproducible with `pnpm package`.
 build/
+
+# Worktrees the agent harness creates beside the checkout.
+.claude/worktrees/
