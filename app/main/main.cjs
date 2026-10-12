@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Notification, ipcMain, protocol, net, dialog, shell } = require('electron');
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const {
   sameRepo, repoOfDir, dirForRepo, ownershipConflict,
@@ -358,6 +359,15 @@ function runJob(label, argv, { onExit } = {}) {
          */
         if (msg.campaign) {
           send('vds:campaign', { id, sample: msg.campaign });
+          continue;
+        }
+        /**
+         * A `mission run` says so on each state change the same way. Forwarded, not stored:
+         * the mission is in daylight.db by the time this arrives and the renderer re-reads
+         * it, so this is the signal and the database is the data.
+         */
+        if (msg.mission && typeof msg.mission === 'object' && typeof msg.mission.id === 'string') {
+          send('vds:mission-update', { id, mission: msg.mission });
           continue;
         }
         if (!msg.spend) continue;
@@ -737,6 +747,13 @@ ipcMain.handle('vds:load', () => {
      * that can answer.
      */
     watching: !!watcher,
+    /**
+     * Mission Control from the bundled sample instead of the CLI. For the headless harness
+     * and for looking at the screens on a machine with no missions; the renderer labels it.
+     */
+    missionSample: !!process.env.VDS_MISSION_SAMPLE,
+    // Decisions are recorded as someone's. The renderer has no way to know who is sitting here.
+    username: safeUsername(),
   };
 });
 
@@ -1063,6 +1080,286 @@ ipcMain.handle('vds:reveal', (_e, { file, line }) => {
   return { ok: true, path: abs, line };
 });
 
+
+// ---- mission control ----------------------------------------------------------
+
+function safeUsername() {
+  try {
+    return os.userInfo().username || 'user';
+  } catch {
+    return 'user';
+  }
+}
+
+/**
+ * Run a CLI command that prints one JSON document, and hand it back parsed.
+ *
+ * Every Mission Control read goes through here. The renderer never names a path or a
+ * command: it names an operation, main builds the argv from its own state, and a failure
+ * comes back as `{error}` the way `vds:query` already reports one.
+ */
+function cliJson(argv, { timeout = 60_000, maxBuffer = 64 * 1024 * 1024 } = {}) {
+  return new Promise((resolve) => {
+    execFile(
+      NODE.bin,
+      nodeArgs(argv),
+      { cwd: ROOT, env: nodeEnv(), maxBuffer, timeout },
+      (err, stdout, stderr) => {
+        if (err) {
+          // The CLI prints its refusal on stderr; the exit code alone says nothing useful.
+          const why = String(stderr || '').trim().split('\n').filter(Boolean).pop();
+          return resolve({ error: why || err.message });
+        }
+        try {
+          resolve(JSON.parse(String(stdout).trim().split('\n').pop()));
+        } catch (e) {
+          resolve({ error: `bad ${argv[0]} output: ${e.message}` });
+        }
+      },
+    );
+  });
+}
+
+/** Renderer input is untrusted: a short, single-line string or nothing. */
+const str = (v, max = 400) =>
+  typeof v === 'string' && v.length > 0 && v.length <= max && !/[\r\n\0]/.test(v) ? v : null;
+/** Ids are ours: a short prefix, an underscore and hex. Anything else is not an id. */
+const idOf = (v) => (typeof v === 'string' && /^[a-z]{1,3}_[0-9a-f]{8,64}$/.test(v) ? v : null);
+const digestOf = (v) => (typeof v === 'string' && /^sha256:[0-9a-f]{64}$/.test(v) ? v : null);
+const num = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : null);
+
+ipcMain.handle('vds:missions', () =>
+  cliJson(['mission', 'list', '--out', state.dir, '--format', 'json']),
+);
+
+ipcMain.handle('vds:mission', (_e, { id } = {}) => {
+  const mid = idOf(id);
+  if (!mid) return { error: 'not a mission id' };
+  return cliJson(['mission', 'inspect', mid, '--out', state.dir, '--format', 'json']);
+});
+
+ipcMain.handle('vds:mission-create', (_e, opts = {}) => {
+  if (!state.repo) return { error: 'no repo selected' };
+  const kind = opts.kind === 'verify' ? 'verify' : opts.kind === 'explore' ? 'explore' : null;
+  const objective = str(opts.objective, 2000);
+  if (!kind || !objective) return { error: 'a mission needs a kind and an objective' };
+  const argv = [
+    'mission', 'create', state.repo, '--out', state.dir,
+    '--kind', kind, '--objective', objective, '--format', 'json',
+  ];
+  if (Array.isArray(opts.scope)) {
+    const scope = opts.scope.filter((p) => str(p, 500) && !p.includes(','));
+    if (scope.length) argv.push('--scope', scope.join(','));
+  }
+  const maxCost = num(opts.maxCost, 0, 10_000);
+  if (maxCost) argv.push('--max-cost', String(maxCost));
+  return cliJson(argv);
+});
+
+/**
+ * Running a mission is a job, like `agent` and `run`: its output streams through the job
+ * channels, its `##vds {"mission":…}` lines become `vds:mission-update`, and it can be stopped.
+ */
+ipcMain.handle('vds:mission-run', (_e, opts = {}) => {
+  if (!state.repo) return { error: 'no repo selected' };
+  const mid = idOf(opts.id);
+  if (!mid) return { error: 'not a mission id' };
+  const tools = str(opts.tools, 400) || 'claude';
+  if (!/^[a-zA-Z0-9:,._\/-]+$/.test(tools)) return { error: 'roster has characters it should not' };
+  const argv = ['mission', 'run', mid, state.repo, '--out', state.dir, '--tools', tools];
+  const maxCost = num(opts.maxCost, 0, 10_000);
+  if (maxCost) argv.push('--max-cost', String(maxCost));
+  if (opts.dryRun) argv.push('--dry-run');
+  return { id: runJob(`mission:${mid.slice(0, 10)}${opts.dryRun ? ':dry' : ''}`, argv) };
+});
+
+ipcMain.handle('vds:mission-decide', (_e, opts = {}) => {
+  const mid = idOf(opts.id);
+  const subject = str(opts.subject, 1000);
+  const predicate = str(opts.predicate, 200);
+  const rationale = str(opts.rationale, 4000);
+  if (!mid || !subject || !predicate || !rationale) {
+    return { error: 'a decision needs a mission, a subject, a predicate and a rationale' };
+  }
+  const argv = [
+    'mission', 'decide', mid, '--out', state.dir,
+    '--subject', subject, '--predicate', predicate,
+    '--value', typeof opts.value === 'string' ? opts.value : JSON.stringify(opts.value ?? null),
+    '--rationale', rationale, '--format', 'json',
+  ];
+  const actor = str(opts.actor, 200);
+  argv.push('--actor', actor || `human:${safeUsername()}`);
+  const experiment = idOf(opts.experiment);
+  if (experiment) argv.push('--experiment', experiment);
+  return cliJson(argv, { timeout: 30_000 });
+});
+
+ipcMain.handle('vds:mission-close', (_e, opts = {}) => {
+  const mid = idOf(opts.id);
+  const outcome = ['succeeded', 'failed', 'inconclusive', 'cancelled'].includes(opts.outcome) ? opts.outcome : null;
+  const reason = str(opts.reason, 4000);
+  if (!mid || !outcome || !reason) return { error: 'closing needs a mission, an outcome and a reason' };
+  return cliJson([
+    'mission', 'close', mid, '--out', state.dir, '--outcome', outcome, '--reason', reason, '--format', 'json',
+  ], { timeout: 30_000 });
+});
+
+ipcMain.handle('vds:experiment-run', (_e, opts = {}) => {
+  if (!state.repo) return { error: 'no repo selected' };
+  const xid = idOf(opts.id);
+  if (!xid) return { error: 'not an experiment id' };
+  const argv = ['experiment', 'run', xid, state.repo, '--out', state.dir, '--format', 'json'];
+  const runs = num(opts.runs, 1, 10);
+  if (runs) argv.push('--runs', String(runs));
+  return { id: runJob(`experiment:${xid.slice(0, 10)}`, argv) };
+});
+
+/**
+ * Artifact text, bounded and redacted by the CLI.
+ *
+ * Addressed by digest only, so the renderer cannot ask for a file — it can ask for content
+ * the mission already recorded, which is the whole point of content addressing.
+ */
+ipcMain.handle('vds:artifact', (_e, opts = {}) => {
+  const digest = digestOf(opts.id);
+  if (!digest) return { error: 'not an artifact digest' };
+  const argv = ['artifact', digest, '--out', state.dir, '--format', 'json'];
+  const max = num(opts.maxBytes, 1, 8 * 1024 * 1024);
+  if (max) argv.push('--max-bytes', String(max));
+  return cliJson(argv, { timeout: 30_000 });
+});
+
+ipcMain.handle('vds:dl-events', (_e, opts = {}) => {
+  const since = num(opts.since, 0, Number.MAX_SAFE_INTEGER) ?? 0;
+  const mid = idOf(opts.missionId);
+  return readDaylightEvents(since, mid, num(opts.limit, 1, 5000) ?? 500);
+});
+
+ipcMain.handle('vds:demo-prepare', () => ({
+  id: runJob('demo prepare (PLANTED fixture)', ['demo', 'prepare', '--out', state.dir, '--format', 'json']),
+}));
+
+ipcMain.handle('vds:demo-replay', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Choose a mission recording',
+    properties: ['openFile'],
+    filters: [{ name: 'Daylight recording', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePaths[0]) return { canceled: true };
+  const file = path.resolve(res.filePaths[0]);
+  return {
+    id: runJob('demo replay', ['demo', 'replay', '--recording', file, '--out', state.dir, '--format', 'json']),
+  };
+});
+
+// ---- live events: a projection of daylight.db, polled -----------------------------
+
+/**
+ * Events are read straight out of `daylight.db` when this Node can, and through the CLI
+ * when it cannot. The table is the truth either way; this is only how often the window
+ * looks at it. One second while a job is running, five otherwise, and not at all when no
+ * mission is open — the renderer tells main which one.
+ */
+let sqlite = null;
+try {
+  sqlite = require('node:sqlite');
+} catch {
+  // Older Electron. The CLI path below does the same read more slowly.
+}
+
+const dlWatch = { missionId: null, since: 0, dir: null, timer: null, busy: false };
+
+function rowToEvent(r) {
+  const json = (v, fallback) => {
+    if (v === null || v === undefined || v === '') return fallback;
+    try { return JSON.parse(v); } catch { return fallback; }
+  };
+  return {
+    schemaVersion: r.schema_version,
+    id: r.id,
+    sequence: Number(r.sequence),
+    at: Number(r.at),
+    projectId: r.project_id,
+    missionId: r.mission_id ?? undefined,
+    taskId: r.task_id ?? undefined,
+    attemptId: r.attempt_id ?? undefined,
+    actorId: r.actor_id ?? undefined,
+    category: r.category,
+    name: r.name,
+    artifactIds: json(r.artifact_ids, undefined),
+    payload: json(r.payload, {}),
+  };
+}
+
+async function readDaylightEvents(since, missionId, limit) {
+  const file = path.join(state.dir, 'daylight.db');
+  if (!fs.existsSync(file)) return { events: [] };
+  if (sqlite) {
+    let db = null;
+    try {
+      db = new sqlite.DatabaseSync(file, { readOnly: true });
+      const rows = missionId
+        ? db.prepare(
+            'SELECT * FROM events WHERE sequence > ? AND mission_id = ? ORDER BY sequence LIMIT ?',
+          ).all(since, missionId, limit)
+        : db.prepare('SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?').all(since, limit);
+      return { events: rows.map(rowToEvent) };
+    } catch (err) {
+      // A locked or half-migrated file: fall through to the CLI, which waits its turn.
+      console.error(`daylight.db read failed, using the CLI: ${err.message}`);
+    } finally {
+      try { db?.close(); } catch { /* already closed */ }
+    }
+  }
+  const argv = ['events', '--out', state.dir, '--since', String(since), '--limit', String(limit), '--format', 'json'];
+  if (missionId) argv.push('--mission', missionId);
+  const out = await cliJson(argv, { timeout: 30_000 });
+  if (out.error) return { events: [], error: out.error };
+  return { events: Array.isArray(out) ? out : out.events ?? [] };
+}
+
+async function pollDaylight() {
+  if (dlWatch.busy || !dlWatch.missionId) return;
+  dlWatch.busy = true;
+  try {
+    // The output directory moved under us: the sequence we had belongs to another database.
+    if (dlWatch.dir !== state.dir) {
+      dlWatch.dir = state.dir;
+      dlWatch.since = 0;
+    }
+    const { events } = await readDaylightEvents(dlWatch.since, dlWatch.missionId, 500);
+    if (events.length) {
+      dlWatch.since = events[events.length - 1].sequence;
+      send('vds:dl-event', { missionId: dlWatch.missionId, events });
+    }
+  } finally {
+    dlWatch.busy = false;
+    scheduleDaylightPoll();
+  }
+}
+
+function scheduleDaylightPoll() {
+  if (dlWatch.timer) clearTimeout(dlWatch.timer);
+  dlWatch.timer = null;
+  if (!dlWatch.missionId) return;
+  dlWatch.timer = setTimeout(pollDaylight, jobs.size > 0 ? 1000 : 5000);
+}
+
+ipcMain.handle('vds:mission-watch', (_e, missionId) => {
+  const mid = idOf(missionId);
+  if (mid !== dlWatch.missionId) {
+    dlWatch.missionId = mid;
+    dlWatch.since = 0;
+    dlWatch.dir = state.dir;
+  }
+  if (dlWatch.timer) clearTimeout(dlWatch.timer);
+  dlWatch.timer = null;
+  // Straight away rather than after the first interval: opening a mission should show its
+  // events, not a blank pane for a second.
+  if (mid) void pollDaylight();
+  return { watching: dlWatch.missionId };
+});
+
 app.whenReady().then(() => {
   protocol.handle('app', (request) => {
     const url = new URL(request.url);
@@ -1081,6 +1378,8 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   stopTail();
   stopWatch();
+  if (dlWatch.timer) clearTimeout(dlWatch.timer);
+  dlWatch.missionId = null;
   for (const child of jobs.values()) child.kill('SIGTERM');
   if (process.platform !== 'darwin') app.quit();
 });
