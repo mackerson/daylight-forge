@@ -8,7 +8,7 @@
  */
 import {
   planUpdate, REBUILD_INPUTS, RECOLOR_INPUTS, RELAYOUT_INPUTS, type SceneInputs,
-} from '../../app/renderer/lib/scene/lifecycle.ts';
+} from '../scene/lifecycle.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();

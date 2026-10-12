@@ -9,7 +9,7 @@ import {
 } from '../../../../engine/render/settings.ts';
 import { onReplayEvent, onReplayReset } from '../replay.ts';
 import { agentColor, channelColor, type Channel } from './palette.ts';
-import type { SceneLod, SceneMode } from './lifecycle.ts';
+import type { SceneLod, SceneMode } from '../../../../engine/scene/lifecycle.ts';
 
 /**
  * The festooned tree, as a thing with a lifetime.
