@@ -406,6 +406,8 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
 /** The MCP config claude/codex accept, pointing at our stdio server. */
 export function mcpConfig(
   serverCmd: string[], dir: string, agentTool: string, model?: string, session?: string,
+  /** Anything else the server should see — a mission's blind-review prefix, for one. */
+  extraEnv: Record<string, string> = {},
 ) {
   return {
     mcpServers: {
@@ -418,6 +420,7 @@ export function mcpConfig(
           VDS_DIR: dir, VDS_AGENT: agentTool,
           ...(model ? { VDS_MODEL: model } : {}),
           ...(session ? { VDS_SESSION: session } : {}),
+          ...extraEnv,
         },
       },
     },

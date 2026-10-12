@@ -67,7 +67,7 @@ export interface DriveOptions {
   onProgress?: (p: { source: string; cost: number; turns: number }) => void;
 }
 
-const SYSTEM_RULES = `
+export const SYSTEM_RULES = `
 You are mapping a codebase for a static-analysis harness. You are READ-ONLY: never edit,
 create or delete any file, and never run commands that mutate state.
 
