@@ -40,6 +40,16 @@ export interface AgentRun {
    * that carries the number out without the noise.
    */
   onProgress?: (spend: { cost: number; turns: number }) => void;
+  /**
+   * Called with every chunk of the child's output, as it arrives.
+   *
+   * The buffered `stdout`/`stderr` on the result stay — they are what every existing caller
+   * reads — but a buffer only exists once the run is over, and a mission wants to show an
+   * agent's console while it is still running and keep the whole stream as an artifact
+   * afterwards without this module deciding where artifacts live. The seam carries bytes
+   * out; what to do with them is the caller's.
+   */
+  onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }
 
 export interface AgentResult {
@@ -344,6 +354,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
     let reported = { cost: 0, turns: 0 };
     child.stdout.on('data', (d) => {
       stdout += d;
+      options.onOutput?.('stdout', String(d));
       const now = readSpend(stdout);
       if (now.cost !== reported.cost || now.turns !== reported.turns) {
         reported = now;
@@ -357,7 +368,10 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
         setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
       }
     });
-    child.stderr.on('data', (d) => (stderr += d));
+    child.stderr.on('data', (d) => {
+      stderr += d;
+      options.onOutput?.('stderr', String(d));
+    });
 
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
