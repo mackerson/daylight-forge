@@ -21,6 +21,16 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # The experiment runner refuses to execute anything without bubblewrap, and its tests
+      # skip the sandboxed cases (with a printed note) when it is absent — so without this
+      # step CI only ever exercises the fail-closed path. Ubuntu 24.04 additionally gates
+      # unprivileged user namespaces behind AppArmor. Unverified from the dev machine: if
+      # either step fails here, the tests still pass, they just cover less.
+      - name: sandbox for experiment tests
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test:all
