@@ -28,6 +28,7 @@ import { evaluate, evaluateAll } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
 import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/share.ts';
 import { toArchitectureDoc } from './render/architecture.ts';
+import { runDaylightCommand } from './mission/commands.ts';
 
 interface Args {
   command: string;
@@ -1539,6 +1540,16 @@ switch (args.command) {
   case 'quality':
     runQuality(args);
     break;
+  case 'mission':
+  case 'experiment':
+  case 'artifact':
+  case 'events':
+  case 'report':
+  case 'demo':
+    // Mission commands carry a subcommand before their positional, which `parseArgs` reads
+    // as a target path, so they parse the raw argv themselves. See mission/commands.ts.
+    process.exitCode = await runDaylightCommand(process.argv.slice(2));
+    break;
   default:
     console.log(`visual-desloppify — get all the data, then focus it down.
 
@@ -1556,6 +1567,17 @@ usage:
                                                    # converges or a ceiling stops it, plan
   node engine/cli.ts adapters   [--format json]    # which agent CLIs are installed and usable
   node engine/cli.ts quality    --out <dir> [--format json]   # how much of the map can be believed
+
+  node engine/cli.ts mission    create <repo> --objective '<q>' [--kind explore] [--scope a.ts,b.ts]
+                                list | inspect <id> | run <id> <repo> --tools <roster> | decide <id> …
+                                close <id> --outcome <o> --reason '<r>' | replay <id>
+                                export <id> --file <f> | import --file <f>     # all take --out, --format json
+  node engine/cli.ts experiment propose <mission-id> --subject <s> --predicate <p> --hypothesis '<h>'
+                                        --test <file> --test-path <rel> --expect-exit <n>
+                                run <experiment-id> [repo] [--runs 2] [--timeout <s>]
+  node engine/cli.ts report     <mission-id> [--file out.md]
+  node engine/cli.ts artifact   <digest> | events --since <n> [--mission <id>]
+  node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>
 
 options:
   --out <dir>            output directory (default: ./out)
