@@ -34,6 +34,30 @@ export interface ServerOptions {
   /** Which CLI is on the other end, recorded as claim provenance. */
   agentTool: string;
   model?: string;
+  /**
+   * Blind review. Agent claims whose session starts with this prefix — the other reviewers
+   * in the same mission — are withheld from every read, so a second reviewer forms its own
+   * answer rather than inheriting the first one's. The caller's own claims still show, and
+   * so do human and static ones, which are not the thing independence protects against.
+   */
+  blindPrefix?: string;
+}
+
+/**
+ * Which claims a blind reviewer may see.
+ *
+ * Exported because the rule is the whole of ADR-6 and is easier to test as a function than
+ * through a stdio transport. `undefined` prefix means not blind: everything is visible.
+ */
+export function visibleToReviewer<T extends { source: Source }>(
+  claims: T[], blindPrefix: string | undefined, ownSession: string,
+): T[] {
+  if (!blindPrefix) return claims;
+  return claims.filter((c) => {
+    if (c.source.kind !== 'agent') return true;
+    const session = c.source.sessionId ?? '';
+    return session === ownSession || !session.startsWith(blindPrefix);
+  });
 }
 
 export function loadGraph(dir: string): Graph {
@@ -112,6 +136,8 @@ export function createServer(opts: ServerOptions) {
   };
 
   const nodesById = new Map(graph.nodes.map((n) => [n.id, n]));
+  const visible = <T extends { source: Source }>(claims: T[]) =>
+    visibleToReviewer(claims, opts.blindPrefix, opts.session);
   const readJson = (name: string, fallback: unknown) => {
     const file = path.join(opts.dir, name);
     if (!fs.existsSync(file)) return fallback;
@@ -222,7 +248,7 @@ export function createServer(opts: ServerOptions) {
         nodes: [...seen].map((id) => nodesById.get(id) ?? { id, kind: 'external' }),
         edges,
         beliefs: [...seen].flatMap((id) =>
-          store.claimsFor(id).map((c) => ({ subject: id, predicate: c.predicate, value: c.value })),
+          visible(store.claimsFor(id)).map((c) => ({ subject: id, predicate: c.predicate, value: c.value })),
         ),
       });
     },
@@ -353,7 +379,10 @@ export function createServer(opts: ServerOptions) {
           confidence: a.confidence, evidence: a.evidence, source,
         });
         emit('flag_contradiction', { ok: true, subject: a.subject, predicate: a.predicate });
-        return ok({ accepted: true, belief: store.belief(a.subject, a.predicate) });
+        // The belief is derived from every claim, but a blind reviewer is only shown its own
+        // share of them — the status stays honest, the other side's text stays unseen.
+        const belief = store.belief(a.subject, a.predicate);
+        return ok({ accepted: true, belief: { ...belief, claims: visible(belief.claims) } });
       } catch (err) {
         if (err instanceof EvidenceRequired) {
           emit('flag_contradiction', { ok: false, subject: a.subject, error: err.message });
@@ -493,6 +522,7 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
     session: process.env.VDS_SESSION ?? 'local',
     agentTool: process.env.VDS_AGENT ?? 'unknown',
     model: process.env.VDS_MODEL,
+    blindPrefix: process.env.VDS_BLIND_PREFIX,
   });
   await server.connect(new StdioServerTransport());
 }
