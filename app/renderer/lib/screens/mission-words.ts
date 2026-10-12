@@ -144,3 +144,23 @@ export function eventLine(e: DaylightEvent): string {
     }
   }
 }
+
+/**
+ * The line a mission is known by.
+ *
+ * An objective is the whole brief a reviewer is handed, several paragraphs long when it
+ * comes from the fixture, and a brief is not a title. The question in it is: the first
+ * sentence that ends in a question mark, or failing that the first line.
+ */
+export function objectiveTitle(objective: string): string {
+  const text = objective.trim();
+  const end = text.indexOf('?');
+  // A sentence boundary is punctuation followed by whitespace, or a line break — a dot
+  // inside `cache.ts` is neither.
+  const starts = [...text.slice(0, end).matchAll(/[.!?]\s+|\n\s*/g)];
+  const last = starts[starts.length - 1];
+  const q = end >= 0 ? text.slice(last ? last.index + last[0].length : 0, end + 1) : null;
+  const line = text.split('\n').map((l) => l.trim()).find(Boolean) ?? text;
+  const pick = (q ?? line).replace(/\s+/g, ' ').trim();
+  return pick.length > 160 ? `${pick.slice(0, 157)}…` : pick;
+}

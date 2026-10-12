@@ -8,8 +8,7 @@ import type {
 import { sourceColor } from '../vocab.ts';
 import {
   attemptWord, conclusionWord, costWord, duration, eventLine, missionWord, shortId, shortRev,
-  toRunEvents,
-} from './mission-words.ts';
+  toRunEvents, objectiveTitle } from './mission-words.ts';
 
 /**
  * One mission, end to end.
@@ -151,7 +150,15 @@ export function MissionDetail({
           )}
           <button className="btn" onClick={onRefresh} disabled={busy}>refresh</button>
         </div>
-        <h2 style={{ marginTop: 11 }}>{mission.objective}</h2>
+        <h2 style={{ marginTop: 11 }}>{objectiveTitle(mission.objective)}</h2>
+        {objectiveTitle(mission.objective) !== mission.objective.trim() && (
+          <details className="dim" style={{ marginTop: 4 }}>
+            <summary>full brief, as handed to every reviewer</summary>
+            <pre className="wrap" style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 12 }}>
+              {mission.objective}
+            </pre>
+          </details>
+        )}
         {mission.outcomeReason && (
           <p className="sub">{mission.state === 'blocked' ? 'blocked: ' : ''}{mission.outcomeReason}</p>
         )}

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Mission, MissionCreateOptions, MissionList } from '../types.ts';
-import { missionWord, shortId, shortRev } from './mission-words.ts';
+import { missionWord, shortId, shortRev, objectiveTitle } from './mission-words.ts';
 
 /**
  * Mission Control, the list.
@@ -116,7 +116,7 @@ export function Missions({
               <button key={m.id} className={`mission-row ${m.state}`} onClick={() => onOpen(m)}>
                 <span className={`pill ${w.tone === 'dim' ? '' : w.tone}`}>{w.name}</span>
                 <span className="body">
-                  <span className="claim-line">{m.objective}</span>
+                  <span className="claim-line" title={m.objective}>{objectiveTitle(m.objective)}</span>
                   <span className="meta">
                     {m.kind} · {shortId(m.id)} · rev {shortRev(m.baseRevision)} · {m.taskIds.length} task{m.taskIds.length === 1 ? '' : 's'}
                     {m.scope.paths?.length ? ` · scope ${m.scope.paths.slice(0, 2).join(', ')}${m.scope.paths.length > 2 ? '…' : ''}` : ''}
