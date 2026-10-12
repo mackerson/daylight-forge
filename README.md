@@ -239,6 +239,28 @@ The working list: [TODO.md](TODO.md).
 
 ---
 
+## Daylight (P0 preview)
+
+The map now has a work queue above it. A **mission** is a question about one revision of a
+repository; it runs independent reviewers that cannot see each other's answers, records
+where they disagree, turns a disagreement into an **experiment** that executes a registered
+test inside a bubblewrap sandbox, and waits for a person to decide — with the test, the
+command, the logs, the revision and the affected node all one click from the verdict. Every
+attempt, event and decision is durable in `daylight.db` beside the claim store, and a whole
+mission can be exported and replayed on another machine.
+
+```bash
+pnpm demo:prepare --out ./out                     # materialise the fixture, map it, open a mission
+pnpm exec vds mission run <id> <fixture-root> --tools claude:sonnet,codex --max-cost 2   # spends money
+pnpm exec vds experiment run <experiment-id> <fixture-root> --out ./out
+pnpm exec vds mission decide <id> --subject src/session-cache.ts --predicate bug_verdict --value true --rationale '…'
+```
+
+The demo fixture under `fixtures/daylight-demo/` carries a **planted** defect, and says so in
+its README, in `DEFECT.md`, in the mission objective and in every report: nothing it shows
+is an independently discovered production defect. The guide, the acceptance checklist and
+the measurements are under [docs/daylight/](docs/daylight/).
+
 ## Reference
 
 | Command | Does |
