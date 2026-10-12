@@ -889,3 +889,70 @@ code, .mono, kbd { font-family: var(--mono); }
 /* Scaled to its own peak: pinned to zero, a repo with four thousand open questions draws a
    flat line whatever the run does. */
 .burn-spark { display: block; width: 100%; height: 46px; margin: 10px 0 4px; }
+
+/* ---- mission control --------------------------------------------------------- */
+
+.mission-row {
+  display: flex; gap: 12px; align-items: flex-start; width: 100%; text-align: left;
+  padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel);
+  color: inherit; font: inherit; cursor: pointer;
+}
+.mission-row:hover { border-color: var(--line-4); }
+.mission-row.blocked { border-left: 2px solid var(--bad-mark); background: var(--bad-bg); }
+.mission-row.running { border-left: 2px solid var(--accent-mark); }
+.mission-row .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mission-row .claim-line { font: 500 12.5px/1.4 var(--sans); color: var(--text-hi); }
+.mission-row .meta { font: 400 10.5px var(--mono); color: var(--dim-2); margin-top: 4px; overflow-wrap: anywhere; }
+.mission-row .pill { flex: none; margin-top: 1px; }
+
+.pill.accent { background: var(--accent-bg-2); color: var(--accent); }
+.pill.warn { background: var(--warn-bg-2); color: var(--warn); }
+
+.mission-cols { grid-template-columns: minmax(0, 1fr) 400px; }
+.mission .card > h3 .link { font-size: 10.5px; }
+.mission .fields label { gap: 8px; }
+.mission textarea, .mission select, .mission input[type="text"], .mission input:not([type]) {
+  background: var(--panel-2); border: 1px solid var(--line-3); border-radius: 5px; color: var(--text);
+  font: 400 11.5px var(--sans); padding: 5px 8px;
+}
+.mission textarea { width: 100%; resize: vertical; font-family: var(--sans); }
+.mission textarea:focus, .mission select:focus, .mission input:focus { outline: none; border-color: var(--accent-mark); }
+.mission .decide-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+
+.task-row { padding: 9px 0; }
+.task-row + .task-row { border-top: 1px solid var(--line); }
+.attempt { margin: 6px 0 0 18px; padding: 6px 0 0; border-left: 2px solid var(--line-3); padding-left: 10px; }
+.attempt .link[aria-pressed="true"] { color: var(--accent); }
+
+.belief-row.picked, .experiment-row.picked { border-color: var(--accent-line); background: var(--accent-bg); }
+.experiment-row {
+  display: flex; gap: 10px; align-items: center; padding: 9px 12px; border: 1px solid var(--line-2);
+  border-radius: 8px; background: var(--panel); margin-top: 6px;
+}
+.experiment-row .body {
+  flex: 1; min-width: 0; text-align: left; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0;
+}
+.experiment-row .claim-line { font: 500 12.5px/1.4 var(--sans); color: var(--text-hi); }
+.experiment-row .meta { font: 400 10.5px var(--mono); color: var(--dim-2); margin-top: 4px; overflow-wrap: anywhere; }
+
+.decision-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; }
+.decision-row + .decision-row { border-top: 1px solid var(--line); }
+.decision-row .body { flex: 1; min-width: 0; }
+.decision-row .claim-line { font: 500 12.5px/1.4 var(--sans); color: var(--text-hi); }
+.decision-row .meta { font: 400 10.5px var(--mono); color: var(--dim-2); margin-top: 3px; }
+
+.console { margin-top: 6px; }
+.console-log { max-height: 320px; }
+.dl-stream { max-height: 360px; }
+.dl-stream .stream-row { grid-template-columns: 40px 120px minmax(0, 1fr); }
+.dl-stream .dl-name { color: var(--ok); }
+.dl-stream .stream-row.cost .dl-name { color: var(--warn); }
+.dl-stream .stream-row.experiment .dl-name { color: var(--accent); }
+.dl-stream .stream-row.claim .dl-name { color: var(--bad); }
+.dl-stream .stream-row.lifecycle .dl-name, .dl-stream .stream-row.process .dl-name { color: var(--dim); }
+
+.evidence { overflow: auto; }
+.evidence .repro { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; }
+.evidence-log { margin-top: 6px; }
+.evidence-log .log { margin-top: 4px; max-height: 220px; }
+.evidence .fact .v { max-width: 60%; overflow-wrap: anywhere; text-align: right; }

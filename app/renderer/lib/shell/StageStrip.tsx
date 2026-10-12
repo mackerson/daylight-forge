@@ -4,16 +4,22 @@ import { money } from '../vocab.ts';
 /**
  * The loop, as a strip that owns navigation.
  *
- * Two things make this different from the tab rail it replaces. It is the same five places
- * on every screen, so where you are is never a question; and each one carries its own live
+ * Two things make this different from the tab rail it replaces. It is the same places on
+ * every screen, so where you are is never a question; and each one carries its own live
  * state underneath rather than a label, so the strip answers "what does this need from me"
  * without being clicked. A stage that reads "blocked on you" is the whole design.
+ *
+ * Mission Control sits at the end of the loop rather than replacing it: a mission is the
+ * loop run on purpose, against a question, with the evidence kept.
  */
 
-export type Stage = 'map' | 'detect' | 'explore' | 'beliefs' | 'plan';
+export type Stage = 'map' | 'detect' | 'explore' | 'beliefs' | 'plan' | 'missions';
 export type View = Stage | 'invariants' | 'runs';
 
-export const STAGES: Stage[] = ['map', 'detect', 'explore', 'beliefs', 'plan'];
+export const STAGES: Stage[] = ['map', 'detect', 'explore', 'beliefs', 'plan', 'missions'];
+
+/** What the strip prints where the stage id is not the right word. */
+const LABEL: Partial<Record<Stage, string>> = { missions: 'mission control' };
 
 /** What the dot means. Not severity — where the work is. */
 export type Tick = 'idle' | 'done' | 'ready' | 'live' | 'blocked';
@@ -49,7 +55,7 @@ export function StageStrip({
         >
           <i className={`tick ${stages[s].tick}`} />
           <span className="stage-text">
-            <span className="what">{s}</span>
+            <span className="what">{LABEL[s] ?? s}</span>
             <span className="state">{stages[s].state}</span>
           </span>
         </button>

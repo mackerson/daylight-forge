@@ -48,6 +48,63 @@ import type { QualityReport } from '../../../engine/quality/types.ts';
 import type { RunRecord } from '../../../engine/swarm/types.ts';
 export type { RunRecord } from '../../../engine/swarm/types.ts';
 export type { QualityReport, QualityWarning, SourceUse } from '../../../engine/quality/types.ts';
+export type {
+  Mission, MissionKind, MissionState, MissionOutcome, Task, TaskState, Attempt, AttemptState,
+  Experiment, ExperimentConclusion, ExpectedObservation, Decision, DecisionKind, ArtifactRef,
+  DaylightEvent, EventCategory, ProjectIdentity,
+} from '../../../engine/mission/types.ts';
+export type { ExecutionRecord, ExecutionStatus, Observation } from '../../../engine/experiment/types.ts';
+
+import type {
+  Mission, Task, Attempt, Experiment, Decision, DaylightEvent, ArtifactRef, ProjectIdentity,
+  MissionKind,
+} from '../../../engine/mission/types.ts';
+import type { Evidence } from '../../../engine/store/types.ts';
+
+/**
+ * One side of a dispute, as `vds mission inspect` reports it.
+ *
+ * A dispute is a CONTRADICTED belief inside a mission's scope, split by distinct answer; the
+ * belief itself is carried so the existing arbitration screen can open it unchanged.
+ */
+export interface DisputeSide {
+  source: string;
+  value: unknown;
+  confidence: number;
+  evidence: Evidence[];
+  claimId: number;
+}
+
+export interface Dispute {
+  subject: string;
+  predicate: string;
+  belief: Belief;
+  sides: DisputeSide[];
+}
+
+/** `vds mission inspect <id> --format json`. */
+export interface MissionInspect {
+  mission: Mission;
+  tasks: Task[];
+  attempts: Attempt[];
+  experiments: Experiment[];
+  decisions: Decision[];
+  disputes: Dispute[];
+  events: DaylightEvent[];
+}
+
+/** `vds mission list --format json`. */
+export interface MissionList {
+  project: ProjectIdentity | null;
+  missions: Mission[];
+}
+
+export interface MissionCreateOptions {
+  kind: MissionKind;
+  objective: string;
+  scope?: string[];
+  maxCost?: number;
+}
 
 /**
  * One row of the launch roster: a tool and the model it runs on.
@@ -140,6 +197,15 @@ export interface LoadPayload {
    * live channel is feeding.
    */
   campaign?: CampaignEntry[];
+  /**
+   * Render Mission Control from the bundled sample rather than the CLI. Set from
+   * VDS_MISSION_SAMPLE so the headless harness can exercise the screens on a machine with no
+   * missions, and so a reviewer can see the layout without spending anything. The sample is
+   * labelled as such on screen.
+   */
+  missionSample?: boolean;
+  /** Who decisions are recorded as, by default: `human:<os user>`. Main knows; the renderer does not. */
+  username?: string;
 }
 
 export interface QueryPayload {
@@ -226,6 +292,32 @@ declare global {
         sources?: Array<{ source: string; cost: number; turns: number }>;
       }) => void): () => void;
       onJobOutput(fn: (o: { id: string; stream: string; text: string }) => void): () => void;
+
+      // ---- Mission Control. Every call shells out to a `vds mission …` command in main. ----
+      missions(): Promise<MissionList & { error?: string }>;
+      mission(p: { id: string }): Promise<MissionInspect & { error?: string }>;
+      missionCreate(p: MissionCreateOptions): Promise<Mission & { error?: string }>;
+      /** Starts a job; its output streams through the ordinary job channels. */
+      missionRun(p: { id: string; tools: string; maxCost?: number; dryRun?: boolean }): Promise<{ id?: string; error?: string }>;
+      missionDecide(p: {
+        id: string; subject: string; predicate: string; value: unknown; rationale: string;
+        actor?: string; experiment?: string;
+      }): Promise<{ decision?: Decision; belief?: Belief; error?: string }>;
+      missionClose(p: { id: string; outcome: string; reason: string }): Promise<Mission & { error?: string }>;
+      experimentRun(p: { id: string; runs?: number }): Promise<{ id?: string; error?: string }>;
+      /** Redacted, bounded text of a content-addressed artifact. */
+      artifact(p: { id: string; maxBytes?: number }): Promise<{
+        ref?: ArtifactRef; text?: string; truncated?: boolean; error?: string;
+      }>;
+      dlEvents(p: { since: number; missionId?: string; limit?: number }): Promise<{ events: DaylightEvent[]; error?: string }>;
+      /** Tell main which mission to poll events for; null stops polling. */
+      missionWatch(missionId: string | null): Promise<{ watching: string | null }>;
+      onDlEvent(fn: (p: { missionId: string; events: DaylightEvent[] }) => void): () => void;
+      /** A `mission run` job reported a state change on a `##vds {"mission":…}` line. */
+      onMissionUpdate(fn: (p: { id: string; mission: Mission }) => void): () => void;
+      demoPrepare(): Promise<{ id?: string; error?: string }>;
+      /** Main opens the file picker; the renderer never names a path. */
+      demoReplay(): Promise<{ id?: string; error?: string; canceled?: boolean }>;
     };
   }
 }

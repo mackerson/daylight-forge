@@ -70,4 +70,28 @@ contextBridge.exposeInMainWorld('vds', {
     ipcRenderer.on('vds:job-output', h);
     return () => ipcRenderer.removeListener('vds:job-output', h);
   },
+
+  // Mission Control. Same rule as everything above: named operations, validated in main.
+  missions: () => invoke('vds:missions'),
+  mission: (p) => invoke('vds:mission', p),
+  missionCreate: (p) => invoke('vds:mission-create', p),
+  missionRun: (p) => invoke('vds:mission-run', p),
+  missionDecide: (p) => invoke('vds:mission-decide', p),
+  missionClose: (p) => invoke('vds:mission-close', p),
+  experimentRun: (p) => invoke('vds:experiment-run', p),
+  artifact: (p) => invoke('vds:artifact', p),
+  dlEvents: (p) => invoke('vds:dl-events', p),
+  missionWatch: (id) => invoke('vds:mission-watch', id),
+  demoPrepare: () => invoke('vds:demo-prepare'),
+  demoReplay: () => invoke('vds:demo-replay'),
+  onDlEvent: (fn) => {
+    const h = (_e, payload) => fn(payload);
+    ipcRenderer.on('vds:dl-event', h);
+    return () => ipcRenderer.removeListener('vds:dl-event', h);
+  },
+  onMissionUpdate: (fn) => {
+    const h = (_e, payload) => fn(payload);
+    ipcRenderer.on('vds:mission-update', h);
+    return () => ipcRenderer.removeListener('vds:mission-update', h);
+  },
 });
