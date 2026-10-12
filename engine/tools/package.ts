@@ -121,6 +121,10 @@ const app = path.join(out, 'resources', 'app');
 copyDir(path.join(ROOT, 'app', 'main'), path.join(app, 'app', 'main'));
 copyDir(rendererDist, path.join(app, 'app', 'dist'));
 copyDir(path.join(ROOT, 'engine'), path.join(app, 'engine'), (name) => name === 'test');
+// `vds demo prepare` materialises the planted-defect fixture from this tree at runtime, and
+// the engine finds it relative to its own source — so a build without it has a demo button
+// that fails on a machine with no checkout.
+copyDir(path.join(ROOT, 'fixtures', 'daylight-demo'), path.join(app, 'fixtures', 'daylight-demo'));
 
 // 4. Runtime dependencies only.
 step('copying runtime dependencies');
