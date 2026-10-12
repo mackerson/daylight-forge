@@ -89,6 +89,11 @@ export function Missions({
             >
               replay recording
             </button>
+            {/* The spec's second entrance. Shown so nobody thinks it was forgotten, disabled
+                so nobody thinks it works: new-project onboarding is P1. */}
+            <button className="btn" disabled title="New-project onboarding from intent to contracts is P1; not available in this build">
+              start project (P1 — not yet)
+            </button>
           </div>
         </div>
       </div>
