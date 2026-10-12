@@ -226,3 +226,52 @@ DL-04 on `./out` and on the 10k fixture if present; packaging smoke via `pnpm pa
 1. wave 0 contracts (done) → 2. DL-01, DL-02, DL-03, DL-04, DL-07a in parallel worktrees →
 3. merge 01, 02, 03 → DL-06; merge 04 → DL-05 (parallel) → 4. DL-07b → 5. live recording run
 on the fixture (needs owner authorisation: it spends money) → 6. report.
+
+## Wave 2 contract — CLI surface DL-06 builds and DL-05 shells out to
+
+Every command takes `--out <dir>` (the output directory, as today) and `--format json` where
+it prints data. JSON goes to stdout as a single document; progress and prose go to stderr or
+as `##vds {...}` lines (the shell already parses those). Exit 0 means the command ran; a
+mission being blocked or an experiment concluding `falsified` is data, not an exit code.
+Exit 2 is bad arguments; exit 1 is the command itself failing.
+
+```
+vds mission create <repo> --kind explore|verify --objective '<text>' [--scope a.ts,b.ts] [--max-cost <usd>] --format json
+    → Mission                                   (ensureProject; baseRevision = currentRevision(repo).label)
+vds mission list --format json                  → { project: ProjectIdentity|null, missions: Mission[] }
+vds mission inspect <mission-id> --format json  → { mission, tasks, attempts, experiments, decisions, disputes, events }
+    disputes: Array<{ subject, predicate, belief: Belief, sides: Array<{ source, value, confidence, evidence, claimId }> }>
+    events: DaylightEvent[] ordered by sequence (last 500)
+vds mission run <mission-id> <repo> --tools claude:sonnet,codex [--max-cost <usd>] [--dry-run] [--format json]
+    creates one `review` task per roster source (runnerHint = tool:model) if none exist, a `compare`
+    task depending on all of them; runs reviews via captureRun with sessions `${missionId}:${attemptId}`
+    and VDS_BLIND_PREFIX=<missionId>; ingests events.jsonl lines for those sessions; runs compare
+    (deterministic, no agent); leaves the mission `running` with disputes recorded as `claim.disputed`
+    events, or `blocked` with a reason when any attempt failed/timed out/over budget/unavailable.
+    Prints `##vds {"mission": {...}}` lines on each state change so the shell can live-update.
+vds mission decide <mission-id> --subject <s> --predicate <p> --value <v> --rationale '<text>' [--actor human:<name>] [--experiment <x_id>] --format json
+    → { decision: Decision, belief: Belief }     (records a Decision AND a human claim via ClaimStore.submit, like `arbitrate`)
+vds mission close <mission-id> --outcome succeeded|failed|inconclusive|cancelled --reason '<text>' --format json → Mission
+vds mission replay <mission-id> [--format json] → DaylightEvent[] in sequence order (prose form prints a timeline)
+vds mission export <mission-id> --file <path.json>   → writes { schemaVersion, project, mission, tasks, attempts, experiments, decisions, events, artifacts: {digest: {kind, text|base64}} }
+vds mission import --file <path.json> [--format json] → Mission   (into the current --out; new ids are NOT minted — ids are preserved so a replay is the same mission; refuses if the project id in the file differs from the map in --out unless --force)
+vds experiment propose <mission-id> --subject <s> --predicate <p> --hypothesis '<text>' --test <file> --test-path <repo-relative> --expect-exit <n> [--expect-stdout '<substr>']… [--claims 12,13] --format json → Experiment
+vds experiment run <experiment-id> <repo> [--runs 2] [--timeout <s>] --format json → Experiment  (after runExperiment)
+vds artifact <digest> [--max-bytes n] [--format json] → redacted text (json: { ref, text, truncated })
+vds events --since <sequence> [--mission <id>] [--attempt <id>] [--limit n] --format json → DaylightEvent[]
+vds report <mission-id> [--file <out.md>] → markdown: objective, revision, reviewers and what each cited, disputes, experiments with command/digests/observed, decisions, limitations, every artifact digest
+vds demo prepare [--dest <dir>] --format json → materialises the fixture (engine/demo/fixture.ts), maps it into --out, creates an explore mission scoped to src/session-cache.ts, registers the fixture's red test as an experiment (prediction exitCode 1; hypothesis "src/session-cache.ts serves an expired session"), prints { root, commit, projectId, missionId, experimentId }
+vds demo replay --recording <file.json> --format json → mission import + prints the mission (the GUI then opens it)
+```
+Everything the GUI does goes through `runJob`/`execFile` on these. The renderer never names
+a path or a command.
+
+IPC (DL-05, in `main.cjs`/`preload.cjs`): `vds:missions` → `mission list`; `vds:mission {id}` →
+`mission inspect`; `vds:mission-create {kind, objective, scope, maxCost}`; `vds:mission-run
+{id, tools, maxCost, dryRun}` → `runJob('mission …')` (returns a job id, streams through the
+existing job channels); `vds:mission-decide {...}`; `vds:mission-close {...}`;
+`vds:experiment-run {id, runs}` → `runJob`; `vds:artifact {id, maxBytes}`; `vds:dl-events
+{since, missionId}`; `vds:demo-prepare`; `vds:demo-replay {file}` (file picker in main, never a
+renderer path). Push `vds:dl-event` for new events: main polls `vds events --since` every
+second while any job runs and every five seconds otherwise, or reads `daylight.db` directly
+through `node:sqlite` if Electron's Node has it (try/catch; fall back to the CLI).
