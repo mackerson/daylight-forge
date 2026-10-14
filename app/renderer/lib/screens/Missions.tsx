@@ -53,7 +53,7 @@ export function Missions({
   };
 
   return (
-    <div className="screen">
+    <div className="screen mission">
       <div className="screen-head">
         <div className="row">
           <div>
@@ -152,7 +152,6 @@ export function Missions({
                 onChange={(e) => setObjective(e.target.value)}
                 placeholder="the question, as a sentence"
                 disabled={sample}
-                style={{ flex: 1 }}
               />
             </label>
             <label>
@@ -162,7 +161,6 @@ export function Missions({
                 onChange={(e) => setScope(e.target.value)}
                 placeholder="paths, comma separated — or select a node on the map"
                 disabled={sample}
-                style={{ flex: 1, width: 'auto' }}
               />
             </label>
             <label>

@@ -911,6 +911,13 @@ code, .mono, kbd { font-family: var(--mono); }
 .mission-cols { grid-template-columns: minmax(0, 1fr) 400px; }
 .mission .card > h3 .link { font-size: 10.5px; }
 .mission .fields label { gap: 8px; }
+/* The new-mission form sits in a 340px rail: controls take the width the label leaves, not their own. */
+.mission .rail { min-width: 0; }
+/* `.fields` wraps by default; a wrapping column sizes its one line to the widest control's
+   intrinsic width, which for a select is its longest option — wider than the rail. */
+.mission .rail .fields { flex-wrap: nowrap; }
+.mission .rail .fields label { min-width: 0; }
+.mission .rail .fields label > :is(select, textarea, input:not([type="number"])) { flex: 1; min-width: 0; width: auto; }
 .mission textarea, .mission select, .mission input[type="text"], .mission input:not([type]) {
   background: var(--panel-2); border: 1px solid var(--line-3); border-radius: 5px; color: var(--text);
   font: 400 11.5px var(--sans); padding: 5px 8px;
