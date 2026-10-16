@@ -544,6 +544,21 @@ if (!live.available) {
       repoRoot: repo, store: dctx.store, artifacts: dctx.artifacts, target: { kind: 'candidate', diffDigest: null }, materialise: ws,
     });
     check('a candidate run that names no diff is invalid', r3.conclusion === 'invalid');
+    let disposed = false;
+    const vanished = await throws(async () => {
+      const r = await runGate(gate, {
+        repoRoot: repo, store: dctx.store, artifacts: dctx.artifacts, target: { kind: 'base', diffDigest: null },
+        materialise: () => {
+          const w = ws();
+          w.dispose();
+          return { ...w, dispose: () => { disposed = true; } };
+        },
+      });
+      check('a tree that vanishes after materialise is invalid, with the reason recorded',
+        r.conclusion === 'invalid' && /tree under test cannot be read/.test(r.records[0]?.why ?? ''), r.records[0]?.why);
+    });
+    check('and runGate does not throw for it', vanished === null, vanished?.message);
+    check('and the tree is still disposed of', disposed);
     const crash = registerGate(ctx, {
       missionId: newMission('crash').id, role: 'gate', basename: 'crash.test.js', prediction: { exitCode: 1, stdoutIncludes: ['# fail 1'] },
       testSource: "process.kill(process.ppid, 'SIGKILL');\n",

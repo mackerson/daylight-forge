@@ -977,10 +977,17 @@ export async function runGate(x: Experiment, ctx: GateRunContext): Promise<GateR
     return refuse(`the tree under test could not be materialised: ${String((err as Error).message).split('\n')[0].slice(0, 300)}`);
   }
   try {
-    const root = fs.realpathSync(tree.tree);
+    // A tree that is gone or unreadable by now is a broken harness: recorded, never thrown.
+    let root: string;
+    let link: string | null;
+    try {
+      root = fs.realpathSync(tree.tree);
+      link = symlinkOnPath(root, testRel);
+    } catch (err) {
+      return refuse(`the tree under test cannot be read: ${(err as Error).message}`);
+    }
     const placed = path.resolve(root, testRel);
     if (!placed.startsWith(`${root}${path.sep}`)) return refuse(`test path ${testRel} escapes the tree under test`);
-    const link = symlinkOnPath(root, testRel);
     if (link) return refuse(`${link} is a symlink in the tree under test; the test is never placed through one`);
     // The gate's path is the gate's alone. Anything already there came from the base or the
     // diff, and either way it is not the registered test, identical or not.
