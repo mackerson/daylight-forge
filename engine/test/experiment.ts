@@ -153,6 +153,9 @@ section('the sandbox argv');
   check('a node outside /usr gets its install dir bound, one under /usr does not',
     bind ? argv.join(' ').includes(`--ro-bind ${bind} ${bind}`) : !argv.join(' ').includes('--ro-bind /home'),
     String(bind));
+  // A copied binary at ~/bin/node must not take ~ (and .ssh, .config) into the sandbox with it.
+  check('a node outside /usr is bound alone, never its directory or home', nodeBind('/home/someone/bin/node') === '/home/someone/bin/node',
+    String(nodeBind('/home/someone/bin/node')));
   let threw = false;
   try { sandboxArgv(UNAVAILABLE, { worktree: tmp, command: ['node', 'x.js'] }); } catch { threw = true; }
   check('an unavailable profile cannot produce an argv at all', threw);
@@ -562,6 +565,16 @@ if (!live.available) {
 
     const which = register('console.log("node", process.version);\n', { exitCode: 0, stdoutIncludes: [`node ${process.version}`] });
     check('the test runs on the same node as the harness', (await run(which, { runs: 1 })).conclusion === 'supported');
+
+    if (nodeBind(nodeBinary())) {
+      const beside = register(
+        'const p = require("path").dirname(process.execPath); console.log("beside", require("fs").readdirSync(p).join(","));\n',
+        { exitCode: 0, stdoutIncludes: ['beside node\n'] },
+      );
+      const seen = await run(beside, { runs: 1 });
+      check('nothing next to the node binary is visible inside', seen.conclusion === 'supported',
+        records(seen)[0]?.stdoutRef ? artifacts.text(records(seen)[0].stdoutRef!) : seen.conclusion);
+    }
   }
 
   section('forced off, every registered experiment is refused');

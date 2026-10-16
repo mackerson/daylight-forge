@@ -157,13 +157,14 @@ export function nodeBinary(): string {
 }
 
 /**
- * The directory to bind so this node works inside the sandbox, or null when it is already
- * under `/usr`. The installation root (parent of `bin/`), so a version manager's `lib/`
- * sits beside the binary the way node expects.
+ * What to bind so this node works inside the sandbox, or null when it is already under
+ * `/usr`: the binary itself, at its own path, and nothing beside it. Binding its installation
+ * root bound whatever that root happened to be — for a copy at `~/bin/node`, the whole home
+ * directory. A nodejs.org build needs only libc and libstdc++ from `/usr` to run a test.
  */
 export function nodeBind(bin: string): string | null {
   if (bin.startsWith('/usr/')) return null;
-  return path.dirname(path.dirname(bin));
+  return bin;
 }
 
 const REFUSED_FLAGS = new Set([
