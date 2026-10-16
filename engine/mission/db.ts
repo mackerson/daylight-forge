@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
@@ -323,12 +324,24 @@ CREATE TABLE ingest_sources (
 CREATE INDEX ingest_sources_project ON ingest_sources(project_id, mission_id);
 `;
 
+/**
+ * The DDL itself, digested and recorded at creation. The version number says which schema a
+ * file claims; this says whether its tables are the ones this build's code reads. The DDL is
+ * still changing under version 2, and a file from another build would otherwise open cleanly
+ * and fail later on a missing column.
+ */
+export const SCHEMA_DIGEST = `sha256:${createHash('sha256').update(SCHEMA).digest('hex')}`;
+
 /** A database this build will not read. The message is one line and says what to do. */
 export class IncompatibleDatabase extends Error {
-  /** `found` is the schema version, 0 for none, or `not-sqlite` for a file that is no database. */
-  constructor(file: string, found: number | 'not-sqlite') {
+  /**
+   * `found` is the schema version, 0 for none, `not-sqlite` for a file that is no database, or
+   * `other-ddl` for a file at this version whose tables another build's DDL made.
+   */
+  constructor(file: string, found: number | 'not-sqlite' | 'other-ddl') {
     const what = found === 'not-sqlite' ? 'not a SQLite file, so not a'
-      : found ? `a schema ${found}` : 'an unversioned';
+      : found === 'other-ddl' ? `a schema ${DAYLIGHT_DB_VERSION} file whose tables another build made, so not this build's`
+        : found ? `a schema ${found}` : 'an unversioned';
     super(
       `${file} is ${what} Daylight database; this build reads ` +
         `schema ${DAYLIGHT_DB_VERSION} only and never migrates. Delete it and re-map ` +
@@ -349,6 +362,14 @@ export function schemaVersion(db: DatabaseSync): number {
   return row ? Number(row.value) : 0;
 }
 
+/** The DDL digest recorded at creation, or null when none was (a file from before it was). */
+export function schemaDigest(db: DatabaseSync): string | null {
+  if (schemaVersion(db) === 0) return null;
+  const row = db.prepare("SELECT value FROM daylight_meta WHERE key='schema_digest'").get() as
+    | { value: string } | undefined;
+  return row?.value ?? null;
+}
+
 const hasTables = (db: DatabaseSync): boolean =>
   !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
 
@@ -362,7 +383,7 @@ const hasTables = (db: DatabaseSync): boolean =>
  */
 const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
 
-function existingVersion(file: string): number | 'not-sqlite' | null {
+function existingVersion(file: string): number | 'not-sqlite' | 'other-ddl' | null {
   if (!fs.existsSync(file) || fs.statSync(file).size === 0) return null;
   const head = Buffer.alloc(SQLITE_HEADER.length);
   const fd = fs.openSync(file, 'r');
@@ -379,7 +400,9 @@ function existingVersion(file: string): number | 'not-sqlite' | null {
   }
   const db = new DatabaseSync(target, { readOnly: true });
   try {
-    return hasTables(db) ? schemaVersion(db) : null;
+    if (!hasTables(db)) return null;
+    const version = schemaVersion(db);
+    return version === DAYLIGHT_DB_VERSION && schemaDigest(db) !== SCHEMA_DIGEST ? 'other-ddl' : version;
   } finally {
     db.close();
   }
@@ -390,13 +413,17 @@ function existingVersion(file: string): number | 'not-sqlite' | null {
  * it. Anything else is refused: there is no older schema this knows how to read.
  */
 export function ensureSchema(db: DatabaseSync, file = 'daylight.db'): boolean {
-  if (schemaVersion(db) === DAYLIGHT_DB_VERSION) return false;
+  if (schemaVersion(db) === DAYLIGHT_DB_VERSION) {
+    if (schemaDigest(db) !== SCHEMA_DIGEST) throw new IncompatibleDatabase(file, 'other-ddl');
+    return false;
+  }
   // IMMEDIATE takes the write lock before looking, so two processes opening one fresh
   // directory cannot both decide it is empty.
   db.exec('BEGIN IMMEDIATE');
   try {
     const found = schemaVersion(db);
     if (found === DAYLIGHT_DB_VERSION) {
+      if (schemaDigest(db) !== SCHEMA_DIGEST) throw new IncompatibleDatabase(file, 'other-ddl');
       db.exec('COMMIT');
       return false;
     }
@@ -404,6 +431,7 @@ export function ensureSchema(db: DatabaseSync, file = 'daylight.db'): boolean {
     db.exec(SCHEMA);
     db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('schema_version', ?)")
       .run(String(DAYLIGHT_DB_VERSION));
+    db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('schema_digest', ?)").run(SCHEMA_DIGEST);
     db.exec('COMMIT');
     return true;
   } catch (err) {
