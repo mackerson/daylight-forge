@@ -1,5 +1,6 @@
 import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import { normalize, providerOf } from './normalize.ts';
 import type { AdapterStatus, AgentSpec, Probe } from './types.ts';
 
@@ -336,6 +337,48 @@ function spendParts(text: string): SpendParts {
 
 const spendOf = (p: SpendParts) => ({ cost: Math.max(p.total, p.generic, p.summed), turns: p.turns });
 
+/**
+ * Process groups of agents this process is running.
+ *
+ * Each agent is its own group leader, so one signal reaches the agent and everything it
+ * started. While any is live, a SIGTERM, SIGINT or SIGHUP to this process is turned into an
+ * ordinary exit, and on exit every live group is killed: `vds:stop-job` signals the CLI only,
+ * and an agent left running would keep writing claims for an attempt nobody owns. `exit`
+ * listeners elsewhere (the mission runner's) run on that same exit.
+ */
+const liveGroups = new Set<number>();
+const PARENT_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+
+function killGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // Already gone.
+  }
+}
+
+/** Kill every agent this process started that is still running. Synchronous. */
+export function killRunningAgents(signal: NodeJS.Signals = 'SIGTERM'): void {
+  for (const pid of liveGroups) killGroup(pid, signal);
+}
+
+const exitOnSignal = (signal: NodeJS.Signals) => process.exit(128 + (os.constants.signals[signal] ?? 15));
+const onExit = () => killRunningAgents('SIGKILL');
+
+function track(pid: number): void {
+  if (!liveGroups.size) {
+    process.on('exit', onExit);
+    for (const s of PARENT_SIGNALS) process.on(s, exitOnSignal);
+  }
+  liveGroups.add(pid);
+}
+
+function untrack(pid: number): void {
+  if (!liveGroups.delete(pid) || liveGroups.size) return;
+  process.off('exit', onExit);
+  for (const s of PARENT_SIGNALS) process.off(s, exitOnSignal);
+}
+
 export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
   const started = Date.now();
   const argv = adapter.argv(options);
@@ -345,7 +388,10 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       cwd: options.cwd,
       env: { ...process.env, VDS_SESSION: options.session },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    if (child.pid) track(child.pid);
+    const stop = (signal: NodeJS.Signals) => (child.pid ? killGroup(child.pid, signal) : child.kill(signal));
 
     let stdout = '';
     let stderr = '';
@@ -354,8 +400,8 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+      stop('SIGTERM');
+      setTimeout(() => stop('SIGKILL'), 5_000).unref();
     }, options.timeoutMs ?? 300_000);
 
     // Spend comes from the provider's own structured result when `normalize` knows its shape:
@@ -403,8 +449,8 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       // reports at the end, the between-runs ceiling in the driver is what actually holds.
       if (options.maxCost && !overBudget && now.cost > options.maxCost) {
         overBudget = true;
-        child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+        stop('SIGTERM');
+        setTimeout(() => stop('SIGKILL'), 5_000).unref();
       }
     });
     child.stderr.on('data', (d) => {
@@ -414,6 +460,11 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
 
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
+      if (child.pid) {
+        // Whatever the agent left behind in its group goes with it.
+        killGroup(child.pid, 'SIGKILL');
+        untrack(child.pid);
+      }
       takeLine(partial);
       partial = '';
       const spend = spendNow();

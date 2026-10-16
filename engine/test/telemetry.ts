@@ -10,6 +10,7 @@
  * Every adapter here is a mock — `node -e` printing lines — and says so in its runner id.
  * No agent CLI is spawned.
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -360,6 +361,42 @@ await (async () => {
   check('codex usage is the same event, cached input included',
     codexUsage?.payload.inputTokens === 5 && codexUsage.payload.cacheReadTokens === 3 && codexUsage.payload.outputTokens === 2 && codexUsage.payload.cacheWriteTokens === null,
     JSON.stringify(codexUsage?.payload));
+})();
+
+section('an agent does not outlive the process that ran it');
+await (async () => {
+  // `vds:stop-job` sends SIGTERM to the CLI only. The agent it spawned, and anything the
+  // agent spawned, must go with it rather than keep writing claims for an attempt nobody owns.
+  const marker = `VDS_ORPHAN_MARKER_${process.pid}`;
+  const parent = path.join(tmp, 'parent.mjs');
+  fs.writeFileSync(parent, `
+    const { run } = await import(${JSON.stringify(path.resolve(import.meta.dirname, '..', 'swarm', 'adapters.ts'))});
+    const agent = { name: 'mock', bin: process.execPath, perInvocationMcp: true, argv: () => ['-e',
+      'require("child_process").spawn("/usr/bin/sleep", ["30"], { stdio: "ignore" }); console.log("ready"); setInterval(() => {}, 1000);',
+      ${JSON.stringify(marker)}] };
+    await run(agent, { prompt: 'x', cwd: process.cwd(), mcpConfigPath: '/dev/null', session: 's', timeoutMs: 60_000,
+      onOutput: (_s, t) => { if (t.includes('ready')) console.log('agent ready'); } });
+  `);
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, [parent], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise<void>((resolve) => {
+    child.stdout.on('data', (d) => { if (String(d).includes('agent ready')) resolve(); });
+    setTimeout(resolve, 8000);
+  });
+  const pgrep = () => {
+    try {
+      return execFileSync('pgrep', ['-f', marker], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  };
+  check('the agent was running', pgrep() !== '');
+  child.kill('SIGTERM');
+  await new Promise((r) => child.on('close', r));
+  await new Promise((r) => setTimeout(r, 500));
+  const left = pgrep();
+  check('after SIGTERM to the parent, the agent is gone', left === '', left);
+  if (left) for (const pid of left.split('\n')) try { process.kill(Number(pid), 'SIGKILL'); } catch { /* gone */ }
 })();
 
 done();
