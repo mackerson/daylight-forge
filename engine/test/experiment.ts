@@ -375,6 +375,28 @@ if (!live.available) {
     check('an identical file already there is fine', (await run(same)).conclusion === 'supported');
   }
 
+  section('an edited experiment row does not match its harness digest');
+  {
+    // The row says which artifact is the test and what counts as a match; it lives in a
+    // database the same uid can UPDATE. The runner re-derives the digest instead of trusting it.
+    const e = register('console.log("ok");\n', { exitCode: 0, stdoutIncludes: ['ok'] });
+    const prediction = await run({ ...e, prediction: { exitCode: 0, stdoutIncludes: ['anything'] } }, { runs: 1 });
+    check('a rewritten prediction concludes invalid', prediction.conclusion === 'invalid', prediction.conclusion);
+    check('and says the harness digest no longer holds', /harness digest/.test(records(prediction)[0]?.why ?? ''), records(prediction)[0]?.why);
+    const moved = await run({ ...e, testArtifact: { ...e.testArtifact, path: 'test/elsewhere.js' } }, { runs: 1 });
+    check('a rewritten test path concludes invalid', moved.conclusion === 'invalid', moved.conclusion);
+    check('nothing ran for either', named('experiment.run.started', e.id).length === 0);
+    check('the untouched row still runs', (await run(e, { runs: 1 })).conclusion === 'supported');
+    check('the registered expectation names the test path', JSON.parse(artifacts.text(e.expectedArtifact)).testPath === e.testArtifact.path);
+    const legacyExpected = artifacts.put(JSON.stringify(e.prediction, null, 2), { kind: 'expected', projectId: e.projectId });
+    const legacy = await run({
+      ...e, expectedArtifact: legacyExpected,
+      harnessDigest: harnessDigestOf(e.testArtifact.digest, legacyExpected.digest, e.command, e.sandboxProfile),
+    }, { runs: 1 });
+    check('a row registered before the path was covered still runs, and says so',
+      legacy.conclusion === 'supported' && legacy.limitations.some((l) => l.includes('test path was covered')), legacy.conclusion);
+  }
+
   section('tamper between runs');
   {
     // A same-uid process rewriting the worktree copy after the first run: what runs second

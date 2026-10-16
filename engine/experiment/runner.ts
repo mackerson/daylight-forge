@@ -93,6 +93,42 @@ export function harnessDigestOf(
     .digest('hex')}`;
 }
 
+const canonicalJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) =>
+    x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : x);
+
+/**
+ * Does the row still describe the experiment that was registered?
+ *
+ * The row — which artifact is the test, where it goes, what counts as a match — is a plain
+ * UPDATE away for any process with this uid, so at run time it is checked against the digest
+ * rather than believed. `legacy` is a row registered before the path was part of it.
+ */
+export function harnessHolds(
+  x: Experiment, artifacts: ArtifactStore,
+): { ok: true; legacy: boolean } | { ok: false; why: string } {
+  const edited = (what: string) => ({
+    ok: false as const,
+    why: `the harness digest no longer holds: ${what} on the experiment row is not what was registered`,
+  });
+  if (harnessDigestOf(x.testArtifact.digest, x.expectedArtifact.digest, x.command, x.sandboxProfile) !== x.harnessDigest) {
+    return edited('the test, prediction, command or profile');
+  }
+  let registered: Record<string, unknown>;
+  try {
+    registered = JSON.parse(artifacts.text(x.expectedArtifact)) as Record<string, unknown>;
+  } catch (err) {
+    return { ok: false, why: `the registered prediction cannot be read: ${(err as Error).message}` };
+  }
+  const { testPath, ...prediction } = registered;
+  if (canonicalJson(prediction) !== canonicalJson(x.prediction)) return edited('the prediction');
+  if (testPath === undefined) return { ok: true, legacy: true };
+  if (testPath !== x.testArtifact.path) return edited('the test path');
+  return { ok: true, legacy: false };
+}
+
 export function registerExperiment(input: RegisterInput): Experiment {
   if (isEmptyPrediction(input.prediction)) {
     throw new InvalidExperiment(
@@ -113,7 +149,9 @@ export function registerExperiment(input: RegisterInput): Experiment {
   const testArtifact = input.artifacts.put(input.testSource, {
     ...meta, kind: 'test', path: rel, label: 'registered test',
   });
-  const expectedArtifact = input.artifacts.put(JSON.stringify(input.prediction, null, 2), {
+  // Where the test is placed decides what runs, so it is part of the protected expectation
+  // and, through that artifact's digest, of the harness digest.
+  const expectedArtifact = input.artifacts.put(JSON.stringify({ ...input.prediction, testPath: rel }, null, 2), {
     ...meta, kind: 'expected', label: 'prediction', mediaType: 'application/json',
   });
 
@@ -444,6 +482,14 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
     if (!allowed.ok) {
       refuse('invalid', `command refused: ${allowed.why}`, startedAt);
       return finish();
+    }
+    const harness = harnessHolds(experiment, ctx.artifacts);
+    if (!harness.ok) {
+      refuse('invalid', harness.why, startedAt);
+      return finish();
+    }
+    if (harness.legacy) {
+      limitations.push('registered before the test path was covered by the harness digest; the path on the row is trusted as is');
     }
 
     for (let i = 0; i < runs; i++) {
