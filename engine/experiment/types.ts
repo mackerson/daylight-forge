@@ -40,7 +40,7 @@ export interface ExecutionRecord {
   sandboxArgv: string[];
   sandboxProfile: string;
   /** The absolute launcher binaries, as resolved at detection. Absent when nothing was spawned. */
-  sandboxBinaries?: { prlimit: string; bwrap: string };
+  sandboxBinaries?: { prlimit: string; bwrap: string; scope?: string };
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;

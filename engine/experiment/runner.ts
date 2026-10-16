@@ -3,15 +3,15 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Writable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
-  checkAllowlist, DEFAULT_LIMITS, detectSandbox, SANDBOX_LIMITATIONS, sandboxArgv, sandboxBinaries,
-  SYSTEM_PATH, type SandboxLimits, type SandboxProfile,
+  checkAllowlist, DEFAULT_LIMITS, detectSandbox, NO_SCOPE_LIMITATION, SANDBOX_LIMITATIONS, sandboxArgv,
+  sandboxBinaries, scopeEnv, SYSTEM_PATH, type SandboxLimits, type SandboxProfile,
 } from './sandbox.ts';
 import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
 
@@ -267,6 +267,8 @@ function observe(
 
 /** The child's fd that carries the registered test into the sandbox. */
 const TEST_FD = 3;
+/** The child's fd bwrap reports on once the command has been started inside the sandbox. */
+const STATUS_FD = 4;
 
 /**
  * Spawn and wait, with a wall-clock ceiling that is actually enforced. `feed`, when given, is
@@ -274,21 +276,26 @@ const TEST_FD = 3;
  */
 function execute(
   argv: string[], timeoutMs: number, feed: Buffer | undefined, bin: string,
-): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean; spawnError?: string }> {
+): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean; spawnError?: string; started: boolean }> {
   return new Promise((resolve) => {
     // The outer process is prlimit, which execs bwrap; the sandbox has --die-with-parent, so
     // killing this one pid takes the whole tree with it. `bin` is the absolute launcher and
     // the PATH it resolves bwrap on is the system's, never the caller's.
     const child = spawn(bin, argv.slice(1), {
       argv0: argv[0],
-      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
-      env: { PATH: SYSTEM_PATH },
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+      env: { PATH: SYSTEM_PATH, ...scopeEnv() },
     });
     const pipe = child.stdio[TEST_FD] as Writable;
     // A launcher that dies before reading closes the pipe; that failure is reported by the
     // exit status, not by an unhandled EPIPE here.
     pipe.on('error', () => {});
     pipe.end(feed ?? Buffer.alloc(0));
+    let status = '';
+    (child.stdio[STATUS_FD] as Readable).on('data', (d: Buffer) => {
+      if (status.length < 4096) status += d.toString('utf8');
+    });
+    const started = () => status.includes('"child-pid"');
     let stdout = '';
     let stderr = '';
     let truncated = false;
@@ -316,11 +323,11 @@ function execute(
 
     child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ exitCode: null, signal: null, timedOut, stdout, stderr: `${stderr}${err.message}`, truncated, spawnError: err.message });
+      resolve({ exitCode: null, signal: null, timedOut, stdout, stderr: `${stderr}${err.message}`, truncated, spawnError: err.message, started: false });
     });
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
-      resolve({ exitCode, signal, timedOut, stdout, stderr, truncated });
+      resolve({ exitCode, signal, timedOut, stdout, stderr, truncated, started: started() });
     });
   });
 }
@@ -347,13 +354,16 @@ function symlinkOnPath(root: string, rel: string): string | null {
 /**
  * Why the sandbox itself never got as far as the command, or null when it did.
  *
- * Exit codes cannot tell this apart — bwrap and prlimit exit 1, 126 or 127 for their own
- * failures, which is exactly what a known-red test may predict — but both prefix their own
- * diagnostics with their name. A test that imitates the prefix only makes its own experiment
- * invalid, which is the direction a false positive is allowed to go.
+ * Exit codes cannot tell this apart — bwrap, prlimit and systemd-run exit 1, 126 or 127 for
+ * their own failures, which is exactly what a known-red test may predict. bwrap reports the
+ * sandboxed child's pid on its status fd once it has one, so no report means the chain died
+ * before bwrap got that far; and bwrap's own setup errors, after that point, are prefixed
+ * with its name. A test that imitates the prefix only makes its own experiment invalid,
+ * which is the direction a false positive is allowed to go.
  */
-function launchFailure(run: { stderr: string; spawnError?: string }): string | null {
+function launchFailure(run: { stderr: string; spawnError?: string; started: boolean }): string | null {
   if (run.spawnError) return `the sandbox did not start: ${run.spawnError}`;
+  if (!run.started) return `the sandbox did not start: ${run.stderr.split('\n')[0].slice(0, 300) || 'no status from bwrap'}`;
   const m = /^(bwrap|prlimit): .*/.exec(run.stderr);
   return m ? `the sandbox did not start: ${m[0].slice(0, 300)}` : null;
 }
@@ -587,6 +597,7 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
     }
 
     const binaries = sandboxBinaries(profile);
+    if (!binaries.scope) limitations.push(NO_SCOPE_LIMITATION);
     for (let i = 0; i < runs; i++) {
       const runStarted = now();
       // The test is bound into the sandbox from the verified buffer on every run. The worktree
@@ -597,11 +608,12 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
         limits: ctx.limits ?? DEFAULT_LIMITS,
         env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id },
         files: [{ fd: TEST_FD, path: testRel }],
+        statusFd: STATUS_FD,
       });
       const shown = argv.map((a) => (a === worktree || a === root ? '<worktree>' : a));
       emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
 
-      const run = await execute(argv, timeoutMs, registered, binaries.prlimit);
+      const run = await execute(argv, timeoutMs, registered, binaries.scope ?? binaries.prlimit);
       const label = (s: string) => `run ${i} ${s}`;
       const stdoutRef = ctx.artifacts.put(run.stdout, { ...meta, kind: 'log', label: label('stdout') });
       const stderrRef = ctx.artifacts.put(run.stderr, { ...meta, kind: 'log', label: label('stderr') });

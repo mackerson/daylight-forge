@@ -22,7 +22,7 @@ import {
   commitOf, harnessDigestOf, registerExperiment, runExperiment, type ExperimentStoreLike,
 } from '../experiment/runner.ts';
 import {
-  checkAllowlist, detectSandbox, nodeBind, nodeBinary, sandboxArgv, sandboxCommand,
+  checkAllowlist, DEFAULT_LIMITS, detectSandbox, nodeBind, nodeBinary, sandboxArgv, sandboxCommand,
 } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { harness } from './harness.ts';
@@ -147,6 +147,17 @@ section('the sandbox argv');
   let threw = false;
   try { sandboxArgv(UNAVAILABLE, { worktree: tmp, command: ['node', 'x.js'] }); } catch { threw = true; }
   check('an unavailable profile cannot produce an argv at all', threw);
+
+  const joined = argv.join(' ');
+  check('the private /tmp has a size ceiling', /--size \d+ --tmpfs \/tmp/.test(joined), joined);
+  check('nested user namespaces are disabled', argv.includes('--disable-userns') && argv.includes('--unshare-user'));
+  check('without a user scope there is no systemd-run in front', argv[0] === 'prlimit');
+  const scoped = sandboxArgv({ name: 'bwrap', available: true, scope: '/usr/bin/systemd-run' }, {
+    worktree: path.join(tmp, 'wt'), command: ['node', 'test/a.js'],
+  });
+  check('with one, memory and task ceilings wrap the whole launch',
+    scoped[0] === 'systemd-run' && scoped.join(' ').includes('-p MemoryMax=') && scoped.join(' ').includes('-p TasksMax=')
+      && scoped.findIndex((a) => a.endsWith('prlimit')) > scoped.indexOf('--'), scoped.slice(0, 12).join(' '));
 }
 
 section('revisions');
@@ -440,6 +451,37 @@ if (!live.available) {
       check('the result records the binaries that were used', records(out)[0]?.sandboxBinaries?.prlimit.startsWith('/usr/bin/') === true);
     } finally {
       process.env.PATH = savedPath;
+    }
+  }
+
+  section('resource ceilings hold inside the sandbox');
+  {
+    const tight = { cpuSeconds: 60, fileSizeBytes: 1 << 20, openFiles: 1024, tmpBytes: 2 << 20 };
+    const fill = register(
+      'const fs = require("fs"); const mb = Buffer.alloc(1 << 20);\n' +
+        'try { for (let i = 0; i < 8; i++) fs.writeFileSync(`/tmp/f${i}`, mb); console.log("tmp unbounded"); }\n' +
+        'catch (e) { console.log("tmp full", e.code); }\n',
+      { exitCode: 0, stdoutIncludes: ['tmp full ENOSPC'] },
+    );
+    const filled = await run(fill, { runs: 1, limits: tight });
+    check('/tmp inside the sandbox stops at its size ceiling', filled.conclusion === 'supported',
+      records(filled)[0]?.stdoutRef ? artifacts.text(records(filled)[0].stdoutRef!) : filled.conclusion);
+    const userns = register(
+      'const r = require("child_process").spawnSync("/usr/bin/unshare", ["-U", "true"]); console.log("unshare", r.status === 0 ? "allowed" : "refused");\n',
+      { exitCode: 0, stdoutIncludes: ['unshare refused'] },
+    );
+    check('a test cannot create a nested user namespace', (await run(userns, { runs: 1 })).conclusion === 'supported');
+    if (live.scope) {
+      const forks = register(
+        'const cp = require("child_process"); let failed = 0; const kids = [];\n' +
+          'for (let i = 0; i < 64; i++) { try { const k = cp.spawn("/usr/bin/sleep", ["5"]); k.on("error", () => failed++); kids.push(k); } catch { failed++; } }\n' +
+          'setTimeout(() => { console.log("forks failed", failed > 0); kids.forEach((k) => k.kill()); }, 500);\n',
+        { exitCode: 0, stdoutIncludes: ['forks failed true'] },
+      );
+      check('the task ceiling stops a test that forks without bound',
+        (await run(forks, { runs: 1, limits: { ...DEFAULT_LIMITS, tasks: 32 } })).conclusion === 'supported');
+    } else {
+      console.log('  skipped: no systemd user scope here, so no memory or task ceiling to test');
     }
   }
 

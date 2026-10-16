@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -11,7 +12,10 @@ import path from 'node:path';
  * files. Memory is deliberately *not* bounded by address space: V8 reserves large virtual
  * ranges at start-up and an `--as` limit kills a healthy node before it runs a line. The
  * wall-clock timeout in the runner and the CPU ceiling here are what bound a runaway, and
- * every result says so in its limitations.
+ * every result says so in its limitations. Where a systemd user manager is reachable the whole
+ * launch also runs in a transient scope with `MemoryMax` and `TasksMax` — a cgroup bounds the
+ * resident memory and the process count that per-process rlimits cannot (`RLIMIT_CPU` resets
+ * in every forked child). The private `/tmp` is RAM-backed, so it has a size of its own.
  *
  * Fail closed. Without `bwrap` and `prlimit` on this machine there is no profile, and the
  * runner records the experiment as `invalid: sandbox unavailable` rather than running the
@@ -25,6 +29,8 @@ export interface SandboxProfile {
   /** Absolute paths resolved at detection; an injected profile without them gets the defaults. */
   bwrap?: string;
   prlimit?: string;
+  /** `systemd-run`, absolute, when a user scope was shown to work at detection. */
+  scope?: string;
 }
 
 /**
@@ -39,13 +45,35 @@ export interface SandboxLimits {
   cpuSeconds: number;
   fileSizeBytes: number;
   openFiles: number;
+  /** Size of the private /tmp. */
+  tmpBytes?: number;
+  /** cgroup ceilings, applied only under a systemd user scope. */
+  memoryBytes?: number;
+  tasks?: number;
 }
 
 export const DEFAULT_LIMITS: SandboxLimits = {
   cpuSeconds: 60,
   fileSizeBytes: 64 * 1024 * 1024,
   openFiles: 1024,
+  tmpBytes: 256 * 1024 * 1024,
+  memoryBytes: 2 * 1024 * 1024 * 1024,
+  tasks: 256,
 };
+
+/** Said on every result that ran without a user scope. */
+export const NO_SCOPE_LIMITATION =
+  'no memory or process-count ceiling: no systemd user scope was available to put the run in';
+
+/** The variables systemd-run needs to reach the user manager. Neither is a credential. */
+export function scopeEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']) {
+    const v = process.env[k];
+    if (v) env[k] = v;
+  }
+  return env;
+}
 
 /** Where the worktree appears inside the sandbox. Commands run with this as cwd. */
 export const WORK = '/work';
@@ -83,12 +111,38 @@ export function detectSandbox(): SandboxProfile {
       why: `${missing.join(' and ')} not installed under ${SYSTEM_BIN} (root-owned); install bubblewrap and util-linux`,
     };
   }
-  return { name: 'bwrap', available: true, bwrap, prlimit };
+  return { name: 'bwrap', available: true, bwrap, prlimit, ...(userScope() ? { scope: userScope()! } : {}) };
+}
+
+let scopeProbe: string | null | undefined;
+
+/**
+ * `systemd-run` if a transient user scope can actually be created here, else null. Probed
+ * once per process: a CI runner or a container has the binary and no user manager, and a
+ * launcher that fails at run time is a failed experiment, not a sandbox.
+ */
+function userScope(): string | null {
+  if (scopeProbe !== undefined) return scopeProbe;
+  const bin = systemBinary('systemd-run');
+  scopeProbe = null;
+  if (!bin) return scopeProbe;
+  try {
+    execFileSync(bin, ['--user', '--scope', '--quiet', '--collect', '-p', 'TasksMax=8', '--', '/usr/bin/true'], {
+      stdio: 'ignore', timeout: 10_000, env: { PATH: SYSTEM_PATH, ...scopeEnv() },
+    });
+    scopeProbe = bin;
+  } catch {
+    // No user manager reachable; the run goes ahead without cgroup ceilings and says so.
+  }
+  return scopeProbe;
 }
 
 /** The binaries a profile launches, absolute. */
-export function sandboxBinaries(profile: SandboxProfile): { prlimit: string; bwrap: string } {
-  return { prlimit: profile.prlimit ?? '/usr/bin/prlimit', bwrap: profile.bwrap ?? '/usr/bin/bwrap' };
+export function sandboxBinaries(profile: SandboxProfile): { prlimit: string; bwrap: string; scope?: string } {
+  return {
+    prlimit: profile.prlimit ?? '/usr/bin/prlimit', bwrap: profile.bwrap ?? '/usr/bin/bwrap',
+    ...(profile.scope ? { scope: profile.scope } : {}),
+  };
 }
 
 /**
@@ -183,24 +237,40 @@ export function sandboxArgv(
      * `path` is worktree-relative and must already exist there as a mount point.
      */
     files?: Array<{ fd: number; path: string }>;
+    /** bwrap writes JSON status here, including the child's pid once it has started it. */
+    statusFd?: number;
   },
 ): string[] {
   if (!profile.available) {
     throw new Error(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
   }
-  const limits = opts.limits ?? DEFAULT_LIMITS;
+  const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const bin = nodeBinary();
   const bind = nodeBind(bin);
+  const scope = profile.scope
+    ? [
+        'systemd-run', '--user', '--scope', '--quiet', '--collect',
+        '-p', `MemoryMax=${limits.memoryBytes}`, '-p', 'MemorySwapMax=0', '-p', `TasksMax=${limits.tasks}`,
+        '--',
+      ]
+    : [];
   const argv = [
-    'prlimit',
+    ...scope,
+    // Under a scope, systemd-run resolves this one, so it is named by the path detection found.
+    scope.length ? (profile.prlimit ?? '/usr/bin/prlimit') : 'prlimit',
     `--cpu=${limits.cpuSeconds}`,
     `--fsize=${limits.fileSizeBytes}`,
     `--nofile=${limits.openFiles}`,
     '--',
     'bwrap',
     '--unshare-all',
+    // Explicit so --disable-userns has a namespace to seal; nested user namespaces are kernel
+    // attack surface a test has no use for.
+    '--unshare-user',
+    '--disable-userns',
     '--die-with-parent',
     '--new-session',
+    ...(opts.statusFd !== undefined ? ['--json-status-fd', String(opts.statusFd)] : []),
     '--clearenv',
     '--setenv', 'PATH', bind ? `${path.dirname(bin)}:/usr/bin:/bin` : '/usr/bin:/bin',
     '--setenv', 'HOME', '/tmp',
@@ -220,7 +290,7 @@ export function sandboxArgv(
   argv.push(
     '--proc', '/proc',
     '--dev', '/dev',
-    '--tmpfs', '/tmp',
+    '--size', String(limits.tmpBytes), '--tmpfs', '/tmp',
     '--ro-bind', path.resolve(opts.worktree), WORK,
   );
   for (const f of opts.files ?? []) argv.push('--ro-bind-data', String(f.fd), path.posix.join(WORK, f.path));
