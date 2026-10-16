@@ -8,6 +8,7 @@ import type { Graph } from '../graph/types.ts';
 import { ClaimStore, EvidenceRequired, type Source } from '../store/claims.ts';
 import type { Claim } from '../store/types.ts';
 import { frontier } from '../swarm/frontier.ts';
+import { defaultOut } from '../paths.ts';
 
 /**
  * The MCP data plane. One server, stdio, spawned per agent session.
@@ -584,7 +585,7 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
   // stdio servers, and a server that cannot be told where to look is a server that cannot
   // be used from those hosts.
   const fromArg = process.argv.slice(2).find((a) => !a.startsWith('-'));
-  const dir = fromArg ?? process.env.DAYLIGHT_DIR ?? process.cwd();
+  const dir = fromArg ?? process.env.DAYLIGHT_DIR ?? defaultOut(process.cwd());
   const { server } = createServer({
     dir,
     session: process.env.DAYLIGHT_SESSION ?? 'local',

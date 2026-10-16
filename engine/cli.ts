@@ -28,6 +28,7 @@ import { evaluate, evaluateAll } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
 import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/share.ts';
 import { toArchitectureDoc } from './render/architecture.ts';
+import { defaultOut } from './paths.ts';
 import { runDaylightCommand } from './mission/commands.ts';
 
 interface Args {
@@ -92,11 +93,16 @@ function parseArgs(argv: string[]): Args {
   }
 
   const root = path.resolve(target ?? '.');
+  const explicitOut = flags.get('out');
+  let out: string | undefined;
   return {
     command: command ?? 'help',
     root,
-    // Default matches what `pnpm view` reads, so map→view needs no env fiddling.
-    out: path.resolve(flags.get('out') ?? 'out'),
+    // Resolved on first use: the default asks git for the project id, which `help` should
+    // not need and a shallow clone cannot answer.
+    get out() {
+      return (out ??= explicitOut ? path.resolve(explicitOut) : defaultOut(root));
+    },
     depth: Number(flags.get('depth') ?? 3),
     commit: flags.get('commit'),
     includeTests: flags.get('include-tests') === 'true',
@@ -1580,7 +1586,8 @@ usage:
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>
 
 options:
-  --out <dir>            output directory (default: ./out)
+  --out <dir>            output directory (default:
+                         \${XDG_DATA_HOME:-~/.local/share}/daylight/<project>/<checkout>)
   --invariants-file <f>  invariant definitions (default: <repo>/daylight.invariants.json)
   --depth <n>        L1 grouping depth (default: 3)
   --commit <sha>     record the commit this tree came from
