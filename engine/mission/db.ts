@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import { DAYLIGHT_DB_VERSION } from './types.ts';
 
 /**
@@ -336,11 +337,19 @@ const hasTables = (db: DatabaseSync): boolean =>
 /**
  * The version of an existing file, read without writing to it, or null when there is nothing
  * there yet. A read-write open would already have changed the file (WAL switch, `-wal` and
- * `-shm` beside it) before it could tell it was refusing.
+ * `-shm` beside it) before it could tell it was refusing, and even a read-only open of a WAL
+ * file leaves `-shm` and `-wal` behind. So a file with no `-wal` is read `immutable`, which
+ * creates nothing; one with a `-wal` is in use, its sidecars already exist, and only a normal
+ * read-only open sees the committed state in it.
  */
 function existingVersion(file: string): number | null {
   if (!fs.existsSync(file) || fs.statSync(file).size === 0) return null;
-  const db = new DatabaseSync(file, { readOnly: true });
+  let target: string | URL = file;
+  if (!fs.existsSync(`${file}-wal`)) {
+    target = pathToFileURL(file);
+    target.searchParams.set('immutable', '1');
+  }
+  const db = new DatabaseSync(target, { readOnly: true });
   try {
     return hasTables(db) ? schemaVersion(db) : null;
   } finally {
