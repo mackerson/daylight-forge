@@ -557,7 +557,7 @@ export function ingestClaudeCode(
       if (!result.missionIds.includes(outcome.missionId)) result.missionIds.push(outcome.missionId);
     }
   }
-  recordRun(ctx, project.id, result);
+  recordRun(ctx, project.id, result, opts.all ? 'all' : 'session');
   return result;
 }
 
@@ -822,9 +822,10 @@ function writeTranscript(
  * Recorded only by a run that ingested something, so a re-run that changed nothing adds no
  * row; `ingest list` therefore shows the last run that did. Its id is its content's.
  */
-function recordRun(ctx: DaylightContext, projectId: string, r: IngestResult): void {
+function recordRun(ctx: DaylightContext, projectId: string, r: IngestResult, mode: 'all' | 'session'): void {
   if (r.sessions.ingested === 0) return;
-  const payload = { sessions: r.sessions, skipped: r.skipped };
+  // `mode` lets `ingest list` prefer a whole-directory scan's counts over one session's.
+  const payload = { mode, sessions: r.sessions, skipped: r.skipped };
   ctx.events.append({
     projectId, actorId: RUNNER_ID, category: 'lifecycle', name: 'ingest.run.finished', payload,
   }, eventId('', '', `run:${projectId}:${canonicalJson(payload)}`));

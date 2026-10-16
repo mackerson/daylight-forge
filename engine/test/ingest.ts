@@ -340,16 +340,18 @@ section('the command, through its module');
   check('--session and --all together are a usage error', run(['claude-code', '--out', out, '--session', MAIN, '--all']).code === 2);
   check('neither is a usage error', run(['claude-code', '--out', out]).code === 2);
   check('an unknown session is an error, not a guess', run(['claude-code', '--out', out, '--session', '55555555-5555-4555-8555-555555555555']).code === 1);
+  // New lines first, so this one-session run ingests something and records its own counts.
+  fs.appendFileSync(path.join(sessionDir, `${MAIN}.jsonl`), substitute(fs.readFileSync(path.join(FIXTURES, `append2-${MAIN}.jsonl`), 'utf8')));
   const ok = run(['claude-code', '--out', out, '--session', MAIN, '--format', 'json']);
-  const parsed = JSON.parse(ok.stdout) as { sessions: { seen: number } };
-  check('--session on this project\'s session runs', ok.code === 0 && parsed.sessions.seen === 1);
+  const parsed = JSON.parse(ok.stdout) as { sessions: { seen: number; ingested: number } };
+  check('--session on this project\'s session runs', ok.code === 0 && parsed.sessions.seen === 1 && parsed.sessions.ingested === 1);
   const noMap = path.join(tmp, 'empty-out');
   check('an out with no map is an error', run(['claude-code', '--out', noMap, '--all']).code === 1);
 
   const list = run(['list', '--out', out, '--format', 'json']);
   const listing = JSON.parse(list.stdout) as { sources: Array<{ agentId: string; pathDigest: string }>; skipped: { foreign: number } | null; controls: string };
   check('ingest list prints every cursor', list.code === 0 && listing.sources.length === 3);
-  check('ingest list carries the last run\'s skip counts', listing.skipped?.foreign === 1);
+  check('ingest list carries the last scan\'s skip counts, not a one-session run\'s', listing.skipped?.foreign === 1, JSON.stringify(listing.skipped));
   check('ingest list names no transcript path', !list.stdout.includes(projectsDir) && listing.sources.every((s) => /^[0-9a-f]{64}$/.test(s.pathDigest)));
   check('ingest list says where the work happened', listing.controls === OUTSIDE_CONTROLS);
   const fresh = path.join(tmp, 'fresh-out');

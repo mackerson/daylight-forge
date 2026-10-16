@@ -30,7 +30,10 @@ function flags(argv: string[]): Map<string, string> {
   return out;
 }
 
-/** What `ingest list` prints: the cursors, and the last run's skip counts or null if none ran. */
+/**
+ * What `ingest list` prints: the cursors, and the skip counts of the last `--all` run that
+ * ingested anything (else the last such `--session` run), or null if none has.
+ */
 export interface IngestListing {
   projectId: string;
   controls: typeof OUTSIDE_CONTROLS;
@@ -40,16 +43,21 @@ export interface IngestListing {
 }
 
 export function ingestList(ctx: DaylightContext, projectId: string): IngestListing {
-  // The run event carries no mission, so it is found by scanning; newest wins.
+  // The run event carries no mission, so it is found by scanning; the newest scan of the whole
+  // directory wins, because a one-session run never sees the other sessions it would skip.
   let last: Record<string, unknown> | null = null;
+  let lastAll: Record<string, unknown> | null = null;
   for (let after = 0; ;) {
     const page = ctx.events.since(after, {}, 5000);
     if (!page.length) break;
     for (const e of page) {
-      if (e.name === 'ingest.run.finished' && e.projectId === projectId) last = e.payload;
+      if (e.name !== 'ingest.run.finished' || e.projectId !== projectId) continue;
+      last = e.payload;
+      if (e.payload.mode === 'all') lastAll = e.payload;
     }
     after = page[page.length - 1].sequence;
   }
+  last = lastAll ?? last;
   return {
     projectId,
     controls: OUTSIDE_CONTROLS,
