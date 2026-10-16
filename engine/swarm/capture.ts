@@ -230,15 +230,18 @@ export async function captureRun(
   }
 
   // The CLI's own spend parser is the fallback for providers that report cost in a shape
-  // `normalize` does not know; but its zero means "saw nothing", which is unknown here.
+  // `normalize` does not know; but its zero means "saw nothing", which is unknown here. A
+  // figure it scraped from stdout is a guess, and the event says so: known is only ever a
+  // number the provider put in its own structured result.
   const costUsd: number | null = reportedCost ?? (result.cost > 0 ? result.cost : null);
   const turns = reportedTurns ?? (result.turns > 0 ? result.turns : null);
+  const costSource = reportedCost !== null ? 'provider' : costUsd !== null ? 'stdout-scan' : 'none';
 
   events.append({
     ...base,
     category: 'cost',
     name: 'cost.reported',
-    payload: { costUsd, turns, known: costUsd !== null, source: ctx.runnerId },
+    payload: { costUsd, turns, known: costSource === 'provider', costSource, source: ctx.runnerId },
   });
 
   const failure = result.ok

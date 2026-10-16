@@ -18,7 +18,7 @@ import { EventLog, runEventId } from '../mission/events.ts';
 import { redact, secretsFromEnv } from '../mission/redact.ts';
 import type { ArtifactRef } from '../mission/types.ts';
 import type { RunEvent } from '../replay/types.ts';
-import type { Adapter } from '../swarm/adapters.ts';
+import { run, type Adapter } from '../swarm/adapters.ts';
 import { captureRun, describeArgv, type AttemptFinisher } from '../swarm/capture.ts';
 import { normalize } from '../swarm/normalize.ts';
 import { harness } from './harness.ts';
@@ -321,6 +321,39 @@ await (async () => {
 
   const codexUsage = normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 3, output_tokens: 2 } }))
     .find((e) => e.name === 'cost.usage');
+  // A spend figure scraped out of raw stdout is a guess, and says so; only a figure the
+  // provider reported in its own structured result is known.
+  const scraped = new Finisher();
+  const scrapeDir = path.join(tmp, 'scraped');
+  fs.mkdirSync(scrapeDir);
+  const scrapeEvents = new EventLog(scrapeDir);
+  await captureRun(
+    { name: 'mock', bin: process.execPath, perInvocationMcp: true, argv: () => ['-e', 'console.log(JSON.stringify({ total_cost_usd: 0.2 }))'] },
+    { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 'm_1:a_5', timeoutMs: 10_000 },
+    ctxFor(scrapeDir, scrapeEvents, new ArtifactStore(scrapeDir), scraped, 'a_5'),
+  );
+  const scrapedCost = scrapeEvents.forAttempt('a_5').find((e) => e.name === 'cost.reported');
+  check('a cost found only by scanning stdout is recorded as not known',
+    scrapedCost?.payload.costUsd === 0.2 && scrapedCost.payload.known === false && scrapedCost.payload.costSource === 'stdout-scan',
+    JSON.stringify(scrapedCost?.payload));
+  scrapeEvents.close();
+
+  // Repository text echoed unescaped into a provider's stream must not move the budget.
+  const echoing: Adapter = {
+    name: 'claude', bin: process.execPath, perInvocationMcp: true,
+    argv: () => ['-e', `console.log(JSON.stringify({ type: 'user', content: { total_cost_usd: 99, cost: 50 } }));
+      setTimeout(() => console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 1 })), 50);`],
+  };
+  const echoed = await run(echoing, { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 's', timeoutMs: 10_000, maxCost: 1 });
+  check('a provider with structured cost is not killed by cost-shaped text in its stream', echoed.ok && !echoed.overBudget,
+    `ok=${echoed.ok} overBudget=${echoed.overBudget}`);
+  const overrun: Adapter = {
+    name: 'claude', bin: process.execPath, perInvocationMcp: true,
+    argv: () => ['-e', `console.log(JSON.stringify({ type: 'result', total_cost_usd: 2, num_turns: 1 })); setTimeout(() => {}, 5000);`],
+  };
+  const killed = await run(overrun, { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 's', timeoutMs: 10_000, maxCost: 1 });
+  check('but its own reported cost over the ceiling still stops it', killed.overBudget && !killed.ok);
+
   check('codex usage is the same event, cached input included',
     codexUsage?.payload.inputTokens === 5 && codexUsage.payload.cacheReadTokens === 3 && codexUsage.payload.outputTokens === 2 && codexUsage.payload.cacheWriteTokens === null,
     JSON.stringify(codexUsage?.payload));

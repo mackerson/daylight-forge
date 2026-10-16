@@ -1,5 +1,6 @@
 import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { normalize, providerOf } from './normalize.ts';
 import type { AdapterStatus, AgentSpec, Probe } from './types.ts';
 
 export type { AdapterStatus, AgentSpec, Probe } from './types.ts';
@@ -309,8 +310,14 @@ export function inspect(serverCmd: string[], cfgPath = '<out>/mcp.json'): Adapte
  * than breaking the run, and the between-runs ceiling still applies.
  */
 export function readSpend(text: string): { cost: number; turns: number } {
-  let cost = 0;
-  let turns = 0;
+  return spendOf(spendParts(text));
+}
+
+interface SpendParts { total: number; generic: number; summed: number; turns: number }
+
+/** The pieces `readSpend` combines, kept apart so a stream can be folded line by line. */
+function spendParts(text: string): SpendParts {
+  const parts: SpendParts = { total: 0, generic: 0, summed: 0, turns: 0 };
   const take = (re: RegExp, onto: (n: number) => void) => {
     for (const m of text.matchAll(re)) {
       const v = Number(m[1]);
@@ -318,16 +325,16 @@ export function readSpend(text: string): { cost: number; turns: number } {
     }
   };
   // claude
-  take(/"total_cost_usd"\s*:\s*([0-9.]+)/g, (v) => (cost = Math.max(cost, v)));
-  take(/"num_turns"\s*:\s*([0-9]+)/g, (v) => (turns = Math.max(turns, v)));
+  take(/"total_cost_usd"\s*:\s*([0-9.]+)/g, (v) => (parts.total = Math.max(parts.total, v)));
+  take(/"num_turns"\s*:\s*([0-9]+)/g, (v) => (parts.turns = Math.max(parts.turns, v)));
   // codex / generic: a cumulative usd figure under any of the usual names
-  take(/"(?:cost_usd|total_cost|usd)"\s*:\s*([0-9.]+)/g, (v) => (cost = Math.max(cost, v)));
+  take(/"(?:cost_usd|total_cost|usd)"\s*:\s*([0-9.]+)/g, (v) => (parts.generic = Math.max(parts.generic, v)));
   // opencode reports per-message cost, so those accumulate rather than take a max
-  let summed = 0;
-  take(/"cost"\s*:\s*([0-9.]+)/g, (v) => (summed += v));
-  if (summed > cost) cost = summed;
-  return { cost, turns };
+  take(/"cost"\s*:\s*([0-9.]+)/g, (v) => (parts.summed += v));
+  return parts;
 }
+
+const spendOf = (p: SpendParts) => ({ cost: Math.max(p.total, p.generic, p.summed), turns: p.turns });
 
 export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
   const started = Date.now();
@@ -351,18 +358,50 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
     }, options.timeoutMs ?? 300_000);
 
+    // Spend comes from the provider's own structured result when `normalize` knows its shape:
+    // a regex over raw stdout also matches repository text an agent echoes, which could kill a
+    // run over a number nobody charged. Only for a provider whose shape is unknown is the
+    // regex used, folded one complete line at a time so the scan stays linear.
+    const provider = providerOf(adapter.name);
+    const structured = provider === 'claude' || provider === 'grok' || provider === 'codex';
+    const fromProvider = { cost: 0, turns: 0 };
+    const scanned: SpendParts = { total: 0, generic: 0, summed: 0, turns: 0 };
+    const spendNow = () => (structured ? { ...fromProvider } : spendOf(scanned));
+    const takeLine = (line: string) => {
+      if (!line.trim()) return;
+      if (structured) {
+        for (const ev of normalize(provider, line)) {
+          if (ev.name !== 'cost.reported') continue;
+          if (typeof ev.payload.costUsd === 'number') fromProvider.cost = ev.payload.costUsd;
+          if (typeof ev.payload.turns === 'number') fromProvider.turns = ev.payload.turns;
+        }
+        return;
+      }
+      const p = spendParts(line);
+      scanned.total = Math.max(scanned.total, p.total);
+      scanned.generic = Math.max(scanned.generic, p.generic);
+      scanned.summed += p.summed;
+      scanned.turns = Math.max(scanned.turns, p.turns);
+    };
+    let partial = '';
+
     let reported = { cost: 0, turns: 0 };
     child.stdout.on('data', (d) => {
       stdout += d;
       options.onOutput?.('stdout', String(d));
-      const now = readSpend(stdout);
+      partial += String(d);
+      const cut = partial.lastIndexOf('\n');
+      if (cut < 0) return;
+      for (const line of partial.slice(0, cut).split('\n')) takeLine(line);
+      partial = partial.slice(cut + 1);
+      const now = spendNow();
       if (now.cost !== reported.cost || now.turns !== reported.turns) {
         reported = now;
         options.onProgress?.(now);
       }
       // Mid-run enforcement only works when the CLI reports cost as it goes. When it only
       // reports at the end, the between-runs ceiling in the driver is what actually holds.
-      if (options.maxCost && !overBudget && readSpend(stdout).cost > options.maxCost) {
+      if (options.maxCost && !overBudget && now.cost > options.maxCost) {
         overBudget = true;
         child.kill('SIGTERM');
         setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
@@ -375,7 +414,9 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
 
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
-      const spend = readSpend(stdout);
+      takeLine(partial);
+      partial = '';
+      const spend = spendNow();
       // A CLI that only reports at the end reports here, and nowhere else.
       if (spend.cost !== reported.cost || spend.turns !== reported.turns) {
         options.onProgress?.(spend);
