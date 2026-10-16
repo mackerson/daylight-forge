@@ -100,6 +100,17 @@ for (const [label, version] of [['schema 1', 1], ['no version at all', null], ['
   check(`${label}: its mtime is unchanged`, fs.statSync(file).mtimeMs === before.mtime);
 }
 {
+  const out = path.join(tmp, 'not-sqlite');
+  fs.mkdirSync(out);
+  const file = path.join(out, 'daylight.db');
+  fs.writeFileSync(file, 'this is not a database, it is a note someone saved here\n'.repeat(20));
+  const before = { sha: sha(file), files: listing(out) };
+  const err = throws(() => openDaylightDb(file));
+  check('a file that is not SQLite is refused with the same one line', err instanceof IncompatibleDatabase
+    && /Delete it and re-map/.test(err.message) && !err.message.includes('\n'), err?.message);
+  check('and is left as found', sha(file) === before.sha && listing(out) === before.files);
+}
+{
   const out = path.join(tmp, 'empty-file');
   fs.mkdirSync(out);
   fs.writeFileSync(path.join(out, 'daylight.db'), '');

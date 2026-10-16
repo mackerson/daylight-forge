@@ -323,9 +323,12 @@ CREATE INDEX ingest_sources_project ON ingest_sources(project_id, mission_id);
 
 /** A database this build will not read. The message is one line and says what to do. */
 export class IncompatibleDatabase extends Error {
-  constructor(file: string, found: number) {
+  /** `found` is the schema version, 0 for none, or `not-sqlite` for a file that is no database. */
+  constructor(file: string, found: number | 'not-sqlite') {
+    const what = found === 'not-sqlite' ? 'not a SQLite file, so not a'
+      : found ? `a schema ${found}` : 'an unversioned';
     super(
-      `${file} is ${found ? `a schema ${found}` : 'an unversioned'} Daylight database; this build reads ` +
+      `${file} is ${what} Daylight database; this build reads ` +
         `schema ${DAYLIGHT_DB_VERSION} only and never migrates. Delete it and re-map ` +
         '(daylight map <repo> --out <dir>).',
     );
@@ -355,8 +358,18 @@ const hasTables = (db: DatabaseSync): boolean =>
  * creates nothing; one with a `-wal` is in use, its sidecars already exist, and only a normal
  * read-only open sees the committed state in it.
  */
-function existingVersion(file: string): number | null {
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
+
+function existingVersion(file: string): number | 'not-sqlite' | null {
   if (!fs.existsSync(file) || fs.statSync(file).size === 0) return null;
+  const head = Buffer.alloc(SQLITE_HEADER.length);
+  const fd = fs.openSync(file, 'r');
+  try {
+    fs.readSync(fd, head, 0, head.length, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (!head.equals(SQLITE_HEADER)) return 'not-sqlite';
   let target: string | URL = file;
   if (!fs.existsSync(`${file}-wal`)) {
     target = pathToFileURL(file);
