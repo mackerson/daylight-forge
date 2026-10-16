@@ -249,6 +249,21 @@ section('nothing from the transcripts\' text reaches the store or an artifact');
   check('the client\'s cost estimate was not read', !bytes.includes('totalCostUSD'));
 }
 
+section('a subagent whose file name holds a secret shape is refused');
+{
+  const hostileId = PLANTED_KEY;
+  const subDir = path.join(sessionDir, MAIN, 'subagents');
+  const hostile = path.join(subDir, `agent-${hostileId}.jsonl`);
+  fs.writeFileSync(hostile, fs.readFileSync(path.join(subDir, 'agent-a2222222222222222.jsonl'), 'utf8').replaceAll('a2222222222222222', hostileId));
+  const before = rowCounts();
+  const r = ingestAll();
+  const listed = capture(() => runIngestCommand(['list', '--out', out], { projectsDir }));
+  check('it is counted as a refused file', r.skipped.refusedFiles === 1, JSON.stringify(r.skipped));
+  check('and adds no row', JSON.stringify(before) === JSON.stringify(rowCounts()));
+  check('its id reaches neither <out> nor the listing', !allBytes(out).includes('PLANTEDFAKEKEY') && !listed.stdout.includes('PLANTEDFAKEKEY'));
+  fs.rmSync(hostile);
+}
+
 section('re-ingest adds zero rows');
 {
   const before = rowCounts();

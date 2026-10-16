@@ -578,9 +578,13 @@ function ingestSessionInner(
   try {
     for (const n of fs.readdirSync(subDir).sort()) {
       const m = /^agent-(.+)\.jsonl$/.exec(n);
-      if (m && AGENT_ID.test(m[1])) {
-        files.push({ agentId: m[1], file: path.join(subDir, n), metaFile: path.join(subDir, `agent-${m[1]}.meta.json`) });
+      if (!m) continue;
+      // The id comes from a file name and is stored and printed, so it is vetted like any other.
+      if (!AGENT_ID.test(m[1]) || !clean(m[1])) {
+        skipped.refusedFiles++;
+        continue;
       }
+      files.push({ agentId: m[1], file: path.join(subDir, n), metaFile: path.join(subDir, `agent-${m[1]}.meta.json`) });
     }
   } catch {
     // No subagents.
