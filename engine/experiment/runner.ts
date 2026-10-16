@@ -7,7 +7,7 @@ import type { Readable, Writable } from 'node:stream';
 import { ArtifactStore, canonicalJson } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
-  NewExperiment,
+  ExperimentRole, NewExperiment,
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
@@ -77,7 +77,13 @@ export interface RegisterInput {
   testPath: string;
   command: string[];
   sandboxProfile?: string;
+  /** `gate` or `holdout` for a Forge gate. Absent, the experiment is a P0 probe. */
+  role?: ExperimentRole;
+  /** Minted first (`newId('experiment')`) when the test path has to name the experiment. */
+  id?: string;
 }
+
+const isForgeRole = (role: ExperimentRole | undefined): boolean => role === 'gate' || role === 'holdout';
 
 const isEmptyPrediction = (p: ExpectedObservation): boolean =>
   p.exitCode === undefined && !p.stdoutIncludes?.length && !p.stderrIncludes?.length;
@@ -117,8 +123,14 @@ export function harnessHolds(
   } catch (err) {
     return { ok: false, why: `the registered prediction cannot be read: ${(err as Error).message}` };
   }
-  const { testPath, ...prediction } = registered;
+  const { testPath, role, baseRevision, ...prediction } = registered;
   if (canonicalJson(prediction) !== canonicalJson(x.prediction)) return edited('the prediction');
+  // A gate's role and base are in its expectation, so an UPDATE turning a holdout into a gate,
+  // a probe into either, or re-pointing its base is a different harness. Probes carry neither.
+  if (role !== undefined || baseRevision !== undefined || isForgeRole(x.role)) {
+    if (role !== x.role) return edited('the role');
+    if (baseRevision !== x.baseRevision) return edited('the base revision');
+  }
   if (testPath === undefined) return { ok: true, legacy: true };
   if (testPath !== x.testArtifact.path) return edited('the test path');
   return { ok: true, legacy: false };
@@ -145,12 +157,18 @@ export function registerExperiment(input: RegisterInput): Experiment {
     ...meta, kind: 'test', path: rel, label: 'registered test',
   });
   // Where the test is placed decides what runs, so it is part of the protected expectation
-  // and, through that artifact's digest, of the harness digest.
-  const expectedArtifact = input.artifacts.put(JSON.stringify({ ...input.prediction, testPath: rel }, null, 2), {
+  // and, through that artifact's digest, of the harness digest. A gate's role and base are
+  // too; a probe's expectation is exactly what P0 wrote, so its digests do not move.
+  const expectation = isForgeRole(input.role)
+    ? { ...input.prediction, testPath: rel, role: input.role, baseRevision: input.baseRevision }
+    : { ...input.prediction, testPath: rel };
+  const expectedArtifact = input.artifacts.put(JSON.stringify(expectation, null, 2), {
     ...meta, kind: 'expected', label: 'prediction', mediaType: 'application/json',
   });
 
   const experiment = input.store.createExperiment({
+    ...(input.id !== undefined ? { id: input.id } : {}),
+    ...(input.role !== undefined ? { role: input.role } : {}),
     missionId: input.missionId,
     projectId: input.projectId,
     claimIds: input.claimIds,

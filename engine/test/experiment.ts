@@ -19,7 +19,7 @@ import type {
 } from '../mission/types.ts';
 import { concludeFrom, verdictOf } from '../experiment/conclude.ts';
 import {
-  commitOf, harnessDigestOf, registerExperiment, runExperiment, type ExperimentStoreLike,
+  commitOf, harnessDigestOf, harnessHolds, registerExperiment, runExperiment, type ExperimentStoreLike,
 } from '../experiment/runner.ts';
 import {
   checkAllowlist, DEFAULT_LIMITS, detectSandbox, nodeBind, nodeBinary, sandboxArgv, sandboxCommand,
@@ -223,6 +223,53 @@ section('registration');
   check('node -e is refused', refused(() => register('x', { exitCode: 0 }, { command: ['node', '-e', '1'] })));
   check('an absolute testPath is refused', refused(() => register('x', { exitCode: 0 }, { testPath: '/etc/x.js' })));
   check('a testPath that climbs out is refused', refused(() => register('x', { exitCode: 0 }, { testPath: '../x.js' })));
+}
+
+section('P0 digests are unchanged by the gate fields (golden)');
+{
+  // Captured from `daylight` 9caf046, before gates added role and base to the expectation. A
+  // probe's expectation must stay byte-identical, or every P0 row would read as edited.
+  const golden = [
+    {
+      input: { testSource: 'console.log("FAIL: expired session served"); process.exit(1);\n', prediction: { exitCode: 1, stdoutIncludes: ['FAIL'] }, testPath: 'test/case1.js', command: ['node', 'test/case1.js'] },
+      harness: 'sha256:1885a72a2cb765ca6a834ab36846cd51cdd3a3701b0e110d39988303cd7b73ac',
+      expected: 'sha256:574a860420b841f14a81543c65930252903344b7ad3d1b0b3de405fc25a77799',
+    },
+    {
+      input: { testSource: 'process.exit(0);\n', prediction: { exitCode: 0 }, testPath: 'test/x.test.js', command: ['node', '--test', 'test/x.test.js'], sandboxProfile: 'bwrap' },
+      harness: 'sha256:4146f3973dad7c2ca13bcaa7718ef1957b49b6ac84cafd7e0aad167388bfaa34',
+      expected: 'sha256:e0c5615597510d27b3afda2bb49106505bedc8cf398e5e80dfe324901dea4b17',
+    },
+  ];
+  for (const [i, g] of golden.entries()) {
+    const x = registerExperiment({
+      store, artifacts, missionId: 'm', projectId: 'git:fixture', baseRevision: 'a'.repeat(40),
+      subject: 's', predicate: 'p', claimIds: [], hypothesis: 'h', ...g.input,
+    });
+    check(`P0 fixture ${i + 1}: the expectation digest is the pre-gate one`, x.expectedArtifact.digest === g.expected, x.expectedArtifact.digest);
+    check(`P0 fixture ${i + 1}: the harness digest is the pre-gate one`, x.harnessDigest === g.harness, x.harnessDigest);
+    check(`P0 fixture ${i + 1}: the expectation names no role and no base`,
+      !('role' in JSON.parse(artifacts.text(x.expectedArtifact))) && !('baseRevision' in JSON.parse(artifacts.text(x.expectedArtifact))));
+  }
+
+  const gate = registerExperiment({
+    store, artifacts, missionId: 'm', projectId: 'git:fixture', baseRevision: 'a'.repeat(40),
+    subject: 's', predicate: 'p', claimIds: [], hypothesis: 'h', role: 'gate', ...golden[0].input,
+  });
+  const expect = JSON.parse(artifacts.text(gate.expectedArtifact));
+  check('a gate\'s expectation carries its role and base', expect.role === 'gate' && expect.baseRevision === 'a'.repeat(40));
+  check('so the same test as a gate is a different harness', gate.harnessDigest !== golden[0].harness);
+  const asRow = { ...gate, role: 'gate' as const };
+  check('the gate row holds its harness', harnessHolds(asRow, artifacts).ok);
+  check('a gate flipped to holdout on the row no longer holds', !harnessHolds({ ...asRow, role: 'holdout' }, artifacts).ok);
+  check('a gate flipped to probe on the row no longer holds', !harnessHolds({ ...asRow, role: 'probe' }, artifacts).ok);
+  check('a gate re-pointed at another base no longer holds', !harnessHolds({ ...asRow, baseRevision: 'b'.repeat(40) }, artifacts).ok);
+  const probeRow = { ...registerExperiment({
+    store, artifacts, missionId: 'm', projectId: 'git:fixture', baseRevision: 'a'.repeat(40),
+    subject: 's', predicate: 'p', claimIds: [], hypothesis: 'h', ...golden[1].input,
+  }), role: 'probe' as const };
+  check('a probe row holds without a role in its expectation', harnessHolds(probeRow, artifacts).ok);
+  check('a probe promoted to gate on the row no longer holds', !harnessHolds({ ...probeRow, role: 'gate' }, artifacts).ok);
 }
 
 // ---- fail closed, everywhere -------------------------------------------------------
