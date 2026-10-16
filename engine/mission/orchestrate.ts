@@ -188,6 +188,8 @@ export interface RunMissionOptions {
   tools: string[];
   model?: string;
   maxCost?: number;
+  /** Lets `maxCost` exceed the budget recorded on the mission. Without it that is refused. */
+  raiseBudget?: boolean;
   dryRun?: boolean;
   timeoutMs?: number;
   concurrency?: number;
@@ -274,6 +276,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     throw new Error(`mission ${mission.id} is closed (${mission.outcome}); it cannot be run again`);
   }
   if (mission.state === 'draft') throw new Error(`mission ${mission.id} is still a draft`);
+  const budget = mission.budget.maxUsd;
+  if (opts.maxCost !== undefined && budget !== undefined && opts.maxCost > budget && !opts.raiseBudget) {
+    throw new Error(
+      `--max-cost $${opts.maxCost} is above mission ${mission.id}'s budget of $${budget}; ` +
+        'pass --raise-budget to spend past what the mission was created with',
+    );
+  }
   const { root, project } = requireMappedRepo(ctx.out, opts.repo);
   if (project.id !== mission.projectId) {
     throw new Error(
@@ -411,7 +420,8 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   const queue = [...todo];
   const limit = Math.max(1, opts.concurrency ?? 1);
 
-  const launch = async (plan: ReviewPlan): Promise<void> => {
+  const unknownCost: string[] = [];
+  const launch = async (plan: ReviewPlan, share: number | undefined): Promise<void> => {
     const { spec } = plan;
     const adapter = adapterFor(spec.tool)!;
     const key = specKey(spec);
@@ -443,7 +453,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         model: spec.model,
         timeoutMs,
         maxTurns: 40,
-        maxCost: ceiling ? Math.max(0, ceiling - spent) : undefined,
+        maxCost: share,
       },
       {
         store: ctx.store,
@@ -461,7 +471,10 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     open.delete(attempt.id);
     const costUsd = ctx.store.attempt(attempt.id)?.costUsd ?? null;
     spent += costUsd ?? 0;
-    if (costUsd === null) costKnown = false;
+    if (costUsd === null) {
+      costKnown = false;
+      unknownCost.push(key);
+    }
     ingestMcpEvents(ctx, mission.id);
     if (!result.ok) {
       const why = result.timedOut ? 'timed out' : result.overBudget ? 'over budget' : `exit ${result.exitCode}`;
@@ -476,8 +489,21 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
       failures.push(`budget exhausted before ${left}: spent $${spent.toFixed(2)} of $${ceiling.toFixed(2)}`);
       break;
     }
+    // A ceiling only holds while spend is known. Once an agent in this run finished without
+    // reporting a cost, the next wave could already be over it; a person reruns to go on.
+    if (ceiling && unknownCost.length) {
+      const left = queue.map((p) => specKey(p.spec)).join(', ');
+      failures.push(
+        `cost unknown for ${unknownCost.join(', ')}, so the $${ceiling.toFixed(2)} ceiling cannot be enforced; ` +
+          `not launching ${left}`,
+      );
+      break;
+    }
+    // Every attempt in a wave starts at once; each gets its share of what is left, or each
+    // would believe it had the whole remainder to itself.
     const wave = queue.splice(0, limit);
-    await Promise.all(wave.map(launch));
+    const share = ceiling ? Math.max(0, ceiling - spent) / wave.length : undefined;
+    await Promise.all(wave.map((p) => launch(p, share)));
   }
 
   if (failures.length) {

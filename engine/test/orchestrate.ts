@@ -360,6 +360,36 @@ section('the budget is the mission\'s, across runs');
   run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
 }
 
+section('a ceiling holds under concurrency, unknown spend and a raised flag');
+{
+  type Ran = { mission: Mission; attempts: Inspection['attempts']; spent: number; costKnown: boolean };
+  const mk = (objective: string, maxCost: string) => json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify',
+    '--objective', objective, '--scope', 'src/session-cache.ts', '--max-cost', maxCost, '--format', 'json']));
+
+  const raise = mk('raise', '0.05');
+  const raised = run(['mission', 'run', raise.id, repo, '--out', out, '--tools', 'mock:yes', '--max-cost', '1', '--format', 'json']);
+  check('--max-cost above the mission\'s budget is refused', raised.code === 1 && /--raise-budget/.test(raised.err), raised.err.slice(-200));
+  const allowed = run(['mission', 'run', raise.id, repo, '--out', out, '--tools', 'mock:yes', '--max-cost', '1', '--raise-budget', '--format', 'json']);
+  check('and allowed when the raise is explicit', allowed.code === 0, allowed.err.slice(-200));
+
+  // Two reviewers that each report $0.05, launched together under a $0.06 ceiling.
+  const costly = path.join(tmp, 'mock-costly.mjs');
+  fs.writeFileSync(costly, `console.log(JSON.stringify({ total_cost_usd: 0.05 })); setTimeout(() => process.exit(0), 300);\n`);
+  const shared = mk('shared ceiling', '0.06');
+  const wave = json<Ran>(run(['mission', 'run', shared.id, repo, '--out', out, '--tools', 'mock:a,mock:b', '--concurrency', '2', '--format', 'json'],
+    { VDS_MOCK_ADAPTER: costly }));
+  const reviews = wave.attempts.filter((a) => a.runnerId.startsWith('agent:mock:'));
+  check('each reviewer in a wave gets its share of the remainder, not all of it',
+    reviews.length === 2 && reviews.every((a) => a.failure === 'over budget'), JSON.stringify(reviews.map((a) => a.failure)));
+
+  const unknown = mk('unknown spend', '1');
+  const blind = json<Ran>(run(['mission', 'run', unknown.id, repo, '--out', out, '--tools', 'mock:no,mock:yes', '--format', 'json']));
+  check('an attempt with unknown cost blocks the next wave under a ceiling',
+    blind.mission.state === 'blocked' && /unknown/.test(blind.mission.outcomeReason ?? ''), blind.mission.outcomeReason);
+  check('so the second reviewer did not run', !blind.attempts.some((a) => a.runnerId === 'agent:mock:yes'));
+  for (const m of [raise, shared, unknown]) run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
 section('a run that dies does not leave an attempt running for ever');
 {
   // A reviewer that waits while MOCK_SLOW is set, so the CLI can be killed mid-attempt.
