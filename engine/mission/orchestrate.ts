@@ -565,7 +565,8 @@ export function runCompare(ctx: DaylightContext, mission: Mission, taskId: strin
   }, null, 2), { ...meta, kind: 'report', label: 'comparison', mediaType: 'application/json' });
   artifacts.push(summary);
 
-  ctx.store.finishAttempt(attempt.id, { state: 'completed', exitCode: 0, costUsd: 0, artifacts });
+  // The comparison is static and runs here: it costs exactly nothing, and says so as its own source.
+  ctx.store.finishAttempt(attempt.id, { state: 'completed', exitCode: 0, costUsd: 0, costSource: 'provider', artifacts });
   lifecycle(ctx, ctx.store.mission(mission.id)!, 'compare.finished', {
     disputes: comparison.disputes.length,
     unverified: comparison.unverified.length,

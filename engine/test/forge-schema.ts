@@ -515,6 +515,10 @@ section('ingested attempts and ingest sources');
   check('and a daylight attempt without one', !!throws(() =>
     raw.prepare('UPDATE attempts SET sandbox_profile=NULL, sandbox_network=NULL, sandbox_write=NULL, sandbox_exec=NULL WHERE id=?').run(authorId)));
   raw.close();
+  check('an ingested attempt cannot finish with a provider-known cost', !!throws(() =>
+    store.finishAttempt(a.id, { state: 'completed', costUsd: 0.5, costSource: 'provider' })));
+  check('nor with an unlabelled one', !!throws(() => store.finishAttempt(a.id, { state: 'completed', costUsd: 0.5 }))
+    && store.attempt(a.id)!.state === 'running');
   const ended = store.finishAttempt(a.id, { state: 'completed', costUsd: null, at: 900 });
   check('finishAttempt keeps an explicit end time', ended.finishedAt === 900);
 

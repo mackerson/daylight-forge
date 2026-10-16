@@ -221,7 +221,10 @@ export interface FinishAttemptInput {
   timedOut?: boolean;
   /** `null` when the runner reported nothing. Not the same as zero. */
   costUsd: number | null;
-  /** Defaults to `none` for a null cost and `provider` otherwise; a scraped figure must say so. */
+  /**
+   * Required with a non-null cost: a figure says where it came from or is refused, because an
+   * assumed `provider` would turn a scrape into knowledge (R10.2). Defaults to `none` for null.
+   */
   costSource?: CostSource;
   /** The model the provider reported. */
   model?: string;
@@ -733,6 +736,13 @@ export class MissionStore {
     if (!canTransition(ATTEMPT_TRANSITIONS, a.state, result.state)) {
       throw new IllegalTransition('attempt', attemptId, a.state, result.state);
     }
+    const costSource = result.costSource ?? (result.costUsd === null ? 'none' : undefined);
+    if (costSource === undefined) {
+      throw new Error(`attempt ${attemptId}: a cost of ${result.costUsd} needs a costSource; an unlabelled figure is not assumed known`);
+    }
+    if (a.origin === 'ingested' && costSource === 'provider') {
+      throw new Error(`attempt ${attemptId} is ingested; a transcript's cost is never the provider's own figure`);
+    }
     const at = result.at ?? this.now();
     // One transaction: a crash between the attempt row and its task would leave the attempt
     // finished and the task running, which no later run can tell from a live attempt.
@@ -748,9 +758,8 @@ export class MissionStore {
         )
         .run(
           result.state, at, result.costUsd,
-          // An unlabelled figure keeps P0's meaning, the runner's own report. Scraped figures
-          // must say `stdout-scan`; the CHECK refuses a cost labelled `none`.
-          result.costSource ?? (result.costUsd === null ? 'none' : 'provider'),
+          // The CHECK refuses a cost labelled `none`.
+          costSource,
           result.exitCode ?? null, result.signal ?? null,
           result.timedOut ? 1 : 0, result.failure ?? null,
           JSON.stringify(result.artifacts ?? []), result.model ?? null,
