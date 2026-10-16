@@ -42,7 +42,7 @@ const mock = path.join(tmp, 'mock-reviewer.mjs');
 fs.writeFileSync(mock, `
 import fs from 'node:fs';
 const [cfgPath, prompt] = process.argv.slice(2);
-const env = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mcpServers.vds.env;
+const env = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mcpServers.daylight.env;
 const { DAYLIGHT_DIR, DAYLIGHT_AGENT, DAYLIGHT_MODEL, DAYLIGHT_SESSION } = env;
 const { ClaimStore } = await import(${JSON.stringify(path.join(ENGINE, 'store', 'claims.ts'))});
 const ev = (tool, extra = {}) => fs.appendFileSync(DAYLIGHT_DIR + '/events.jsonl',
@@ -230,7 +230,7 @@ section('5. blind review');
   const blind = !seenByB.includes(a) && seenByB.includes(b) && seenByB.length === 2;
   check('reviewer B\'s view excludes reviewer A\'s claim and keeps its own and the human\'s', blind);
   const cfg = JSON.parse(fs.readFileSync(path.join(out, `mcp.mock-no.${prepared.missionId}.json`), 'utf8'));
-  const plumbed = cfg.mcpServers.vds.env.DAYLIGHT_BLIND_PREFIX === prepared.missionId;
+  const plumbed = cfg.mcpServers.daylight.env.DAYLIGHT_BLIND_PREFIX === prepared.missionId;
   check('the run handed each reviewer the blind prefix through its MCP config', plumbed);
   item('blind review: B\'s initial input excludes A\'s conclusions', blind && plumbed);
 }

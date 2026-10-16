@@ -8,11 +8,11 @@ import type { MissionInspect, MissionList } from '../types.ts';
  * orchestrator exists. Loaded only under `DAYLIGHT_MISSION_SAMPLE=1`, and every screen that shows
  * it says "sample" in the corner. Nothing here was produced by a model; the sources, costs
  * and quotes are illustrative, modelled on the planted-defect fixture in
- * `fixtures/daylight-demo/` (commit 38fa2007…, defect in `src/session-cache.ts`).
+ * `fixtures/daylight-demo/` (commit b57b1c8c…, defect in `src/session-cache.ts`).
  */
 
-const PROJECT = 'git:38fa20074d80';
-const REV = '38fa20074d8003c2860e3e0f605dd562d827eb5e';
+const PROJECT = 'git:b57b1c8c436a';
+const REV = 'b57b1c8c436af52c5bdae26744dbcc4e5ddc6913';
 const M = 'm_0f3c2a9e5b7d4c1e8a6f2b9d0c4e7a1f';
 const T_REVIEW_A = 't_1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d';
 const T_REVIEW_B = 't_2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e';

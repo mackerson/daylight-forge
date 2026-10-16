@@ -118,10 +118,10 @@ export const CLAUDE: Adapter = {
     '--strict-mcp-config',
     // Read-only allow-list. Anything else fails closed in non-interactive mode.
     '--allowedTools',
-    'Read Grep Glob mcp__vds__get_overview mcp__vds__get_slice mcp__vds__get_open_questions ' +
-      'mcp__vds__get_focus_state mcp__vds__submit_claim mcp__vds__flag_contradiction ' +
-      'mcp__vds__propose_cluster mcp__vds__propose_elision mcp__vds__defend_node ' +
-      'mcp__vds__propose_invariant',
+    'Read Grep Glob mcp__daylight__get_overview mcp__daylight__get_slice mcp__daylight__get_open_questions ' +
+      'mcp__daylight__get_focus_state mcp__daylight__submit_claim mcp__daylight__flag_contradiction ' +
+      'mcp__daylight__propose_cluster mcp__daylight__propose_elision mcp__daylight__defend_node ' +
+      'mcp__daylight__propose_invariant',
     ...(run.model ? ['--model', run.model] : []),
     ...(run.maxTurns ? ['--max-turns', String(run.maxTurns)] : []),
   ],
@@ -163,18 +163,18 @@ export const CODEX: Adapter = {
   argv: (run) => {
     // codex takes MCP servers as dotted TOML config overrides rather than a config file.
     const cfg = JSON.parse(fs.readFileSync(run.mcpConfigPath, 'utf8'));
-    const vds = cfg.mcpServers.vds;
+    const server = cfg.mcpServers.daylight;
     return [
       'exec', run.prompt,
       '--json',
       '-s', 'read-only',
       '-C', run.cwd,
       '--skip-git-repo-check',
-      '-c', `mcp_servers.vds.command=${JSON.stringify(vds.command)}`,
-      '-c', `mcp_servers.vds.args=${JSON.stringify(vds.args)}`,
+      '-c', `mcp_servers.daylight.command=${JSON.stringify(server.command)}`,
+      '-c', `mcp_servers.daylight.args=${JSON.stringify(server.args)}`,
       // TOML inline table, not JSON — codex parses these values as TOML.
       '-c',
-      `mcp_servers.vds.env={${Object.entries(vds.env as Record<string, string>)
+      `mcp_servers.daylight.env={${Object.entries(server.env as Record<string, string>)
         .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
         .join(', ')}}`,
       ...(run.model ? ['-m', run.model] : []),
@@ -202,7 +202,7 @@ export const GROK: Adapter = {
     ...(run.maxTurns ? ['--max-turns', String(run.maxTurns)] : []),
   ],
   registrationHint: (_cfg, cmd) =>
-    `grok mcp add vds -- ${cmd.join(' ')}`,
+    `grok mcp add daylight -- ${cmd.join(' ')}`,
   probe: () => {
     const out = ask('grok', ['models']);
     const models = [...out.matchAll(/^\s*[*-]\s+(\S+)/gm)].map((m) => m[1]);
@@ -229,7 +229,7 @@ export const OPENCODE: Adapter = {
     '--dir', run.cwd,
     ...(run.model ? ['--model', run.model] : []),
   ],
-  registrationHint: (_cfg, cmd) => `opencode mcp add vds -- ${cmd.join(' ')}`,
+  registrationHint: (_cfg, cmd) => `opencode mcp add daylight -- ${cmd.join(' ')}`,
   probe: () => {
     const models = ask('opencode', ['models'])
       .split('\n')
@@ -503,7 +503,7 @@ export function mcpConfig(
 ) {
   return {
     mcpServers: {
-      vds: {
+      daylight: {
         command: serverCmd[0],
         args: serverCmd.slice(1),
         // The model matters for provenance: two runs of the same CLI on different models

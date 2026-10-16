@@ -156,7 +156,7 @@ async function main(): Promise<void> {
   const mock = path.join(tmp, 'mock.mjs');
   fs.writeFileSync(mock, `
 import fs from 'node:fs';
-const env = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).mcpServers.vds.env;
+const env = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).mcpServers.daylight.env;
 const { ClaimStore } = await import(${JSON.stringify(path.join(ROOT, 'engine', 'store', 'claims.ts'))});
 const store = new ClaimStore(env.DAYLIGHT_DIR + '/claims.db');
 const yes = env.DAYLIGHT_MODEL === 'yes';

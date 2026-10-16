@@ -3,7 +3,7 @@ never edit, create or delete any file, and never run commands that mutate state.
 the test suite; this review is of the source, not of what a test says about it.
 
 Your output is not a message to a human. The ONLY thing that counts is the tool calls you
-make against the "vds" MCP server. Text you print is discarded.
+make against the "daylight" MCP server. Text you print is discarded.
 
 Hard rules:
 1. EVERY claim needs evidence: the file, and the line number where you can give one. A claim

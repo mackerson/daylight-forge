@@ -35,7 +35,7 @@ const mock = path.join(tmp, 'mock-reviewer.mjs');
 fs.writeFileSync(mock, `
 import fs from 'node:fs';
 const [cfgPath, prompt] = process.argv.slice(2);
-const env = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mcpServers.vds.env;
+const env = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mcpServers.daylight.env;
 const { DAYLIGHT_DIR, DAYLIGHT_AGENT, DAYLIGHT_MODEL, DAYLIGHT_SESSION, DAYLIGHT_BLIND_PREFIX } = env;
 if (!DAYLIGHT_BLIND_PREFIX) { console.error('no DAYLIGHT_BLIND_PREFIX in config'); process.exit(3); }
 if (process.env.DAYLIGHT_SESSION !== DAYLIGHT_SESSION) { console.error('session mismatch'); process.exit(4); }
@@ -145,8 +145,8 @@ section('two independent reviewers, blind to each other');
   check('nothing left unverified in scope', report.comparison.unverified.length === 0);
 
   const cfg = JSON.parse(fs.readFileSync(path.join(out, `mcp.mock-yes.${prepared.missionId}.json`), 'utf8'));
-  check('the MCP config carries the blind prefix', cfg.mcpServers.vds.env.DAYLIGHT_BLIND_PREFIX === prepared.missionId);
-  check('and the agent label', cfg.mcpServers.vds.env.DAYLIGHT_AGENT === 'mock' && cfg.mcpServers.vds.env.DAYLIGHT_MODEL === 'yes');
+  check('the MCP config carries the blind prefix', cfg.mcpServers.daylight.env.DAYLIGHT_BLIND_PREFIX === prepared.missionId);
+  check('and the agent label', cfg.mcpServers.daylight.env.DAYLIGHT_AGENT === 'mock' && cfg.mcpServers.daylight.env.DAYLIGHT_MODEL === 'yes');
 
   const view = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out, '--format', 'json']));
   for (const a of reviews) {

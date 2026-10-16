@@ -34,7 +34,7 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
 ## The guided demo, in order
 
 1. **Prepare.** Materialises the fixture as a git repository at the pinned commit
-   `38fa20074d80`, maps it, creates an *explore* mission scoped to `src/session-cache.ts`,
+   `b57b1c8c436a`, maps it, creates an *explore* mission scoped to `src/session-cache.ts`,
    and registers the fixture's own red test as the experiment (prediction: exit 1).
    ```bash
    pnpm demo:prepare --out ./out-demo --dest /tmp/daylight-demo-repo --format json

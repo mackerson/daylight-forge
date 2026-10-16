@@ -72,7 +72,7 @@ You are mapping a codebase for a static-analysis harness. You are READ-ONLY: nev
 create or delete any file, and never run commands that mutate state.
 
 Your output is not a message to a human. The ONLY thing that counts is the tool calls you
-make against the "vds" MCP server. Text you print is discarded.
+make against the "daylight" MCP server. Text you print is discarded.
 
 Hard rules:
 1. EVERY claim needs evidence: the file, and the line number where you can give one. A claim
@@ -101,7 +101,7 @@ const FOCUS_RULES = `
 You are focusing a codebase map. You are READ-ONLY: never edit, create or delete any file.
 
 Your output is not a message to a human. The ONLY thing that counts is the tool calls you
-make against the "vds" MCP server. Text you print is discarded.
+make against the "daylight" MCP server. Text you print is discarded.
 
 The job is NOT to describe everything. It is to make the map SMALLER and TRUER. An
 exhaustive map asserts that every file matters equally, which is false. Intent is only

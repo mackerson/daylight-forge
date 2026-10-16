@@ -218,7 +218,7 @@ export function createServer(opts: ServerOptions) {
   const findings = readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] });
   const structure = readJson('structure.json', {});
 
-  const server = new McpServer({ name: 'visual-desloppify', version: '0.1.0' });
+  const server = new McpServer({ name: 'daylight', version: '0.1.0' });
 
   /**
    * Every tool call is appended to events.jsonl.

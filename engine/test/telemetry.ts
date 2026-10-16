@@ -90,13 +90,13 @@ section('normalising provider output');
     type: 'assistant',
     message: { content: [
       { type: 'thinking', thinking: 'private' },
-      { type: 'tool_use', id: 'toolu_1', name: 'mcp__vds__get_slice', input: { node: 'a.ts', hops: 1 } },
+      { type: 'tool_use', id: 'toolu_1', name: 'mcp__daylight__get_slice', input: { node: 'a.ts', hops: 1 } },
       { type: 'text', text: 'ok' },
     ] },
   });
   const ev = normalize('claude', toolUse);
   const call = ev.find((e) => e.name === 'tool.call');
-  check('a claude tool_use block is a tool.call', !!call && call.payload.tool === 'mcp__vds__get_slice');
+  check('a claude tool_use block is a tool.call', !!call && call.payload.tool === 'mcp__daylight__get_slice');
   check('its input is summarised, not reproduced', typeof call?.payload.input === 'string' && String(call?.payload.input).includes('a.ts'));
   const thought = ev.find((e) => e.name === 'process.thinking');
   check('thinking is counted, never quoted',
@@ -275,7 +275,7 @@ await (async () => {
     bin: process.execPath,
     perInvocationMcp: true,
     argv: () => ['-e', `
-      console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__vds__get_overview', input: {} }] } }));
+      console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__daylight__get_overview', input: {} }] } }));
       process.stdout.write('{"type":"result","total_cost_usd":0.42,"num_t');
       setTimeout(() => console.log('urns":2}'), 20);
     `],
@@ -287,7 +287,7 @@ await (async () => {
   );
   const ev = events.forAttempt('a_3');
   check('a line split across chunks still normalises', ev.some((e) => e.name === 'process.result'));
-  check('the tool call became an event', ev.some((e) => e.name === 'tool.call' && e.payload.tool === 'mcp__vds__get_overview'));
+  check('the tool call became an event', ev.some((e) => e.name === 'tool.call' && e.payload.tool === 'mcp__daylight__get_overview'));
   check('process.exit counts the tool calls', ev[ev.length - 1].payload.toolCalls === 1);
   check('reported cost reaches the attempt', store.calls[0].result.costUsd === 0.42);
   check('and agrees with the adapter\'s own spend parser', r.cost === 0.42 && r.turns === 2);
