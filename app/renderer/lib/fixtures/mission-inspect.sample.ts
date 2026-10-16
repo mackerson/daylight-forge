@@ -5,7 +5,7 @@ import type { MissionInspect, MissionList } from '../types.ts';
  *
  * Exists so Mission Control can be rendered, screenshotted and reviewed on a machine that has
  * never run a mission, and so the headless harness has something to assert against before the
- * orchestrator exists. Loaded only under `VDS_MISSION_SAMPLE=1`, and every screen that shows
+ * orchestrator exists. Loaded only under `DAYLIGHT_MISSION_SAMPLE=1`, and every screen that shows
  * it says "sample" in the corner. Nothing here was produced by a model; the sources, costs
  * and quotes are illustrative, modelled on the planted-defect fixture in
  * `fixtures/daylight-demo/` (commit 38fa2007…, defect in `src/session-cache.ts`).

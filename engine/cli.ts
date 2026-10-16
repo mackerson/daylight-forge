@@ -1481,7 +1481,7 @@ function runCheck(args: Args): void {
 const args = parseArgs(process.argv.slice(2));
 
 // Opted-in language providers, before anything reads a file. Loading one runs its code, so
-// this only ever happens because VDS_PARSERS named it; see extract/registry.ts.
+// this only ever happens because DAYLIGHT_PARSERS named it; see extract/registry.ts.
 const registry = await loadParsers();
 for (const f of registry.failures) console.log(`parser '${f.spec}' not loaded: ${f.reason}`);
 

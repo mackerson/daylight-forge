@@ -10,7 +10,7 @@ labelled `mock` in every artifact it produces. A recording of real models review
 can only come from an authorised live run (below), because it spends money through the
 operator's `claude` and `codex` accounts. Until that run has been made, `pnpm demo:replay` has
 nothing to play, and the Mission Control screen says so rather than animating anything
-synthetic. The sample data behind `VDS_MISSION_SAMPLE=1` exists for screenshots and is
+synthetic. The sample data behind `DAYLIGHT_MISSION_SAMPLE=1` exists for screenshots and is
 labelled **SAMPLE DATA** on screen; it is never offered as a recording.
 
 The fixture repository is **planted**. `fixtures/daylight-demo/DEFECT.md` names the file, the
@@ -44,7 +44,7 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
 
 2. **Open the app on that directory.**
    ```bash
-   VDS_DIR=$PWD/out-demo pnpm view          # or pnpm gui to rebuild first
+   DAYLIGHT_DIR=$PWD/out-demo pnpm view          # or pnpm gui to rebuild first
    ```
    The last stage in the strip is **mission control**. Open the mission. The top bar shows
    project id, revision, state (`ready`), and the PLANTED objective.
@@ -123,7 +123,7 @@ narrative must say so. The two models may also both be wrong; the experiment is 
 | State | How to produce it |
 | --- | --- |
 | Sandbox unavailable | `PATH=/nonexistent pnpm exec vds experiment run …` on a machine where that hides `bwrap`; or run on a machine without bubblewrap. Conclusion `invalid`, limitation "sandbox unavailable", nothing spawned. |
-| Timed-out reviewer | `pnpm exec vds mission run <id> <repo> --out … --tools mock:slow --timeout 2` with `VDS_MOCK_ADAPTER` pointing at a script that sleeps (see `engine/test/acceptance.ts`). Mission `blocked`, attempt `timed out`. |
+| Timed-out reviewer | `pnpm exec vds mission run <id> <repo> --out … --tools mock:slow --timeout 2` with `DAYLIGHT_MOCK_ADAPTER` pointing at a script that sleeps (see `engine/test/acceptance.ts`). Mission `blocked`, attempt `timed out`. |
 | Failed reviewer | Same with a script that exits 1. Mission `blocked — exit 1`; its stderr is kept, redacted. |
 | Budget exhausted | `--max-cost 0.005` with two reviewers that report `$0.01`: the second is not launched; the mission is `blocked` with the spend named. |
 | Dirty revision refused | Edit a file in the fixture repo and run the experiment: refused as `invalid`, "not reproducible", because `baseRevision` carries `+dirty`. |
@@ -134,5 +134,5 @@ narrative must say so. The two models may also both be wrong; the experiment is 
 ## Packaging
 
 `pnpm package` builds a portable directory including the fixture; `./vds` launches it. Verified
-headless on this machine: the packaged app with `VDS_DIR` pointing at a prepared directory
+headless on this machine: the packaged app with `DAYLIGHT_DIR` pointing at a prepared directory
 renders the mission on the Mission Control stage.

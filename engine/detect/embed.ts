@@ -13,10 +13,10 @@
  *
  * So, fail-closed at every step:
  *
- *  - **Off unless you configured it.** No `VDS_EMBED_URL`, no requests, no error — the
+ *  - **Off unless you configured it.** No `DAYLIGHT_EMBED_URL`, no requests, no error — the
  *    lexical scorer simply runs alone.
  *  - **Loopback only, unless you say otherwise.** A remote host needs
- *    `VDS_EMBED_ALLOW_REMOTE=1` on top of the URL. Two deliberate acts, because the second
+ *    `DAYLIGHT_EMBED_ALLOW_REMOTE=1` on top of the URL. Two deliberate acts, because the second
  *    one sends your architecture over a network.
  *  - **It says what it is doing.** Before the first request it prints the endpoint and how
  *    many descriptions are going to it. A transmission nobody is told about is the thing
@@ -41,22 +41,22 @@ export function embedConfig(env: NodeJS.ProcessEnv = process.env): {
   model: string;
   reason?: string;
 } {
-  const url = env.VDS_EMBED_URL;
-  const model = env.VDS_EMBED_MODEL || 'nomic-embed-text';
-  if (!url) return { model, reason: 'VDS_EMBED_URL is not set — D5 runs on words alone' };
+  const url = env.DAYLIGHT_EMBED_URL;
+  const model = env.DAYLIGHT_EMBED_MODEL || 'nomic-embed-text';
+  if (!url) return { model, reason: 'DAYLIGHT_EMBED_URL is not set — D5 runs on words alone' };
 
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return { model, reason: `VDS_EMBED_URL is not a valid URL: ${url}` };
+    return { model, reason: `DAYLIGHT_EMBED_URL is not a valid URL: ${url}` };
   }
-  if (!LOOPBACK.test(parsed.hostname) && env.VDS_EMBED_ALLOW_REMOTE !== '1') {
+  if (!LOOPBACK.test(parsed.hostname) && env.DAYLIGHT_EMBED_ALLOW_REMOTE !== '1') {
     return {
       model,
       reason:
         `${parsed.hostname} is not loopback. Sending module purposes there means sending a ` +
-        'description of your architecture over a network, so it needs VDS_EMBED_ALLOW_REMOTE=1 ' +
+        'description of your architecture over a network, so it needs DAYLIGHT_EMBED_ALLOW_REMOTE=1 ' +
         'as a second, deliberate act.',
     };
   }

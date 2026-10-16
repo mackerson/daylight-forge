@@ -143,12 +143,12 @@ console.log('\nloading providers is opt-in and fails closed');
   check('with nothing configured, only the built-ins are loaded',
     none.parsers.length === builtinParsers().length && none.failures.length === 0);
 
-  const missing = await loadParsers({ VDS_PARSERS: './does-not-exist.ts' });
+  const missing = await loadParsers({ DAYLIGHT_PARSERS: './does-not-exist.ts' });
   check('a provider that will not load is reported, not swallowed',
     missing.failures.length === 1, JSON.stringify(missing.failures));
   check('and the run keeps its built-ins', missing.parsers.length === builtinParsers().length);
 
-  const notAParser = await loadParsers({ VDS_PARSERS: 'node:path' });
+  const notAParser = await loadParsers({ DAYLIGHT_PARSERS: 'node:path' });
   check('a module that is not a parser is refused',
     notAParser.failures[0]?.reason.includes('does not export a parser'),
     JSON.stringify(notAParser.failures));

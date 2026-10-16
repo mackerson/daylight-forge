@@ -42,7 +42,7 @@ import { fileOf, shorten } from './vocab.ts';
  * it happen on the map.
  */
 
-/** Panels the old tab rail had, so `VDS_TAB=review pnpm shot` keeps working. */
+/** Panels the old tab rail had, so `DAYLIGHT_TAB=review pnpm shot` keeps working. */
 const TAB_ALIASES: Record<string, View> = {
   overview: 'map',
   map: 'map',

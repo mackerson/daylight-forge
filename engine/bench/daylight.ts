@@ -4,7 +4,7 @@
  *
  * Everything in the document is measured here, in this process or a child of it; nothing is
  * copied from the spec or recalled. The renderer numbers come from the same headless bench the
- * baseline used (`VDS_BENCH=6` and the `BENCH {…}` line the renderer prints), so the two
+ * baseline used (`DAYLIGHT_BENCH=6` and the `BENCH {…}` line the renderer prints), so the two
  * documents compare like for like. A number that could not be measured is written as such,
  * not left blank and not estimated.
  *
@@ -22,7 +22,8 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const CLI = path.join(ROOT, 'engine', 'cli.ts');
 const MAIN = path.join(ROOT, 'app', 'main', 'main.cjs');
 const DOC = path.join(ROOT, 'docs', 'daylight', 'MEASURED.md');
-const TENK = path.join(os.homedir(), '.config', 'visual-desloppify', 'maps', 'launchpad-8b518ad0');
+// The 10k-file map is private; its location is the operator's, never a literal here.
+const TENK = process.env.DAYLIGHT_BENCH_10K;
 const skipRenderer = process.argv.includes('--skip-renderer');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-bench-'));
@@ -67,11 +68,11 @@ interface Bench {
 function renderBench(dir: string, env: NodeJS.ProcessEnv, extraArgs: string[] = []): Bench | null {
   const r = spawnSync('pnpm', ['exec', 'electron', MAIN, ...extraArgs], {
     cwd: ROOT, encoding: 'utf8', timeout: 240_000,
-    // The renderer samples for `VDS_BENCH` seconds after the map loads, so the capture that
+    // The renderer samples for `DAYLIGHT_BENCH` seconds after the map loads, so the capture that
     // ends the run has to wait longer than that or the BENCH line is never printed.
     env: {
-      ...process.env, VDS_DIR: dir, VDS_BENCH: '6', VDS_SHOT: path.join(tmp, 'bench.png'),
-      VDS_SHOT_DELAY: '17000', ...env,
+      ...process.env, DAYLIGHT_DIR: dir, DAYLIGHT_BENCH: '6', DAYLIGHT_SHOT: path.join(tmp, 'bench.png'),
+      DAYLIGHT_SHOT_DELAY: '17000', ...env,
     },
   });
   const m = `${r.stdout}\n${r.stderr}`.match(/BENCH (\{.*\})/);
@@ -87,8 +88,8 @@ function shotAssert(dir: string, expr: string, env: NodeJS.ProcessEnv = {}, extr
   const r = spawnSync('pnpm', ['exec', 'electron', MAIN, ...extraArgs], {
     cwd: ROOT, encoding: 'utf8', timeout: 120_000,
     env: {
-      ...process.env, VDS_DIR: dir, VDS_SHOT: path.join(tmp, 'shot.png'), VDS_SHOT_DELAY: '6000',
-      VDS_SHOT_ASSERT: expr, ...env,
+      ...process.env, DAYLIGHT_DIR: dir, DAYLIGHT_SHOT: path.join(tmp, 'shot.png'), DAYLIGHT_SHOT_DELAY: '6000',
+      DAYLIGHT_SHOT_ASSERT: expr, ...env,
     },
   });
   return `${r.stdout}\n${r.stderr}`.match(/^DOM: (.*)$/m)?.[1] ?? null;
@@ -157,16 +158,16 @@ async function main(): Promise<void> {
 import fs from 'node:fs';
 const env = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).mcpServers.vds.env;
 const { ClaimStore } = await import(${JSON.stringify(path.join(ROOT, 'engine', 'store', 'claims.ts'))});
-const store = new ClaimStore(env.VDS_DIR + '/claims.db');
-const yes = env.VDS_MODEL === 'yes';
-fs.appendFileSync(env.VDS_DIR + '/events.jsonl', JSON.stringify({ at: Date.now(), session: env.VDS_SESSION, agent: 'mock', model: env.VDS_MODEL, tool: 'get_slice', node: 'src/session-cache.ts' }) + '\\n');
+const store = new ClaimStore(env.DAYLIGHT_DIR + '/claims.db');
+const yes = env.DAYLIGHT_MODEL === 'yes';
+fs.appendFileSync(env.DAYLIGHT_DIR + '/events.jsonl', JSON.stringify({ at: Date.now(), session: env.DAYLIGHT_SESSION, agent: 'mock', model: env.DAYLIGHT_MODEL, tool: 'get_slice', node: 'src/session-cache.ts' }) + '\\n');
 store.submit({ subject: 'src/session-cache.ts', predicate: 'bug_verdict', value: yes, confidence: 0.8,
-  source: { kind: 'agent', tool: 'mock', model: env.VDS_MODEL, sessionId: env.VDS_SESSION },
+  source: { kind: 'agent', tool: 'mock', model: env.DAYLIGHT_MODEL, sessionId: env.DAYLIGHT_SESSION },
   evidence: [{ file: 'src/session-cache.ts', line: 37, note: 'mock' }, { file: 'src/session-cache.ts', line: 34, note: 'mock' }] });
 store.close();
-console.log(JSON.stringify({ reviewer: env.VDS_MODEL }));
+console.log(JSON.stringify({ reviewer: env.DAYLIGHT_MODEL }));
 `);
-  const run = await timed(['mission', 'run', missionId, demoRepo, '--out', demoOut, '--tools', 'mock:yes,mock:no', '--format', 'json'], { VDS_MOCK_ADAPTER: mock });
+  const run = await timed(['mission', 'run', missionId, demoRepo, '--out', demoOut, '--tools', 'mock:yes,mock:no', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: mock });
   const experiment = await timed(['experiment', 'run', experimentId, demoRepo, '--out', demoOut, '--format', 'json']);
   const conclusion = (JSON.parse(execFileSync(process.execPath, [CLI, 'mission', 'inspect', missionId, '--out', demoOut, '--format', 'json'], { encoding: 'utf8' })) as
     { experiments: Array<{ conclusion: string; executions: unknown[] }> }).experiments[0];
@@ -178,7 +179,7 @@ console.log(JSON.stringify({ reviewer: env.VDS_MODEL }));
   say();
 
   // ---- renderer ------------------------------------------------------------------------
-  say('## Renderer (headless `VDS_BENCH=6`, same method as BASELINE.md)');
+  say('## Renderer (headless `DAYLIGHT_BENCH=6`, same method as BASELINE.md)');
   say();
   if (skipRenderer) {
     say('Skipped with `--skip-renderer`.');
@@ -204,10 +205,10 @@ console.log(JSON.stringify({ reviewer: env.VDS_MODEL }));
       : `| ${label} | — | ${i} | not measured | | | | | | |`);
     row('this repo', 1, probe);
     for (let i = 2; i <= 3; i++) row('this repo', i, renderBench(selfOut, {}, headless ? HEADLESS : []));
-    if (fs.existsSync(path.join(TENK, 'view.json'))) {
-      row('10k-file map (private, load fixture only)', 1, renderBench(TENK, { VDS_MODE: 'tree', VDS_SHOT_DELAY: '40000' }, headless ? HEADLESS : []));
+    if (TENK && fs.existsSync(path.join(TENK, 'view.json'))) {
+      row('10k-file map (private, load fixture only)', 1, renderBench(TENK, { DAYLIGHT_MODE: 'tree', DAYLIGHT_SHOT_DELAY: '40000' }, headless ? HEADLESS : []));
     } else {
-      say('| 10k-file map | — | — | not present on this machine | | | | | | |');
+      say('| 10k-file map | — | — | not measured (set DAYLIGHT_BENCH_10K to its map dir) | | | | | | |');
     }
     say();
     say('### Single renderer across lens changes');

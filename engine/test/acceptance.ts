@@ -43,17 +43,17 @@ fs.writeFileSync(mock, `
 import fs from 'node:fs';
 const [cfgPath, prompt] = process.argv.slice(2);
 const env = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mcpServers.vds.env;
-const { VDS_DIR, VDS_AGENT, VDS_MODEL, VDS_SESSION } = env;
+const { DAYLIGHT_DIR, DAYLIGHT_AGENT, DAYLIGHT_MODEL, DAYLIGHT_SESSION } = env;
 const { ClaimStore } = await import(${JSON.stringify(path.join(ENGINE, 'store', 'claims.ts'))});
-const ev = (tool, extra = {}) => fs.appendFileSync(VDS_DIR + '/events.jsonl',
-  JSON.stringify({ at: Date.now(), session: VDS_SESSION, agent: VDS_AGENT, model: VDS_MODEL ?? null, tool, ...extra }) + '\\n');
+const ev = (tool, extra = {}) => fs.appendFileSync(DAYLIGHT_DIR + '/events.jsonl',
+  JSON.stringify({ at: Date.now(), session: DAYLIGHT_SESSION, agent: DAYLIGHT_AGENT, model: DAYLIGHT_MODEL ?? null, tool, ...extra }) + '\\n');
 ev('get_overview');
 ev('get_slice', { node: 'src/session-cache.ts', hops: 1 });
-if (VDS_MODEL === 'crash') { console.error('mock reviewer crashed on purpose'); process.exit(1); }
-if (VDS_MODEL === 'slow') { await new Promise((r) => setTimeout(r, 10_000)); }
-const store = new ClaimStore(VDS_DIR + '/claims.db');
-const source = { kind: 'agent', tool: VDS_AGENT, model: VDS_MODEL, sessionId: VDS_SESSION };
-const yes = VDS_MODEL === 'yes';
+if (DAYLIGHT_MODEL === 'crash') { console.error('mock reviewer crashed on purpose'); process.exit(1); }
+if (DAYLIGHT_MODEL === 'slow') { await new Promise((r) => setTimeout(r, 10_000)); }
+const store = new ClaimStore(DAYLIGHT_DIR + '/claims.db');
+const source = { kind: 'agent', tool: DAYLIGHT_AGENT, model: DAYLIGHT_MODEL, sessionId: DAYLIGHT_SESSION };
+const yes = DAYLIGHT_MODEL === 'yes';
 store.submit({
   subject: 'src/session-cache.ts', predicate: 'bug_verdict', value: yes, confidence: yes ? 0.9 : 0.7, source,
   evidence: yes
@@ -65,10 +65,10 @@ ev('submit_claim', { ok: true, subject: 'src/session-cache.ts', predicate: 'bug_
 store.close();
 // Named per reviewer: two byte-identical streams would be one content-addressed artifact,
 // which is correct and would make "separate artifacts" unobservable here.
-console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 2, reviewer: VDS_MODEL }));
+console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 2, reviewer: DAYLIGHT_MODEL }));
 `);
 
-const env = { ...process.env, VDS_MOCK_ADAPTER: mock };
+const env = { ...process.env, DAYLIGHT_MOCK_ADAPTER: mock };
 const run = (args: string[]): { code: number; out: string; err: string } => {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env, timeout: 240_000,
@@ -230,7 +230,7 @@ section('5. blind review');
   const blind = !seenByB.includes(a) && seenByB.includes(b) && seenByB.length === 2;
   check('reviewer B\'s view excludes reviewer A\'s claim and keeps its own and the human\'s', blind);
   const cfg = JSON.parse(fs.readFileSync(path.join(out, `mcp.mock-no.${prepared.missionId}.json`), 'utf8'));
-  const plumbed = cfg.mcpServers.vds.env.VDS_BLIND_PREFIX === prepared.missionId;
+  const plumbed = cfg.mcpServers.vds.env.DAYLIGHT_BLIND_PREFIX === prepared.missionId;
   check('the run handed each reviewer the blind prefix through its MCP config', plumbed);
   item('blind review: B\'s initial input excludes A\'s conclusions', blind && plumbed);
 }

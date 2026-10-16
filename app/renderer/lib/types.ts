@@ -198,9 +198,9 @@ export interface LoadPayload {
   fileEdges: Array<{ from: string; to: string; weight: number }>;
   /** Lets a headless screenshot open straight into a given layout. */
   initialMode?: 'graph' | 'tree';
-  /** Panel to open on. Set from VDS_TAB so `pnpm shot` can capture a specific screen. */
+  /** Panel to open on. Set from DAYLIGHT_TAB so `pnpm shot` can capture a specific screen. */
   initialTab?: string | null;
-  /** Enables the frame-time probe; set from VDS_PERF. */
+  /** Enables the frame-time probe; set from DAYLIGHT_PERF. */
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
@@ -221,7 +221,7 @@ export interface LoadPayload {
   campaign?: CampaignEntry[];
   /**
    * Render Mission Control from the bundled sample rather than the CLI. Set from
-   * VDS_MISSION_SAMPLE so the headless harness can exercise the screens on a machine with no
+   * DAYLIGHT_MISSION_SAMPLE so the headless harness can exercise the screens on a machine with no
    * missions, and so a reviewer can see the layout without spending anything. The sample is
    * labelled as such on screen.
    */

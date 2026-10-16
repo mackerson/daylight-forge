@@ -33,7 +33,7 @@ const CLI = path.join(ROOT, 'engine', 'cli.ts');
  * needs the type-stripping flag since that Node is older than the CLI assumes.
  */
 const NODE = (() => {
-  if (process.env.VDS_NODE) return { bin: process.env.VDS_NODE, extraArgs: [], env: {} };
+  if (process.env.DAYLIGHT_NODE) return { bin: process.env.DAYLIGHT_NODE, extraArgs: [], env: {} };
   try {
     const found = execFileSync('which', ['node'], { encoding: 'utf8' }).trim();
     if (found) return { bin: found, extraArgs: [], env: {} };
@@ -63,8 +63,8 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 app.setName('visual-desloppify');
 
 const state = {
-  repo: process.env.VDS_REPO ? path.resolve(process.env.VDS_REPO) : null,
-  dir: process.env.VDS_DIR ? path.resolve(process.env.VDS_DIR) : path.resolve(ROOT, 'out'),
+  repo: process.env.DAYLIGHT_REPO ? path.resolve(process.env.DAYLIGHT_REPO) : null,
+  dir: process.env.DAYLIGHT_DIR ? path.resolve(process.env.DAYLIGHT_DIR) : path.resolve(ROOT, 'out'),
 };
 
 /**
@@ -82,12 +82,12 @@ const state = {
 const chosenDirs = new Map();
 
 /**
- * A VDS_DIR that no map has claimed yet.
+ * A DAYLIGHT_DIR that no map has claimed yet.
  *
  * Launching with an explicit empty output directory and then choosing a repo should still put
  * that repo's map where it was asked to go; the first repository picked claims it.
  */
-let unclaimedDir = process.env.VDS_DIR && !repoOfDir(state.dir) ? state.dir : null;
+let unclaimedDir = process.env.DAYLIGHT_DIR && !repoOfDir(state.dir) ? state.dir : null;
 
 /** Set when the map in `state.dir` names a repo that is no longer on disk. */
 let missingRepo = null;
@@ -468,27 +468,27 @@ function createWindow() {
 
   startTail();
 
-  if (process.env.VDS_SHOT) {
+  if (process.env.DAYLIGHT_SHOT) {
     win.webContents.once('did-finish-load', () => {
-      // VDS_SHOT_KEYS drives real key events before capture, so camera controls can be
+      // DAYLIGHT_SHOT_KEYS drives real key events before capture, so camera controls can be
       // verified headlessly instead of assumed.
-      // VDS_SHOT_HOVER="x,y" parks the cursor so hover states can be captured headlessly.
-      if (process.env.VDS_SHOT_HOVER) {
-        const [x, y] = process.env.VDS_SHOT_HOVER.split(',').map(Number);
+      // DAYLIGHT_SHOT_HOVER="x,y" parks the cursor so hover states can be captured headlessly.
+      if (process.env.DAYLIGHT_SHOT_HOVER) {
+        const [x, y] = process.env.DAYLIGHT_SHOT_HOVER.split(',').map(Number);
         setTimeout(() => {
           win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
           setTimeout(() => win.webContents.sendInputEvent({ type: 'mouseMove', x, y }), 250);
         }, 2200);
       }
       /**
-       * VDS_SHOT_DRAG="x1,y1,x2,y2" performs a real pointer drag before capture.
+       * DAYLIGHT_SHOT_DRAG="x1,y1,x2,y2" performs a real pointer drag before capture.
        *
        * Dragging a node is the one interaction that cannot be verified by reading the code:
        * it depends on raycasting, a plane derived from the camera, and an instanced matrix
        * write. Synthetic input exercises the actual handlers rather than a stand-in.
        */
-      if (process.env.VDS_SHOT_DRAG) {
-        const [x1, y1, x2, y2] = process.env.VDS_SHOT_DRAG.split(',').map(Number);
+      if (process.env.DAYLIGHT_SHOT_DRAG) {
+        const [x1, y1, x2, y2] = process.env.DAYLIGHT_SHOT_DRAG.split(',').map(Number);
         setTimeout(() => {
           // Hover first: the handler picks whatever the last move-event highlighted.
           win.webContents.sendInputEvent({ type: 'mouseMove', x: x1, y: y1 });
@@ -512,9 +512,9 @@ function createWindow() {
         }, 3000);
       }
 
-      if (process.env.VDS_SHOT_KEYS) {
-        const keys = process.env.VDS_SHOT_KEYS.split(',');
-        const holdMs = Number(process.env.VDS_SHOT_KEY_MS || 900);
+      if (process.env.DAYLIGHT_SHOT_KEYS) {
+        const keys = process.env.DAYLIGHT_SHOT_KEYS.split(',');
+        const holdMs = Number(process.env.DAYLIGHT_SHOT_KEY_MS || 900);
         setTimeout(() => {
           for (const k of keys) {
             win.webContents.sendInputEvent({ type: 'keyDown', keyCode: k });
@@ -537,23 +537,23 @@ function createWindow() {
            * regression and is not one. The DOM is the truth; the PNG is a picture of it that
            * may be late. Assert against this.
            */
-          if (process.env.VDS_SHOT_ASSERT) {
+          if (process.env.DAYLIGHT_SHOT_ASSERT) {
             // "1" dumps the page's text. Anything else is evaluated as an expression, so a
             // layout question — how wide did this actually end up — can be answered against
             // the live DOM instead of by squinting at a PNG that may be a frame behind.
-            const expr = process.env.VDS_SHOT_ASSERT === '1'
+            const expr = process.env.DAYLIGHT_SHOT_ASSERT === '1'
               ? 'document.body.innerText.replace(/\\s+/g, " ").slice(0, 600)'
-              : process.env.VDS_SHOT_ASSERT;
+              : process.env.DAYLIGHT_SHOT_ASSERT;
             const out = await win.webContents.executeJavaScript(expr);
             console.log(`DOM: ${typeof out === 'string' ? out : JSON.stringify(out)}`);
           }
-          fs.writeFileSync(process.env.VDS_SHOT, (await win.webContents.capturePage()).toPNG());
-          console.log(`wrote ${process.env.VDS_SHOT}`);
+          fs.writeFileSync(process.env.DAYLIGHT_SHOT, (await win.webContents.capturePage()).toPNG());
+          console.log(`wrote ${process.env.DAYLIGHT_SHOT}`);
         } catch (err) {
           console.error(`capture failed: ${err.message}`);
         }
         app.quit();
-      }, Number(process.env.VDS_SHOT_DELAY || 4000));
+      }, Number(process.env.DAYLIGHT_SHOT_DELAY || 4000));
     });
   }
 }
@@ -711,16 +711,16 @@ ipcMain.handle('vds:load', () => {
     ...state,
     stack,
     fileEdges,
-    initialMode: process.env.VDS_MODE === 'tree' ? 'tree' : 'graph',
+    initialMode: process.env.DAYLIGHT_MODE === 'tree' ? 'tree' : 'graph',
     // Which panel to open on. Exists so `pnpm shot` can capture a specific screen.
-    initialTab: process.env.VDS_TAB || null,
-    perf: !!process.env.VDS_PERF,
-    bench: Number(process.env.VDS_BENCH || 0),
-    debugPick: !!process.env.VDS_DEBUG_PICK,
+    initialTab: process.env.DAYLIGHT_TAB || null,
+    perf: !!process.env.DAYLIGHT_PERF,
+    bench: Number(process.env.DAYLIGHT_BENCH || 0),
+    debugPick: !!process.env.DAYLIGHT_DEBUG_PICK,
     discreteGpu: detectDiscreteGpu(),
-    lodDefault: process.env.VDS_LOD === 'auto' ? 'auto' : 'all',
-    channelDefault: process.env.VDS_CHANNEL || 'structure',
-    autoArbitrate: !!process.env.VDS_ARBITRATE,
+    lodDefault: process.env.DAYLIGHT_LOD === 'auto' ? 'auto' : 'all',
+    channelDefault: process.env.DAYLIGHT_CHANNEL || 'structure',
+    autoArbitrate: !!process.env.DAYLIGHT_ARBITRATE,
     findings: readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] }),
     structure: readJson('structure.json', null),
     invariants: readJson('invariants.json', null),
@@ -751,7 +751,7 @@ ipcMain.handle('vds:load', () => {
      * Mission Control from the bundled sample instead of the CLI. For the headless harness
      * and for looking at the screens on a machine with no missions; the renderer labels it.
      */
-    missionSample: !!process.env.VDS_MISSION_SAMPLE,
+    missionSample: !!process.env.DAYLIGHT_MISSION_SAMPLE,
     // Decisions are recorded as someone's. The renderer has no way to know who is sitting here.
     username: safeUsername(),
   };

@@ -386,7 +386,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
   return new Promise((resolve) => {
     const child = spawn(adapter.bin, argv, {
       cwd: options.cwd,
-      env: { ...process.env, VDS_SESSION: options.session },
+      env: { ...process.env, DAYLIGHT_SESSION: options.session },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -509,9 +509,9 @@ export function mcpConfig(
         // The model matters for provenance: two runs of the same CLI on different models
         // are independent sources for the belief calculus, and must be distinguishable.
         env: {
-          VDS_DIR: dir, VDS_AGENT: agentTool,
-          ...(model ? { VDS_MODEL: model } : {}),
-          ...(session ? { VDS_SESSION: session } : {}),
+          DAYLIGHT_DIR: dir, DAYLIGHT_AGENT: agentTool,
+          ...(model ? { DAYLIGHT_MODEL: model } : {}),
+          ...(session ? { DAYLIGHT_SESSION: session } : {}),
           ...extraEnv,
         },
       },

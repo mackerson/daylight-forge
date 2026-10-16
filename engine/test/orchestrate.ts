@@ -36,20 +36,20 @@ fs.writeFileSync(mock, `
 import fs from 'node:fs';
 const [cfgPath, prompt] = process.argv.slice(2);
 const env = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).mcpServers.vds.env;
-const { VDS_DIR, VDS_AGENT, VDS_MODEL, VDS_SESSION, VDS_BLIND_PREFIX } = env;
-if (!VDS_BLIND_PREFIX) { console.error('no VDS_BLIND_PREFIX in config'); process.exit(3); }
-if (process.env.VDS_SESSION !== VDS_SESSION) { console.error('session mismatch'); process.exit(4); }
+const { DAYLIGHT_DIR, DAYLIGHT_AGENT, DAYLIGHT_MODEL, DAYLIGHT_SESSION, DAYLIGHT_BLIND_PREFIX } = env;
+if (!DAYLIGHT_BLIND_PREFIX) { console.error('no DAYLIGHT_BLIND_PREFIX in config'); process.exit(3); }
+if (process.env.DAYLIGHT_SESSION !== DAYLIGHT_SESSION) { console.error('session mismatch'); process.exit(4); }
 if (!prompt.includes('src/session-cache.ts')) { console.error('prompt lacks the scope'); process.exit(5); }
-if (VDS_AGENT !== 'mock') { console.error('not labelled mock'); process.exit(6); }
+if (DAYLIGHT_AGENT !== 'mock') { console.error('not labelled mock'); process.exit(6); }
 const { ClaimStore } = await import(${JSON.stringify(path.join(ENGINE, 'store', 'claims.ts'))});
-const store = new ClaimStore(VDS_DIR + '/claims.db');
-const source = { kind: 'agent', tool: VDS_AGENT, model: VDS_MODEL, sessionId: VDS_SESSION };
-const ev = (tool, extra = {}) => fs.appendFileSync(VDS_DIR + '/events.jsonl',
-  JSON.stringify({ at: Date.now(), session: VDS_SESSION, agent: VDS_AGENT, model: VDS_MODEL ?? null, tool, ...extra }) + '\\n');
+const store = new ClaimStore(DAYLIGHT_DIR + '/claims.db');
+const source = { kind: 'agent', tool: DAYLIGHT_AGENT, model: DAYLIGHT_MODEL, sessionId: DAYLIGHT_SESSION };
+const ev = (tool, extra = {}) => fs.appendFileSync(DAYLIGHT_DIR + '/events.jsonl',
+  JSON.stringify({ at: Date.now(), session: DAYLIGHT_SESSION, agent: DAYLIGHT_AGENT, model: DAYLIGHT_MODEL ?? null, tool, ...extra }) + '\\n');
 ev('get_overview');
 ev('get_slice', { node: 'src/session-cache.ts', hops: 1 });
-if (VDS_MODEL === 'crash') { console.error('mock crash SECRET_MOCK_TOKEN_abcdefghijklmnop'); process.exit(1); }
-const yes = VDS_MODEL === 'yes';
+if (DAYLIGHT_MODEL === 'crash') { console.error('mock crash SECRET_MOCK_TOKEN_abcdefghijklmnop'); process.exit(1); }
+const yes = DAYLIGHT_MODEL === 'yes';
 store.submit({
   subject: 'src/session-cache.ts', predicate: 'bug_verdict', value: yes, confidence: yes ? 0.9 : 0.7, source,
   evidence: yes
@@ -64,7 +64,7 @@ if (yes) console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.05, num_
 
 const env = {
   ...process.env,
-  VDS_MOCK_ADAPTER: mock,
+  DAYLIGHT_MOCK_ADAPTER: mock,
   // A suspicious name with a long value: it must never reach an artifact.
   MOCK_SECRET_TOKEN: 'SECRET_MOCK_TOKEN_abcdefghijklmnop',
 };
@@ -145,8 +145,8 @@ section('two independent reviewers, blind to each other');
   check('nothing left unverified in scope', report.comparison.unverified.length === 0);
 
   const cfg = JSON.parse(fs.readFileSync(path.join(out, `mcp.mock-yes.${prepared.missionId}.json`), 'utf8'));
-  check('the MCP config carries the blind prefix', cfg.mcpServers.vds.env.VDS_BLIND_PREFIX === prepared.missionId);
-  check('and the agent label', cfg.mcpServers.vds.env.VDS_AGENT === 'mock' && cfg.mcpServers.vds.env.VDS_MODEL === 'yes');
+  check('the MCP config carries the blind prefix', cfg.mcpServers.vds.env.DAYLIGHT_BLIND_PREFIX === prepared.missionId);
+  check('and the agent label', cfg.mcpServers.vds.env.DAYLIGHT_AGENT === 'mock' && cfg.mcpServers.vds.env.DAYLIGHT_MODEL === 'yes');
 
   const view = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out, '--format', 'json']));
   for (const a of reviews) {
@@ -440,7 +440,7 @@ section('a ceiling holds under concurrency, unknown spend and a raised flag');
   fs.writeFileSync(costly, `console.log(JSON.stringify({ total_cost_usd: 0.05 })); setTimeout(() => process.exit(0), 300);\n`);
   const shared = mk('shared ceiling', '0.06');
   const wave = json<Ran>(run(['mission', 'run', shared.id, repo, '--out', out, '--tools', 'mock:a,mock:b', '--concurrency', '2', '--format', 'json'],
-    { VDS_MOCK_ADAPTER: costly }));
+    { DAYLIGHT_MOCK_ADAPTER: costly }));
   const reviews = wave.attempts.filter((a) => a.runnerId.startsWith('agent:mock:'));
   check('each reviewer in a wave gets its share of the remainder, not all of it',
     reviews.length === 2 && reviews.every((a) => a.failure === 'over budget'), JSON.stringify(reviews.map((a) => a.failure)));
@@ -520,7 +520,7 @@ process.exit(0);
   const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'crash recovery', '--scope', 'src/session-cache.ts', '--format', 'json']));
   const { spawn } = await import('node:child_process');
   const startSlow = () => spawn(process.execPath, [CLI, 'mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], {
-    stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, VDS_MOCK_ADAPTER: slowMock, MOCK_SLOW: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, DAYLIGHT_MOCK_ADAPTER: slowMock, MOCK_SLOW: '1' },
   });
   const untilStarted = (child: ReturnType<typeof startSlow>) => new Promise<void>((resolve) => {
     child.stderr.on('data', (d) => { if (String(d).includes('started')) resolve(); });
@@ -534,7 +534,7 @@ process.exit(0);
 
   const stopped = startSlow();
   await untilStarted(stopped);
-  const busy = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { VDS_MOCK_ADAPTER: slowMock });
+  const busy = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: slowMock });
   check('a second run of a mission that is being run is refused', busy.code === 1 && /already being run/.test(busy.err), busy.err.slice(-200));
   stopped.kill('SIGTERM');
   await closed(stopped);
@@ -547,7 +547,7 @@ process.exit(0);
   crashed.kill('SIGKILL');
   await closed(crashed);
   check('a killed run leaves its attempt running', attemptsOf().filter((a) => a.state === 'running').length === 1);
-  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { VDS_MOCK_ADAPTER: slowMock });
+  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: slowMock });
   check('the next run proceeds', rerun.code === 0, rerun.err.slice(-300));
   const after = attemptsOf();
   check('and nothing is left running', after.every((a) => a.state !== 'running'), JSON.stringify(after.map((a) => a.state)));

@@ -101,13 +101,13 @@ function lifecycle(
 /**
  * A reviewer that is only ever a test double.
  *
- * `VDS_MOCK_ADAPTER` names a script; a roster entry `mock:<model>` runs it with our node,
+ * `DAYLIGHT_MOCK_ADAPTER` names a script; a roster entry `mock:<model>` runs it with our node,
  * handing it the MCP config path and the prompt. It is registered as `mock` everywhere it
  * leaves a trace — claims, attempts, events — so nothing it produces can be mistaken for a
  * model's. Without the variable, `mock` is simply not an adapter.
  */
 export function mockAdapter(): Adapter | null {
-  const script = process.env.VDS_MOCK_ADAPTER;
+  const script = process.env.DAYLIGHT_MOCK_ADAPTER;
   if (!script || !fs.existsSync(script)) return null;
   return {
     name: 'mock',
@@ -440,7 +440,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     fs.writeFileSync(
       plan.mcpConfigPath,
       JSON.stringify(
-        mcpConfig(cmd, ctx.out, spec.tool, spec.model, session, { VDS_BLIND_PREFIX: mission.id }),
+        mcpConfig(cmd, ctx.out, spec.tool, spec.model, session, { DAYLIGHT_BLIND_PREFIX: mission.id }),
         null, 2,
       ),
     );

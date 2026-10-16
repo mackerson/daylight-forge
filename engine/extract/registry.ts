@@ -14,7 +14,7 @@ import type { Parser } from './parser.ts';
  * back. `engine/test/registry.ts` drives a second, deliberately non-TypeScript provider all
  * the way through to edges and detector findings, which is the only way to know the seam fits.
  *
- * **Loading a provider runs its code.** `VDS_PARSERS` takes a comma-separated list of module
+ * **Loading a provider runs its code.** `DAYLIGHT_PARSERS` takes a comma-separated list of module
  * paths, and importing a module executes it — so this is a code-execution surface by
  * construction, in the same way a plugin system is. It is opt-in, it names what it loaded,
  * and a provider that fails to load is reported rather than swallowed. Do not point it at
@@ -81,7 +81,7 @@ function isParser(value: unknown): value is Parser {
 }
 
 /**
- * Load the providers named in `VDS_PARSERS`, on top of the built-ins.
+ * Load the providers named in `DAYLIGHT_PARSERS`, on top of the built-ins.
  *
  * A module may default-export a parser, export `parser`, or export a `createParser()`. All
  * three are checked because a provider written by someone else should not have to guess our
@@ -94,7 +94,7 @@ export async function loadParsers(
   const loaded: Parser[] = [];
   const failures: RegistryResult['failures'] = [];
 
-  const specs = (env.VDS_PARSERS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const specs = (env.DAYLIGHT_PARSERS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   for (const spec of specs) {
     try {
       const mod = (await import(spec)) as Record<string, unknown>;

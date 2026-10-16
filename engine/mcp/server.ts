@@ -134,7 +134,7 @@ export function loadGraph(dir: string): Graph {
     // indistinguishable from the host refusing them — a full evening was spent on that
     // ambiguity with codex. Say what is wrong, on stderr, where the host will log it.
     throw new Error(
-      `no graph.json in ${dir}. Set VDS_DIR to a directory produced by \`vds map\`, ` +
+      `no graph.json in ${dir}. Set DAYLIGHT_DIR to a directory produced by \`vds map\`, ` +
         'or run map first. The MCP server has nothing to serve without it.',
     );
   }
@@ -584,13 +584,13 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
   // stdio servers, and a server that cannot be told where to look is a server that cannot
   // be used from those hosts.
   const fromArg = process.argv.slice(2).find((a) => !a.startsWith('-'));
-  const dir = fromArg ?? process.env.VDS_DIR ?? process.cwd();
+  const dir = fromArg ?? process.env.DAYLIGHT_DIR ?? process.cwd();
   const { server } = createServer({
     dir,
-    session: process.env.VDS_SESSION ?? 'local',
-    agentTool: process.env.VDS_AGENT ?? 'unknown',
-    model: process.env.VDS_MODEL,
-    blindPrefix: process.env.VDS_BLIND_PREFIX,
+    session: process.env.DAYLIGHT_SESSION ?? 'local',
+    agentTool: process.env.DAYLIGHT_AGENT ?? 'unknown',
+    model: process.env.DAYLIGHT_MODEL,
+    blindPrefix: process.env.DAYLIGHT_BLIND_PREFIX,
   });
   await server.connect(new StdioServerTransport());
 }

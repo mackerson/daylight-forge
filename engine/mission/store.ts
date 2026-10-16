@@ -432,7 +432,7 @@ export class MissionStore {
       .map((r) => this.rowToAttempt(r));
   }
 
-  /** The attempt a `VDS_SESSION` belongs to, which is how an MCP event finds its attempt. */
+  /** The attempt a `DAYLIGHT_SESSION` belongs to, which is how an MCP event finds its attempt. */
   attemptBySession(sessionId: string): Attempt | null {
     const r = this.db
       .prepare('SELECT * FROM attempts WHERE session_id=? ORDER BY started_at DESC LIMIT 1')
