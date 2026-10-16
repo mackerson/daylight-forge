@@ -121,14 +121,32 @@ export function confirmCodeOf(digest: string): string {
 export function assertHumanDecision(
   env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string,
 ): void {
+  const why = guardCheck(env, actor, confirm, digest);
+  if (why !== null) throw new DecisionRefused(why);
+}
+
+/**
+ * The same rules as `assertHumanDecision`, answered rather than enforced: the reason the act
+ * would be refused, or null when it would pass. Read-only, for a UI that shows why a button
+ * is disabled before anyone presses it (R12.5). Never a substitute for the assert at the act.
+ */
+export function guardCheck(
+  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string,
+): string | null {
   const set = AGENT_SESSION_VARS.filter((k) => env[k] !== undefined && env[k] !== '');
   if (set.length) {
-    throw new DecisionRefused(`refused: ${set.join(' and ')} is set, so an agent is running this; a human decides this from their own shell`);
+    return `refused: ${set.join(' and ')} is set, so an agent is running this; a human decides this from their own shell`;
   }
-  if (!isHumanActor(actor)) throw new DecisionRefused(`refused: the actor must be human:<name>, not ${actor}`);
-  const code = confirmCodeOf(digest);
+  if (!isHumanActor(actor)) return `refused: the actor must be human:<name>, not ${actor}`;
+  let code: string;
+  try {
+    code = confirmCodeOf(digest);
+  } catch (err) {
+    return (err as Error).message;
+  }
   if (confirm === undefined || confirm.trim().toLowerCase() !== code) {
     // The expected code is not echoed: a retry should come from reading the digest, not this.
-    throw new DecisionRefused('refused: --confirm must be the first eight characters of the digest you are deciding on');
+    return 'refused: --confirm must be the first eight characters of the digest you are deciding on';
   }
+  return null;
 }
