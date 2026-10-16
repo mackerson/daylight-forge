@@ -35,7 +35,7 @@ export interface Revision {
   commit: string | null;
   /** Uncommitted changes present. A dirty tree is a revision nobody else can reproduce. */
   dirty: boolean;
-  /** `<commit>`, `<commit>+dirty`, or `unversioned`. What goes in a `baseRevision` field. */
+  /** `<commit>`, `<commit>+dirty`, `<commit>+unknown` (status failed) or `unversioned`. What goes in a `baseRevision` field. */
   label: string;
 }
 

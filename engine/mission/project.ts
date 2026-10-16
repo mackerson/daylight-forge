@@ -29,6 +29,14 @@ const git = (root: string, args: string[]): string | null => {
  */
 export function identifyProject(root: string): ProjectIdentity {
   const abs = path.resolve(root);
+  // In a shallow clone the parentless commit is the graft boundary, so two clones of one
+  // project would get two ids, and missions recorded under one would be orphaned by the next.
+  if (git(abs, ['rev-parse', '--is-shallow-repository']) === 'true') {
+    throw new Error(
+      `${abs} is a shallow clone, so its first commit — the project's identity — is not ` +
+        'knowable here. Run `git fetch --unshallow` and try again.',
+    );
+  }
   const roots = git(abs, ['rev-list', '--max-parents=0', 'HEAD']);
   const first = roots
     ? roots.split('\n').map((s) => s.trim()).filter(Boolean).sort()[0]
@@ -44,7 +52,11 @@ export function currentRevision(root: string): Revision {
   const commit = git(abs, ['rev-parse', 'HEAD']);
   if (!commit) return { commit: null, dirty: false, label: 'unversioned' };
   const status = git(abs, ['status', '--porcelain', '--untracked-files=no']);
-  const dirty = !!status && status.length > 0;
+  // A status that failed or timed out says nothing about the tree, and reading it as clean
+  // would let an unreproducible revision through as a commit. `+unknown` is refused wherever
+  // a bare commit is required, and counts as dirty for anyone asking.
+  if (status === null) return { commit, dirty: true, label: `${commit}+unknown` };
+  const dirty = status.length > 0;
   return { commit, dirty, label: dirty ? `${commit}+dirty` : commit };
 }
 
