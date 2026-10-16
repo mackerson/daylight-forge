@@ -208,7 +208,13 @@ export function parseLine(line: string, root: string): LineFacts {
   return { ...base, kind: typeof type === 'string' && IGNORED_TYPES.has(type) ? 'ignored' : 'unknown' };
 }
 
-/** `ev_cc_<sha256(sessionId \0 agentId \0 key)>`: the same fact read twice is one event. */
+/**
+ * `ev_cc_<sha256(sessionId \0 agentId \0 key)>`: the same fact read twice is one event. The keys
+ * refine resolution 8's `message.id | line hash`: `usage:<message.id>:<seq>` for a turn,
+ * `tool:<tool_use.id>` (or `tool:line_<sha256(line)>:<i>`) for a tool call, and
+ * `finished:<linesSeen>:<prefixDigest>` for a transcript's run. `seq` is per attempt and in
+ * insertion order, so a fresh `<out>` reproduces the same ids.
+ */
 export function eventId(sessionId: string, agentId: string, key: string): string {
   return `ev_cc_${sha256(`${sessionId}\0${agentId}\0${key}`)}`;
 }
