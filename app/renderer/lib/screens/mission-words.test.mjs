@@ -1,28 +1,29 @@
 /**
- * Mission Control's pure helpers. Run: node engine/test/mission-ui.ts
+ * Mission Control's pure helpers. Run: node app/renderer/lib/screens/mission-words.test.mjs
  *
  * The renderer is drawn by Electron, but what it draws from is decided by small functions
  * that need no window. These are the ones where a wrong shape crashes a screen rather than
- * showing a wrong number.
+ * showing a wrong number. Plain JS so the renderer's DOM-only tsconfig does not have to know
+ * about node, and outside engine/ because the engine may not import the app.
  */
-import type { Mission, MissionList } from '../../app/renderer/lib/types.ts';
-import { mergeMissionUpdate } from '../../app/renderer/lib/screens/mission-words.ts';
-import { harness } from './harness.ts';
+import { mergeMissionUpdate } from './mission-words.ts';
+import { harness } from '../../../../engine/test/harness.ts';
 
 const { check, section, done } = harness();
 
-const mission = (id: string, over: Partial<Mission> = {}): Mission => ({
+/** @returns {import('../types.ts').Mission} */
+const mission = (id, over = {}) => ({
   id, projectId: 'git:aaaaaaaaaaaa', kind: 'verify', objective: 'is the cache wrong', baseRevision: 'abc123',
   scope: { paths: ['src'] }, permissions: { read: true, write: false, execute: true, deploy: false },
   budget: {}, requirementIds: [], acceptanceGateIds: [], state: 'running', taskIds: ['t_1', 't_2'],
   createdAt: 1, updatedAt: 2, ...over,
-} as Mission);
+});
 
 section('a partial mission update from a running job');
 {
   // `mission run` pushes {id, state, outcomeReason, note} on every state change; the list
   // rows read objective, kind, baseRevision and taskIds, which the push does not carry.
-  const list: MissionList = { project: null, missions: [mission('m_1'), mission('m_2')] };
+  const list = { project: null, missions: [mission('m_1'), mission('m_2')] };
   const merged = mergeMissionUpdate(list, { id: 'm_1', state: 'blocked', outcomeReason: 'exit 1', note: 'mock:crash failed' });
   const row = merged.missions.find((m) => m.id === 'm_1');
   check('the pushed fields land on the row', row?.state === 'blocked' && row.outcomeReason === 'exit 1');
