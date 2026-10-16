@@ -374,9 +374,12 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
 
   if (!runnable.length) {
     // `blocked` is re-entered through `running` so the new reason replaces the old one and
-    // the transition table stays the only path between states.
-    mission = ctx.store.transitionMission(mission.id, 'running');
-    lifecycle(ctx, mission, 'mission.started', { roster: opts.tools });
+    // the transition table stays the only path between states. A mission already running
+    // (a finished review waiting on a person, or a crashed run) goes straight to blocked.
+    if (mission.state !== 'running') {
+      mission = ctx.store.transitionMission(mission.id, 'running');
+      lifecycle(ctx, mission, 'mission.started', { roster: opts.tools });
+    }
     block(`no runnable agent in roster: ${unavailable.join(', ') || opts.tools.join(', ')}`);
     return finish(report());
   }

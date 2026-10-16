@@ -332,6 +332,19 @@ section('events');
   check('and since the tail returns just what followed', tail.length === 2);
 }
 
+section('an empty roster blocks a mission that is already running');
+{
+  const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'empty roster', '--scope', 'src/session-cache.ts', '--format', 'json']));
+  const first = json<{ mission: Mission }>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  check('a finished review leaves the mission running', first.mission.state === 'running');
+  const none = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'nosuchtool', '--format', 'json']);
+  check('a roster with nothing runnable still exits 0', none.code === 0, none.err.slice(-300));
+  const blocked = none.code === 0 ? json<{ mission: Mission }>(none).mission : null;
+  check('and blocks with the reason, rather than failing on running → running',
+    blocked?.state === 'blocked' && /no runnable agent/.test(blocked.outcomeReason ?? ''), blocked?.outcomeReason);
+  run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
 section('a run that dies does not leave an attempt running for ever');
 {
   // A reviewer that waits while MOCK_SLOW is set, so the CLI can be killed mid-attempt.
