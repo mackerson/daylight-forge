@@ -394,6 +394,10 @@ export class MissionStore {
           JSON.stringify(m.requirementIds), JSON.stringify(m.acceptanceGateIds),
           m.workItemId ?? null, m.state, m.createdAt, m.updatedAt,
         );
+      // In the same transaction as the mission row: two creates from one item cannot both land.
+      if (m.workItemId !== undefined && !this.claimWorkItem(m.workItemId, m.id, m.projectId)) {
+        throw new Error(`work item ${m.workItemId} is already built by mission ${this.workItemConsumer(m.workItemId)}; an item is consumed once`);
+      }
       if (input.adhoc) {
         this.recordDecision({
           missionId: m.id, projectId: m.projectId, revision: m.baseRevision,
@@ -1281,6 +1285,69 @@ export class MissionStore {
       .run(to, d.id, this.now(), w.id, from);
     if (!r.changes) throw new IllegalTransition('work item', workItemId, 'changed underneath', to);
     return this.workItem(w.id)!;
+  }
+
+  /**
+   * Record a work-item decision and move the item by it, in one transaction: either both are
+   * written or neither is, so a refused move never leaves a decision behind it.
+   */
+  decideWorkItem(
+    workItemId: string, from: WorkItemStatus, to: WorkItemStatus, decision: CreateDecisionInput,
+  ): { decision: Decision; workItem: WorkItem } {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const d = this.recordDecision(decision);
+      const workItem = this.setWorkItemStatus(workItemId, from, to, d.id);
+      this.db.exec('COMMIT');
+      return { decision: d, workItem };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /**
+   * Mark an approved work item as built by `missionId`, compare-and-set: true when this call
+   * (or an earlier one for the same mission) holds it, false when another mission already
+   * does. Refused for an item that is not approved or a mission that is not an implement
+   * mission of the item's project.
+   */
+  consumeWorkItem(workItemId: string, missionId: string): boolean {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const m = this.requireMission(missionId);
+      if (m.kind !== 'implement') throw new Error(`mission ${missionId} is a ${m.kind} mission; only an implement mission builds a work item`);
+      if (m.workItemId !== undefined && m.workItemId !== workItemId) {
+        throw new Error(`mission ${missionId} builds work item ${m.workItemId}, not ${workItemId}`);
+      }
+      const won = this.claimWorkItem(workItemId, missionId, m.projectId);
+      this.db.exec('COMMIT');
+      return won;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /** The implement mission that consumed this work item, or null. */
+  workItemConsumer(workItemId: string): string | null {
+    const r = this.db.prepare('SELECT consumed_by FROM work_items WHERE id=?').get(workItemId) as
+      | { consumed_by: string | null } | undefined;
+    return r?.consumed_by ?? null;
+  }
+
+  /** The compare-and-set itself; the caller holds the transaction. */
+  private claimWorkItem(workItemId: string, missionId: string, projectId: string): boolean {
+    const r = this.db
+      .prepare(`UPDATE work_items SET consumed_by=?, updated_at=? WHERE id=? AND project_id=? AND status='approved' AND consumed_by IS NULL`)
+      .run(missionId, this.now(), workItemId, projectId);
+    if (r.changes === 1) return true;
+    const w = this.db.prepare('SELECT status, project_id, consumed_by FROM work_items WHERE id=?').get(workItemId) as
+      | { status: string; project_id: string; consumed_by: string | null } | undefined;
+    if (!w) throw new Error(`unknown work item ${workItemId}`);
+    if (w.project_id !== projectId) throw new Error(`work item ${workItemId} belongs to ${w.project_id}, not ${projectId}`);
+    if (w.status !== 'approved') throw new Error(`work item ${workItemId} is ${w.status}; a mission builds only an approved one`);
+    return w.consumed_by === missionId;
   }
 
   // ---- candidates ------------------------------------------------------------------

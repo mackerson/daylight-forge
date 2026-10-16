@@ -245,6 +245,8 @@ CREATE TABLE work_items (
   status            TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected','superseded')),
   proposed_by       TEXT NOT NULL,
   decision_id       TEXT,
+  -- The one implement mission that builds it; set compare-and-set, never cleared.
+  consumed_by       TEXT,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
 );
