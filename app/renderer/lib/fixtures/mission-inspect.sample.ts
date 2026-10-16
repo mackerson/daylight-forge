@@ -66,7 +66,7 @@ const execution = (runIndex: number) => JSON.stringify({
   finishedAt: T0 + 400_412 + runIndex * 1009,
 }, null, 2);
 
-/** What `vds artifact <digest>` would print for the sample's digests. */
+/** What `daylight artifact <digest>` would print for the sample's digests. */
 export const SAMPLE_ARTIFACTS: Record<string, string> = {
   [SAMPLE_STDOUT_A]: [
     '{"type":"system","subtype":"init","session_id":"sample-a","model":"claude-sonnet"}',

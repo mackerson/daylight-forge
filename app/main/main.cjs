@@ -60,7 +60,7 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
  * shared with every other unpackaged Electron app on the machine. Render settings and the
  * per-repo map directories were both being written there.
  */
-app.setName('visual-desloppify');
+app.setName('daylight');
 
 const state = {
   repo: process.env.DAYLIGHT_REPO ? path.resolve(process.env.DAYLIGHT_REPO) : null,
@@ -445,7 +445,7 @@ function createWindow() {
     width: 1600,
     height: 1000,
     backgroundColor: '#0a0c10',
-    title: 'visual-desloppify',
+    title: 'Daylight Software Forge',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -945,7 +945,7 @@ ipcMain.handle('daylight:agent', (_e, opts = {}) => {
 /**
  * The whole loop as one job: map, agents until a stop fires, plan.
  *
- * The same `vds run` a terminal would use — the ceilings are the only thing a person is for,
+ * The same `daylight run` a terminal would use — the ceilings are the only thing a person is for,
  * so they are the only thing the window passes.
  */
 ipcMain.handle('daylight:run', (_e, opts = {}) => {

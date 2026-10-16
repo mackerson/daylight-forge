@@ -269,7 +269,7 @@ export function MissionDetail({
             {!experiments.length && (
               <p className="dim">
                 None registered. An experiment is a hypothesis, a protected test and a prediction
-                written down before anything runs — register one with <code>vds experiment propose</code>.
+                written down before anything runs — register one with <code>daylight experiment propose</code>.
               </p>
             )}
             {experiments.map((x) => {

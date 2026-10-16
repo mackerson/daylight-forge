@@ -89,7 +89,7 @@ section('the fixture typechecks and maps');
 
   const out = path.join(tmp, 'out');
   const map = run('node', [CLI, 'map', a.root, '--out', out, '--top', '0']);
-  check('vds map succeeds', map.code === 0, map.out.slice(-400));
+  check('daylight map succeeds', map.code === 0, map.out.slice(-400));
   const graph = JSON.parse(fs.readFileSync(path.join(out, 'graph.json'), 'utf8')) as {
     root: string; nodes: Array<{ id: string; kind: string }>;
   };

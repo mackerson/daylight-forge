@@ -541,7 +541,7 @@ export function App() {
   return (
     <div className="app">
       <TitleBar
-        name={`visual-desloppify${view === 'map' ? '' : ` — ${view}`}`}
+        name={`Daylight Software Forge${view === 'map' ? '' : ` — ${view}`}`}
         where={data?.repo ? shorten(data.repo) : null}
         busy={running.length > 0}
         onPick={() => act(async () => window.daylight.pickRepo())}

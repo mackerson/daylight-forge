@@ -134,7 +134,7 @@ export function loadGraph(dir: string): Graph {
     // indistinguishable from the host refusing them — a full evening was spent on that
     // ambiguity with codex. Say what is wrong, on stderr, where the host will log it.
     throw new Error(
-      `no graph.json in ${dir}. Set DAYLIGHT_DIR to a directory produced by \`vds map\`, ` +
+      `no graph.json in ${dir}. Set DAYLIGHT_DIR to a directory produced by \`daylight map\`, ` +
         'or run map first. The MCP server has nothing to serve without it.',
     );
   }

@@ -60,7 +60,7 @@ export function manifestFor(pkg: RepoManifest): Record<string, unknown> {
 const isEntry = process.argv[1]?.endsWith('package.ts') ?? false;
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
-const out = path.resolve(process.argv[2] ?? path.join(ROOT, 'build', 'vds-portable'));
+const out = path.resolve(process.argv[2] ?? path.join(ROOT, 'build', 'daylight-portable'));
 
 function copyDir(from: string, to: string, skip: (name: string) => boolean = () => false): number {
   let count = 0;
@@ -121,7 +121,7 @@ const app = path.join(out, 'resources', 'app');
 copyDir(path.join(ROOT, 'app', 'main'), path.join(app, 'app', 'main'));
 copyDir(rendererDist, path.join(app, 'app', 'dist'));
 copyDir(path.join(ROOT, 'engine'), path.join(app, 'engine'), (name) => name === 'test');
-// `vds demo prepare` materialises the planted-defect fixture from this tree at runtime, and
+// `daylight demo prepare` materialises the planted-defect fixture from this tree at runtime, and
 // the engine finds it relative to its own source — so a build without it has a demo button
 // that fails on a machine with no checkout.
 copyDir(path.join(ROOT, 'fixtures', 'daylight-demo'), path.join(app, 'fixtures', 'daylight-demo'));
@@ -144,18 +144,18 @@ const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 fs.writeFileSync(path.join(app, 'package.json'), `${JSON.stringify(manifestFor(pkg), null, 2)}\n`);
 
 // 5. A launcher, so starting it is one obvious thing rather than a paragraph of instructions.
-const launcher = path.join(out, 'vds');
+const launcher = path.join(out, 'daylight');
 fs.writeFileSync(launcher, `#!/bin/sh
-# visual-desloppify, portable build.
+# Daylight Software Forge, portable build.
 # Everything it needs is in this directory; nothing has to be installed.
 here=$(cd "$(dirname "$0")" && pwd)
 exec "$here/runtime/electron" "$here/resources/app" "$@"
 `);
 fs.chmodSync(launcher, 0o755);
 
-fs.writeFileSync(path.join(out, 'README.txt'), `visual-desloppify — portable build
+fs.writeFileSync(path.join(out, 'README.txt'), `Daylight Software Forge — portable build
 
-Run ./vds
+Run ./daylight
 
 Everything needed is in this directory. Nothing has to be installed: the Electron
 runtime here ships its own Node, and the engine runs from TypeScript source with no
@@ -168,5 +168,5 @@ consequences outside this repo.
 
 const total = electronFiles + depFiles;
 step(`${total} files`);
-console.log(`\nRun it with: ${path.relative(process.cwd(), launcher) || './vds'}\n`);
+console.log(`\nRun it with: ${path.relative(process.cwd(), launcher) || './daylight'}\n`);
 }

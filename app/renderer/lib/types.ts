@@ -62,7 +62,7 @@ import type {
 import type { Evidence } from '../../../engine/store/types.ts';
 
 /**
- * One side of a dispute, as `vds mission inspect` reports it.
+ * One side of a dispute, as `daylight mission inspect` reports it.
  *
  * A dispute is a CONTRADICTED belief inside a mission's scope, split by distinct answer; the
  * belief itself is carried so the existing arbitration screen can open it unchanged.
@@ -82,7 +82,7 @@ export interface Dispute {
   sides: DisputeSide[];
 }
 
-/** `vds mission inspect <id> --format json`. */
+/** `daylight mission inspect <id> --format json`. */
 /** Something a person has to do before a mission can move; derived by the engine. */
 export interface MissionNeed {
   kind: 'blocked' | 'dispute';
@@ -112,7 +112,7 @@ export interface MissionUpdate {
   note?: string;
 }
 
-/** `vds mission list --format json`. */
+/** `daylight mission list --format json`. */
 export interface MissionList {
   project: ProjectIdentity | null;
   missions: Mission[];
@@ -315,7 +315,7 @@ declare global {
       }) => void): () => void;
       onJobOutput(fn: (o: { id: string; stream: string; text: string }) => void): () => void;
 
-      // ---- Mission Control. Every call shells out to a `vds mission …` command in main. ----
+      // ---- Mission Control. Every call shells out to a `daylight mission …` command in main. ----
       missions(): Promise<MissionList & { error?: string }>;
       mission(p: { id: string }): Promise<MissionInspect & { error?: string }>;
       missionCreate(p: MissionCreateOptions): Promise<Mission & { error?: string }>;

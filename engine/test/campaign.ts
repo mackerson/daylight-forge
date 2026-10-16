@@ -202,7 +202,7 @@ section('a campaign runs rounds, samples each one, and stops itself');
   /**
    * A repo that has not declared an architecture still finishes.
    *
-   * `vds plan` exits non-zero without a target, and inheriting that here would report a
+   * `daylight plan` exits non-zero without a target, and inheriting that here would report a
    * campaign that ran and cost money as a failure because of a file nobody wrote.
    */
   fs.rmSync(path.join(repo, 'daylight.target.json'));

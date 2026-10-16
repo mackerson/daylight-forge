@@ -1,13 +1,14 @@
 {
-  "name": "visual-desloppify",
+  "name": "daylight-forge",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "description": "Get all the data, then focus it down.",
   "bin": {
-    "vds": "engine/cli.ts"
+    "daylight": "engine/cli.ts"
   },
   "scripts": {
+    "daylight": "node engine/cli.ts",
     "map": "node engine/cli.ts map",
     "extract": "node engine/cli.ts extract",
     "invariants": "node engine/cli.ts invariants",

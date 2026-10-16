@@ -150,7 +150,7 @@ console.log('\nsaving into the repo');
     !!onBroken.error && fs.readFileSync(file, 'utf8') === '{ not json', JSON.stringify(onBroken));
   check('and the error says to fix it by hand', /by hand/.test(onBroken.error ?? ''));
 
-  // The object form is what an agent-proposed file looks like after `vds adopt`.
+  // The object form is what an agent-proposed file looks like after `daylight adopt`.
   fs.writeFileSync(file, JSON.stringify({ invariants: [{ id: 'kept', prose: 'p', predicate: pred }] }));
   const onObject = saveInvariant(repo, { id: 'added', prose: 'q', predicate: pred });
   check('the { invariants: [...] } form is understood too',

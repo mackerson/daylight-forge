@@ -231,7 +231,7 @@ function emitExtract(args: Args, graph: Graph): void {
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   const s = graph.stats;
 
-  console.log(`\nvisual-desloppify — ${args.root}`);
+  console.log(`\nDaylight Software Forge — ${args.root}`);
   if (graph.commit) console.log(`commit ${graph.commit}`);
   console.log('─'.repeat(64));
   console.log(
@@ -947,14 +947,14 @@ async function runRun(args: Args): Promise<void> {
   /**
    * The plan is the end of the loop, but only where there is a target to plan against.
    *
-   * `vds plan` exits non-zero without one, which is right when a plan is what you asked for
+   * `daylight plan` exits non-zero without one, which is right when a plan is what you asked for
    * and wrong here: the rounds happened, they cost money, and reporting the whole campaign as
    * failed because the repo has not declared an architecture would throw that away.
    */
   if (!loadTarget(args.root, args.targetFile)) {
     console.log(
       '\nno target architecture in this repo, so there is no plan to derive. The campaign ' +
-        'itself is done — run `vds plan` after writing daylight.target.json.',
+        'itself is done — run `daylight plan` after writing daylight.target.json.',
     );
     return;
   }
@@ -1445,7 +1445,7 @@ function runCheck(args: Args): void {
     console.log('─'.repeat(72));
 
     if (!loaded.source) {
-      console.log('invariants: none defined (see `vds invariants` for how to add them)');
+      console.log('invariants: none defined (see `daylight invariants` for how to add them)');
     } else {
       for (const r of invariants) {
         console.log(`${r.status === 'green' ? 'GREEN' : 'RED  '}  ${r.id}`);
@@ -1551,7 +1551,7 @@ switch (args.command) {
     process.exitCode = await runDaylightCommand(process.argv.slice(2));
     break;
   default:
-    console.log(`visual-desloppify — get all the data, then focus it down.
+    console.log(`Daylight Software Forge — get all the data, then focus it down.
 
 usage:
   node engine/cli.ts map        <path> [options]   # extract + invariants + focus, one pass

@@ -13,7 +13,7 @@ import { mappedProject } from './context.ts';
 import type { MissionKind, MissionOutcome } from './types.ts';
 
 /**
- * The `vds mission|experiment|artifact|events|report|demo` commands.
+ * The `daylight mission|experiment|artifact|events|report|demo` commands.
  *
  * Kept out of `cli.ts`, which dispatches here with the raw argv. These commands have a
  * subcommand before their positional, which the main parser reads as a target path, so the
@@ -363,7 +363,7 @@ function demo(sub: string | undefined, p: Parsed, out: string, asJson: boolean):
       else {
         say(`fixture at ${prepared.root} @ ${prepared.commit.slice(0, 12)} (project ${prepared.projectId})`);
         say(`mission ${prepared.missionId}, experiment ${prepared.experimentId}, in ${out}`);
-        say('next: vds mission run <mission-id> <fixture-root> --tools <a>,<b>');
+        say('next: daylight mission run <mission-id> <fixture-root> --tools <a>,<b>');
       }
       return 0;
     }
