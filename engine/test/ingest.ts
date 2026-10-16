@@ -50,6 +50,8 @@ function makeRepo(name: string, content: string): { root: string; head: string }
 }
 
 const repo = makeRepo('repo', 'project\n');
+// One fixture line's cwd is this directory, so a raw cwd that reached <out> would show the sentinel.
+fs.mkdirSync(path.join(repo.root, `${SENTINEL}-dir`));
 const foreign = makeRepo('foreign', 'another project\n');
 const out = path.join(tmp, 'out');
 fs.mkdirSync(out);
