@@ -413,6 +413,17 @@ section('a mission compares and exports its own reviewers, not another mission\'
     exported.claims.every((c) => c.source.kind !== 'agent' || (c.source.sessionId ?? '').startsWith(`${m.id}:`)),
     exported.claims.map((c) => c.source.sessionId ?? c.source.kind).join(' '));
   check('but does carry its own', exported.claims.some((c) => (c.source.sessionId ?? '').startsWith(`${m.id}:`)));
+
+  // The first mission is running with every task done and a dispute open: it is waiting on a
+  // person, and the state machine (rightly) has no state for that, so it is derived.
+  type Need = { kind: string; ref: string; why: string };
+  const disputed = json<Inspection & { needs?: Need[] }>(run(['mission', 'inspect', first.missionId, '--out', out4, '--format', 'json']));
+  check('a running mission with an open dispute says it needs a person', disputed.mission.state === 'running'
+    && disputed.needs?.length === 1 && disputed.needs[0].kind === 'dispute' && disputed.needs[0].ref.includes('src/session-cache.ts'),
+    JSON.stringify(disputed.needs));
+  const listed = json<{ missions: Mission[]; needs?: Record<string, Need[]> }>(run(['mission', 'list', '--out', out4, '--format', 'json']));
+  check('and the list says so per mission', listed.needs?.[first.missionId]?.[0]?.kind === 'dispute', JSON.stringify(listed.needs));
+  check('a mission with nothing open needs nobody', (listed.needs?.[m.id] ?? []).length === 0);
 }
 
 section('a run that dies does not leave an attempt running for ever');

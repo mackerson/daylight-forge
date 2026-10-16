@@ -83,6 +83,13 @@ export interface Dispute {
 }
 
 /** `vds mission inspect <id> --format json`. */
+/** Something a person has to do before a mission can move; derived by the engine. */
+export interface MissionNeed {
+  kind: 'blocked' | 'dispute';
+  ref: string;
+  why: string;
+}
+
 export interface MissionInspect {
   mission: Mission;
   tasks: Task[];
@@ -91,13 +98,17 @@ export interface MissionInspect {
   decisions: Decision[];
   disputes: Dispute[];
   events: DaylightEvent[];
+  needs?: MissionNeed[];
 }
 
 /** `vds mission list --format json`. */
 export interface MissionList {
   project: ProjectIdentity | null;
   missions: Mission[];
+  /** By mission id. Absent from older builds and the bundled sample. */
+  needs?: Record<string, MissionNeed[]>;
 }
+
 
 export interface MissionCreateOptions {
   kind: MissionKind;

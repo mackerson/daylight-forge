@@ -21,6 +21,7 @@ import { Runs } from './screens/Runs.tsx';
 import { Missions } from './screens/Missions.tsx';
 import { MissionDetail } from './screens/MissionDetail.tsx';
 import { SAMPLE_ARTIFACTS, SAMPLE_INSPECT, SAMPLE_LIST } from './fixtures/mission-inspect.sample.ts';
+import { needsPerson } from './screens/mission-words.ts';
 import type {
   Belief, DaylightEvent, Job, LoadPayload, Mission, MissionCreateOptions, MissionInspect,
   MissionList, QueryPayload, VdsEvent,
@@ -202,7 +203,7 @@ export function App() {
       setMissions((prev) => prev ?? { project: null, missions: [] });
     } else {
       setMissionError(null);
-      setMissions({ project: r.project, missions: r.missions ?? [] });
+      setMissions({ project: r.project, missions: r.missions ?? [], needs: r.needs });
     }
   }, [sample]);
 
@@ -386,7 +387,7 @@ export function App() {
   const mapped = !!data?.stack;
   const missionList = missions?.missions ?? [];
   const missionsRunning = missionList.filter((m) => m.state === 'running').length;
-  const missionsBlocked = missionList.filter((m) => m.state === 'blocked').length;
+  const missionsBlocked = missionList.filter((m) => needsPerson(missions, m)).length;
   // Main owns the watcher and stops it when the repo changes, so main is what reports it.
   const watchingFiles = !!data?.watching;
   const beliefs = query?.beliefs ?? [];

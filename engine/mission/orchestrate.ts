@@ -627,6 +627,33 @@ export interface InspectedDispute {
   decisionId?: string;
 }
 
+/**
+ * Something a person has to do before the mission can move, derived and never stored.
+ *
+ * A mission whose reviews are done and whose reviewers disagree is `running` — the state
+ * table has no "waiting on you", and should not: a dispute is not a failure, so `blocked`
+ * would be the wrong word. But it is the one moment the product exists to produce, so it is
+ * computed here and the list counts it.
+ */
+export interface Need {
+  kind: 'blocked' | 'dispute';
+  ref: string;
+  why: string;
+}
+
+export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Comparison): Need[] {
+  if (mission.state === 'closed') return [];
+  if (mission.state === 'blocked') {
+    return [{ kind: 'blocked', ref: mission.id, why: mission.outcomeReason ?? 'blocked' }];
+  }
+  const tasks = ctx.store.tasks(mission.id);
+  if (!tasks.length || tasks.some((t) => t.state !== 'done')) return [];
+  const disputes = (comparison ?? compare(ctx.claims, mission.scope, missionClaims(mission.id))).disputes;
+  return disputes
+    .filter((d) => d.belief.status === 'CONTRADICTED')
+    .map((d) => ({ kind: 'dispute', ref: `${d.subject} ${d.predicate}`, why: 'the reviewers disagree; a person decides' }));
+}
+
 export interface Inspection {
   mission: Mission;
   tasks: Task[];
@@ -637,6 +664,7 @@ export interface Inspection {
   unverified: Belief[];
   settled: Belief[];
   events: DaylightEvent[];
+  needs: Need[];
 }
 
 interface ComparisonRecord {
@@ -687,6 +715,7 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
     unverified: comparison.unverified,
     settled: comparison.settled,
     events: all.slice(-eventLimit),
+    needs: needsOf(ctx, mission, comparison),
   };
 }
 

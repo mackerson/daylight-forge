@@ -1,5 +1,5 @@
 import type {
-  Attempt, DaylightEvent, ExecutionRecord, Experiment, Mission, VdsEvent,
+  Attempt, DaylightEvent, ExecutionRecord, Experiment, Mission, MissionList, VdsEvent,
 } from '../types.ts';
 import type { Tone } from '../vocab.ts';
 
@@ -29,6 +29,13 @@ export function missionWord(m: Mission): Word {
     default: return { name: 'draft', tone: 'dim' };
   }
 }
+
+/**
+ * Does this mission want a person? `blocked` always does; a running one does when the
+ * engine derived a need for it — reviews done, reviewers disagreeing.
+ */
+export const needsPerson = (list: MissionList | null, m: Mission): boolean =>
+  m.state === 'blocked' || (list?.needs?.[m.id]?.length ?? 0) > 0;
 
 /**
  * One attempt, as a sentence fragment. The order matters: a kill for budget looks like a

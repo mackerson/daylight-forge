@@ -138,6 +138,9 @@ export function MissionDetail({
         <div className="toolbar wrap">
           <button className="link" onClick={onBack}>← missions</button>
           <span className={`pill ${w.tone === 'dim' ? '' : w.tone}`}>{w.name}</span>
+          {mission.state === 'running' && !running && !!inspect.needs?.length && (
+            <span className="pill warn" title={inspect.needs.map((n) => `${n.ref}: ${n.why}`).join('\n')}>needs you</span>
+          )}
           <code style={{ color: 'var(--warn)' }}>{mission.kind}</code>
           <span className="subject">{shortId(mission.id)} · project {mission.projectId} · rev {shortRev(mission.baseRevision)}</span>
           {mission.baseRevision.endsWith('+dirty') && (
