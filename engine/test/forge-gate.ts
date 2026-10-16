@@ -11,7 +11,7 @@
  * it is not installed they are skipped and said to be. No agent is ever run: candidates are
  * diffs this file writes itself.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -249,6 +249,36 @@ let vacuous!: Experiment;
   check('the default command runs the test under the tap reporter', gate.command.join(' ') === `node --test --test-reporter=tap ${gate.testArtifact.path}`);
   check('gate.registered names id, role and harness', named('gate.registered').length === 3
     && named('gate.registered')[1].payload.role === 'holdout' && named('gate.registered')[0].payload.harnessDigest === gate.harnessDigest);
+}
+
+section('the gate commands, through the module');
+{
+  const runner = path.join(tmp, 'gate-cli.ts');
+  fs.writeFileSync(runner, [
+    `import { runGateCommand } from ${JSON.stringify(path.join(HERE, '..', 'forge', 'commands-gate.ts'))};`,
+    'process.exitCode = await runGateCommand(process.argv.slice(2));',
+  ].join('\n'));
+  const cli = (args: string[], env: Record<string, string> = {}) => {
+    const r = spawnSync(process.execPath, [runner, ...args, '--out', out], {
+      encoding: 'utf8', env: { ...process.env, CLAUDECODE: '', DAYLIGHT_SESSION: '', ...env },
+    });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
+  const m = newMission('cli');
+  const testFile = path.join(tmp, 'add.test.js');
+  fs.writeFileSync(testFile, HOLDOUT_TEST);
+  const noRole = cli(['add', m.id, '--test', testFile, '--expect-exit', '0', '--expect-stdout', '# fail 0']);
+  check('gate add without --role is a usage error', noRole.code === 2 && /--role gate\|holdout is required/.test(noRole.stderr), noRole.stderr);
+  const added = cli(['add', m.id, '--role', 'holdout', '--test', testFile, '--expect-exit', '0', '--expect-stdout', '# fail 0', '--format', 'json']);
+  const x = added.code === 0 ? JSON.parse(added.stdout) as Experiment : null;
+  check('gate add --role holdout registers under .daylight-gates', !!x && x.role === 'holdout' && x.testArtifact.path === `.daylight-gates/${x.id}/add.test.js`, added.stderr);
+  const preview = cli(['lock', m.id, '--actor', HUMAN, '--rationale', 'r', '--format', 'json']);
+  const shown = preview.code === 2 ? JSON.parse(preview.stdout) as { digest: string; lines: string[] } : null;
+  check('gate lock without --confirm shows the digest and refuses', !!shown && shown.digest.startsWith('sha256:') && !preview.stdout.includes('"digest8"'), preview.stderr);
+  const agent = cli(['lock', m.id, '--actor', HUMAN, '--rationale', 'r', '--confirm', shown?.digest.slice(7, 15) ?? '', '--format', 'json'], { CLAUDECODE: '1' });
+  check('gate lock under CLAUDECODE is refused', agent.code === 1 && JSON.parse(agent.stdout).refused === true, agent.stdout);
+  const listed = cli(['list', m.id, '--format', 'json']);
+  check('gate list shows the human every gate, unlocked', listed.code === 0 && JSON.parse(listed.stdout).gates.length === 1 && JSON.parse(listed.stdout).lock === null);
 }
 
 /** A candidate: an edit of a fresh tree at `commit`, captured as a diff, filed against an attempt. */
