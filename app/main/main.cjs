@@ -1301,12 +1301,10 @@ ipcMain.handle('daylight:demo-replay', async () => {
  * looks at it. One second while a job is running, five otherwise, and not at all when no
  * mission is open — the renderer tells main which one.
  */
-let sqlite = null;
-try {
-  sqlite = require('node:sqlite');
-} catch {
-  // Older Electron. The CLI path below does the same read more slowly.
-}
+// Older Electron without node:sqlite: the CLI path below does the same read more slowly.
+const { openEventsReadOnly, sqliteAvailable } = require('./daylight-db.cjs');
+/** The refused file last reported, so a stale db in <out> costs one log line, not one per poll. */
+let refusedDb = null;
 
 const dlWatch = { missionId: null, since: 0, dir: null, timer: null, busy: false };
 
@@ -1335,14 +1333,19 @@ function rowToEvent(r) {
 async function readDaylightEvents(since, missionId, limit) {
   const file = path.join(state.dir, 'daylight.db');
   if (!fs.existsSync(file)) return { events: [] };
-  if (sqlite) {
+  if (sqliteAvailable()) {
     let db = null;
     try {
-      db = new sqlite.DatabaseSync(file, { readOnly: true });
-      // Only schema 2 is read here. Anything else goes to the CLI, which refuses it with the
-      // one line that says to delete it and re-map.
-      const meta = db.prepare("SELECT value FROM daylight_meta WHERE key='schema_version'").get();
-      if (!meta || meta.value !== '2') throw new Error(`daylight.db is not at schema 2`);
+      const opened = openEventsReadOnly(file);
+      if (opened.refused) {
+        // Not schema 2: refused here as the engine refuses it, without asking the CLI each poll.
+        const key = `${file}:${fs.statSync(file).mtimeMs}`;
+        if (refusedDb !== key) console.error(opened.refused);
+        refusedDb = key;
+        return { events: [], error: opened.refused };
+      }
+      db = opened.db;
+      if (!db) return { events: [] };
       const rows = missionId
         ? db.prepare(
             'SELECT * FROM events WHERE sequence > ? AND mission_id = ? ORDER BY sequence LIMIT ?',
