@@ -417,6 +417,10 @@ export class MissionStore {
     if (input.permissions.write && m.kind !== 'implement') {
       throw new Error(`mission ${m.id} is ${m.kind}; write is granted only to an implement mission`);
     }
+    // A spec mission only decomposes and a work mission only records; neither runs anything.
+    if (input.permissions.execute && (m.kind === 'spec' || m.kind === 'work')) {
+      throw new Error(`mission ${m.id} is a ${m.kind} mission; it never executes`);
+    }
     if (input.maxUsd !== null && !(Number.isFinite(input.maxUsd) && input.maxUsd > 0)) {
       throw new Error(`mission ${m.id}: maxUsd must be a positive number or null`);
     }

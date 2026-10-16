@@ -278,6 +278,12 @@ let authorId: string;
   check('an implement mission starts draft without write', mission.state === 'draft' && !mission.permissions.write && mission.workItemId === w.id);
 
   const review = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'look', baseRevision: 'base1' });
+  for (const kind of ['spec', 'work'] as const) {
+    const m = store.createMission({ projectId: PROJECT.id, kind, objective: `no execute for ${kind}`, baseRevision: 'base1' });
+    check(`execute is never granted to a ${kind} mission`, !!throws(() => store.authorizeMission({
+      missionId: m.id, actor: HUMAN, rationale: 'r', permissions: { write: false, execute: true }, maxUsd: null,
+    })) && !store.mission(m.id)!.permissions.execute && store.decisions(m.id).length === 0);
+  }
   check('write is never granted to a review mission', !!throws(() => store.authorizeMission({
     missionId: review.id, actor: HUMAN, rationale: 'r', permissions: { write: true, execute: false }, maxUsd: null,
   })));
