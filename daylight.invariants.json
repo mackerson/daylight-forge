@@ -111,5 +111,30 @@
         "file": "^engine/(swarm/|mission/store\\.ts$|experiment/)"
       }
     }
+  },
+  {
+    "id": "spec-intake-never-authors-gates",
+    "prose": "Nothing in spec intake (registering a spec, decomposing it, ingesting proposals, deciding work items) registers, starts or locks an experiment. Acceptance gates are written and locked by a person, never derived from a decomposer's proposal.",
+    "rationale": "PLAN resolution 7: automating gates from a spec automates the one thing that must stay human-authored, the acceptance criterion. The row-level half (no spec mission holds an experiment, no item leaves proposed without a human decision naming its digest, no implement mission without an approved item or an adhoc-mission decision) is specIntakeViolations, tested in engine/test/spec.ts.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^engine/forge/(spec|decompose|proposal|work-items|commands-work-item)\\.ts$"
+      },
+      "callee": "registerExperiment|createExperiment|lockGates|markExperimentStarted|runExperiment"
+    }
+  },
+  {
+    "id": "work-item-decisions-pass-the-guard",
+    "prose": "Deciding a work item and starting an ad hoc implement mission both go through the one decision-authenticity guard, assertHumanDecision.",
+    "rationale": "R10.4 and R14 D-9: one guard, owned by forge/policy.ts, wraps every decision operation; a work-item path that stopped calling it would let an agent session approve its own proposals.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/work-items\\.ts$"
+      },
+      "callee": "assertHumanDecision",
+      "min": 2
+    }
   }
 ]
