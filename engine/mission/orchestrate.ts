@@ -14,7 +14,9 @@ import { available } from '../swarm/adapters.ts';
 import type { Belief, ClaimStatus } from '../store/types.ts';
 import type { DaylightContext } from './context.ts';
 import { requireMappedRepo } from './context.ts';
-import { compare, type Comparison, type Dispute, type DisputeSide } from './disputes.ts';
+import {
+  compare, MISSION_CLAIM_FILTER, missionClaims, type Comparison, type Dispute, type DisputeSide,
+} from './disputes.ts';
 import { currentRevision } from './project.ts';
 import type {
   ArtifactRef, Attempt, DaylightEvent, Decision, Experiment, ExpectedObservation, Mission,
@@ -516,7 +518,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     opts.onProgress?.(ctx.store.mission(mission.id)!, `compared: ${comparison.disputes.length} dispute(s)`);
     return finish(report(comparison, spent, costKnown));
   }
-  return finish(report(compare(ctx.claims, mission.scope), spent, costKnown));
+  return finish(report(compare(ctx.claims, mission.scope, missionClaims(mission.id)), spent, costKnown));
 }
 
 /**
@@ -526,7 +528,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
  */
 export function runCompare(ctx: DaylightContext, mission: Mission, taskId: string): Comparison {
   const attempt = ctx.store.startAttempt({ taskId, runnerId: 'static:vds' });
-  const comparison = compare(ctx.claims, mission.scope);
+  const comparison = compare(ctx.claims, mission.scope, missionClaims(mission.id));
   const meta = { projectId: mission.projectId, revision: mission.baseRevision };
   const artifacts: ArtifactRef[] = [];
   const base = { taskId, attemptId: attempt.id };
@@ -556,7 +558,7 @@ export function runCompare(ctx: DaylightContext, mission: Mission, taskId: strin
     });
   }
   const summary = ctx.artifacts.put(JSON.stringify({
-    missionId: mission.id, scope: mission.scope,
+    missionId: mission.id, scope: mission.scope, claims: MISSION_CLAIM_FILTER,
     disputes: comparison.disputes.map(disputeRecord),
     unverified: comparison.unverified.map(beliefRecord),
     settled: comparison.settled.map(beliefRecord),
@@ -647,13 +649,14 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
   const tasks = ctx.store.tasks(missionId);
   const attempts = tasks.flatMap((t) => ctx.store.attempts(t.id));
   const decisions = ctx.store.decisions(missionId);
-  const comparison = compare(ctx.claims, mission.scope);
+  const admit = missionClaims(mission.id);
+  const comparison = compare(ctx.claims, mission.scope, admit);
 
   // Recorded first, then whatever is contradicted right now and was not recorded yet.
   const byKey = new Map<string, InspectedDispute>();
   const key = (d: { subject: string; predicate: string }) => `${d.subject}\u0000${d.predicate}`;
   const settle = (d: { subject: string; predicate: string; sameEvidence: boolean; sides: DisputeSide[] }) => {
-    const status = ctx.claims.belief(d.subject, d.predicate).status;
+    const status = ctx.claims.belief(d.subject, d.predicate, undefined, admit).status;
     const decision = decisions.find((x) => x.subject === d.subject && x.predicate === d.predicate);
     byKey.set(key(d), {
       subject: d.subject, predicate: d.predicate, status, sameEvidence: d.sameEvidence,

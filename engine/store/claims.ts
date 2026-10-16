@@ -309,12 +309,14 @@ export class ClaimStore {
    * becomes CONTRADICTED and stays that way until a human resolves it. Nothing here
    * auto-resolves a conflict — that is the whole point.
    */
-  belief(subject: string, predicate: string, currentHash?: string): Belief {
+  belief(subject: string, predicate: string, currentHash?: string, admit?: (c: Claim) => boolean): Belief {
     // Gather across polar aliases so `duplicates` and `not_duplicates` are compared
-    // rather than filed as unrelated topics.
+    // rather than filed as unrelated topics. `admit` narrows the claims a belief is derived
+    // from — one mission's reviewers, say — without changing how it is derived.
     const canonical = canonicalise(predicate, undefined).predicate;
-    const claims =
+    const gathered =
       canonical === predicate ? this.claimsFor(subject, predicate) : this.claimsForCanonical(subject, canonical);
+    const claims = admit ? gathered.filter(admit) : gathered;
     if (!claims.length) {
       return { subject, predicate, status: 'UNKNOWN', confidence: 0, claims: [] };
     }

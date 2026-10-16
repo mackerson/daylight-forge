@@ -390,6 +390,31 @@ section('a ceiling holds under concurrency, unknown spend and a raised flag');
   for (const m of [raise, shared, unknown]) run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
 }
 
+section('a mission compares and exports its own reviewers, not another mission\'s');
+{
+  // A fresh directory where one mission's two reviewers disagree, and no human has decided.
+  const out4 = path.join(tmp, 'out4');
+  const repo4 = path.join(tmp, 'repo4');
+  const first = json<Prepared>(run(['demo', 'prepare', '--out', out4, '--dest', repo4, '--format', 'json']));
+  const a = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', first.missionId, repo4, '--out', out4, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  check('the first mission has its dispute', a.comparison.disputes.length === 1);
+  // A second mission with a single reviewer has nobody to disagree with.
+  const m = json<Mission>(run(['mission', 'create', repo4, '--out', out4, '--kind', 'verify', '--objective', 'one reviewer',
+    '--scope', 'src/session-cache.ts', '--format', 'json']));
+  const r = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', m.id, repo4, '--out', out4, '--tools', 'mock:no', '--format', 'json']));
+  check('one reviewer\'s mission records no dispute from another mission\'s reviewers', r.comparison.disputes.length === 0, String(r.comparison.disputes.length));
+  const view = json<Inspection>(run(['mission', 'inspect', m.id, '--out', out4, '--format', 'json']));
+  check('and inspect agrees', view.disputes.length === 0, String(view.disputes.length));
+  check('its own claim is unverified, as a single source is', view.unverified.length === 1, String(view.unverified.length));
+  const file = path.join(tmp, 'one-reviewer.json');
+  run(['mission', 'export', m.id, '--out', out4, '--file', file]);
+  const exported = JSON.parse(fs.readFileSync(file, 'utf8')) as { claims: Claim[] };
+  check('its export carries no other mission\'s agent claims',
+    exported.claims.every((c) => c.source.kind !== 'agent' || (c.source.sessionId ?? '').startsWith(`${m.id}:`)),
+    exported.claims.map((c) => c.source.sessionId ?? c.source.kind).join(' '));
+  check('but does carry its own', exported.claims.some((c) => (c.source.sessionId ?? '').startsWith(`${m.id}:`)));
+}
+
 section('a run that dies does not leave an attempt running for ever');
 {
   // A reviewer that waits while MOCK_SLOW is set, so the CLI can be killed mid-attempt.

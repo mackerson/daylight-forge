@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import type { Claim } from '../store/types.ts';
 import { digestOf } from './artifacts.ts';
-import { inScope } from './disputes.ts';
+import { inScope, missionClaims } from './disputes.ts';
 import type { DaylightContext } from './context.ts';
 import { mappedProject } from './context.ts';
 import { DAYLIGHT_DB, openDaylightDb } from './db.ts';
@@ -38,7 +38,8 @@ export interface MissionExport {
   decisions: Decision[];
   events: DaylightEvent[];
   /**
-   * Every claim in the mission's scope, from any source. The disputes, the beliefs and the
+   * Every claim in the mission's scope that the mission's comparison is drawn from — its
+   * own reviewers' agent claims, and human and static ones (`missionClaims`). The disputes, the beliefs and the
    * human decision all live in the claim store; a replay without them would be a mission
    * with no facts behind it. Claim ids are not preserved — the store numbers its own rows —
    * so a dispute record's `claimId` is a reference into the exporting store, not this one.
@@ -95,10 +96,11 @@ export function exportMission(ctx: DaylightContext, missionId: string): MissionE
   };
   const claims: Claim[] = [];
   const seen = new Set<string>();
+  const admit = missionClaims(missionId);
   for (const { subject } of ctx.claims.allSubjects()) {
     if (seen.has(subject) || !inScope(subject, mission.scope)) continue;
     seen.add(subject);
-    claims.push(...ctx.claims.claimsFor(subject));
+    claims.push(...ctx.claims.claimsFor(subject).filter(admit));
   }
   const artifacts: MissionExport['artifacts'] = {};
   for (const [id, ref] of collectArtifactRefs(ctx, parts)) {

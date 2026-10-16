@@ -49,6 +49,20 @@ export function inScope(subject: string, scope: MissionScope): boolean {
   return paths.some((p) => file === p || file.startsWith(`${p}/`));
 }
 
+/**
+ * The claims a mission's comparison, inspection and export are about: agent claims made in
+ * this mission's own sessions, and human and static claims, which are facts about the
+ * repository rather than about who reviewed it. Another mission's reviewer on the same
+ * subject neither corroborates nor contradicts this one's.
+ */
+export function missionClaims(missionId: string): (c: Claim) => boolean {
+  const prefix = `${missionId}:`;
+  return (c) => c.source.kind !== 'agent' || (c.source.sessionId ?? '').startsWith(prefix);
+}
+
+/** Said in a comparison record, so a reader knows which claims it was drawn from. */
+export const MISSION_CLAIM_FILTER = 'agent claims from this mission\'s sessions, plus human and static claims';
+
 export const sourceKey = (c: Claim): string =>
   `${c.source.kind}:${c.source.tool ?? ''}:${c.source.model ?? ''}`;
 
@@ -77,7 +91,7 @@ function shareASpan(sides: DisputeSide[]): boolean {
   return [...first].some((k) => rest.every((s) => s.has(k)));
 }
 
-export function compare(claims: ClaimStore, scope: MissionScope): Comparison {
+export function compare(claims: ClaimStore, scope: MissionScope, admit?: (c: Claim) => boolean): Comparison {
   const disputes: Dispute[] = [];
   const unverified: Belief[] = [];
   const settled: Belief[] = [];
@@ -90,7 +104,7 @@ export function compare(claims: ClaimStore, scope: MissionScope): Comparison {
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const belief = claims.belief(subject, predicate);
+    const belief = claims.belief(subject, predicate, undefined, admit);
     const status: ClaimStatus = belief.status;
     if (status === 'CONTRADICTED') {
       const sides = sidesOf(belief);
