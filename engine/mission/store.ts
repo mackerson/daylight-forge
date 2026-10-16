@@ -970,9 +970,14 @@ export class MissionStore {
    * every gate and holdout, and make the mission's `acceptanceGateIds` exactly that set. A
    * lock is never half-written, and nothing but these rows decides what the digest covers.
    */
-  lockGates(missionId: string, input: LockGatesInput): { mission: Mission; decision: Decision; gateSetDigest: string } {
+  /**
+   * The gate set a lock of exactly these experiments would freeze, and its digest. The one
+   * computation behind both `lockGates` and the `--confirm` preview, so the code a person
+   * types is the digest the lock records, for any subset of the mission's gates.
+   */
+  gateSet(missionId: string, experimentIds: readonly string[]): { experiments: Experiment[]; gateSetDigest: string } {
     const m = this.requireMission(missionId);
-    const ids = [...new Set(input.experimentIds)].sort();
+    const ids = [...new Set(experimentIds)].sort();
     if (!ids.length) throw new Error(`mission ${m.id}: a gate lock names at least one gate`);
     const experiments = ids.map((id) => {
       const x = this.experiment(id);
@@ -980,11 +985,17 @@ export class MissionStore {
       if (x.role === 'probe') throw new Error(`experiment ${id} is a probe; only gates and holdouts are locked`);
       return x;
     });
+    return { experiments, gateSetDigest: gateSetDigestOf(experiments) };
+  }
+
+  lockGates(missionId: string, input: LockGatesInput): { mission: Mission; decision: Decision; gateSetDigest: string } {
+    const m = this.requireMission(missionId);
+    const { experiments, gateSetDigest } = this.gateSet(m.id, input.experimentIds);
+    const ids = experiments.map((x) => x.id);
     const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
     for (const id of vacuous) {
       if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
     }
-    const gateSetDigest = gateSetDigestOf(experiments);
     const at = this.now();
     this.db.exec('BEGIN');
     try {

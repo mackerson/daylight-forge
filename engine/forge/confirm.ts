@@ -1,6 +1,5 @@
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import type { MissionStore } from '../mission/store.ts';
-import { gateSetDigestOf } from '../mission/store.ts';
 import type { DecisionOperation } from '../mission/types.ts';
 import { confirmCodeOf } from './policy.ts';
 
@@ -13,7 +12,8 @@ import { confirmCodeOf } from './policy.ts';
  *   base revision, work item. The permissions asked for are shown, and recorded in the
  *   decision, but are an input to the act rather than part of what is identified.
  * - `adhoc-mission` (the objective text, since the mission does not exist yet).
- * - `lock-gates` (mission id): the gate-set digest over its gates and holdouts.
+ * - `lock-gates` (mission id, plus the experiment ids to lock): `store.gateSet`'s digest, the
+ *   same computation `lockGates` records, so any subset is confirmable.
  * - `approve-work-item` / `reject-work-item` (work item id): the item's content digest.
  * - `approve-candidate` / `reject-candidate` / `override-candidate` / `apply` (candidate id):
  *   the diff's digest, the bytes that will be committed.
@@ -26,9 +26,16 @@ export interface ConfirmDigest {
   lines: string[];
 }
 
-type Store = Pick<MissionStore, 'mission' | 'experimentsFor' | 'workItem' | 'candidate'>;
+type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate'>;
 
-export function confirmDigest(ctx: { store: Store }, operation: ConfirmOperation, subjectId: string): ConfirmDigest {
+export interface ConfirmOptions {
+  /** `lock-gates`: exactly the experiments the lock will name. Required. */
+  experimentIds?: readonly string[];
+}
+
+export function confirmDigest(
+  ctx: { store: Store }, operation: ConfirmOperation, subjectId: string, opts: ConfirmOptions = {},
+): ConfirmDigest {
   const out = (digest: string, lines: string[]): ConfirmDigest => ({ digest, digest8: confirmCodeOf(digest), lines });
   switch (operation) {
     case 'authorize-mission': {
@@ -45,13 +52,11 @@ export function confirmDigest(ctx: { store: Store }, operation: ConfirmOperation
         'start an implement mission with no work item', `objective: ${subjectId}`,
       ]);
     case 'lock-gates': {
-      const m = ctx.store.mission(subjectId);
-      if (!m) throw new Error(`unknown mission ${subjectId}`);
-      const gates = [...ctx.store.experimentsFor(m.id, 'gate'), ...ctx.store.experimentsFor(m.id, 'holdout')];
-      if (!gates.length) throw new Error(`mission ${m.id} has no gates or holdouts to lock`);
-      return out(gateSetDigestOf(gates), [
-        `lock ${gates.length} gate(s) on mission ${m.id}`,
-        ...gates.map((x) => `${x.role} ${x.id} harness ${x.harnessDigest}`).sort(),
+      if (!opts.experimentIds) throw new Error('lock-gates confirms a chosen set; pass the experiment ids the lock will name');
+      const { experiments, gateSetDigest } = ctx.store.gateSet(subjectId, opts.experimentIds);
+      return out(gateSetDigest, [
+        `lock ${experiments.length} gate(s) on mission ${subjectId}`,
+        ...experiments.map((x) => `${x.role} ${x.id} harness ${x.harnessDigest}`),
       ]);
     }
     case 'approve-work-item':

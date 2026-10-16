@@ -18,6 +18,7 @@ import { IncompatibleDatabase, openDaylightDb, schemaVersion } from '../mission/
 import { EventLog } from '../mission/events.ts';
 import { exportMission, importMission, readExport } from '../mission/export.ts';
 import { confirmDigest } from '../forge/confirm.ts';
+import { guardCheck } from '../forge/policy.ts';
 import { gateSetDigestOf, MissionStore, newId, workItemContentDigest } from '../mission/store.ts';
 import type { ArtifactRef, CandidateFile, Mission, ProjectIdentity } from '../mission/types.ts';
 import {
@@ -572,8 +573,9 @@ section('finishAttempt records usage and cost source');
 section('confirm digests');
 {
   const ctx = { store };
-  const lockDigest = store.lockDecision(mission.id)!.scope.gateSetDigest;
-  const lock = confirmDigest(ctx, 'lock-gates', mission.id);
+  const lockDecision = store.lockDecision(mission.id)!;
+  const lockDigest = lockDecision.scope.gateSetDigest;
+  const lock = confirmDigest(ctx, 'lock-gates', mission.id, { experimentIds: lockDecision.scope.experimentIds as string[] });
   check('lock-gates confirms the gate-set digest the lock records', lock.digest === lockDigest && lock.digest8 === lock.digest.slice(7, 15));
   check('and lists each gate', lock.lines.length === 3);
   check('a candidate act confirms the diff digest', confirmDigest(ctx, 'approve-candidate', candidateId).digest
@@ -582,7 +584,30 @@ section('confirm digests');
   const auth = confirmDigest(ctx, 'authorize-mission', mission.id);
   check('authorize confirms a stable digest of the mission', auth.digest === confirmDigest(ctx, 'authorize-mission', mission.id).digest
     && auth.digest !== confirmDigest(ctx, 'authorize-mission', spec.id).digest);
-  check('an unknown subject is refused', !!throws(() => confirmDigest(ctx, 'lock-gates', 'm_nope')));
+  check('an unknown subject is refused', !!throws(() => confirmDigest(ctx, 'lock-gates', 'm_nope', { experimentIds: [] })));
+
+  // A partial lock, the normal case when a vacuous gate is left out (ws1-review M1).
+  const pm = store.createMission({ projectId: PROJECT.id, kind: 'verify', objective: 'partial lock', baseRevision: 'base1' });
+  const pt = art('test("p", () => {})', 'test');
+  const pe = art('{"exitCode":0,"p":1}', 'expected');
+  const gate = (role: 'gate' | 'holdout', n: number) => store.createExperiment({
+    missionId: pm.id, projectId: PROJECT.id, claimIds: [], subject: 's', predicate: 'p', hypothesis: `h${n}`,
+    prediction: { exitCode: 0 }, baseRevision: 'base1', testArtifact: pt, expectedArtifact: pe,
+    harnessDigest: digestOf(`partial-${n}`), command: ['node', '--test'], sandboxProfile: 'bwrap', limitations: [], role,
+  });
+  const g1 = gate('gate', 1);
+  gate('gate', 2);
+  const h1 = gate('holdout', 3);
+  const chosen = [g1.id, h1.id];
+  const preview = confirmDigest(ctx, 'lock-gates', pm.id, { experimentIds: chosen });
+  const locked = store.lockGates(pm.id, { experimentIds: chosen, actor: HUMAN, rationale: 'g2 is vacuous' });
+  check('a partial lock is confirmable: the preview is the recorded digest', preview.digest === locked.gateSetDigest);
+  check('and the guard accepts its code against the lock', guardCheck({}, HUMAN, preview.digest8, locked.gateSetDigest) === null);
+  gate('gate', 4);
+  check('a gate registered after the lock does not move the preview of the locked set',
+    confirmDigest(ctx, 'lock-gates', pm.id, { experimentIds: chosen }).digest === store.lockDecision(pm.id)!.scope.gateSetDigest);
+  check('the preview refuses what the lock would refuse', !!throws(() => confirmDigest(ctx, 'lock-gates', pm.id, { experimentIds: [] })));
+  check('lock-gates without a chosen set is refused, not guessed', !!throws(() => confirmDigest(ctx, 'lock-gates', pm.id)));
 }
 store.close();
 
