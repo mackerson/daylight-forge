@@ -304,9 +304,22 @@ export class MissionStore {
 
   // ---- attempts --------------------------------------------------------------
 
-  /** Opens an attempt and moves its task to `running`, via `leased` when it was queued. */
+  /**
+   * Opens an attempt and moves its task to `running`, via `leased` when it was queued.
+   *
+   * One live attempt per task. A second one stacked on a task whose first never finished
+   * (its process died) would leave the first `running` for ever and let whichever finishes
+   * last decide the task; the dead one has to be cancelled first, which is what
+   * `cancelRunningAttempts` is for.
+   */
   startAttempt(input: StartAttemptInput): Attempt {
     let t = this.requireTask(input.taskId);
+    const live = this.db
+      .prepare(`SELECT id FROM attempts WHERE task_id=? AND state IN ('starting','running') LIMIT 1`)
+      .get(t.id) as { id: string } | undefined;
+    if (live) {
+      throw new IllegalTransition('task', t.id, `running (attempt ${live.id} has not finished)`, 'a second attempt');
+    }
     if (t.state === 'queued') t = this.transitionTask(t.id, 'leased');
     if (t.state === 'leased') t = this.transitionTask(t.id, 'running');
     if (t.state !== 'running') {
@@ -369,6 +382,20 @@ export class MissionStore {
       this.transitionTask(t.id, result.state === 'completed' ? 'done' : 'failed');
     }
     return this.requireAttempt(attemptId);
+  }
+
+  /**
+   * Cancel every attempt of a mission that is still marked live, with `failure` as the reason,
+   * failing their tasks so they can be retried. For attempts whose owning process is known to
+   * be gone; the caller decides that, this only records it.
+   */
+  cancelRunningAttempts(missionId: string, failure: string): Attempt[] {
+    const ids = (
+      this.db
+        .prepare(`SELECT id FROM attempts WHERE mission_id=? AND state IN ('starting','running') ORDER BY started_at, id`)
+        .all(missionId) as Array<{ id: string }>
+    ).map((r) => r.id);
+    return ids.map((id) => this.finishAttempt(id, { state: 'cancelled', costUsd: null, failure }));
   }
 
   attempt(attemptId: string): Attempt | null {

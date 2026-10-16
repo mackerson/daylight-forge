@@ -332,6 +332,54 @@ section('events');
   check('and since the tail returns just what followed', tail.length === 2);
 }
 
+section('a run that dies does not leave an attempt running for ever');
+{
+  // A reviewer that waits while MOCK_SLOW is set, so the CLI can be killed mid-attempt.
+  const slowMock = path.join(tmp, 'mock-slow.mjs');
+  fs.writeFileSync(slowMock, `
+if (process.env.MOCK_SLOW) { console.log('slow reviewer waiting'); await new Promise((r) => setTimeout(r, 30_000)); }
+process.exit(0);
+`);
+  const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'crash recovery', '--scope', 'src/session-cache.ts', '--format', 'json']));
+  const { spawn } = await import('node:child_process');
+  const startSlow = () => spawn(process.execPath, [CLI, 'mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], {
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, VDS_MOCK_ADAPTER: slowMock, MOCK_SLOW: '1' },
+  });
+  const untilStarted = (child: ReturnType<typeof startSlow>) => new Promise<void>((resolve) => {
+    child.stderr.on('data', (d) => { if (String(d).includes('started')) resolve(); });
+    setTimeout(resolve, 20_000);
+  });
+  const closed = (child: ReturnType<typeof startSlow>) => new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve();
+    else child.on('close', () => resolve());
+  });
+  const attemptsOf = () => json<Inspection>(run(['mission', 'inspect', m.id, '--out', out, '--format', 'json'])).attempts;
+
+  const stopped = startSlow();
+  await untilStarted(stopped);
+  const busy = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { VDS_MOCK_ADAPTER: slowMock });
+  check('a second run of a mission that is being run is refused', busy.code === 1 && /already being run/.test(busy.err), busy.err.slice(-200));
+  stopped.kill('SIGTERM');
+  await closed(stopped);
+  const afterStop = attemptsOf();
+  check('stopping the run cancels the attempt it had open', afterStop.length === 1 && afterStop[0].state === 'cancelled'
+    && /interrupted/.test(afterStop[0].failure ?? ''), JSON.stringify(afterStop.map((a) => [a.state, a.failure])));
+
+  const crashed = startSlow();
+  await untilStarted(crashed);
+  crashed.kill('SIGKILL');
+  await closed(crashed);
+  check('a killed run leaves its attempt running', attemptsOf().filter((a) => a.state === 'running').length === 1);
+  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { VDS_MOCK_ADAPTER: slowMock });
+  check('the next run proceeds', rerun.code === 0, rerun.err.slice(-300));
+  const after = attemptsOf();
+  check('and nothing is left running', after.every((a) => a.state !== 'running'), JSON.stringify(after.map((a) => a.state)));
+  check('the orphan is cancelled, saying why', after.filter((a) => a.state === 'cancelled' && /orphaned/.test(a.failure ?? '')).length === 1,
+    JSON.stringify(after.map((a) => [a.state, a.failure])));
+  check('and the retry completed on the same task', after.filter((a) => a.runnerId === 'agent:mock:slow' && a.state === 'completed').length === 1);
+  run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
 section('usage');
 {
   check('a missing subcommand is exit 2', run(['mission', '--out', out]).code === 2);

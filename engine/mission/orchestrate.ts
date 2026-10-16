@@ -216,6 +216,49 @@ export interface RunMissionReport {
   costKnown: boolean;
 }
 
+/**
+ * The claim one process holds on running a mission: `<out>/mission-run.<id>.pid`.
+ *
+ * While it is held by a live process, a second run is refused rather than stacked on the
+ * first. When it names a process that is gone — or is absent — whatever attempts the
+ * mission still marks `running` have no owner, and the run that takes the claim cancels them
+ * before it starts anything. Released on return and on process exit; a SIGKILL leaves the
+ * file, which names a dead pid and so is taken over.
+ */
+function takeRunClaim(out: string, missionId: string): () => void {
+  const file = path.join(out, `mission-run.${missionId}.pid`);
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+      return () => {
+        try {
+          if (fs.readFileSync(file, 'utf8').trim() === String(process.pid)) fs.unlinkSync(file);
+        } catch {
+          // Already gone.
+        }
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    const holder = Number(fs.readFileSync(file, 'utf8').trim());
+    if (holder !== process.pid && processAlive(holder)) {
+      throw new Error(`mission ${missionId} is already being run by process ${holder}`);
+    }
+    fs.rmSync(file, { force: true });
+  }
+  throw new Error(`could not claim mission ${missionId} for this run`);
+}
+
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Review tasks already on the mission, by the source they are pinned to. */
 function reviewTasksBySource(tasks: Task[]): Map<string, Task> {
   const out = new Map<string, Task>();
@@ -304,13 +347,38 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     opts.onProgress?.(mission, why);
   };
 
+  // Attempts this process opened and has not finished. If the process is stopped — the shell
+  // sends SIGTERM, which the adapter layer turns into an exit — they are recorded as
+  // cancelled on the way out rather than left `running` for ever.
+  const open = new Set<string>();
+  const releaseClaim = takeRunClaim(ctx.out, mission.id);
+  const onExit = () => {
+    for (const id of open) {
+      try {
+        ctx.store.finishAttempt(id, { state: 'cancelled', costUsd: null, failure: 'interrupted: the run was stopped' });
+      } catch {
+        // Finished in the meantime.
+      }
+    }
+    releaseClaim();
+  };
+  process.on('exit', onExit);
+  const finish = <T>(value: T): T => {
+    process.off('exit', onExit);
+    releaseClaim();
+    return value;
+  };
+  for (const orphan of ctx.store.cancelRunningAttempts(mission.id, 'orphaned: the process running it is gone')) {
+    lifecycle(ctx, mission, 'attempt.orphaned', { failure: orphan.failure }, { taskId: orphan.taskId, attemptId: orphan.id });
+  }
+
   if (!runnable.length) {
     // `blocked` is re-entered through `running` so the new reason replaces the old one and
     // the transition table stays the only path between states.
     mission = ctx.store.transitionMission(mission.id, 'running');
     lifecycle(ctx, mission, 'mission.started', { roster: opts.tools });
     block(`no runnable agent in roster: ${unavailable.join(', ') || opts.tools.join(', ')}`);
-    return report();
+    return finish(report());
   }
 
   if (mission.state === 'ready' || mission.state === 'blocked') {
@@ -347,6 +415,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     // the mission id first so the server can withhold the other reviewers' claims by prefix.
     const session = `${mission.id}:${task.id}:a${task.attemptIds.length + 1}`;
     const attempt = ctx.store.startAttempt({ taskId: task.id, runnerId, sessionId: session });
+    open.add(attempt.id);
     lifecycle(ctx, mission, 'attempt.started', { runnerId, session }, { taskId: task.id, attemptId: attempt.id });
     opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} started`);
 
@@ -383,6 +452,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         onChunk: opts.onChunk ? (s, t) => opts.onChunk!(attempt.id, s, t) : undefined,
       },
     );
+    open.delete(attempt.id);
     spent += result.cost;
     if (result.ok && result.cost === 0) costKnown = false;
     ingestMcpEvents(ctx, mission.id);
@@ -405,15 +475,15 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
 
   if (failures.length) {
     block(failures.join('; '));
-    return report(undefined, spent, costKnown);
+    return finish(report(undefined, spent, costKnown));
   }
 
   if (compareTask && ctx.store.task(compareTask.id)!.state !== 'done') {
     const comparison = runCompare(ctx, ctx.store.mission(mission.id)!, compareTask.id);
     opts.onProgress?.(ctx.store.mission(mission.id)!, `compared: ${comparison.disputes.length} dispute(s)`);
-    return report(comparison, spent, costKnown);
+    return finish(report(comparison, spent, costKnown));
   }
-  return report(compare(ctx.claims, mission.scope), spent, costKnown);
+  return finish(report(compare(ctx.claims, mission.scope), spent, costKnown));
 }
 
 /**

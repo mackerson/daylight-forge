@@ -151,6 +151,26 @@ section('an exit code is not an outcome');
   store.close();
 }
 
+section('a task runs one attempt at a time');
+{
+  const store = new MissionStore(path.join(tmp, 'one-attempt'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
+  const t = store.createTask({ missionId: m.id, role: 'review', objective: 'review' });
+  const a1 = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a', sessionId: `${m.id}:${t.id}:a1` });
+  const second = throws(() => store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a', sessionId: `${m.id}:${t.id}:a2` }));
+  check('a second attempt on a task with one running is refused', second instanceof IllegalTransition, second?.message);
+  check('and names the attempt still running', !!second && second.message.includes(a1.id), second?.message);
+  check('the task still has just the one attempt', store.attempts(t.id).length === 1);
+
+  const cancelled = store.cancelRunningAttempts(m.id, 'orphaned: owning process gone');
+  check('a mission\'s running attempts can be cancelled with a reason', cancelled.length === 1
+    && store.attempt(a1.id)!.state === 'cancelled' && store.attempt(a1.id)!.failure === 'orphaned: owning process gone');
+  check('which fails the task so it can be retried', store.task(t.id)!.state === 'failed');
+  check('and leaves nothing running', store.cancelRunningAttempts(m.id, 'x').length === 0);
+  store.close();
+}
+
 section('cost: null is unknown, 0 is zero');
 {
   const store = new MissionStore(path.join(tmp, 'cost'), clock());
