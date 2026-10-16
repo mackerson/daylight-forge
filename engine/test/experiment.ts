@@ -422,6 +422,19 @@ if (!live.available) {
     }
   }
 
+  section('a sandbox that fails to start is not a test result');
+  {
+    // Infrastructure failure must never be evidence either way: a prediction of exit 127 must
+    // not be "supported" because the launcher could not find its own libraries.
+    const e = register('process.exit(0);\n', { exitCode: 127 });
+    const missing = await run(e, { runs: 1, sandbox: { ...live, prlimit: path.join(tmp, 'no-such-prlimit') } });
+    check('a launcher that cannot be spawned concludes invalid', missing.conclusion === 'invalid', missing.conclusion);
+    check('and the record says the sandbox did not start', records(missing)[0]?.status === 'invalid'
+      && /did not start/.test(records(missing)[0]?.why ?? ''), records(missing)[0]?.why);
+    const starved = await run(e, { runs: 1, limits: { cpuSeconds: 60, fileSizeBytes: 1 << 20, openFiles: 3 } });
+    check('bwrap dying before the command concludes invalid, not supported', starved.conclusion === 'invalid', starved.conclusion);
+  }
+
   section('tamper between runs');
   {
     // A same-uid process rewriting the worktree copy after the first run: what runs second

@@ -272,7 +272,7 @@ const TEST_FD = 3;
  */
 function execute(
   argv: string[], timeoutMs: number, feed: Buffer | undefined, bin: string,
-): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean }> {
+): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean; spawnError?: string }> {
   return new Promise((resolve) => {
     // The outer process is prlimit, which execs bwrap; the sandbox has --die-with-parent, so
     // killing this one pid takes the whole tree with it. `bin` is the absolute launcher and
@@ -314,7 +314,7 @@ function execute(
 
     child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ exitCode: null, signal: null, timedOut, stdout, stderr: `${stderr}${err.message}`, truncated });
+      resolve({ exitCode: null, signal: null, timedOut, stdout, stderr: `${stderr}${err.message}`, truncated, spawnError: err.message });
     });
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
@@ -340,6 +340,20 @@ function symlinkOnPath(root: string, rel: string): string | null {
     if (st.isSymbolicLink()) return path.relative(root, at);
   }
   return null;
+}
+
+/**
+ * Why the sandbox itself never got as far as the command, or null when it did.
+ *
+ * Exit codes cannot tell this apart — bwrap and prlimit exit 1, 126 or 127 for their own
+ * failures, which is exactly what a known-red test may predict — but both prefix their own
+ * diagnostics with their name. A test that imitates the prefix only makes its own experiment
+ * invalid, which is the direction a false positive is allowed to go.
+ */
+function launchFailure(run: { stderr: string; spawnError?: string }): string | null {
+  if (run.spawnError) return `the sandbox did not start: ${run.spawnError}`;
+  const m = /^(bwrap|prlimit): .*/.exec(run.stderr);
+  return m ? `the sandbox did not start: ${m[0].slice(0, 300)}` : null;
 }
 
 /** Is `file` still a regular file holding exactly `bytes`? A symlink in its place is not. */
@@ -518,13 +532,14 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       // Something rewrote the copy while we held the worktree. The bytes that ran were still
       // the registered ones, but a harness under attack is not one to draw a conclusion from.
       const drifted = !sameFile(target, registered);
-      const status: ExecutionStatus = drifted ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
+      const unstarted = launchFailure(run);
+      const status: ExecutionStatus = drifted || unstarted ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
       record({
         experimentId: experiment.id, runIndex: i,
         status,
         why: drifted
           ? `the worktree copy of ${testRel} changed during the experiment; something else is writing to it`
-          : run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined,
+          : unstarted ?? (run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined),
         command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
         sandboxBinaries: binaries,
         exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
