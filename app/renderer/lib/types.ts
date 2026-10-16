@@ -335,7 +335,7 @@ declare global {
       /** Tell main which mission to poll events for; null stops polling. */
       missionWatch(missionId: string | null): Promise<{ watching: string | null }>;
       onDlEvent(fn: (p: { missionId: string; events: DaylightEvent[] }) => void): () => void;
-      /** A `mission run` job reported a state change on a `##vds {"mission":…}` line. */
+      /** A `mission run` job reported a state change on a `##daylight {"mission":…}` line. */
       onMissionUpdate(fn: (p: { id: string; mission: MissionUpdate }) => void): () => void;
       demoPrepare(): Promise<{ id?: string; error?: string }>;
       /** Main opens the file picker; the renderer never names a path. */

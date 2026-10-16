@@ -736,7 +736,7 @@ async function runAgent(args: Args): Promise<void> {
     // One machine-readable line per spend update, on our own stdout. The GUI's live meter
     // reads these; a terminal reader sees them as noise, so they are prefixed and terse
     // rather than dumped as the agents' raw streams would be.
-    onProgress: (p) => process.stdout.write(`##vds ${JSON.stringify({ spend: p })}\n`),
+    onProgress: (p) => process.stdout.write(`##daylight ${JSON.stringify({ spend: p })}\n`),
   });
 
   console.log(
@@ -927,7 +927,7 @@ async function runRun(args: Args): Promise<void> {
       runDerive(args);
       // One machine-readable line per round, on our own stdout. The GUI meters the burndown
       // from these; a terminal reader gets the drawn version below.
-      process.stdout.write(`##vds ${JSON.stringify({ campaign: sample })}\n`);
+      process.stdout.write(`##daylight ${JSON.stringify({ campaign: sample })}\n`);
       // The series on disk, which already includes the round-0 sample the callback is not
       // handed — and round 0 is what the convergence estimate measures the fall from.
       console.log(burndown(series(args.out), limits));

@@ -333,7 +333,7 @@ function runJob(label, argv, { onExit } = {}) {
   send('vds:job', { id, label, status: 'running', argv, startedAt });
 
   /**
-   * Per-source spend, as the engine reports it on `##vds` lines.
+   * Per-source spend, as the engine reports it on `##daylight` lines.
    *
    * This used to scrape `total_cost_usd` out of whatever crossed this pipe and take the
    * maximum, which was wrong twice over: the engine buffers each agent's stdout rather than
@@ -347,9 +347,9 @@ function runJob(label, argv, { onExit } = {}) {
   const scan = (text) => {
     let changed = false;
     for (const line of text.split('\n')) {
-      if (!line.startsWith('##vds ')) continue;
+      if (!line.startsWith('##daylight ')) continue;
       try {
-        const msg = JSON.parse(line.slice(6));
+        const msg = JSON.parse(line.slice('##daylight '.length));
         /**
          * A campaign samples itself after every round and says so here.
          *
@@ -395,7 +395,7 @@ function runJob(label, argv, { onExit } = {}) {
     const text = d.toString();
     // Bound the buffer: a long run can emit megabytes and we only need recent output.
     acc = (acc + text).slice(-200_000);
-    // Scan on line boundaries so a `##vds` envelope split across two chunks still parses.
+    // Scan on line boundaries so a `##daylight` envelope split across two chunks still parses.
     partial += text;
     const at = partial.lastIndexOf('\n');
     if (at >= 0) {
@@ -1165,7 +1165,7 @@ ipcMain.handle('vds:mission-create', (_e, opts = {}) => {
 
 /**
  * Running a mission is a job, like `agent` and `run`: its output streams through the job
- * channels, its `##vds {"mission":…}` lines become `vds:mission-update`, and it can be stopped.
+ * channels, its `##daylight {"mission":…}` lines become `vds:mission-update`, and it can be stopped.
  */
 ipcMain.handle('vds:mission-run', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };

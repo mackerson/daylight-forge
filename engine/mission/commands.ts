@@ -20,7 +20,7 @@ import type { MissionKind, MissionOutcome } from './types.ts';
  * parsing is done again here — small, and only for flags these commands own.
  *
  * Output discipline: with `--format json`, stdout is one JSON document and nothing else.
- * Progress goes to stderr as `##vds {...}` lines, which the Electron shell already scans on
+ * Progress goes to stderr as `##daylight {...}` lines, which the Electron shell already scans on
  * both streams. Exit 0 means the command ran — a blocked mission or a falsified experiment
  * is data, not a failure. Exit 2 is bad arguments. Exit 1 is the command itself failing.
  */
@@ -81,7 +81,7 @@ const parseValue = (raw: string): unknown => {
 
 const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 const say = (line: string) => process.stdout.write(`${line}\n`);
-const progress = (data: unknown) => process.stderr.write(`##vds ${JSON.stringify(data)}\n`);
+const progress = (data: unknown) => process.stderr.write(`##daylight ${JSON.stringify(data)}\n`);
 
 function withContext<T>(out: string, fn: (ctx: DaylightContext) => T): T {
   const ctx = openDaylight(out);

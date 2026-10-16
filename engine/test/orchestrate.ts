@@ -126,7 +126,7 @@ section('two independent reviewers, blind to each other');
 {
   const r = run(['mission', 'run', prepared.missionId, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']);
   check('exits 0', r.code === 0, r.err.slice(-500));
-  check('reports progress as ##vds lines on stderr', r.err.includes('##vds {"mission"'));
+  check('reports progress as ##daylight lines on stderr', r.err.includes('##daylight {"mission"'));
   const report = json<{ mission: Mission; attempts: Inspection['attempts']; comparison: { disputes: Inspection['disputes']; unverified: unknown[] }; sourceDiversity: number; costKnown: boolean }>(r);
   check('the mission is running, not closed — reviews finishing is not an outcome', report.mission.state === 'running' && !report.mission.outcome);
   check('two sources', report.sourceDiversity === 2);
