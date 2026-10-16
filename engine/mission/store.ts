@@ -33,6 +33,19 @@ export class IllegalTransition extends Error {
 
 const id = (prefix: string) => `${prefix}_${randomUUID().replace(/-/g, '')}`;
 
+/**
+ * Scope paths in the one spelling claims use: repo-relative, no `./`, no trailing or doubled
+ * slash. Matching is by string prefix, so `src/` or `./src` typed into a form would otherwise
+ * match nothing and the mission would report that nothing in scope is disputed.
+ */
+function normaliseScope(scope: MissionScope): MissionScope {
+  if (!scope.paths) return scope;
+  const paths = scope.paths
+    .map((p) => path.posix.normalize(p.trim()).replace(/^(\.\/)+/, '').replace(/\/+$/, ''))
+    .filter((p) => p && p !== '.');
+  return { ...scope, paths };
+}
+
 const DEFAULT_PERMISSIONS: MissionPermissions = {
   read: true, write: false, execute: false, deploy: false,
 };
@@ -134,7 +147,7 @@ export class MissionStore {
       kind: input.kind,
       objective: input.objective,
       baseRevision: input.baseRevision,
-      scope: input.scope ?? {},
+      scope: normaliseScope(input.scope ?? {}),
       permissions: { ...DEFAULT_PERMISSIONS, ...input.permissions },
       budget: input.budget ?? {},
       requirementIds: input.requirementIds ?? [],

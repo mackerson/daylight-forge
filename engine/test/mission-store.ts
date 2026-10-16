@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore } from '../mission/artifacts.ts';
+import { inScope } from '../mission/disputes.ts';
 import { IllegalTransition, MissionStore } from '../mission/store.ts';
 import type { ProjectIdentity } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -187,6 +188,20 @@ section('finishing an attempt is all or nothing');
   check('with its task still running, not half-moved', store.task(t.id)!.state === 'running');
   check('so it can still be finished properly', store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1 }).state === 'completed'
     && store.task(t.id)!.state === 'done');
+  store.close();
+}
+
+section('scope paths are normalised when a mission is created');
+{
+  const store = new MissionStore(path.join(tmp, 'scope'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({
+    projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r',
+    scope: { paths: ['src/', './lib', 'a//b/', 'docs'] },
+  });
+  check('trailing slashes, ./ and doubled slashes are dropped', m.scope.paths?.join() === 'src,lib,a/b,docs', m.scope.paths?.join());
+  check('and read back the same', store.mission(m.id)!.scope.paths?.join() === 'src,lib,a/b,docs');
+  check('so `src/` scopes src/a.ts', inScope('src/a.ts', m.scope) && inScope('lib/x/y.ts#f', m.scope) && !inScope('srcx/a.ts', m.scope));
   store.close();
 }
 
