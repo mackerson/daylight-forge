@@ -747,6 +747,43 @@ export interface LedgerRow {
   gateSetDigests: string[];
 }
 
+/** Who decided what, counted. Human rows in the ledger carry decisions, never dollars. */
+export interface LedgerDecisionCount {
+  actor: string;
+  kind: DecisionKind;
+  operation: DecisionOperation | null;
+  count: number;
+}
+
+export interface LedgerWorkItem {
+  id: string;
+  missionId: string;
+  title: string;
+  status: WorkItemStatus;
+}
+
+export interface LedgerRevision {
+  revision: string;
+  missions: number;
+  attempts: number;
+}
+
+/**
+ * The project ledger as one JSON document (interfaces-reconciled R-28), declared here so the
+ * renderer can type it without importing `mission/ledger.ts`. It carries no timestamp, so an
+ * export → import → ledger round trip is byte-equal. WS5 builds it.
+ */
+export interface Ledger {
+  kind: 'daylight-ledger';
+  schemaVersion: typeof EXPORT_SCHEMA_VERSION;
+  projectId: string;
+  rows: LedgerRow[];
+  decisions: LedgerDecisionCount[];
+  workItems: LedgerWorkItem[];
+  applications: Application[];
+  revisions: LedgerRevision[];
+}
+
 /** `mission.authorized`: ids and grants, never prose. */
 export interface MissionAuthorizedPayload {
   decisionId: string;

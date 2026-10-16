@@ -20,7 +20,7 @@ import { exportMission, importMission, readExport } from '../mission/export.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { guardCheck } from '../forge/policy.ts';
 import { gateSetDigestOf, MissionStore, newId, workItemContentDigest } from '../mission/store.ts';
-import type { ArtifactRef, CandidateFile, Mission, ProjectIdentity } from '../mission/types.ts';
+import type { ArtifactRef, CandidateFile, Ledger, Mission, ProjectIdentity } from '../mission/types.ts';
 import {
   costKnown, DAYLIGHT_DB_VERSION, EVENT_SCHEMA_VERSION, EXPORT_SCHEMA_VERSION, isEntityId,
 } from '../mission/types.ts';
@@ -60,6 +60,23 @@ function writeV1(file: string, version: number | null): void {
   `);
   if (version !== null) db.prepare("INSERT INTO daylight_meta VALUES ('schema_version', ?)").run(String(version));
   db.close();
+}
+
+section('the ledger shape is plain JSON the renderer can import');
+{
+  const ledger: Ledger = {
+    kind: 'daylight-ledger', schemaVersion: EXPORT_SCHEMA_VERSION, projectId: PROJECT.id,
+    rows: [{
+      key: 'agent:mock:a', attempts: 1, usdKnown: 0, usdUnknownCount: 1, usdScanned: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 1 },
+      candidates: { accepted: 0, rejected: 0, applied: 0, overridden: 0 }, decisions: 0, gateSetDigests: [],
+    }],
+    decisions: [{ actor: HUMAN, kind: 'approve', operation: 'authorize-mission', count: 1 }],
+    workItems: [{ id: newId('workItem'), missionId: newId('mission'), title: 't', status: 'approved' }],
+    applications: [],
+    revisions: [{ revision: 'base1', missions: 1, attempts: 1 }],
+  };
+  check('a ledger round-trips through JSON unchanged', JSON.stringify(JSON.parse(JSON.stringify(ledger))) === JSON.stringify(ledger));
 }
 
 section('versions');
