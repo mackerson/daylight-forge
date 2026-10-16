@@ -157,6 +157,8 @@ export interface GateRow {
   baseline: Experiment['conclusion'] | 'not run';
   /** Passes at base already, so it cannot tell a change from no change. */
   vacuous: boolean;
+  /** Named in the lock's `vacuousOverrides`: a person accepted it as vacuous, on the record. */
+  acceptedAtLock: boolean;
 }
 
 export type GateLock =
@@ -183,17 +185,18 @@ export function gateSetView(
     rows.sort((a, b) => b.createdAt - a.createdAt);
     return rows[0]?.conclusion;
   };
+  const d = latestDecision(decisions, 'lock-gates');
+  const overrides = new Set(((d?.scope as { vacuousOverrides?: string[] } | undefined)?.vacuousOverrides) ?? []);
   const gates: GateRow[] = experiments
     .filter((x) => x.role === 'gate')
     .map((x) => {
       const base = baseOf(x.id);
       return {
         id: x.id, role: 'gate', hypothesis: x.hypothesis, harnessDigest: x.harnessDigest,
-        baseline: base ?? 'not run', vacuous: base === 'supported',
+        baseline: base ?? 'not run', vacuous: base === 'supported', acceptedAtLock: overrides.has(x.id),
       };
     });
   const holdouts = experiments.filter((x) => x.role === 'holdout');
-  const d = latestDecision(decisions, 'lock-gates');
   let lock: GateLock = { state: 'unlocked' };
   if (d) {
     const scope = d.scope as { gateSetDigest?: string; harnessDigests?: Record<string, string>; experimentIds?: string[] };

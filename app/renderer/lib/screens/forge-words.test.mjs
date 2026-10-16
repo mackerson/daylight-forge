@@ -71,6 +71,7 @@ section('the gate set: lock state, vacuous gates, and holdouts as a count only')
   check('no holdout field survives into the view', !JSON.stringify(v).includes(HOLDOUT_SECRET) && !JSON.stringify(v).includes(X_HOLDOUT));
   check('the lock names its decision, actor and digest', v.lock.state === 'locked' && v.lock.actor === 'human:miz' && v.lock.digest.startsWith('sha256:'));
   check('a gate that passes at base is vacuous', v.gates.filter((g) => g.vacuous).length === 1);
+  check('and the lock that named it says it was accepted', v.gates.filter((g) => g.acceptedAtLock).every((g) => g.vacuous) && v.gates.some((g) => g.acceptedAtLock));
   check('a gate that fails at base is its baseline', v.gates.some((g) => g.baseline === 'falsified' && !g.vacuous));
   const drift = FORGE_IMPLEMENT.experiments.map((x) => (x.role === 'gate' ? { ...x, harnessDigest: `sha256:${'0'.repeat(64)}` } : x));
   const stale = gateSetView(drift, FORGE_IMPLEMENT.decisions, []);
