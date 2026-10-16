@@ -593,6 +593,16 @@ export function App() {
           </button>
         </div>
       )}
+      {data?.dirNote && (
+        <div className="banner error">
+          <span>
+            {data.dirNote} Until then, output goes to <code className="wrap">{data.dir}</code>.
+          </span>
+          <button className="link" onClick={() => act(async () => window.daylight.setDir())}>
+            choose out
+          </button>
+        </div>
+      )}
       {toast && (
         <div className="banner toast">
           {toast}

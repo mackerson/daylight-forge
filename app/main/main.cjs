@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Notification, ipcMain, protocol, net, dialog, shell } = require('electron');
 const { spawn, execFile, execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -69,11 +70,31 @@ app.setName('daylight');
  */
 const MAPS_BASE = path.join(dataHome(), 'daylight');
 
+/** Why the startup output directory is a stand-in, when it is. Shown in the window. */
+let dirNote = null;
+
+/**
+ * The output directory to open on.
+ *
+ * Deriving it asks git for this checkout's project id, which a shallow clone cannot answer.
+ * That used to throw at module load and take the window down before it opened. The CLI's
+ * refusal is right, so no id is guessed here either: the window says why, and opens on a
+ * directory keyed on the path alone, under a name nothing else derives.
+ */
+function startupDir() {
+  if (process.env.DAYLIGHT_DIR) return path.resolve(process.env.DAYLIGHT_DIR);
+  try {
+    return derivedDirFor(ROOT, MAPS_BASE);
+  } catch (err) {
+    dirNote = err.message;
+    console.error(`daylight: ${dirNote}`);
+    return path.join(MAPS_BASE, 'unidentified', createHash('sha256').update(ROOT).digest('hex').slice(0, 8));
+  }
+}
+
 const state = {
   repo: process.env.DAYLIGHT_REPO ? path.resolve(process.env.DAYLIGHT_REPO) : null,
-  dir: process.env.DAYLIGHT_DIR
-    ? path.resolve(process.env.DAYLIGHT_DIR)
-    : derivedDirFor(ROOT, MAPS_BASE),
+  dir: startupDir(),
 };
 
 /**
@@ -573,6 +594,7 @@ ipcMain.handle('daylight:state', () => ({
   ...state,
   hasGraph: fs.existsSync(path.join(state.dir, 'graph.json')),
   missingRepo,
+  dirNote,
   watching: !!watcher,
 }));
 
@@ -738,6 +760,7 @@ ipcMain.handle('daylight:load', () => {
     // Why the actions are disabled, when they are. A dead button with no reason is the bug
     // this replaced; a dead button that says the repo has moved is a different thing.
     missingRepo,
+    dirNote,
     /**
      * Every campaign sample in this directory, oldest first.
      *
@@ -788,9 +811,9 @@ ipcMain.handle('daylight:query', () =>
 /**
  * What agent CLIs are on this machine, and what each can actually do.
  *
- * Cached, because answering it spawns every installed binary to ask what models it has.
- * `refresh` is there for after a `grok login` or an install, which is the only time the
- * answer changes while the app is open.
+ * Opening the launcher runs no provider CLI: the plain listing only looks on PATH. Asking
+ * each installed binary what models it has means executing it, so that happens only on
+ * `refresh` — the launcher's "refresh models", pressed by a person. Cached either way.
  */
 let adapterCache = null;
 ipcMain.handle('daylight:adapters', (_e, { refresh } = {}) => {
@@ -798,7 +821,7 @@ ipcMain.handle('daylight:adapters', (_e, { refresh } = {}) => {
   return new Promise((resolve) => {
     execFile(
       NODE.bin,
-      nodeArgs(['adapters', '--out', state.dir, '--format', 'json']),
+      nodeArgs(['adapters', ...(refresh ? ['--probe'] : []), '--out', state.dir, '--format', 'json']),
       { cwd: ROOT, env: nodeEnv(), timeout: 60_000 },
       (err, stdout) => {
         if (err) return resolve({ error: err.message, adapters: [] });
@@ -862,6 +885,7 @@ ipcMain.handle('daylight:pick-repo', async () => {
   const next = dirFor(picked);
   if (next !== state.dir) {
     state.dir = next;
+    dirNote = null;
     fs.mkdirSync(state.dir, { recursive: true });
     resetDirCaches();
     startTail();
@@ -896,6 +920,7 @@ ipcMain.handle('daylight:set-dir', async () => {
   }
 
   state.dir = picked;
+  dirNote = null;
   resetDirCaches();
   unclaimedDir = null;
   // An output directory belongs to one repository, so pointing at a new one may tell us which

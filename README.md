@@ -169,7 +169,7 @@ pnpm gui                    # fly through it
 That is the whole read-only path. Everything below costs money or changes files.
 
 ```bash
-pnpm adapters                          # which agent CLIs are installed, and what models they have
+pnpm adapters --probe                  # which agent CLIs are installed, and what models they have
 pnpm agent <repo> --tools claude:sonnet,claude:opus,codex --batch 5 --max-cost 2.00
 pnpm quality <repo>                    # how much of the map can be believed, and why not more
 ```
@@ -194,7 +194,7 @@ the integrated chip and says nothing about it — 93fps against 143 on the same 
 frame meter (the `fps` chip) names whichever GPU actually rendered.
 
 Other useful bits: `pnpm package` builds a portable directory that runs without a checkout;
-`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 653 assertions across 27
+`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 1,442 assertions across 40
 files.
 
 ---
@@ -271,7 +271,7 @@ the measurements are under [docs/daylight/](docs/daylight/).
 | `pnpm focus <repo>` | rebuild the L1→L2→L3 stack from the claim store |
 | `pnpm check <repo>` | invariants + target architecture; exit 1 on red. `--warn-only` to adopt. |
 | `pnpm agent <repo>` | drive a roster of agent CLIs against the frontier |
-| `pnpm adapters` | which agent CLIs are installed, what models each reports, what still needs setup |
+| `pnpm adapters [--probe]` | which agent CLIs are installed, what still needs setup; `--probe` runs each to ask what models it reports |
 | `pnpm quality <repo>` | how much of the map can be believed, and what is missing |
 | `pnpm plan <repo>` | diff the declared target architecture; writes task packets |
 | `pnpm export <repo>` | write the committed layer: `knowledge.json` + `ARCHITECTURE.md` |
@@ -285,7 +285,7 @@ the measurements are under [docs/daylight/](docs/daylight/).
 | `pnpm bench` | measure frame time headlessly and print one line |
 | `pnpm package` | build a portable directory that runs without a checkout |
 | `pnpm calibrate <spec>` | sweep similarity thresholds against labelled fixture points |
-| `pnpm test:all` | 653 assertions across 27 files |
+| `pnpm test:all` | 1,442 assertions across 40 files |
 | `pnpm typecheck` | `tsc --noEmit` over engine and renderer |
 
 | Flag | Default | Meaning |

@@ -10,7 +10,7 @@
  * Every adapter here is a mock — `node -e` printing lines — and says so in its runner id.
  * No agent CLI is spawned.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,7 +20,7 @@ import { redact, secretsFromEnv } from '../mission/redact.ts';
 import type { ArtifactRef } from '../mission/types.ts';
 import type { RunEvent } from '../replay/types.ts';
 import { run, type Adapter } from '../swarm/adapters.ts';
-import { captureRun, describeArgv, type AttemptFinisher } from '../swarm/capture.ts';
+import { captureRun, describeArgv, sweepSpills, type AttemptFinisher } from '../swarm/capture.ts';
 import { normalize } from '../swarm/normalize.ts';
 import { harness } from './harness.ts';
 
@@ -397,6 +397,76 @@ await (async () => {
   const left = pgrep();
   check('after SIGTERM to the parent, the agent is gone', left === '', left);
   if (left) for (const pid of left.split('\n')) try { process.kill(Number(pid), 'SIGKILL'); } catch { /* gone */ }
+})();
+
+section('spill directories a dead capture left behind');
+await (async () => {
+  // They hold raw, unredacted agent output, in a shared /tmp. Swept only when this uid made
+  // them 0700, their owner is dead and names this repository, and every file in them is one
+  // a capture writes. Anything else is left exactly as it is.
+  const spills = path.join(tmp, 'spills');
+  fs.mkdirSync(spills);
+  const repoRoot = path.join(tmp, 'repo');
+  const projectId = 'git:fixture00000';
+  const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
+  const outside = path.join(tmp, 'outside.txt');
+  fs.writeFileSync(outside, 'not a spill\n');
+  const plant = (name: string, owner: object | null, files: (d: string) => void, mode = 0o700) => {
+    const d = path.join(spills, `daylight-capture-${name}`);
+    fs.mkdirSync(d, { mode });
+    fs.chmodSync(d, mode);
+    if (owner) fs.writeFileSync(path.join(d, 'owner.json'), JSON.stringify(owner));
+    files(d);
+    return d;
+  };
+  const spillOf = (pid: number) => (d: string) => fs.writeFileSync(path.join(d, `stdout.${pid}.1.log`), 'raw output\n');
+  const ownedBy = (pid: number, root = repoRoot, project = projectId) => ({ pid, repoRoot: root, projectId: project, startedAt: 1 });
+
+  const abandoned = plant('abandoned', ownedBy(dead), spillOf(dead));
+  const live = plant('live', ownedBy(process.pid), spillOf(process.pid));
+  const foreign = plant('foreign', ownedBy(dead, path.join(tmp, 'elsewhere')), spillOf(dead));
+  const otherProject = plant('other-project', ownedBy(dead, repoRoot, 'git:another0000'), spillOf(dead));
+  const legacy = plant('legacy', null, () => {});
+  const open = plant('open', ownedBy(dead), spillOf(dead), 0o755);
+  const stranger = plant('stranger', ownedBy(dead), (d) => fs.writeFileSync(path.join(d, 'precious.txt'), 'mine\n'));
+  const linkedFile = plant('linked-file', ownedBy(dead), (d) => fs.symlinkSync(outside, path.join(d, `stdout.${dead}.1.log`)));
+  const realDir = path.join(tmp, 'real-dir');
+  fs.mkdirSync(realDir, { mode: 0o700 });
+  fs.writeFileSync(path.join(realDir, 'owner.json'), JSON.stringify(ownedBy(dead)));
+  spillOf(dead)(realDir);
+  const linkedDir = path.join(spills, 'daylight-capture-linked-dir');
+  fs.symlinkSync(realDir, linkedDir);
+
+  const swept = sweepSpills({ repoRoot, projectId }, spills);
+  check('a dead capture\'s spill directory for this repository is removed', !fs.existsSync(abandoned));
+  check('and only that one', swept === 1, String(swept));
+  check('a live owner\'s is left alone', fs.existsSync(path.join(live, `stdout.${process.pid}.1.log`)));
+  check('as is one naming another repository', fs.existsSync(foreign));
+  check('or another project', fs.existsSync(otherProject));
+  check('or naming no owner at all', fs.existsSync(legacy));
+  check('or readable by others', fs.existsSync(open));
+  check('or holding a file a capture does not write', fs.existsSync(path.join(stranger, 'precious.txt')));
+  check('or whose spill file is a symlink', fs.existsSync(linkedFile) && fs.readFileSync(outside, 'utf8') === 'not a spill\n');
+  check('or which is itself a symlink', fs.existsSync(path.join(realDir, `stdout.${dead}.1.log`)));
+
+  // A capture of its own, end to end: whatever spill directory it made is gone afterwards.
+  const dir = path.join(tmp, 'spill-run');
+  fs.mkdirSync(dir);
+  const events = new EventLog(dir);
+  await captureRun(
+    mock('spill', 4),
+    { prompt: 'p', cwd: repoRoot, mcpConfigPath: '/dev/null', session: 'm_1:a_spill', timeoutMs: 10_000 },
+    ctxFor(dir, events, new ArtifactStore(dir), new Finisher(), 'a_spill', { memoryBytes: 16 }),
+  );
+  events.close();
+  const mine = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('daylight-capture-')).filter((n) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(os.tmpdir(), n, 'owner.json'), 'utf8')).pid === process.pid;
+    } catch {
+      return false;
+    }
+  });
+  check('a finished capture leaves no spill directory of its own', mine.length === 0, mine.join(', '));
 })();
 
 done();

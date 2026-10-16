@@ -406,7 +406,7 @@ const OWNER_FILE = 'owner.json';
 
 interface ScratchOwner { pid: number; experimentId: string; repoRoot: string; startedAt: number }
 
-function processAlive(pid: number): boolean {
+export function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -494,7 +494,7 @@ export function sweepAbandoned(
 /**
  * Why `work` is not a linked worktree of the repository whose `.git/worktrees` is given, or
  * null when it is: a real directory, holding a regular `.git` file whose `gitdir:` resolves
- * inside that directory. A missing `work` is fine — the runner died before the checkout.
+ * inside that directory, to metadata whose own `gitdir` file points back at it. A missing `work` is fine — the runner died before the checkout.
  */
 function foreignWorktree(work: string, worktreesDir: string | null): string | null {
   let st: fs.Stats;
@@ -520,7 +520,16 @@ function foreignWorktree(work: string, worktreesDir: string | null): string | nu
   } catch {
     return 'its worktree metadata does not exist';
   }
-  return gitdir.startsWith(`${worktreesDir}${path.sep}`) ? null : 'its work is a worktree of another repository';
+  if (!gitdir.startsWith(`${worktreesDir}${path.sep}`)) return 'its work is a worktree of another repository';
+  // The forward link is only a file's say-so, and a copy of a real worktree's .git file says
+  // the same. git's own record of where that worktree lives has to name this one.
+  try {
+    const back = fs.readFileSync(path.join(gitdir, 'gitdir'), 'utf8').trim();
+    if (fs.realpathSync(path.resolve(gitdir, back)) === fs.realpathSync(path.join(work, '.git'))) return null;
+  } catch {
+    return 'its worktree metadata does not name it';
+  }
+  return 'its worktree metadata names another checkout';
 }
 
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {

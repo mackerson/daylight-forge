@@ -683,15 +683,27 @@ section('a runner that was killed is cleaned up after by the next one');
     fs.mkdirSync(path.join(d, 'work'));
     fs.writeFileSync(path.join(d, 'work', '.git'), `gitdir: ${path.join(victim, '.git', 'worktrees', 'precious-wt')}\n`);
   });
+  // A copy of a real worktree's .git file of *this* repository points forward correctly; only
+  // git's own metadata pointing back says which checkout it belongs to.
+  const ours = path.join(tmp, 'ours-wt');
+  git(['worktree', 'add', '-q', '--detach', ours, commit]);
+  fs.writeFileSync(path.join(ours, 'uncommitted.txt'), 'mine\n');
+  const copied = plant(repo, (d) => {
+    fs.mkdirSync(path.join(d, 'work'));
+    fs.copyFileSync(path.join(ours, '.git'), path.join(d, 'work', '.git'));
+  });
   await runExperiment(inLookup('test/next2.js'), { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
   check('a planted owner naming another repository is left alone', fs.existsSync(foreign));
   check('as is one whose work is a symlink', fs.existsSync(linked));
   check('and one whose worktree belongs to another repository', fs.existsSync(misfiled));
+  check('and one holding a copy of a real worktree\'s .git file', fs.existsSync(copied));
+  check('whose original, and its uncommitted work, survive', fs.existsSync(path.join(ours, 'uncommitted.txt')));
   check('the real worktree and its uncommitted work survive', fs.existsSync(path.join(precious, 'uncommitted.txt')));
   check('the other repository still lists it', vgit(['worktree', 'list', '--porcelain']).includes(precious));
   check('and the experiment the planted files named is still pending', lookup.rows.get(target.id)?.conclusion === 'pending',
     lookup.rows.get(target.id)?.conclusion);
-  for (const d of [foreign, linked, misfiled]) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of [foreign, linked, misfiled, copied]) fs.rmSync(d, { recursive: true, force: true });
+  git(['worktree', 'remove', '--force', ours]);
 }
 
 section('nothing is left behind');

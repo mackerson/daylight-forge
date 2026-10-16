@@ -113,10 +113,19 @@ export function Explore({
 }) {
   const [shape, setShape] = useState<RunShape>(loadShape);
   const [adapters, setAdapters] = useState<AdapterStatus[] | null>(null);
+  const [asking, setAsking] = useState(false);
 
   useEffect(() => {
     void window.daylight.adapters().then((r) => setAdapters(r.adapters ?? []));
   }, []);
+  // Runs every installed agent CLI to ask what models it has, so only when asked to.
+  const refreshModels = () => {
+    setAsking(true);
+    void window.daylight.adapters({ refresh: true })
+      .then((r) => setAdapters(r.adapters ?? []))
+      .finally(() => setAsking(false));
+  };
+  const probed = (adapters ?? []).some((a) => a.probed);
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(shape));
   }, [shape]);
@@ -238,6 +247,18 @@ export function Explore({
               {a.models.map((m) => <option key={m} value={m} />)}
             </datalist>
           ))}
+          <p className="hint">
+            {probed ? 'models: as each CLI reported them' : 'models: not asked'}
+            {' · '}
+            <button
+              className="link"
+              disabled={asking}
+              onClick={refreshModels}
+              title="runs each installed agent CLI to ask what models it has"
+            >
+              {asking ? 'asking…' : 'refresh models'}
+            </button>
+          </p>
 
           {shape.roster.map((row, i) => {
             const key = keyOf(row);

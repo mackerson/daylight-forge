@@ -85,8 +85,8 @@ const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, nul
 const say = (line: string) => process.stdout.write(`${line}\n`);
 const progress = (data: unknown) => process.stderr.write(`##daylight ${JSON.stringify(data)}\n`);
 
-function withContext<T>(out: string, fn: (ctx: DaylightContext) => T): T {
-  const ctx = openDaylight(out);
+function withContext<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
+  const ctx = openDaylight(out());
   try {
     return fn(ctx);
   } finally {
@@ -94,8 +94,8 @@ function withContext<T>(out: string, fn: (ctx: DaylightContext) => T): T {
   }
 }
 
-async function withContextAsync<T>(out: string, fn: (ctx: DaylightContext) => Promise<T>): Promise<T> {
-  const ctx = openDaylight(out);
+async function withContextAsync<T>(out: () => string, fn: (ctx: DaylightContext) => Promise<T>): Promise<T> {
+  const ctx = openDaylight(out());
   try {
     return await fn(ctx);
   } finally {
@@ -108,7 +108,7 @@ const OUTCOMES: MissionOutcome[] = ['succeeded', 'failed', 'inconclusive', 'canc
 
 // ---- mission ---------------------------------------------------------------------
 
-async function mission(sub: string | undefined, p: Parsed, out: string, asJson: boolean): Promise<number> {
+async function mission(sub: string | undefined, p: Parsed, out: () => string, asJson: boolean): Promise<number> {
   switch (sub) {
     case 'create': {
       const repo = p.positionals[0];
@@ -128,7 +128,7 @@ async function mission(sub: string | undefined, p: Parsed, out: string, asJson: 
       const data = withContext(out, (ctx) => {
         const missions = ctx.store.missions();
         return {
-          project: mappedProject(out),
+          project: mappedProject(out()),
           missions,
           needs: Object.fromEntries(missions.map((m) => [m.id, needsOf(ctx, m)])),
         };
@@ -261,7 +261,7 @@ async function mission(sub: string | undefined, p: Parsed, out: string, asJson: 
 
 // ---- experiment ------------------------------------------------------------------
 
-async function experiment(sub: string | undefined, p: Parsed, out: string, asJson: boolean): Promise<number> {
+async function experiment(sub: string | undefined, p: Parsed, out: () => string, asJson: boolean): Promise<number> {
   switch (sub) {
     case 'propose': {
       const id = p.positionals[0];
@@ -310,12 +310,12 @@ async function experiment(sub: string | undefined, p: Parsed, out: string, asJso
 
 // ---- the rest ----------------------------------------------------------------------
 
-function artifact(p: Parsed, out: string, asJson: boolean): number {
+function artifact(p: Parsed, out: () => string, asJson: boolean): number {
   const id = p.positionals[0];
   if (!id) throw new Usage('artifact needs a <digest>');
   const maxBytes = num(last(p, 'max-bytes')) ?? 256 * 1024;
   const result = withContext(out, (ctx) => {
-    if (!ctx.artifacts.has(id)) throw new Error(`no artifact ${id} in ${out}`);
+    if (!ctx.artifacts.has(id)) throw new Error(`no artifact ${id} in ${out()}`);
     const ref = ctx.store.artifact(id);
     const bytes = ctx.artifacts.get(id);
     const shown = bytes.subarray(0, maxBytes).toString('utf8');
@@ -329,7 +329,7 @@ function artifact(p: Parsed, out: string, asJson: boolean): number {
   return 0;
 }
 
-function events(p: Parsed, out: string, asJson: boolean): number {
+function events(p: Parsed, out: () => string, asJson: boolean): number {
   const since = num(last(p, 'since')) ?? 0;
   const limit = num(last(p, 'limit')) ?? 1000;
   const rows = withContext(out, (ctx) =>
@@ -339,7 +339,7 @@ function events(p: Parsed, out: string, asJson: boolean): number {
   return 0;
 }
 
-function report(p: Parsed, out: string): number {
+function report(p: Parsed, out: () => string): number {
   const id = p.positionals[0];
   if (!id) throw new Usage('report needs a <mission-id>');
   const md = withContext(out, (ctx) => renderReport(ctx, inspectMission(ctx, id, Number.MAX_SAFE_INTEGER)));
@@ -405,8 +405,10 @@ export async function runDaylightCommand(argv: string[]): Promise<number> {
     const repoArg = command === 'mission' && sub === 'create' ? p.positionals[0]
       : (command === 'mission' || command === 'experiment') && sub === 'run' ? p.positionals[1]
         : undefined;
-    const out = explicitOut ? path.resolve(explicitOut)
-      : command === 'demo' ? '' : defaultOut(repoArg ?? process.cwd());
+    // Resolved on first use, so a usage error is reported as one rather than as a project id
+    // the working directory cannot answer.
+    let resolved: string | undefined;
+    const out = () => (resolved ??= explicitOut ? path.resolve(explicitOut) : defaultOut(repoArg ?? process.cwd()));
     switch (command) {
       case 'mission': return await mission(sub, p, out, asJson);
       case 'experiment': return await experiment(sub, p, out, asJson);

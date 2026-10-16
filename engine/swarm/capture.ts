@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { processAlive } from '../experiment/runner.ts';
 import { digestOf, type ArtifactStore } from '../mission/artifacts.ts';
 import type { EventLog } from '../mission/events.ts';
 import { redact } from '../mission/redact.ts';
@@ -112,6 +113,60 @@ class StreamCapture {
   }
 }
 
+const SPILL_PREFIX = 'daylight-capture-';
+const SPILL_OWNER = 'owner.json';
+const SPILL_FILE = /^(?:stdout|stderr)\.(\d+)\.\d+\.log$/;
+
+interface SpillOwner { pid: number; repoRoot: string; projectId: string; startedAt: number }
+
+/**
+ * Remove spill directories left by captures whose process died before its cleanup ran.
+ *
+ * They hold raw, unredacted agent output, so leaving them is not only untidy. But they sit in
+ * a shared /tmp and `owner.json` is input, not instruction, so the rules are the experiment
+ * sweep's: only a real directory this uid made with mode 0700, whose owner is dead and names
+ * this repository and project, holding nothing but regular spill files of that owner. Each
+ * is unlinked by name and the directory removed without recursion; anything else is left.
+ */
+export function sweepSpills(ctx: { repoRoot: string; projectId: string }, tmp: string = os.tmpdir()): number {
+  const uid = process.getuid?.();
+  const repoRoot = path.resolve(ctx.repoRoot);
+  let swept = 0;
+  let names: string[];
+  try {
+    names = fs.readdirSync(tmp).filter((n) => n.startsWith(SPILL_PREFIX));
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    const dir = path.join(tmp, name);
+    try {
+      const st = fs.lstatSync(dir);
+      if (!st.isDirectory() || st.uid !== uid || (st.mode & 0o077) !== 0) continue;
+      const ownerFile = path.join(dir, SPILL_OWNER);
+      if (!fs.lstatSync(ownerFile).isFile()) continue;
+      const owner = JSON.parse(fs.readFileSync(ownerFile, 'utf8')) as SpillOwner;
+      if (!Number.isInteger(owner.pid) || owner.pid <= 0 || processAlive(owner.pid)) continue;
+      if (typeof owner.repoRoot !== 'string' || path.resolve(owner.repoRoot) !== repoRoot) continue;
+      if (owner.projectId !== ctx.projectId) continue;
+      const files = fs.readdirSync(dir).filter((n) => n !== SPILL_OWNER);
+      const ours = files.every((n) =>
+        SPILL_FILE.exec(n)?.[1] === String(owner.pid) && fs.lstatSync(path.join(dir, n)).isFile());
+      if (!ours) {
+        process.stderr.write(`daylight: left ${dir} alone: it holds files a capture does not write\n`);
+        continue;
+      }
+      for (const n of files) fs.unlinkSync(path.join(dir, n));
+      fs.unlinkSync(ownerFile);
+      fs.rmdirSync(dir);
+      swept++;
+    } catch {
+      // Unreadable, malformed or changing under us: not ours to decide about.
+    }
+  }
+  return swept;
+}
+
 /** The prompt is the biggest argv element and the one with the least business in a log. */
 export function describeArgv(argv: string[], prompt: string): string[] {
   const stand = `<prompt ${prompt.length} chars ${digestOf(prompt)}>`;
@@ -133,7 +188,10 @@ export async function captureRun(
   };
   const scrub = (text: string) => redact(text, ctx.secrets).text;
   const provider = providerOf(adapter.name);
-  const spillDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-capture-'));
+  sweepSpills({ repoRoot: options.cwd, projectId: ctx.projectId });
+  const spillDir = fs.mkdtempSync(path.join(os.tmpdir(), SPILL_PREFIX));
+  const owner: SpillOwner = { pid: process.pid, repoRoot: path.resolve(options.cwd), projectId: ctx.projectId, startedAt: Date.now() };
+  fs.writeFileSync(path.join(spillDir, SPILL_OWNER), JSON.stringify(owner));
   const cap = ctx.memoryBytes ?? DEFAULT_MEMORY;
   const streams = {
     stdout: new StreamCapture(cap, spillDir, 'stdout'),
@@ -224,6 +282,7 @@ export async function captureRun(
     cap.dispose();
   }
   try {
+    fs.unlinkSync(path.join(spillDir, SPILL_OWNER));
     fs.rmdirSync(spillDir);
   } catch {
     // Not empty, or already gone — either way not worth failing an attempt over.

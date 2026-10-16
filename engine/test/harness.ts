@@ -27,7 +27,10 @@ export function harness(): Harness {
   // The default <out> lives under the data home. A test that forgets --out must not write a
   // map into the developer's real ~/.local/share, so every test, and every CLI it spawns,
   // gets a throwaway one.
-  process.env.XDG_DATA_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-xdg-'));
+  const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-xdg-'));
+  process.env.XDG_DATA_HOME = dataHome;
+  // 'exit' also fires after an uncaught throw, so a failing file does not leave one behind.
+  process.on('exit', () => fs.rmSync(dataHome, { recursive: true, force: true }));
   let passed = 0;
   let failed = 0;
 
