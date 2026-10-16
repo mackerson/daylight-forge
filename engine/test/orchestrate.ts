@@ -300,8 +300,6 @@ section('an import that disagrees with what is already here says so');
   };
   file.mission.objective = 'TAMPERED';
   file.attempts[0].costUsd = 9999;
-  const someId = Object.keys(file.artifacts)[0];
-  file.artifacts[someId].ref.kind = 'decision';
   const tampered = path.join(tmp, 'tampered.json');
   fs.writeFileSync(tampered, JSON.stringify(file));
   const r = run(['mission', 'import', '--out', out2, '--file', tampered, '--format', 'json']);
@@ -309,7 +307,7 @@ section('an import that disagrees with what is already here says so');
   const forced = run(['mission', 'import', '--out', out2, '--file', tampered, '--force', '--format', 'json']);
   const result = forced.code === 0 ? json<{ conflicts?: string[] }>(forced) : {};
   check('--force imports anyway and lists every conflict', forced.code === 0
-    && ['mission', 'attempt', 'artifact'].every((k) => (result.conflicts ?? []).some((c) => c.startsWith(k))),
+    && ['mission', 'attempt'].every((k) => (result.conflicts ?? []).some((c) => c.startsWith(k))),
     JSON.stringify(result.conflicts));
   check('and keeps what was here', json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out2, '--format', 'json'])).mission.objective !== 'TAMPERED');
 

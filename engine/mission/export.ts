@@ -170,7 +170,9 @@ function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
   for (const x of file.experiments) differs('experiment', x.id, ctx.store.experiment(x.id), x);
   const decisionsHere = new Map(ctx.store.decisions(file.mission.id).map((d) => [d.id, d]));
   for (const d of file.decisions) differs('decision', d.id, decisionsHere.get(d.id), d);
-  for (const [id, blob] of Object.entries(file.artifacts)) differs('artifact', id, ctx.store.artifact(id), blob.ref);
+  // Artifacts are not compared: an artifact row is one per digest and keeps whichever label
+  // first wrote those bytes (an empty stderr is the same artifact in every run), so the file's
+  // ref legitimately differs from the row here. The bytes are verified against the digest.
   return out;
 }
 
