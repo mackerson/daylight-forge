@@ -402,8 +402,11 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   const cmd = serverCommand();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const ceiling = opts.maxCost ?? mission.budget.maxUsd;
-  let spent = 0;
-  let costKnown = true;
+  // The budget is the mission's, so a run starts from what every earlier attempt recorded —
+  // the ledger's figure, not an adapter's — and a null anywhere makes the total a floor.
+  const recorded = ctx.store.tasks(mission.id).flatMap((t) => ctx.store.attempts(t.id));
+  let spent = recorded.reduce((n, a) => n + (a.costUsd ?? 0), 0);
+  let costKnown = recorded.every((a) => a.costUsd !== null);
   const failures: string[] = [];
   const queue = [...todo];
   const limit = Math.max(1, opts.concurrency ?? 1);
@@ -456,8 +459,9 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
       },
     );
     open.delete(attempt.id);
-    spent += result.cost;
-    if (result.ok && result.cost === 0) costKnown = false;
+    const costUsd = ctx.store.attempt(attempt.id)?.costUsd ?? null;
+    spent += costUsd ?? 0;
+    if (costUsd === null) costKnown = false;
     ingestMcpEvents(ctx, mission.id);
     if (!result.ok) {
       const why = result.timedOut ? 'timed out' : result.overBudget ? 'over budget' : `exit ${result.exitCode}`;

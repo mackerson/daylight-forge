@@ -345,6 +345,21 @@ section('an empty roster blocks a mission that is already running');
   run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
 }
 
+section('the budget is the mission\'s, across runs');
+{
+  const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'budget across runs',
+    '--scope', 'src/session-cache.ts', '--max-cost', '0.05', '--format', 'json']));
+  type Ran = { mission: Mission; attempts: Inspection['attempts']; spent: number; costKnown: boolean };
+  const first = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes', '--format', 'json']));
+  check('the first run spends what its reviewer reported', first.spent === 0.05 && first.costKnown, `${first.spent} ${first.costKnown}`);
+  const second = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  check('a second run starts from what the mission has already spent', second.spent === 0.05, String(second.spent));
+  check('so a spent budget blocks it before launching anyone',
+    second.mission.state === 'blocked' && /budget exhausted/.test(second.mission.outcomeReason ?? ''), second.mission.outcomeReason);
+  check('and the new reviewer never ran', !second.attempts.some((a) => a.runnerId === 'agent:mock:no'));
+  run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
 section('a run that dies does not leave an attempt running for ever');
 {
   // A reviewer that waits while MOCK_SLOW is set, so the CLI can be killed mid-attempt.
