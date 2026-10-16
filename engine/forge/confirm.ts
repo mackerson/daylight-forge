@@ -8,10 +8,10 @@ import { confirmCodeOf } from './policy.ts';
  * prompt or the GUI's native dialog shows beside it. Read-only.
  *
  * One definition per act, so the CLI, the GUI and the guard agree on what was confirmed:
- * - `authorize-mission` (mission id): the mission's identity — id, project, kind, objective,
- *   base revision, work item. The permissions asked for are shown, and recorded in the
- *   decision, but are an input to the act rather than part of what is identified.
- * - `adhoc-mission` (the objective text, since the mission does not exist yet).
+ * - `authorize-mission` (mission id, plus the permissions and budget asked for): the mission's
+ *   identity and the grant, so a code confirmed for one grant does not authorise another.
+ * - `adhoc-mission` (the objective text, since the mission does not exist yet, plus the
+ *   project), so one objective confirmed in one repository is not a code for another.
  * - `lock-gates` (mission id, plus the experiment ids to lock): `store.gateSet`'s digest, the
  *   same computation `lockGates` records, so any subset is confirmable.
  * - `approve-work-item` / `reject-work-item` (work item id): the item's content digest.
@@ -31,6 +31,12 @@ type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate'
 export interface ConfirmOptions {
   /** `lock-gates`: exactly the experiments the lock will name. Required. */
   experimentIds?: readonly string[];
+  /** `authorize-mission`: what will be granted. Required. */
+  permissions?: { write: boolean; execute: boolean };
+  /** `authorize-mission`: the budget that will be set, or null to leave it. Required. */
+  maxUsd?: number | null;
+  /** `adhoc-mission`: the project the mission will belong to. Required. */
+  projectId?: string;
 }
 
 export function confirmDigest(
@@ -41,15 +47,25 @@ export function confirmDigest(
     case 'authorize-mission': {
       const m = ctx.store.mission(subjectId);
       if (!m) throw new Error(`unknown mission ${subjectId}`);
-      const id = { operation, missionId: m.id, projectId: m.projectId, kind: m.kind, objective: m.objective, baseRevision: m.baseRevision, workItemId: m.workItemId ?? null };
+      if (!opts.permissions || opts.maxUsd === undefined) {
+        throw new Error('authorize-mission confirms a grant; pass the permissions and maxUsd it will record');
+      }
+      const permissions = { write: !!opts.permissions.write, execute: !!opts.permissions.execute };
+      const id = {
+        operation, missionId: m.id, projectId: m.projectId, kind: m.kind, objective: m.objective,
+        baseRevision: m.baseRevision, workItemId: m.workItemId ?? null, permissions, maxUsd: opts.maxUsd,
+      };
       return out(digestOf(canonicalJson(id)), [
         `authorize ${m.kind} mission ${m.id}`, `project ${m.projectId} at ${m.baseRevision}`,
         `objective: ${m.objective}`, `work item: ${m.workItemId ?? 'none (ad hoc)'}`,
+        `grant: write ${permissions.write ? 'yes' : 'no'}, execute ${permissions.execute ? 'yes' : 'no'}, `
+          + `budget ${opts.maxUsd === null ? 'unchanged' : `$${opts.maxUsd}`}`,
       ]);
     }
     case 'adhoc-mission':
-      return out(digestOf(canonicalJson({ operation, objective: subjectId })), [
-        'start an implement mission with no work item', `objective: ${subjectId}`,
+      if (!opts.projectId) throw new Error('adhoc-mission confirms a mission in one project; pass its projectId');
+      return out(digestOf(canonicalJson({ operation, projectId: opts.projectId, objective: subjectId })), [
+        `start an implement mission with no work item in ${opts.projectId}`, `objective: ${subjectId}`,
       ]);
     case 'lock-gates': {
       if (!opts.experimentIds) throw new Error('lock-gates confirms a chosen set; pass the experiment ids the lock will name');

@@ -619,9 +619,18 @@ section('confirm digests');
   check('a candidate act confirms the diff digest', confirmDigest(ctx, 'approve-candidate', candidateId).digest
     === store.candidate(candidateId)!.diffArtifact.digest && confirmDigest(ctx, 'apply', candidateId).digest8.length === 8);
   check('a work-item act confirms the content digest', confirmDigest(ctx, 'approve-work-item', w.id).digest === w.contentDigest);
-  const auth = confirmDigest(ctx, 'authorize-mission', mission.id);
-  check('authorize confirms a stable digest of the mission', auth.digest === confirmDigest(ctx, 'authorize-mission', mission.id).digest
-    && auth.digest !== confirmDigest(ctx, 'authorize-mission', spec.id).digest);
+  const grant = { permissions: { write: true, execute: false }, maxUsd: 2 };
+  const auth = confirmDigest(ctx, 'authorize-mission', mission.id, grant);
+  check('authorize confirms a stable digest of the mission', auth.digest === confirmDigest(ctx, 'authorize-mission', mission.id, grant).digest
+    && auth.digest !== confirmDigest(ctx, 'authorize-mission', spec.id, grant).digest);
+  check('authorize binds the grant asked for: other permissions, another code',
+    auth.digest !== confirmDigest(ctx, 'authorize-mission', mission.id, { ...grant, permissions: { write: true, execute: true } }).digest
+    && auth.digest !== confirmDigest(ctx, 'authorize-mission', mission.id, { ...grant, maxUsd: 200 }).digest);
+  check('authorize without the grant is refused, not guessed', !!throws(() => confirmDigest(ctx, 'authorize-mission', mission.id)));
+  const adhoc = confirmDigest(ctx, 'adhoc-mission', 'fix the typo', { projectId: PROJECT.id });
+  check('an ad hoc mission binds its project: same objective, another project, another code',
+    adhoc.digest !== confirmDigest(ctx, 'adhoc-mission', 'fix the typo', { projectId: OTHER.id }).digest);
+  check('ad hoc without a project is refused', !!throws(() => confirmDigest(ctx, 'adhoc-mission', 'fix the typo')));
   check('an unknown subject is refused', !!throws(() => confirmDigest(ctx, 'lock-gates', 'm_nope', { experimentIds: [] })));
 
   // A partial lock, the normal case when a vacuous gate is left out (ws1-review M1).
