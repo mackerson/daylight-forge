@@ -151,6 +151,33 @@ export interface ImportResult {
 }
 
 /**
+ * The file with every claim id it records rewritten to this store's numbering.
+ *
+ * Claim ids are the claim store's rowids, so the same claim has a different id in every
+ * directory it lands in. A decision's `scope.claimId`, an experiment's `claimIds` and a
+ * `claim.disputed` event's sides would otherwise point at whatever claim happens to have
+ * that number here. Ids with no mapping — claims the export did not carry — are left as they
+ * were. Recorded comparison artifacts are content-addressed and keep the exporter's ids.
+ */
+function withLocalClaimIds(file: MissionExport, ids: Map<number, number>): MissionExport {
+  const local = (id: unknown) => (typeof id === 'number' ? ids.get(id) ?? id : id);
+  return {
+    ...file,
+    experiments: file.experiments.map((x) => ({ ...x, claimIds: x.claimIds.map((id) => local(id) as number) })),
+    decisions: file.decisions.map((d) => ('claimId' in d.scope ? { ...d, scope: { ...d.scope, claimId: local(d.scope.claimId) } } : d)),
+    events: file.events.map((e) => (Array.isArray(e.payload.sides)
+      ? {
+          ...e,
+          payload: {
+            ...e.payload,
+            sides: (e.payload.sides as Array<Record<string, unknown>>).map((s) => ({ ...s, claimId: local(s.claimId) })),
+          },
+        }
+      : e)),
+  };
+}
+
+/**
  * Rows in the file whose id is already here with different content.
  *
  * Ids are preserved on import, so a matching id is supposed to mean the same record. When it
@@ -207,7 +234,13 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
       throw new Error(`artifact ${id} in the export carries a ref that does not name it; refusing to file it under the wrong record`);
     }
   }
-  const conflicts = importConflicts(ctx, file);
+  // Claims already here, by the id the file gives them; the rest are numbered as they land.
+  const claimIds = new Map<number, number>();
+  for (const c of file.claims ?? []) {
+    const have = ctx.claims.claimsFor(c.subject, c.predicate).find((h) => sameClaim(h, c));
+    if (have) claimIds.set(c.id, have.id);
+  }
+  const conflicts = importConflicts(ctx, withLocalClaimIds(file, claimIds));
   if (conflicts.length && !opts.force) {
     throw new Error(
       `${conflicts.length} conflict(s) between the export and ${ctx.out}: ${conflicts.slice(0, 5).join('; ')}` +
@@ -221,16 +254,18 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
   // Claims go through the store's own boundary, evidence rules and all, with their original
   // assertion time — a replayed review is still that reviewer's claim made when it was made.
   for (const c of file.claims ?? []) {
-    if (ctx.claims.claimsFor(c.subject, c.predicate).some((have) => sameClaim(have, c))) {
+    if (claimIds.has(c.id)) {
       skipped.claims++;
       continue;
     }
-    ctx.claims.submit({
+    const made = ctx.claims.submit({
       subject: c.subject, predicate: c.predicate, value: c.value, source: c.source,
       confidence: c.confidence, evidence: c.evidence, observedHash: c.observedHash, at: c.at,
     });
+    claimIds.set(c.id, made.id);
     added.claims++;
   }
+  const local = withLocalClaimIds(file, claimIds);
 
   for (const [id, blob] of Object.entries(file.artifacts)) {
     const bytes = blob.encoding === 'base64' ? Buffer.from(blob.content, 'base64') : Buffer.from(blob.content, 'utf8');
@@ -302,7 +337,7 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
         limitations, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
-    for (const x of file.experiments) {
+    for (const x of local.experiments) {
       const r = experiment.run(
         x.id, x.missionId, x.projectId, JSON.stringify(x.claimIds), x.subject, x.predicate, x.hypothesis,
         JSON.stringify(x.prediction), x.baseRevision, JSON.stringify(x.testArtifact),
@@ -316,7 +351,7 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
        (id, mission_id, project_id, revision, actor, kind, subject, predicate, value, rationale, scope, artifact_ids, at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
-    for (const d of file.decisions) {
+    for (const d of local.decisions) {
       const r = decision.run(
         d.id, d.missionId, d.projectId, d.revision, d.actor, d.kind, d.subject ?? null, d.predicate ?? null,
         d.value === undefined ? null : JSON.stringify(d.value), d.rationale, JSON.stringify(d.scope),
@@ -333,7 +368,7 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
   }
 
   // Events keep their ids and their order; the sequence they get here is this directory's.
-  for (const e of [...file.events].sort((a, b) => a.sequence - b.sequence)) {
+  for (const e of [...local.events].sort((a, b) => a.sequence - b.sequence)) {
     if (ctx.events.has(e.id)) {
       skipped.events++;
       continue;

@@ -258,10 +258,10 @@ const recording = path.join(tmp, 'recording.json');
   check('the same mission id', replayed.mission.id === prepared.missionId);
   check('everything added once', replayed.added.events > 0 && replayed.skipped.events === 0 && replayed.added.claims === 3);
 
-  // Sequences are per output directory (the original shares its log with other missions)
-  // and claim ids are per store; everything else must agree byte for byte.
+  // Sequences are per output directory (the original shares its log with other missions);
+  // claim ids are remapped on import, so everything else must agree byte for byte.
   const strip = (v: Inspection) =>
-    JSON.stringify(v, (k, x) => (k === 'claimId' || k === 'sequence' || k === 'id' && typeof x === 'number' ? undefined : x));
+    JSON.stringify(v, (k, x) => (k === 'sequence' ? undefined : x));
   const a = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out, '--format', 'json']));
   const b = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out2, '--format', 'json']));
   check('inspect on the replay equals inspect on the original', strip(a) === strip(b),
@@ -454,6 +454,26 @@ section('a mission compares and exports its own reviewers, not another mission\'
   const listed = json<{ missions: Mission[]; needs?: Record<string, Need[]> }>(run(['mission', 'list', '--out', out4, '--format', 'json']));
   check('and the list says so per mission', listed.needs?.[first.missionId]?.[0]?.kind === 'dispute', JSON.stringify(listed.needs));
   check('a mission with nothing open needs nobody', (listed.needs?.[m.id] ?? []).length === 0);
+
+  // out4 already numbers its own claims, so the recording's claims get new ids here. What the
+  // recording's rows point at must follow them.
+  const imported = run(['mission', 'import', '--out', out4, '--file', recording, '--format', 'json']);
+  check('a recording imports into a directory that has claims of its own', imported.code === 0, imported.err.slice(-300));
+  const replayed = json<Inspection & { decisions: Array<{ scope: { claimId?: number } }> }>(
+    run(['mission', 'inspect', prepared.missionId, '--out', out4, '--format', 'json']));
+  const store4 = new ClaimStore(path.join(out4, 'claims.db'));
+  const byId = (id: number | undefined) => store4.claimsFor('src/session-cache.ts').find((c) => c.id === id);
+  const decided = byId(replayed.decisions[0]?.scope.claimId);
+  check('the decision still points at the human claim it recorded', decided?.source.kind === 'human', JSON.stringify(decided?.source));
+  const disputedEvent = replayed.events.find((e) => e.name === 'claim.disputed');
+  const sides = (disputedEvent?.payload.sides ?? []) as Array<{ claimId: number; source: string }>;
+  check('and the dispute event\'s sides point at the reviewers\' claims here',
+    sides.length === 2 && sides.every((s) => {
+      const c = byId(s.claimId);
+      return !!c && `${c.source.kind}:${c.source.tool}:${c.source.model}` === s.source && (c.source.sessionId ?? '').startsWith(`${prepared.missionId}:`);
+    }),
+    JSON.stringify(sides));
+  store4.close();
 }
 
 section('a run that dies does not leave an attempt running for ever');
