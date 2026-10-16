@@ -14,6 +14,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { DAYLIGHT_DB } from '../mission/db.ts';
+import { runWorkItemCommand } from '../forge/commands-work-item.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { ambiguities, buildDecomposePrompt, ingestProposals, workItemIdOf } from '../forge/decompose.ts';
 import { confirmCodeOf, DecisionRefused } from '../forge/policy.ts';
@@ -379,6 +380,38 @@ section('an approved item is built by exactly one implement mission (R10.1)');
   check('the invariant reports an item approved without a human decision',
     specIntakeViolations(ctx, projectId).some((v) => v.includes(toImplement2.id)));
   check('and such an item cannot parent a mission', /no approve-work-item decision/.test(throws(mk({ workItemId: toImplement2.id }))?.message ?? ''));
+}
+
+section('daylight work-item list | show | approve | reject (the module WS8 dispatches to)');
+{
+  const run = (argv: string[], env: Record<string, string | undefined> = CLEAN_ENV) => {
+    let stdout = '';
+    let stderr = '';
+    const code = runWorkItemCommand([...argv], { out: A.out, env, stdout: (s) => { stdout += s; }, stderr: (s) => { stderr += s; } });
+    return { code, stdout, stderr };
+  };
+  const listed = run(['list', '--format', 'json', '--status', 'proposed']);
+  const body = JSON.parse(listed.stdout) as { workItems: Array<{ id: string; contentDigest: string; status: string }>; needs: Array<{ kind: string }> };
+  check('list --format json is one document with items and derived needs',
+    listed.code === 0 && body.workItems.length > 0 && body.workItems.every((w) => w.status === 'proposed')
+      && body.needs.some((n) => n.kind === 'spec-ambiguity'));
+  const target = body.workItems.find((w) => w.id !== toTamper.id)!;
+  const shown = run(['show', target.id]);
+  check('show prints the digest a person confirms against', shown.code === 0 && shown.stdout.includes(target.contentDigest));
+  check('show never prints the bare confirm code as its own value',
+    !shown.stdout.split('\n').some((l) => l.trim() === confirmCodeOf(target.contentDigest)));
+
+  const code8 = confirmCodeOf(target.contentDigest);
+  const agent = run(['approve', target.id, '--actor', HUMAN, '--rationale', 'ok', '--confirm', code8], { ...CLEAN_ENV, CLAUDECODE: '1' });
+  check('approve from an agent shell exits 1 with the guard\'s reason', agent.code === 1 && /CLAUDECODE/.test(agent.stderr), agent.stderr);
+  const wrong = run(['approve', target.id, '--actor', HUMAN, '--rationale', 'ok', '--confirm', '00000000', '--format', 'json']);
+  check('approve with a wrong --confirm exits 1, marked refused',
+    wrong.code === 1 && (JSON.parse(wrong.stdout) as { refused?: boolean }).refused === true);
+  check('approve without --actor is a usage error', run(['approve', target.id, '--rationale', 'ok', '--confirm', code8]).code === 2);
+  check('the item is still proposed after every refusal', ctx.store.workItem(target.id)!.status === 'proposed');
+  const ok = run(['approve', target.id, '--actor', HUMAN, '--rationale', 'ok', '--confirm', code8]);
+  check('approve from a person\'s shell with the code exits 0', ok.code === 0 && ctx.store.workItem(target.id)!.status === 'approved', ok.stderr);
+  check('an unknown subcommand is a usage error', run(['merge']).code === 2);
 }
 
 done();
