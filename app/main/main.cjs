@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  sameRepo, repoOfDir, dirForRepo, ownershipConflict,
+  sameRepo, repoOfDir, dataHome, derivedDirFor, dirForRepo, ownershipConflict,
   readJsonIn, readJsonRaw, readJsonlIn, forgetCachedJson,
 } = require('./session.cjs');
 
@@ -62,9 +62,18 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
  */
 app.setName('daylight');
 
+/**
+ * Per-repo output lives under the data home, beside what the CLI writes by default, so a map
+ * made in a terminal and one made here are the same directory. Not under userData: that is
+ * configuration, and ~/.config is not where a claims database belongs.
+ */
+const MAPS_BASE = path.join(dataHome(), 'daylight');
+
 const state = {
   repo: process.env.DAYLIGHT_REPO ? path.resolve(process.env.DAYLIGHT_REPO) : null,
-  dir: process.env.DAYLIGHT_DIR ? path.resolve(process.env.DAYLIGHT_DIR) : path.resolve(ROOT, 'out'),
+  dir: process.env.DAYLIGHT_DIR
+    ? path.resolve(process.env.DAYLIGHT_DIR)
+    : derivedDirFor(ROOT, MAPS_BASE),
 };
 
 /**
@@ -94,7 +103,7 @@ let missingRepo = null;
 
 /** Where a repository's output goes, honouring a directory picked for that repository. */
 const dirFor = (repo) =>
-  dirForRepo(repo, { chosen: chosenDirs, base: path.join(app.getPath('userData'), 'maps') });
+  dirForRepo(repo, { chosen: chosenDirs, base: MAPS_BASE });
 
 let win = null;
 const jobs = new Map();

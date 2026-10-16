@@ -1,8 +1,9 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const {
-  dirForRepo, forgetCachedJson, ownershipConflict, readJsonIn, readJsonRaw, repoOfDir, sameRepo,
+  dataHome, derivedDirFor, dirForRepo, forgetCachedJson, ownershipConflict, readJsonIn, readJsonRaw, repoOfDir, sameRepo,
 } = require('./session.cjs');
 
 /**
@@ -60,7 +61,8 @@ console.log('\na hand-picked directory follows only the repo it was picked for')
   const dirA = mapped('chosen-a', repoA);
 
   check('a repo with no directory of its own gets a derived one',
-    dirForRepo(repoA, { chosen: new Map(), base }).startsWith(path.join(base, 'repoA-')));
+    dirForRepo(repoA, { chosen: new Map(), base }).startsWith(path.join(base, 'path-')),
+    dirForRepo(repoA, { chosen: new Map(), base }));
   check('two checkouts of one name do not collide',
     dirForRepo(path.join(tmp, 'x', 'repoA'), { chosen: new Map(), base }) !==
       dirForRepo(path.join(tmp, 'y', 'repoA'), { chosen: new Map(), base }));
@@ -143,6 +145,40 @@ console.log('\nthe output directory is re-read when it changes, and not otherwis
     readJsonRaw(dir, 'graph.json') !== readJsonRaw(dir, 'graph.json'));
   check('and still reads what is there',
     readJsonRaw(dir, 'graph.json', {})?.root === '/somewhere');
+}
+
+console.log('\nthe shell and the CLI agree on the default output directory');
+{
+  // The shared vector: map through the real CLI with no --out and look for the result where
+  // the shell would. A git repo and a plain directory cover both kinds of project id.
+  const xdg = path.join(tmp, 'xdg');
+  const env = { ...process.env, XDG_DATA_HOME: xdg };
+  const gitEnv = {
+    ...env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@x', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+    GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
+  };
+  const cli = path.resolve(__dirname, '..', '..', 'engine', 'cli.ts');
+  const repo = path.join(tmp, 'vector-git');
+  const plain = path.join(tmp, 'vector-plain');
+  for (const dir of [repo, plain]) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'export const a = 1;\n');
+  }
+  const git = (args) => execFileSync('git', ['-C', repo, ...args], { env: gitEnv, stdio: 'ignore' });
+  git(['init', '-q']);
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'first']);
+
+  check('the data home honours XDG_DATA_HOME', dataHome(env) === xdg);
+  check('a git repo is keyed by git-<first commit>',
+    /^git-[0-9a-f]{12}$/.test(path.basename(path.dirname(derivedDirFor(repo, xdg)))));
+  for (const [label, dir] of [['git repo', repo], ['plain directory', plain]]) {
+    execFileSync(process.execPath, [cli, 'map', dir, '--top', '0'], { env, stdio: 'ignore' });
+    const expected = derivedDirFor(dir, path.join(dataHome(env), 'daylight'));
+    check(`for a ${label}, the CLI's default is the shell's derived directory`,
+      fs.existsSync(path.join(expected, 'graph.json')), expected);
+  }
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
