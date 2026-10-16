@@ -21,7 +21,7 @@ import { Runs } from './screens/Runs.tsx';
 import { Missions } from './screens/Missions.tsx';
 import { MissionDetail } from './screens/MissionDetail.tsx';
 import { SAMPLE_ARTIFACTS, SAMPLE_INSPECT, SAMPLE_LIST } from './fixtures/mission-inspect.sample.ts';
-import { needsPerson } from './screens/mission-words.ts';
+import { mergeMissionUpdate, needsPerson } from './screens/mission-words.ts';
 import type {
   Belief, DaylightEvent, Job, LoadPayload, Mission, MissionCreateOptions, MissionInspect,
   MissionList, QueryPayload, VdsEvent,
@@ -260,9 +260,7 @@ export function App() {
       });
     });
     const offUpdate = window.vds.onMissionUpdate(({ mission }) => {
-      setMissions((prev) => prev
-        ? { ...prev, missions: [...prev.missions.filter((m) => m.id !== mission.id), mission] }
-        : prev);
+      setMissions((prev) => (prev ? mergeMissionUpdate(prev, mission) : prev));
       if (mission.id === openMission) void loadMission(mission.id);
     });
     // A finished job of any kind may have moved a mission: a run, an experiment, a demo.
