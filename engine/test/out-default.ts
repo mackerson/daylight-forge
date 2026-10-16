@@ -109,5 +109,31 @@ check('and its out is the pinned project\'s, for that checkout',
   prepared.out === outFor(`git:${EXPECTED_FIXTURE_COMMIT.slice(0, 12)}`, prepared.root, ENV), prepared.out);
 check('which is what defaultOut computes from the repo itself', prepared.out === defaultOut(prepared.root, ENV));
 
+section('the test harness\'s own data home');
+{
+  const script = path.join(tmp, 'harness-leak.ts');
+  const harnessUrl = new URL('./harness.ts', import.meta.url).href;
+  fs.writeFileSync(script, `import fs from 'node:fs';
+import { harness } from '${harnessUrl}';
+const h = harness();
+fs.writeFileSync(process.env.XDG_DATA_HOME + '/written', '');
+console.log(process.env.XDG_DATA_HOME);
+if (process.argv[2] === 'throw') throw new Error('boom');
+h.check('x', process.argv[2] !== 'fail');
+h.done();
+`);
+  for (const how of ['pass', 'fail', 'throw']) {
+    let stdout = '';
+    try {
+      stdout = execFileSync(process.execPath, [script, how], { encoding: 'utf8', stdio: 'pipe', env: ENV });
+    } catch (err) {
+      stdout = (err as { stdout?: string }).stdout ?? '';
+    }
+    const dir = stdout.split('\n')[0].trim();
+    check(`is removed when a test file exits (${how})`,
+      dir.startsWith(path.join(os.tmpdir(), 'daylight-xdg-')) && !fs.existsSync(dir), dir);
+  }
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 done();
