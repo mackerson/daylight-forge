@@ -1,4 +1,4 @@
-# visual-desloppify — design
+# Daylight Software Forge — design
 
 **Working premise:** an Electron app that extracts everything a codebase contains, then drives a
 swarm of coding agents to **focus that down** to a small map that is actually true — and keeps
@@ -920,7 +920,7 @@ Different finding classes need different mechanisms, which is the whole reason t
 has more than one entry. Layering is checked by the target, duplication by D1–D3, drift by
 invariants, and none substitutes for another.
 
-| **P10 Guard** | invariants and the target run as a check that fails a build | `vds check` exits non-zero on a red invariant; wired to this repo's own CI | next |
+| **P10 Guard** | invariants and the target run as a check that fails a build | `daylight check` exits non-zero on a red invariant; wired to this repo's own CI | next |
 | **P11 Adjudicate the taxonomy** | structural findings reach agents instead of sitting in a file | a high-tier dead candidate gets tiered with evidence, and a false one refuted | after |
 | **P12 Team layer** | the confirmed map is committed, reviewable in a PR, survives a clone | two clones converge on one map; a cluster you confirmed is there for me | after |
 | **P13 Finish the swarm** | remaining adapters usable; budget ceilings enforced | two *different models* disagree live and arbitration resolves it | after |

@@ -1,3 +1,5 @@
+> **P0 record, kept verbatim.** It uses the pre-rename names (`vds`, `VDS_*`, `visual-desloppify`); the product is now Daylight Software Forge and the CLI is `daylight`.
+
 # TODO
 
 Everything outstanding, in the order I would do it. Rationale for the phase ordering lives in

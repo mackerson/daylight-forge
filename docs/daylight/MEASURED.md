@@ -1,3 +1,5 @@
+> **P0 record, kept verbatim.** It uses the pre-rename names (`vds`, `VDS_*`, `visual-desloppify`); the product is now Daylight Software Forge and the CLI is `daylight`.
+
 # Measured — Daylight P0 build
 
 Written by `engine/bench/daylight.ts` on 2026-10-12T23:46:38.153Z at `f089b8a589cc`. Every number below

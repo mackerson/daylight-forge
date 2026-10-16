@@ -37,14 +37,16 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
    `b57b1c8c436a`, maps it, creates an *explore* mission scoped to `src/session-cache.ts`,
    and registers the fixture's own red test as the experiment (prediction: exit 1).
    ```bash
-   pnpm demo:prepare --out ./out-demo --dest /tmp/daylight-demo-repo --format json
+   pnpm demo:prepare --out /tmp/daylight-demo-out --dest /tmp/daylight-demo-repo --format json
    ```
-   Note the `missionId` and `experimentId` it prints. Or press **fixture (PLANTED defect)**
+   Without `--out` and `--dest`, both go under `${XDG_DATA_HOME:-~/.local/share}/daylight/`
+   and the JSON names the `out` it used; the explicit paths here just keep the commands
+   below copyable. Note the `missionId` and `experimentId` it prints. Or press **fixture (PLANTED defect)**
    on the Mission Control screen, which runs the same command.
 
 2. **Open the app on that directory.**
    ```bash
-   DAYLIGHT_DIR=$PWD/out-demo pnpm view          # or pnpm gui to rebuild first
+   DAYLIGHT_DIR=/tmp/daylight-demo-out pnpm view          # or pnpm gui to rebuild first
    ```
    The last stage in the strip is **mission control**. Open the mission. The top bar shows
    project id, revision, state (`ready`), and the PLANTED objective.
@@ -53,10 +55,10 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
    - *Live* (spends money, see below): roster `claude:sonnet,codex`, ceiling `$2`, press
      **run reviews**; or from a terminal
      ```bash
-     pnpm exec vds mission run <missionId> /tmp/daylight-demo-repo --out ./out-demo --tools claude:sonnet,codex --max-cost 2
+     pnpm daylight mission run <missionId> /tmp/daylight-demo-repo --out /tmp/daylight-demo-out --tools claude:sonnet,codex --max-cost 2
      ```
    - *Replay* a recording made from a previous live run (**replay recording**, or
-     `pnpm demo:replay --out ./out-fresh --recording <file.json>`).
+     `pnpm demo:replay --out /tmp/daylight-fresh-out --recording <file.json>`).
 
    Each reviewer is a task; each run is an attempt with its exit code, duration, cost (or
    "cost unknown"), its console and its event stream. Reviews finishing does **not** close the
@@ -67,7 +69,7 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
    confidence and cited lines, readable in place.
 
 5. **Experiment.** Press **run** on the registered experiment (or
-   `pnpm exec vds experiment run <experimentId> /tmp/daylight-demo-repo --out ./out-demo`).
+   `pnpm daylight experiment run <experimentId> /tmp/daylight-demo-repo --out /tmp/daylight-demo-out`).
    A detached worktree at the pinned commit is created, the registered test is copied in from
    the artifact store (a different file already there is refused), and `node --test` runs twice
    under `prlimit … bwrap --unshare-all …` with no network and the worktree read-only. The
@@ -81,9 +83,9 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
 
 7. **Report and replay.**
    ```bash
-   pnpm exec vds report <missionId> --out ./out-demo --file report.md
-   pnpm exec vds mission export <missionId> --out ./out-demo --file recording.json
-   pnpm demo:replay --out ./out-elsewhere --recording recording.json --format json
+   pnpm daylight report <missionId> --out /tmp/daylight-demo-out --file report.md
+   pnpm daylight mission export <missionId> --out /tmp/daylight-demo-out --file recording.json
+   pnpm demo:replay --out /tmp/daylight-elsewhere-out --recording recording.json --format json
    ```
    The replay reproduces the mission with the same ids, events, artifacts and decision on a
    fresh directory; `inspect` on both agrees byte for byte (except per-directory sequence
@@ -92,11 +94,11 @@ pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the accepta
 ## Making the recording (needs authorisation; spends money)
 
 ```bash
-pnpm demo:prepare --out ./out-rec --dest /tmp/daylight-rec-repo --format json
-pnpm exec vds mission run <missionId> /tmp/daylight-rec-repo --out ./out-rec --tools claude:sonnet,codex --max-cost 2
-pnpm exec vds experiment run <experimentId> /tmp/daylight-rec-repo --out ./out-rec
-pnpm exec vds mission decide <missionId> --out ./out-rec --subject src/session-cache.ts --predicate bug_verdict --value true --rationale 'The registered test fails at this revision.' --experiment <experimentId>
-pnpm exec vds mission export <missionId> --out ./out-rec --file fixtures/daylight-demo/recordings/<date>-sonnet-codex.json
+pnpm demo:prepare --out /tmp/daylight-rec-out --dest /tmp/daylight-rec-repo --format json
+pnpm daylight mission run <missionId> /tmp/daylight-rec-repo --out /tmp/daylight-rec-out --tools claude:sonnet,codex --max-cost 2
+pnpm daylight experiment run <experimentId> /tmp/daylight-rec-repo --out /tmp/daylight-rec-out
+pnpm daylight mission decide <missionId> --out /tmp/daylight-rec-out --subject src/session-cache.ts --predicate bug_verdict --value true --rationale 'The registered test fails at this revision.' --experiment <experimentId>
+pnpm daylight mission export <missionId> --out /tmp/daylight-rec-out --file fixtures/daylight-demo/recordings/<date>-sonnet-codex.json
 ```
 
 A recording is a real run: whatever the models actually said is what replays, including
@@ -122,17 +124,17 @@ narrative must say so. The two models may also both be wrong; the experiment is 
 
 | State | How to produce it |
 | --- | --- |
-| Sandbox unavailable | `PATH=/nonexistent pnpm exec vds experiment run …` on a machine where that hides `bwrap`; or run on a machine without bubblewrap. Conclusion `invalid`, limitation "sandbox unavailable", nothing spawned. |
-| Timed-out reviewer | `pnpm exec vds mission run <id> <repo> --out … --tools mock:slow --timeout 2` with `DAYLIGHT_MOCK_ADAPTER` pointing at a script that sleeps (see `engine/test/acceptance.ts`). Mission `blocked`, attempt `timed out`. |
+| Sandbox unavailable | `PATH=/nonexistent pnpm daylight experiment run …` on a machine where that hides `bwrap`; or run on a machine without bubblewrap. Conclusion `invalid`, limitation "sandbox unavailable", nothing spawned. |
+| Timed-out reviewer | `pnpm daylight mission run <id> <repo> --out … --tools mock:slow --timeout 2` with `DAYLIGHT_MOCK_ADAPTER` pointing at a script that sleeps (see `engine/test/acceptance.ts`). Mission `blocked`, attempt `timed out`. |
 | Failed reviewer | Same with a script that exits 1. Mission `blocked — exit 1`; its stderr is kept, redacted. |
 | Budget exhausted | `--max-cost 0.005` with two reviewers that report `$0.01`: the second is not launched; the mission is `blocked` with the spend named. |
 | Dirty revision refused | Edit a file in the fixture repo and run the experiment: refused as `invalid`, "not reproducible", because `baseRevision` carries `+dirty`. |
 | Tampered test | Propose an experiment whose `--test-path` names a file that already exists with other content: `invalid`, nothing runs. |
 | Timed-out experiment | A test that sleeps past `--timeout`: `inconclusive`, status `timeout`, the process is gone. |
-| Wrong project | `vds mission import --file recording.json --out <another repo's out>`: refused, naming both projects. |
+| Wrong project | `daylight mission import --file recording.json --out <another repo's out>`: refused, naming both projects. |
 
 ## Packaging
 
-`pnpm package` builds a portable directory including the fixture; `./vds` launches it. Verified
+`pnpm package` builds a portable directory including the fixture; `./daylight` launches it. Verified
 headless on this machine: the packaged app with `DAYLIGHT_DIR` pointing at a prepared directory
 renders the mission on the Mission Control stage.
