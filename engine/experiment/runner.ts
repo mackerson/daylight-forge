@@ -164,9 +164,27 @@ export interface RunContext {
 
 const STREAM_CAP = 2 * 1024 * 1024;
 
+/**
+ * Git as the runner runs it: none of the repository's hooks, fsmonitor or ssh command, no
+ * user or system config, and none of the caller's GIT_* variables. A linked worktree shares
+ * the main repo's `.git/config`, which anyone with write access to the checkout can edit,
+ * and a checkout runs `post-checkout` — on the host, outside the sandbox, as us.
+ */
+export const HARDENED_GIT_CONFIG = [
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.sshCommand=false',
+];
+
+export const hardenedGitEnv = (): Record<string, string> => ({
+  PATH: process.env.PATH ?? '/usr/bin:/bin',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+});
+
 const git = (root: string, args: string[]): string =>
-  execFileSync('git', ['-C', root, ...args], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+  execFileSync('git', [...HARDENED_GIT_CONFIG, '-C', root, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, env: hardenedGitEnv(),
   }).trim();
 
 /** The commit a revision label names, or why it cannot be used. */

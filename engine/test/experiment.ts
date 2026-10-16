@@ -272,6 +272,27 @@ section('a committed symlink is never followed out of the worktree');
   check('and the host file it points at is untouched', fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8') === 'host file\n');
 }
 
+section('the repository\'s own git hooks and config do not run on the host');
+{
+  // The runner checks out a worktree with the repository's config. A hook or fsmonitor set
+  // there by anyone with write access to .git would otherwise run unsandboxed, as us.
+  const marker = path.join(tmp, 'hook-ran');
+  const hook = path.join(repo, '.git', 'hooks', 'post-checkout');
+  fs.writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  const fsmon = path.join(tmp, 'fsmonitor-ran');
+  const fsmonScript = path.join(tmp, 'fsmonitor.sh');
+  fs.writeFileSync(fsmonScript, `#!/bin/sh\ntouch ${JSON.stringify(fsmon)}\n`, { mode: 0o755 });
+  git(['config', 'core.fsmonitor', fsmonScript]);
+  const e = register('process.exit(0);\n', { exitCode: 0 });
+  // Refused after the checkout, so the checkout happens and nothing is spawned.
+  const out = await run({ ...e, command: ['python3', 'x.py'] }, { sandbox: { name: 'bwrap', available: true } });
+  check('the run got as far as a checkout', /python3/.test(records(out)[0]?.why ?? ''), records(out)[0]?.why);
+  check('a post-checkout hook in the repository did not fire', !fs.existsSync(marker));
+  check('nor did a configured fsmonitor', !fs.existsSync(fsmon));
+  fs.rmSync(hook);
+  git(['config', '--unset', 'core.fsmonitor']);
+}
+
 // ---- the real sandbox -------------------------------------------------------------
 
 if (!live.available) {
