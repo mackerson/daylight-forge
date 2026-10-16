@@ -251,6 +251,25 @@ function execute(
   });
 }
 
+/**
+ * The first symlink met walking `rel` down from `root`, as a repo-relative path, or null.
+ * A component that does not exist ends the walk: nothing below it can be a link yet.
+ */
+function symlinkOnPath(root: string, rel: string): string | null {
+  let at = root;
+  for (const part of rel.split('/').filter(Boolean)) {
+    at = path.join(at, part);
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(at);
+    } catch {
+      return null;
+    }
+    if (st.isSymbolicLink()) return path.relative(root, at);
+  }
+  return null;
+}
+
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
   const now = ctx.now ?? (() => Date.now());
   const runs = Math.max(1, ctx.runs ?? 2);
@@ -342,6 +361,13 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       refuse('invalid', `test path ${testRel} escapes the worktree`, startedAt);
       return finish();
     }
+    // The tree at the base revision is the author's, and a link committed in it can point at
+    // any directory this uid can write. String containment above says nothing about that.
+    const link = symlinkOnPath(root, testRel);
+    if (link) {
+      refuse('invalid', `${link} is a symlink in the checked-out tree; the test is never placed through one`, startedAt);
+      return finish();
+    }
     const registered = ctx.artifacts.get(experiment.testArtifact);
     if (fs.existsSync(target)) {
       const existing = fs.readFileSync(target);
@@ -356,7 +382,21 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       }
     } else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, registered);
+      const parent = fs.realpathSync(path.dirname(target));
+      if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) {
+        refuse('invalid', `the directory for ${testRel} resolves outside the worktree`, startedAt);
+        return finish();
+      }
+      const fd = fs.openSync(
+        target,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+        0o644,
+      );
+      try {
+        fs.writeFileSync(fd, registered);
+      } finally {
+        fs.closeSync(fd);
+      }
     }
 
     const allowed = checkAllowlist(experiment.command, worktree);

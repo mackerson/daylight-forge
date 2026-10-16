@@ -240,6 +240,38 @@ section('the runtime allowlist is a second check');
   check('nothing was spawned', named('experiment.run.started', e.id).length === 0);
 }
 
+section('a committed symlink is never followed out of the worktree');
+{
+  // The author controls the tree at the base revision, so a link in it can point anywhere the
+  // runner's uid can write. Placing the test must not follow it.
+  const outside = path.join(tmp, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'host file\n');
+  fs.symlinkSync(outside, path.join(repo, 'linked'));
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(repo, 'test', 'linked.js'));
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'symlinks']);
+  const linkedCommit = git(['rev-parse', 'HEAD']);
+  const avail = { sandbox: { name: 'bwrap' as const, available: true } };
+
+  const viaDir = register('process.exit(0);\n', { exitCode: 0 }, {
+    baseRevision: linkedCommit, testPath: 'linked/x.js', command: ['node', 'linked/x.js'],
+  });
+  const out = await run(viaDir, avail);
+  check('a symlinked parent directory concludes invalid', out.conclusion === 'invalid', out.conclusion);
+  check('and nothing was written outside the worktree', fs.readdirSync(outside).join() === 'secret.txt', fs.readdirSync(outside).join());
+  check('the record names the symlink', /symlink/.test(records(out)[0]?.why ?? ''), records(out)[0]?.why);
+  check('nothing ran', named('experiment.run.started', viaDir.id).length === 0);
+
+  const atPath = register('process.exit(0);\n', { exitCode: 0 }, {
+    baseRevision: linkedCommit, testPath: 'test/linked.js', command: ['node', 'test/linked.js'],
+  });
+  const out2 = await run(atPath, avail);
+  check('a symlink at the test path itself concludes invalid, as a symlink', out2.conclusion === 'invalid'
+    && /symlink/.test(records(out2)[0]?.why ?? ''), records(out2)[0]?.why);
+  check('and the host file it points at is untouched', fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8') === 'host file\n');
+}
+
 // ---- the real sandbox -------------------------------------------------------------
 
 if (!live.available) {
