@@ -12,7 +12,8 @@ import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
 import { ensureSchema, openDaylightDb, schemaVersion } from '../mission/db.ts';
 import { currentRevision, identifyProject, shortRevision } from '../mission/project.ts';
 import {
-  ATTEMPT_TRANSITIONS, canTransition, DAYLIGHT_DB_VERSION, MISSION_TRANSITIONS,
+  ATTEMPT_TRANSITIONS, canTransition, DAYLIGHT_DB_VERSION, ID_PREFIX, isEntityId, MISSION_TRANSITIONS,
+  WORK_ITEM_TRANSITIONS,
   TASK_TRANSITIONS,
 } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -51,6 +52,18 @@ section('state tables');
   check('a completed attempt cannot be reopened', ATTEMPT_TRANSITIONS.completed.length === 0);
   check('an unknown state has no transitions rather than throwing',
     !canTransition(MISSION_TRANSITIONS, 'nonsense' as never, 'ready'));
+  check('a work item leaves proposed only to approved, rejected or superseded',
+    WORK_ITEM_TRANSITIONS.proposed.join() === 'approved,rejected,superseded');
+  check('a rejected work item is terminal', WORK_ITEM_TRANSITIONS.rejected.length === 0);
+}
+
+section('id prefixes');
+{
+  const prefixes = Object.values(ID_PREFIX);
+  check('every entity kind has its own prefix', new Set(prefixes).size === prefixes.length);
+  check('the P0 prefixes are unchanged', ['m', 't', 'a', 'x', 'd', 'ev'].every((p) => prefixes.includes(p as never)));
+  check('isEntityId checks prefix and length', isEntityId('mission', `m_${'a'.repeat(32)}`)
+    && !isEntityId('mission', `t_${'a'.repeat(32)}`) && !isEntityId('mission', 'm_abc'));
 }
 
 section('project identity');

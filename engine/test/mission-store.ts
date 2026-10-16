@@ -370,4 +370,23 @@ section('two output directories do not see each other');
   b.close();
 }
 
+section('schema 2 attempt and experiment defaults');
+{
+  const store = new MissionStore(path.join(tmp, 'v2-defaults'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
+  const t = store.createTask({ missionId: m.id, role: 'review', objective: 'r' });
+  const a = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:x' });
+  check('a P0 attempt is recorded read-only, unsandboxed', !a.sandbox.write && !a.sandbox.exec && a.sandbox.profile === 'none');
+  check('with no usage and no cost source', a.usageSource === 'none' && a.costSource === 'none'
+    && a.tokens.input === null && a.tokens.output === null);
+  const done = store.finishAttempt(a.id, { state: 'completed', costUsd: 0.05 });
+  check('an unlabelled figure keeps P0\'s meaning, the runner\'s own report', done.costSource === 'provider' && done.costUsd === 0.05);
+  check('closing a non-implement mission as succeeded needs no application', (() => {
+    store.transitionMission(m.id, 'ready');
+    return store.closeMission(m.id, 'succeeded', 'answered').outcome === 'succeeded';
+  })());
+  store.close();
+}
+
 done();
