@@ -36,10 +36,10 @@ export interface ServerOptions {
   agentTool: string;
   model?: string;
   /**
-   * Blind review. Agent claims whose session starts with this prefix — the other reviewers
-   * in the same mission — are withheld from every read, so a second reviewer forms its own
-   * answer rather than inheriting the first one's. The caller's own claims still show, and
-   * so do human and static ones, which are not the thing independence protects against.
+   * Blind review: set to the mission id. Every agent claim but the caller's own is withheld
+   * from every read — the other reviewers in this mission, and any other mission's reviewers
+   * on the same subjects — so a reviewer forms its own answer rather than inheriting one.
+   * Human and static claims still show; they are not what independence protects against.
    */
   blindPrefix?: string;
 }
@@ -54,11 +54,10 @@ export function visibleToReviewer<T extends { source: Source }>(
   claims: T[], blindPrefix: string | undefined, ownSession: string,
 ): T[] {
   if (!blindPrefix) return claims;
-  return claims.filter((c) => {
-    if (c.source.kind !== 'agent') return true;
-    const session = c.source.sessionId ?? '';
-    return session === ownSession || !session.startsWith(blindPrefix);
-  });
+  // Another mission's reviewer is no less someone else's answer than this mission's: an
+  // earlier review of the same subject, shown to a blind reviewer, is the anchoring blind
+  // review exists to prevent.
+  return claims.filter((c) => c.source.kind !== 'agent' || c.source.sessionId === ownSession);
 }
 
 /**
@@ -100,7 +99,10 @@ export class BlindReviewStore extends ClaimStore {
     return super.legacyVerdicts().filter((v) => this.seen(v.source));
   }
 
-  /** The other reviewers' leases do not steer this one: independence means the same subjects. */
+  /**
+   * The other reviewers' leases do not steer this one: independence means the same subjects.
+   * Leases from outside this mission still do — they are concurrent work, not answers.
+   */
   override leasedElsewhere(session: string): Set<string> {
     return new Set(
       this.activeLeases()

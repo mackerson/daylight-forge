@@ -176,7 +176,10 @@ section('blind review filter');
   const seen = visibleToReviewer([mine, other, elsewhere, human, stat], 'm_1', 'm_1:t_1:a1');
   check('the other reviewer in the mission is withheld', !seen.includes(other));
   check('my own claims show', seen.includes(mine));
-  check('another mission\'s agent claims show', seen.includes(elsewhere));
+  // ADR-6 as amended: independence holds across missions too — last week's reviewer on the
+  // same subject is as much someone else's answer as today's other reviewer.
+  check('another mission\'s agent claims are withheld too', !seen.includes(elsewhere));
+  check('and so is an agent claim with no session', !visibleToReviewer([claim(undefined)], 'm_1', 'm_1:t_1:a1').length);
   check('human and static claims show', seen.includes(human) && seen.includes(stat));
   check('no prefix means not blind', visibleToReviewer([mine, other], undefined, 'x').length === 2);
 }
