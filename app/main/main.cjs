@@ -1306,6 +1306,19 @@ ipcMain.handle('daylight:demo-replay', async () => {
   };
 });
 
+// ---- forge ------------------------------------------------------------------------
+
+/** Handler logic lives in forge.cjs so it can be tested without Electron; this wires it to main's state. */
+require('./forge.cjs').register(ipcMain, {
+  cliJson,
+  runJob,
+  state: () => ({ dir: state.dir, repo: state.repo }),
+  username: safeUsername,
+  showMessageBox: (opts) => (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts)),
+  showOpenDialog: (opts) => (win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts)),
+  sample: !!process.env.DAYLIGHT_MISSION_SAMPLE,
+});
+
 // ---- live events: a projection of daylight.db, polled -----------------------------
 
 /**
