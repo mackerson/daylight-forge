@@ -798,7 +798,7 @@ ipcMain.handle('daylight:adapters', (_e, { refresh } = {}) => {
   return new Promise((resolve) => {
     execFile(
       NODE.bin,
-      nodeArgs(['adapters', '--out', state.dir, '--format', 'json']),
+      nodeArgs(['adapters', '--probe', '--out', state.dir, '--format', 'json']),
       { cwd: ROOT, env: nodeEnv(), timeout: 60_000 },
       (err, stdout) => {
         if (err) return resolve({ error: err.message, adapters: [] });

@@ -70,6 +70,9 @@ interface Args {
   skipMap: boolean;
   invariantId?: string;
   prose?: string;
+  help: boolean;
+  /** `adapters`: run each installed provider binary to ask what it can do. */
+  probe: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -132,6 +135,8 @@ function parseArgs(argv: string[]): Args {
     stallRounds: Number(flags.get('stall') ?? DEFAULT_LIMITS.stallRounds),
     floor: Number(flags.get('floor') ?? DEFAULT_LIMITS.floor),
     skipMap: flags.get('skip-map') === 'true',
+    help: flags.get('help') === 'true',
+    probe: flags.get('probe') === 'true',
   };
 }
 
@@ -1037,7 +1042,15 @@ function runQuality(args: Args): void {
  * command, so it is a measurement rather than a list someone maintained by hand.
  */
 function runAdapters(args: Args): void {
-  const status = inspect(serverCommand(), path.join(args.out, 'mcp.<tool>.json'));
+  if (args.help) {
+    console.log(`usage: node engine/cli.ts adapters [--probe] [--format json] [--out <dir>]
+
+  Lists the agent CLIs this tool can drive and whether each is on PATH.
+  --probe   also run each installed CLI's own introspection to ask what models it has.
+            This executes the provider binaries; without it, none is run.`);
+    return;
+  }
+  const status = inspect(serverCommand(), path.join(args.out, 'mcp.<tool>.json'), { probe: args.probe });
   if (args.json) {
     console.log(JSON.stringify(status, null, 2));
     return;
@@ -1045,10 +1058,12 @@ function runAdapters(args: Args): void {
   console.log('\nagent CLIs');
   console.log('─'.repeat(72));
   for (const a of status) {
-    const state = !a.installed ? 'not installed' : a.note ? a.note : 'ready';
+    const state = !a.installed ? 'not installed' : !a.probed ? 'installed' : a.note ? a.note : 'ready';
     console.log(`  ${a.name.padEnd(10)} ${state}`);
     if (!a.installed) continue;
-    if (a.models.length) {
+    if (!a.probed) {
+      console.log('             models: not asked — pass --probe to run the CLI and find out');
+    } else if (a.models.length) {
       const how = a.modelSource === 'listed' ? 'reported by the binary' : 'from its own --help';
       // opencode reports several hundred. The whole list is in --format json for the
       // launcher to filter; a terminal wants to know it exists and roughly what is in it.
@@ -1571,7 +1586,8 @@ usage:
   node engine/cli.ts run        <path> --out <dir> [--rounds 12] [--max-cost <usd>]
                                                    # the whole loop: map, agents until it
                                                    # converges or a ceiling stops it, plan
-  node engine/cli.ts adapters   [--format json]    # which agent CLIs are installed and usable
+  node engine/cli.ts adapters   [--probe] [--format json]   # which agent CLIs are installed;
+                                                   # --probe runs them to ask what they can do
   node engine/cli.ts quality    --out <dir> [--format json]   # how much of the map can be believed
 
   node engine/cli.ts mission    create <repo> --objective '<q>' [--kind explore] [--scope a.ts,b.ts]

@@ -283,10 +283,15 @@ export function available(adapter: Adapter): boolean {
  * machine. Everything here is measured at call time: whether the binary exists, what models
  * it says it has, and whether it is going to refuse the moment it is handed real work.
  */
-export function inspect(serverCmd: string[], cfgPath = '<out>/mcp.json'): AdapterStatus[] {
+export function inspect(
+  serverCmd: string[],
+  cfgPath = '<out>/mcp.json',
+  { probe: shouldProbe = false }: { probe?: boolean } = {},
+): AdapterStatus[] {
   return Object.values(ADAPTERS).map((adapter) => {
     const installed = available(adapter);
-    const probe = installed && adapter.probe ? adapter.probe() : undefined;
+    // Probing executes the provider's own binary. Only on request: a listing must be safe to ask for.
+    const probe = shouldProbe && installed && adapter.probe ? adapter.probe() : undefined;
     return {
       name: adapter.name,
       bin: adapter.bin,
@@ -294,6 +299,7 @@ export function inspect(serverCmd: string[], cfgPath = '<out>/mcp.json'): Adapte
       perInvocationMcp: adapter.perInvocationMcp,
       models: probe?.models ?? [],
       modelSource: probe?.source ?? 'unknown',
+      probed: shouldProbe,
       note: probe?.note,
       registrationHint:
         !adapter.perInvocationMcp && adapter.registrationHint

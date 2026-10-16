@@ -37,6 +37,8 @@ export interface AdapterStatus {
   perInvocationMcp: boolean;
   models: string[];
   modelSource: Probe['source'];
+  /** False means the binary was not run, so `models`, `modelSource` and `note` say nothing. */
+  probed: boolean;
   note?: string;
   registrationHint?: string;
 }
