@@ -52,7 +52,28 @@ export interface AgentRun {
    * out; what to do with them is the caller's.
    */
   onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
+  /**
+   * How the agent is launched inside a sandbox profile (R11.3). Given the adapter's binary and
+   * argv, returns what to actually spawn: the launcher, its argv, its whole environment and the
+   * bytes to feed its fds 3 and up. Without it the agent runs as P0 reviewers always have.
+   */
+  launch?: Launcher;
+  /**
+   * The built-in and MCP tools this role may use, for adapters that take an allowlist (D-2).
+   * Absent: the read-only reviewer list.
+   */
+  allowedTools?: string[];
 }
+
+export interface Launch {
+  bin: string;
+  /** `argv[0]` is the process name; the rest are its arguments. */
+  argv: string[];
+  env: Record<string, string>;
+  feeds?: Buffer[];
+}
+
+export type Launcher = (bin: string, argv: string[]) => Launch;
 
 export interface AgentResult {
   tool: string;
@@ -118,7 +139,8 @@ export const CLAUDE: Adapter = {
     '--strict-mcp-config',
     // Read-only allow-list. Anything else fails closed in non-interactive mode.
     '--allowedTools',
-    'Read Grep Glob mcp__daylight__get_overview mcp__daylight__get_slice mcp__daylight__get_open_questions ' +
+    run.allowedTools?.join(' ') ??
+      'Read Grep Glob mcp__daylight__get_overview mcp__daylight__get_slice mcp__daylight__get_open_questions ' +
       'mcp__daylight__get_focus_state mcp__daylight__submit_claim mcp__daylight__flag_contradiction ' +
       'mcp__daylight__propose_cluster mcp__daylight__propose_elision mcp__daylight__defend_node ' +
       'mcp__daylight__propose_invariant',
@@ -389,12 +411,29 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
   const started = Date.now();
   const argv = adapter.argv(options);
 
+  // A sandboxed launch takes nothing from this process's environment: the launcher gets the
+  // environment the hook names, and the agent only what the sandbox sets.
+  const plan = options.launch?.(adapter.bin, argv);
+  const feeds = plan?.feeds ?? [];
+
   return new Promise((resolve) => {
-    const child = spawn(adapter.bin, argv, {
-      cwd: options.cwd,
-      env: { ...process.env, DAYLIGHT_SESSION: options.session },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
+    const child = plan
+      ? spawn(plan.bin, plan.argv.slice(1), {
+          argv0: plan.argv[0], cwd: '/', env: plan.env,
+          stdio: ['ignore', 'pipe', 'pipe', ...feeds.map(() => 'pipe' as const)],
+          detached: true,
+        })
+      : spawn(adapter.bin, argv, {
+          cwd: options.cwd,
+          env: { ...process.env, DAYLIGHT_SESSION: options.session },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+        });
+    feeds.forEach((bytes, i) => {
+      const fd = child.stdio[3 + i] as NodeJS.WritableStream & { on(e: 'error', f: () => void): void };
+      // A launcher that dies before reading closes the pipe; its exit status says so.
+      fd.on('error', () => {});
+      fd.end(bytes);
     });
     if (child.pid) track(child.pid);
     const stop = (signal: NodeJS.Signals) => (child.pid ? killGroup(child.pid, signal) : child.kill(signal));
@@ -438,7 +477,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
     let partial = '';
 
     let reported = { cost: 0, turns: 0 };
-    child.stdout.on('data', (d) => {
+    child.stdout!.on('data', (d) => {
       stdout += d;
       options.onOutput?.('stdout', String(d));
       partial += String(d);
@@ -459,7 +498,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
         setTimeout(() => stop('SIGKILL'), 5_000).unref();
       }
     });
-    child.stderr.on('data', (d) => {
+    child.stderr!.on('data', (d) => {
       stderr += d;
       options.onOutput?.('stderr', String(d));
     });
