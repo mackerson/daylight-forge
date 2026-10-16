@@ -7,7 +7,7 @@
  * one guard; an approved item is built by exactly one implement mission; and nothing here
  * ever creates an experiment. Mock decomposers only: the MCP server is driven in memory.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -525,6 +525,70 @@ section('two blind decomposers, one anchor: two rows, one need, neither sees the
     !seen['mock:right'].replies.join('').includes('201') && !seen['mock:right'].prompt.includes('201 with the new id'));
   check('decompose ran under no implement mission and created no experiment',
     c.store.experiments(spec.mission.id).length === 0 && c.store.missions(spec.mission.projectId).every((m) => m.kind !== 'implement'));
+  const [left] = r.proposed;
+  const lcode = confirmCodeOf(left.contentDigest);
+
+  // A move the store refuses must leave no decision behind: the decision and the move are one transaction.
+  const decisionsBefore = c.store.decisions(spec.mission.id).length;
+  const bad = throws(() => c.store.decideWorkItem(left.id, 'proposed', 'approved', {
+    missionId: spec.mission.id, projectId: spec.mission.projectId, revision: spec.mission.baseRevision, actor: HUMAN,
+    kind: 'approve', subject: left.id, rationale: 'r', artifactIds: [],
+    scope: { operation: 'approve-work-item', workItemId: left.id, contentDigest: 'sha256:' + '0'.repeat(64) },
+  }));
+  check('a decision the move refuses leaves the status unchanged and records no decision',
+    bad !== null && c.store.workItem(left.id)!.status === 'proposed' && c.store.decisions(spec.mission.id).length === decisionsBefore);
+  const bad2 = throws(() => c.store.decideWorkItem(left.id, 'approved', 'superseded', {
+    missionId: spec.mission.id, projectId: spec.mission.projectId, revision: spec.mission.baseRevision, actor: HUMAN,
+    kind: 'reject', subject: left.id, rationale: 'r', artifactIds: [],
+    scope: { operation: 'reject-work-item', workItemId: left.id, contentDigest: left.contentDigest },
+  }));
+  check('a decision on a stale "from" rolls back too',
+    bad2 !== null && c.store.workItem(left.id)!.status === 'proposed' && c.store.decisions(spec.mission.id).length === decisionsBefore);
+  decideWorkItem(c, { id: left.id, kind: 'approve', actor: HUMAN, rationale: 'the 201 reading', confirm: lcode, env: CLEAN_ENV });
+
+  // Two processes create an implement mission from one approved item at the same instant.
+  const child = path.join(tmp, 'consume-child.ts');
+  const engine = path.resolve(import.meta.dirname, '..');
+  fs.writeFileSync(child, [
+    `import { openDaylight } from ${JSON.stringify(path.join(engine, 'mission', 'context.ts'))};`,
+    'const [out, projectId, base, wid, startAt] = process.argv.slice(2);',
+    'const ctx = openDaylight(out);',
+    'while (Date.now() < Number(startAt)) { /* barrier */ }',
+    'try {',
+    // The store directly, past every pre-check, so only its transaction decides the race.
+    '  const m = ctx.store.createMission({ projectId, kind: "implement", objective: "race", baseRevision: base, workItemId: wid });',
+    '  console.log(`WON ${m.id}`);',
+    '} catch (err) { console.log(`LOST ${(err as Error).message}`); }',
+    'ctx.close();',
+  ].join('\n'));
+  const startAt = String(Date.now() + 1500);
+  const runChild = () => new Promise<string>((resolve) => {
+    const p = spawn(process.execPath, [child, E.out, spec.mission.projectId, E.commit, left.id, startAt], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let o = '';
+    p.stdout.on('data', (d) => { o += d; });
+    p.stderr.on('data', (d) => { o += d; });
+    p.on('close', () => resolve(o.trim()));
+  });
+  const outcomes = await Promise.all([runChild(), runChild()]);
+  const winners = outcomes.filter((o) => o.startsWith('WON '));
+  const builders = c.store.missions(spec.mission.projectId).filter((m) => m.kind === 'implement' && m.workItemId === left.id);
+  check('of two concurrent consumers exactly one wins', winners.length === 1 && outcomes.filter((o) => o.startsWith('LOST ')).length === 1, outcomes.join(' | '));
+  check('exactly one implement mission names the item, and it is the consumer',
+    builders.length === 1 && c.store.workItemConsumer(left.id) === builders[0].id && winners[0] === `WON ${builders[0].id}`);
+  check('the store itself refuses a second mission from a consumed item, leaving no row',
+    throws(() => c.store.createMission({ projectId: spec.mission.projectId, kind: 'implement', objective: 'again', baseRevision: E.commit, workItemId: left.id })) !== null
+      && c.store.missions(spec.mission.projectId).filter((m) => m.workItemId === left.id).length === 1);
+  const objective = 'unrelated ad hoc work';
+  const adhoc = createImplementMission(c, {
+    projectId: spec.mission.projectId, baseRevision: E.commit, env: CLEAN_ENV, objective,
+    from: { adhoc: { actor: HUMAN, rationale: 'r', confirm: confirmDigest(c, 'adhoc-mission', objective, { projectId: spec.mission.projectId }).digest8 } },
+  });
+  check('consumeWorkItem is idempotent for the holder and false for anyone else',
+    c.store.consumeWorkItem(left.id, builders[0].id) === true && c.store.consumeWorkItem(left.id, adhoc.id) === false);
+  check('consumeWorkItem refuses an item that is not approved',
+    throws(() => c.store.consumeWorkItem(r.proposed[1].id, adhoc.id)) !== null && c.store.workItemConsumer(r.proposed[1].id) === null);
+  check('the spec-intake invariant still holds', specIntakeViolations(c, spec.mission.projectId).length === 0,
+    specIntakeViolations(c, spec.mission.projectId).join('; '));
   check('decompose on a non-spec mission is refused',
     (await throwsAsync(() => decompose(c, c.store.createMission({ projectId: spec.mission.projectId, kind: 'explore', objective: 'x', baseRevision: E.commit }).id, E.root, ['mock:left'], { runner }))) !== null);
   c.close();

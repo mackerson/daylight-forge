@@ -64,7 +64,7 @@ export function showWorkItem(ctx: DaylightContext, id: string): WorkItemView {
     workItem: w,
     confirm: { digest: c.digest, lines: c.lines },
     decision: w.decisionId ? ctx.store.decision(w.decisionId) : null,
-    consumedBy: consumers(ctx, w)[0]?.id ?? null,
+    consumedBy: ctx.store.workItemConsumer(w.id) ?? consumers(ctx, w)[0]?.id ?? null,
     tampered: !intact(w),
   };
 }
@@ -108,12 +108,12 @@ export function decideWorkItem(ctx: DaylightContext, input: DecideWorkItemInput)
   const scope: WorkItemDecisionScope & { specRevision: string; anchor: string } = {
     operation, workItemId: w.id, contentDigest: w.contentDigest, specRevision: w.specRevision, anchor: w.anchor,
   };
-  const decision = ctx.store.recordDecision({
+  // One transaction: a move the store refuses leaves no decision behind it.
+  const { decision, workItem } = ctx.store.decideWorkItem(w.id, 'proposed', input.kind === 'approve' ? 'approved' : 'rejected', {
     missionId: mission.id, projectId: mission.projectId, revision: mission.baseRevision, actor: input.actor,
     kind: input.kind, subject: w.id, rationale: input.rationale.trim(), scope: { ...scope },
     artifactIds: [w.specArtifact.id, ...(w.proposalArtifact ? [w.proposalArtifact.id] : [])],
   });
-  const workItem = ctx.store.setWorkItemStatus(w.id, 'proposed', input.kind === 'approve' ? 'approved' : 'rejected', decision.id);
   ctx.events.append({
     projectId: mission.projectId, missionId: mission.id, actorId: input.actor, category: 'approval',
     name: 'spec.work-item.decided', artifactIds: decision.artifactIds,
@@ -136,8 +136,8 @@ export function assertImplementable(ctx: DaylightContext, workItemId: string): W
   if (!d || d.kind !== 'approve' || scope?.operation !== 'approve-work-item' || scope.contentDigest !== w.contentDigest) {
     throw new Error(`work item ${w.id} has no approve-work-item decision naming ${w.contentDigest}`);
   }
-  const taken = consumers(ctx, w);
-  if (taken.length) throw new Error(`work item ${w.id} is already built by mission ${taken[0].id}; an item is consumed once`);
+  const taken = ctx.store.workItemConsumer(w.id) ?? consumers(ctx, w)[0]?.id;
+  if (taken) throw new Error(`work item ${w.id} is already built by mission ${taken}; an item is consumed once`);
   return w;
 }
 
@@ -175,10 +175,8 @@ export function createImplementMission(ctx: DaylightContext, input: CreateImplem
       projectId: input.projectId, kind: 'implement', objective: (input.objective ?? w.title).trim(),
       baseRevision: input.baseRevision, scope: input.scope, budget: input.budget, workItemId: w.id,
     });
-    // The store has no uniqueness on work_item_id, so a racing second create is caught here;
-    // it cannot be undone from this side, only reported loudly (asked of WS1).
-    const all = consumers(ctx, w);
-    if (all.length > 1) throw new Error(`work item ${w.id} is now named by ${all.length} implement missions (${all.map((m) => m.id).join(', ')}); this is a broken invariant`);
+    // createMission marks the item consumed in the mission's own transaction, so of two
+    // racing creates exactly one lands; the other is refused and leaves no mission.
     ctx.events.append({
       projectId: mission.projectId, missionId: mission.id, actorId: 'daylight', category: 'lifecycle',
       name: 'spec.work-item.consumed', payload: { workItemId: w.id, missionId: mission.id, contentDigest: w.contentDigest },
