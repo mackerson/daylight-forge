@@ -535,4 +535,49 @@ await (async () => {
   }
 })();
 
+section('a key nobody put in the environment, glued to a word, still persists nowhere');
+await (async () => {
+  // The reviewer's sentinels (ws5-review F1): not in process.env, so only shape and field
+  // whitelisting can catch them. `msg_sk-…` defeated `\bsk-`: `_` then `s` is no boundary.
+  const KEY = 'sk-ant-api03-FAKEPROBEKEYzzzz0123456789abcdef';
+  const KEY2 = 'sk-ant-api03-SPACEDELIMzzzz0123456789abcdef';
+  const BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.FAKEPROBETOKENpayload.FAKEsig';
+  const ctx = fresh('glued');
+  const m = ctx.store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'glued', baseRevision: 'base1' });
+  const lines = [
+    `Authorization: ${BEARER} and key ${KEY} and ${KEY2} x-api-key:${KEY2} api_key_${KEY2}`,
+    assistant('msg_' + KEY, { input_tokens: 3 }, 'model-' + BEARER),
+    assistant('msg_ok', { input_tokens: 1 }, `claude_${KEY}`),
+    JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 1, subtype: KEY }),
+  ];
+  const leaky: Adapter = {
+    name: 'mock', bin: process.execPath, perInvocationMcp: true, streamShape: 'claude',
+    argv: () => ['-e', `for (const l of ${JSON.stringify(lines)}) console.log(l); console.error(${JSON.stringify(`stderr tok_${KEY} ${BEARER}`)});`,
+      '--', '--api-key', `key_${KEY}`, '--hdr', BEARER],
+  };
+  const a = await captured(ctx, m.id, leaky, 'agent:mock:glued');
+  const rows = ctx.store.usageRows(a.id);
+  const report = projectReportText(ctx, PROJECT.id);
+  const exported = JSON.stringify(exportMission(ctx, m.id));
+  const evs = JSON.stringify(ctx.events.forAttempt(a.id));
+  ctx.close();
+  const bytes: Buffer[] = [];
+  const walk = (dir: string) => {
+    for (const n of fs.readdirSync(dir)) {
+      const p = path.join(dir, n);
+      if (fs.statSync(p).isDirectory()) walk(p);
+      else bytes.push(fs.readFileSync(p));
+    }
+  };
+  walk(path.join(tmp, 'glued'));
+  const all = Buffer.concat([...bytes, Buffer.from(report + exported + evs + JSON.stringify(rows))]);
+  check('a key glued to a word char is in no file, row, event, report or export',
+    !all.includes('FAKEPROBEKEY') && !all.includes('SPACEDELIM'), rows.map((r) => r.requestId).join(' | '));
+  check('nor the bearer token', !all.includes('FAKEPROBETOKEN'));
+  check('a request id or model of any other shape is replaced, not stored',
+    rows.every((r) => r.requestId === null || /^[A-Za-z0-9._:\/@+-]{1,128}$/.test(r.requestId))
+      && rows.every((r) => r.model === null || /^[A-Za-z0-9._:\/@+-]{1,128}$/.test(r.model)), JSON.stringify(rows.map((r) => [r.requestId, r.model])));
+  check('the turns are still counted once each', rows.length === 3 && a.tokens.input === 4 && a.costUsd === 0.01, JSON.stringify(a.tokens));
+})();
+
 done();
