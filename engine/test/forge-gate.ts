@@ -395,6 +395,21 @@ if (!live.available) {
     const code = (ids: string[]) => confirmDigest(ctx, 'lock-gates', m2.id, { experimentIds: ids }).digest8;
     const invalidLock = await throws(() => lock(ctx, { missionId: m2.id, actor: HUMAN, rationale: 'r', confirm: code([g2.id, h2.id]), experimentIds: [g2.id, h2.id] }));
     check('an invalid baseline can never be locked', invalidLock instanceof GateRefused && /baseline is invalid/.test(invalidLock.message), invalidLock?.message);
+    // A same-uid writer re-stamping a gate between the human's confirm and the store's lock.
+    const raw = new DatabaseSync(path.join(out, 'daylight.db'));
+    const racing = Object.create(dctx.store) as MissionStore;
+    racing.lockGates = (id, input) => {
+      raw.prepare('UPDATE experiments SET harness_digest=? WHERE id=?').run(D('a'), g2.id);
+      try {
+        return dctx.store.lockGates(id, input);
+      } finally {
+        raw.prepare('UPDATE experiments SET harness_digest=? WHERE id=?').run(g2.harnessDigest, g2.id);
+      }
+    };
+    const raced = await throws(() => lock({ ...ctx, store: racing }, { missionId: m2.id, actor: HUMAN, rationale: 'r', confirm: code([g2.id]), experimentIds: [g2.id] }));
+    raw.close();
+    check('a gate set that moved between confirm and lock is reported, not passed off as confirmed',
+      raced instanceof GateRefused && /not the one confirmed/.test(raced.message), raced?.message);
     const d = lock(ctx, { missionId: m2.id, actor: HUMAN, rationale: 'accepted: smoke check', confirm: code([g2.id, v2.id]), experimentIds: [g2.id, v2.id], acceptVacuous: [v2.id] });
     check('named in --accept-vacuous, a vacuous gate locks and the override is recorded',
       (d.scope as unknown as LockGatesScope).vacuousOverrides.join() === v2.id);

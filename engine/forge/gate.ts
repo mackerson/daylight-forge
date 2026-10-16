@@ -251,6 +251,11 @@ export function lock(ctx: GateContext, input: LockInput): Decision {
   const { decision, gateSetDigest } = ctx.store.lockGates(m.id, {
     experimentIds: ids, actor: input.actor, rationale: input.rationale, vacuousOverrides: vacuous,
   });
+  // The store recomputes the set inside its transaction. Until it can refuse a mismatch there
+  // (TRACKED, WS8), a set that moved since the confirm is at least surfaced, never passed off.
+  if (gateSetDigest !== preview.digest) {
+    throw new GateRefused(`gate lock ${decision.id} recorded gate set ${gateSetDigest}, not the one confirmed (${preview.digest}); a gate changed during the lock — review and lock again`);
+  }
   const scope = lockScopeOf(decision);
   emit(ctx, m, 'approval', 'forge.gates.locked', {
     decisionId: decision.id, gateSetDigest, experimentIds: scope.experimentIds,
