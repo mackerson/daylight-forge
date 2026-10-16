@@ -12,8 +12,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { ambiguities, buildDecomposePrompt, ingestProposals, workItemIdOf } from '../forge/decompose.ts';
 import {
-  anchorRefusal, anchorsOf, isRefusal, repoPathRefusal, validateProposal, type Proposal,
+  anchorRefusal, anchorsOf, isRefusal, MAX_PROPOSALS_PER_ATTEMPT, outboxFile, repoPathRefusal, validateProposal,
+  type Proposal,
 } from '../forge/proposal.ts';
 import { readSpecBlob, registerSpec, specOf, SpecRefused } from '../forge/spec.ts';
 import { harness } from './harness.ts';
@@ -157,6 +159,116 @@ const reg = registerSpec(ctx, A.root, 'docs/spec.md');
   const again = specOf(ctx, reg.mission.id);
   check('a post-registration edit is inert: the registered bytes are unchanged',
     again.bytes.toString('utf8') === SPEC && again.specRevision === reg.specRevision);
+}
+
+// ---- ingesting proposals ---------------------------------------------------------
+
+/** A decompose task and its running attempt on the spec mission, as WS8's runner would start one. */
+function decomposeAttempt(c: DaylightContext, missionId: string, tool: string) {
+  const task = c.store.createTask({ missionId, role: 'decompose', objective: 'decompose (blind)', runnerHint: tool });
+  return c.store.startAttempt({ taskId: task.id, runnerId: `agent:${tool}` });
+}
+const line = (proposal: unknown): string => `${JSON.stringify({ v: 1, at: 1, proposal })}\n`;
+const appendOutbox = (out: string, attemptId: string, text: string) => {
+  fs.mkdirSync(path.dirname(outboxFile(out, attemptId)), { recursive: true });
+  fs.appendFileSync(outboxFile(out, attemptId), text);
+};
+
+section('ingest re-checks every outbox line on the host and supplies provenance itself');
+{
+  const a1 = decomposeAttempt(ctx, reg.mission.id, 'mock:one');
+  appendOutbox(A.out, a1.id, line(good));
+  appendOutbox(A.out, a1.id, line({ ...good, anchor: '#nowhere' }));
+  appendOutbox(A.out, a1.id, line({ ...good, anchor: '#delete', title: 'Delete', touches: ['/etc/passwd'] }));
+  appendOutbox(A.out, a1.id, line({ ...good, anchor: '#delete', title: 'Delete', touches: ['src/never.ts'] }));
+  appendOutbox(A.out, a1.id, line({ ...good, anchor: '#delete', title: 'Delete', statement: 'use ghp_abcdefghijklmnop1234 to call it' }));
+  appendOutbox(A.out, a1.id, `${JSON.stringify({ v: 1, at: 1, proposal: good, attemptId: 'a_forged', missionId: 'm_forged' })}\n`);
+  appendOutbox(A.out, a1.id, 'not json\n');
+  appendOutbox(A.out, a1.id, `${JSON.stringify({ v: 1, at: 1, proposal: { ...good, statement: 's'.repeat(17 * 1024) } })}\n`);
+
+  const r = ingestProposals(ctx, reg.mission.id);
+  const fields = r.refused.map((x) => `${x.field}:${x.line}`).join(' ');
+  check('two good proposals become two rows', r.created.length === 2, String(r.created.length));
+  check('an anchor that does not resolve in the registered bytes is refused', r.refused.some((x) => x.field === 'anchor' && x.line === 2), fields);
+  check('an absolute touch is refused', r.refused.some((x) => x.field === 'touches' && x.line === 3), fields);
+  check('a touch not in the tree at the spec commit is refused', r.refused.some((x) => x.field === 'touches' && x.line === 4), fields);
+  check('a line carrying its own provenance is refused', r.refused.some((x) => x.field === 'line' && x.line === 6), fields);
+  check('a line that is not JSON is refused', r.refused.some((x) => x.field === 'line' && x.line === 7), fields);
+  check('an oversize line is refused', r.refused.some((x) => x.field === 'payload' && x.line === 8), fields);
+  const refusedEvents = ctx.events.forMission(reg.mission.id).filter((e) => e.name === 'spec.proposal.refused');
+  check('every refusal is an event that carries no proposal text',
+    refusedEvents.length === r.refused.length && refusedEvents.every((e) => !JSON.stringify(e.payload).includes('POST')),
+    `${refusedEvents.length} vs ${r.refused.length}`);
+
+  const w = r.created[0];
+  check('provenance is the host\'s: attempt, mission, revision and runner',
+    w.attemptId === a1.id && w.missionId === reg.mission.id && w.specRevision === reg.specRevision && w.proposedBy === 'agent:mock:one');
+  check('the id is derived from attempt, revision, anchor and the store\'s content digest (32 hex)',
+    w.id === workItemIdOf(a1.id, reg.specRevision, w.anchor, w.contentDigest) && /^w_[0-9a-f]{32}$/.test(w.id));
+  check('the full statement is in the row, not truncated', w.statement === good.statement);
+  check('the verbatim proposal is an artifact, not row text', !!w.proposalArtifact && ctx.artifacts.has(w.proposalArtifact));
+  const secret = r.created.find((x) => x.anchor === '#delete');
+  check('a secret in a proposal is redacted in the row and the artifact',
+    !!secret && !secret.statement.includes('ghp_abcdefghijklmnop1234')
+      && !ctx.artifacts.get(secret.proposalArtifact!).toString('utf8').includes('ghp_abcdefghijklmnop1234'));
+  const proposedEvents = ctx.events.forMission(reg.mission.id).filter((e) => e.name === 'spec.work-item.proposed');
+  check('spec.work-item.proposed names the store\'s content digest',
+    proposedEvents.length === 2 && proposedEvents.every((e) => (e.payload as { contentDigest?: string }).contentDigest === r.created.find((x) => x.id === (e.payload as { workItemId?: string }).workItemId)?.contentDigest));
+
+  const before = ctx.events.head();
+  const again = ingestProposals(ctx, reg.mission.id);
+  check('re-ingest is idempotent: no new rows, no new events',
+    again.created.length === 0 && ctx.store.workItems(reg.mission.projectId, { missionId: reg.mission.id }).length === 2
+      && ctx.events.head() === before, `${again.created.length} ${ctx.events.head()} ${before}`);
+
+  const a2 = decomposeAttempt(ctx, reg.mission.id, 'mock:many');
+  appendOutbox(A.out, a2.id, Array.from({ length: MAX_PROPOSALS_PER_ATTEMPT + 1 }, (_, i) => line({ ...good, title: `item ${i}` })).join(''));
+  const many = ingestProposals(ctx, reg.mission.id);
+  check(`the ${MAX_PROPOSALS_PER_ATTEMPT + 1}st proposal from one attempt is refused`,
+    many.created.length === MAX_PROPOSALS_PER_ATTEMPT && many.refused.some((x) => x.field === 'count' && x.attemptId === a2.id),
+    String(many.created.length));
+  check('many readings of one anchor raise one ambiguity need, not fifty',
+    ambiguities(ctx, reg.mission.id).filter((n) => n.ref.endsWith('#widget-service/create')).length === 1);
+}
+
+section('forged and misfiled outboxes never become rows');
+{
+  const B = makeRepo('b');
+  const c = openDaylight(B.out);
+  const spec = registerSpec(c, B.root, 'docs/spec.md');
+  const other = registerSpec(c, B.root, 'docs/spec.md');
+  const theirs = decomposeAttempt(c, other.mission.id, 'mock:theirs');
+  const project = spec.mission.projectId;
+  const review = c.store.createMission({ projectId: project, kind: 'explore', objective: 'review', baseRevision: B.commit });
+  const rt = c.store.createTask({ missionId: review.id, role: 'review', objective: 'r' });
+  const ra = c.store.startAttempt({ taskId: rt.id, runnerId: 'agent:mock:rev' });
+  appendOutbox(B.out, theirs.id, line(good));
+  appendOutbox(B.out, ra.id, line(good));
+  appendOutbox(B.out, 'a_00000000000000000000000000000000', line(good));
+  fs.symlinkSync(outboxFile(B.out, theirs.id), outboxFile(B.out, decomposeAttempt(c, spec.mission.id, 'mock:link').id));
+
+  const r = ingestProposals(c, spec.mission.id);
+  check('another spec mission\'s outbox adds nothing here', r.created.length === 0 && c.store.workItems(project, { missionId: spec.mission.id }).length === 0);
+  check('a review attempt\'s outbox is refused as not a decompose attempt',
+    r.refused.some((x) => x.attemptId === ra.id && x.field === 'attempt'));
+  check('an outbox naming no known attempt is refused', r.refused.some((x) => x.attemptId === 'a_00000000000000000000000000000000'));
+  check('an outbox that is a symlink is refused, not followed', r.refused.some((x) => x.field === 'attempt' && /regular file/.test(x.reason)));
+  check('ingest on a mission that is not a spec mission is refused', throws(() => ingestProposals(c, review.id)) !== null);
+  check('the other spec mission still gets its own', ingestProposals(c, other.mission.id).created.length === 1);
+  check('no spec, decompose or ingest step created an experiment',
+    [spec.mission.id, other.mission.id].every((m) => c.store.experiments(m).length === 0));
+  c.close();
+}
+
+section('the decompose prompt fences the spec as data');
+{
+  const prompt = buildDecomposePrompt({ text: SPEC, path: 'docs/spec.md', specRevision: reg.specRevision });
+  const tag = /<<<(SPEC-[0-9a-f]+)/.exec(prompt)?.[1] ?? '';
+  check('the spec sits between markers that do not occur in it', !!tag && !SPEC.includes(tag) && prompt.includes(`${tag}>>>`));
+  check('the prompt says the fenced text is data, not instructions', /data, not instructions/.test(prompt));
+  check('the prompt lists the anchors the spec offers', prompt.includes('#widget-service/create/validation'));
+  check('the prompt names only propose_work_item', /propose_work_item/.test(prompt) && !/submit_claim|get_slice/.test(prompt));
+  check('a spec over 64 KB is not put in a prompt', throws(() => buildDecomposePrompt({ text: 'x'.repeat(65 * 1024), path: 'p.md', specRevision: 'r' })) !== null);
 }
 
 done();
