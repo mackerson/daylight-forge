@@ -364,22 +364,31 @@ export class MissionStore {
       throw new IllegalTransition('attempt', attemptId, a.state, result.state);
     }
     const at = this.now();
-    this.db
-      .prepare(
-        `UPDATE attempts SET state=?, finished_at=?, cost_usd=?, exit_code=?, signal=?,
-           timed_out=?, failure=?, artifacts=?
-         WHERE id=?`,
-      )
-      .run(
-        result.state, at, result.costUsd, result.exitCode ?? null, result.signal ?? null,
-        result.timedOut ? 1 : 0, result.failure ?? null,
-        JSON.stringify(result.artifacts ?? []), attemptId,
-      );
-    for (const ref of result.artifacts ?? []) this.recordArtifact(ref);
+    // One transaction: a crash between the attempt row and its task would leave the attempt
+    // finished and the task running, which no later run can tell from a live attempt.
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `UPDATE attempts SET state=?, finished_at=?, cost_usd=?, exit_code=?, signal=?,
+             timed_out=?, failure=?, artifacts=?
+           WHERE id=?`,
+        )
+        .run(
+          result.state, at, result.costUsd, result.exitCode ?? null, result.signal ?? null,
+          result.timedOut ? 1 : 0, result.failure ?? null,
+          JSON.stringify(result.artifacts ?? []), attemptId,
+        );
+      for (const ref of result.artifacts ?? []) this.recordArtifact(ref);
 
-    const t = this.requireTask(a.taskId);
-    if (t.state === 'running') {
-      this.transitionTask(t.id, result.state === 'completed' ? 'done' : 'failed');
+      const t = this.requireTask(a.taskId);
+      if (t.state === 'running') {
+        this.transitionTask(t.id, result.state === 'completed' ? 'done' : 'failed');
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
     }
     return this.requireAttempt(attemptId);
   }

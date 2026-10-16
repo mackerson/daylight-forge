@@ -171,6 +171,25 @@ section('a task runs one attempt at a time');
   store.close();
 }
 
+section('finishing an attempt is all or nothing');
+{
+  const store = new MissionStore(path.join(tmp, 'atomic'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
+  const t = store.createTask({ missionId: m.id, role: 'review', objective: 'review' });
+  const a = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a' });
+  // An artifact row the schema refuses, part-way through the finish.
+  const bad = { id: 'sha256:bad', kind: 'log', digest: 'sha256:bad', projectId: null } as unknown as Parameters<MissionStore['recordArtifact']>[0];
+  const err = throws(() => store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, artifacts: [bad] }));
+  check('a finish that fails part-way throws', !!err);
+  check('and leaves the attempt as it was', store.attempt(a.id)!.state === 'running' && store.attempt(a.id)!.costUsd === null,
+    store.attempt(a.id)!.state);
+  check('with its task still running, not half-moved', store.task(t.id)!.state === 'running');
+  check('so it can still be finished properly', store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1 }).state === 'completed'
+    && store.task(t.id)!.state === 'done');
+  store.close();
+}
+
 section('cost: null is unknown, 0 is zero');
 {
   const store = new MissionStore(path.join(tmp, 'cost'), clock());
