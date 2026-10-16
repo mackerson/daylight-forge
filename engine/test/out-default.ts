@@ -99,6 +99,14 @@ check('a shallow clone has no knowable project, so the default is refused rather
   refused.code !== 0 && /shallow/.test(refused.out), refused.out.slice(-300));
 check('and --out works there', cli(['map', shallow, '--out', path.join(tmp, 'shallow-out'), '--top', '0']).code === 0);
 check('help needs no project at all', cli(['help'], shallow).code === 0);
+for (const argv of [['mission', 'bogus'], ['mission', 'inspect'], ['experiment'], ['report'], ['artifact']]) {
+  const r = cli(argv, shallow);
+  check(`a usage error is reported as one before the default out is asked for (${argv.join(' ')})`,
+    r.code === 2 && /usage:/.test(r.out) && !/shallow/.test(r.out), r.out.slice(-300));
+}
+const shallowList = cli(['mission', 'list'], shallow);
+check('a command that needs the default out there is still refused, by design',
+  shallowList.code !== 0 && /shallow/.test(shallowList.out), shallowList.out.slice(-300));
 
 section('the demo without --out');
 const demo = cli(['demo', 'prepare', '--format', 'json']);
