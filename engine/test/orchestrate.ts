@@ -271,6 +271,7 @@ const recording = path.join(tmp, 'recording.json');
   check('every artifact is present by digest and verifies', experiment.executions.every((x) => store2.has(x)) && store2.text(experiment.testArtifact).includes('an expired session is not served'));
   const report2 = run(['report', prepared.missionId, '--out', out2]);
   check('the replayed report is the original report', report2.out.replace(/\/repo2\b/g, '/repo') === reportMd.replace(/\/repo\b/g, '/repo'));
+  check('and names this machine\'s checkout, not the exporter\'s', report2.out.includes(`\`${repo2}\``), report2.out.split('\n').find((l) => l.includes('**Project.**')));
 
   const again = run(['mission', 'import', '--out', out2, '--file', recording, '--format', 'json']);
   const second = json<{ added: Record<string, number>; skipped: Record<string, number> }>(again);

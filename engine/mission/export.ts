@@ -209,7 +209,12 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
   const db = openDaylightDb(path.join(ctx.out, DAYLIGHT_DB));
   try {
     db.exec('BEGIN');
-    ctx.store.ensureProject(file.project);
+    // The project's identity travels; where it is checked out does not. The exporter's root
+    // is a path on their machine, and `experiment run` defaults to the recorded root — so a
+    // root already known here is kept, and a new one is this directory's map when it has one.
+    if (!ctx.store.project(file.project.id)) {
+      ctx.store.ensureProject(here && here.id === file.project.id ? { ...file.project, root: here.root } : file.project);
+    }
     const m = file.mission;
     db.prepare(
       `INSERT OR IGNORE INTO missions
