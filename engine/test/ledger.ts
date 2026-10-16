@@ -467,8 +467,17 @@ section('report --project: refusals and formats');
 {
   const out = path.join(tmp, 'fixture');
   const json = cli(['report', '--project', PROJECT.id, '--out', out, '--format', 'json', '--group', 'runner']);
-  const parsed = json.code === 0 ? JSON.parse(json.stdout) as { kind: string; rows: unknown[] } : null;
+  type JsonRow = { key: string; tokensKnown: boolean; tokensReported: Record<string, number | null>; tokensUnknownByField: Record<string, number> };
+  const parsed = json.code === 0 ? JSON.parse(json.stdout) as { kind: string; rows: JsonRow[] } : null;
   check('json is one Ledger document', parsed?.kind === 'daylight-ledger' && parsed.rows.length > 0, json.err);
+  const jrow = (k: string) => parsed?.rows.find((r) => r.key === k);
+  check('json says a token field nobody reported is unknown (null), not 0',
+    jrow('agent:codex:default')?.tokensReported.cacheWrite === null && jrow('agent:codex:default')?.tokensReported.input === 70
+      && jrow('agent:codex:default')?.tokensUnknownByField.cacheWrite === 1 && jrow('agent:codex:default')?.tokensKnown === false,
+    JSON.stringify(jrow('agent:codex:default')));
+  check('and an attempt with no usage at all is null in every field',
+    Object.values(jrow('agent:mock:plan')?.tokensReported ?? { x: 0 }).every((v) => v === null) && jrow('agent:mock:plan')?.tokensKnown === false);
+  check('a fully reported row is known', jrow('agent:claude:sonnet')?.tokensKnown === true);
   const text = cli(['report', '--project', PROJECT.id, '--out', out]);
   check('text is the whole ledger', text.code === 0 && text.stdout.includes('# Ledger') && text.stdout.includes('unknown'), text.err);
   const bare = cli(['report', '--project', '--out', out]);

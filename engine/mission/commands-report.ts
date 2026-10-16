@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mappedProject, mappedRoot, openDaylight, type DaylightContext } from './context.ts';
 import {
-  LEDGER_GROUPS, OUTSIDE_CONTROLS, dollarsOf, ledger, ledgerWithGaps, renderLedger, tokenCells, totalGaps, totalOf,
+  LEDGER_GROUPS, OUTSIDE_CONTROLS, dollarsOf, ledgerWithGaps, renderLedger, tokenCells, totalGaps, totalOf,
   type LedgerGroup, type TokenGaps,
 } from './ledger.ts';
 import { shortRevision } from './project.ts';
@@ -136,6 +136,29 @@ export function projectReportText(ctx: DaylightContext, projectId: string, since
   return out.join('\n');
 }
 
+/**
+ * The `--format json` document: a `Ledger`, whose rows also say per token field what is
+ * unknown. `LedgerRow.tokens` holds known sums only, so on its own a field nobody reported
+ * reads as 0. Each row gains `tokensReported` (null where no attempt reported the field, a floor
+ * otherwise), `tokensUnknownByField` (attempts missing it) and `tokensKnown` (no gap at all).
+ */
+export function ledgerJson(ctx: DaylightContext, o: Parameters<typeof ledgerWithGaps>[1]) {
+  const { ledger: l, gaps } = ledgerWithGaps(ctx, o);
+  return {
+    ...l,
+    rows: l.rows.map((r) => {
+      const gap = gaps[r.key] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      const reported = (f: keyof typeof gap) => (r.attempts > 0 && gap[f] >= r.attempts ? null : r.tokens[f]);
+      return {
+        ...r,
+        tokensReported: { input: reported('input'), output: reported('output'), cacheRead: reported('cacheRead'), cacheWrite: reported('cacheWrite') },
+        tokensUnknownByField: gap,
+        tokensKnown: r.attempts > 0 && Object.values(gap).every((n) => n === 0),
+      };
+    }),
+  };
+}
+
 /** Entry for `daylight report --project …`; `argv` is everything after `report`. */
 export function runProjectReport(argv: string[], out: () => string): number {
   let flags: Flags;
@@ -150,7 +173,7 @@ export function runProjectReport(argv: string[], out: () => string): number {
     ctx = openDaylight(out());
     const projectId = resolveProject(ctx, flags.project);
     const text = flags.format === 'json'
-      ? `${JSON.stringify(ledger(ctx, { projectId, group: flags.group, since: flags.since, origin: flags.origin }), null, 2)}\n`
+      ? `${JSON.stringify(ledgerJson(ctx, { projectId, group: flags.group, since: flags.since, origin: flags.origin }), null, 2)}\n`
       : projectReportText(ctx, projectId, flags.since);
     if (flags.file) {
       fs.mkdirSync(path.dirname(path.resolve(flags.file)), { recursive: true });
