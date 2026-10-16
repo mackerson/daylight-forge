@@ -594,7 +594,7 @@ function reportInvariantSource(args: Args, loaded: ReturnType<typeof loadInvaria
       `\ninvariants — none defined for ${args.root}\n` +
         '─'.repeat(78) +
         '\nInvariants describe THIS codebase, so they live with it. Create ' +
-        'vds.invariants.json\nin the repo root (or pass --invariants-file), or let an agent ' +
+        'daylight.invariants.json\nin the repo root (or pass --invariants-file), or let an agent ' +
         'propose them:\n  pnpm agent <repo> --tools claude\n',
     );
   }
@@ -954,7 +954,7 @@ async function runRun(args: Args): Promise<void> {
   if (!loadTarget(args.root, args.targetFile)) {
     console.log(
       '\nno target architecture in this repo, so there is no plan to derive. The campaign ' +
-        'itself is done — run `vds plan` after writing vds.target.json.',
+        'itself is done — run `vds plan` after writing daylight.target.json.',
     );
     return;
   }
@@ -1182,7 +1182,7 @@ function runPlan(args: Args): void {
     console.log(
       `\nno target architecture for ${graph.root}\n` + '─'.repeat(72) +
         '\nThe target is intent, so it lives with the repo and no extraction can derive it.' +
-        '\nCreate vds.target.json (or pass --target-file):\n\n' +
+        '\nCreate daylight.target.json (or pass --target-file):\n\n' +
         JSON.stringify(
           { layers: [
             { name: 'ui', include: ['src/renderer/**'], mayDependOn: ['shared'], purpose: 'what the user sees' },
@@ -1267,7 +1267,7 @@ function runAdopt(args: Args): void {
 
   const targetFile = args.invariantsFile
     ? path.resolve(args.invariantsFile)
-    : path.join(args.root, 'vds.invariants.json');
+    : path.join(args.root, 'daylight.invariants.json');
   const existing: Invariant[] = fs.existsSync(targetFile)
     ? JSON.parse(fs.readFileSync(targetFile, 'utf8'))
     : [];
@@ -1581,7 +1581,7 @@ usage:
 
 options:
   --out <dir>            output directory (default: ./out)
-  --invariants-file <f>  invariant definitions (default: <repo>/vds.invariants.json)
+  --invariants-file <f>  invariant definitions (default: <repo>/daylight.invariants.json)
   --depth <n>        L1 grouping depth (default: 3)
   --commit <sha>     record the commit this tree came from
   --force            overwrite an out dir that holds a different repo's map

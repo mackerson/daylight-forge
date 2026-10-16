@@ -60,7 +60,7 @@ export function Author({ onSaved }: { onSaved: () => void }) {
       <h3>Write an invariant</h3>
       <p className="dim">
         A claim about <em>this</em> codebase, checked against L0 on every run. It is saved into
-        the repo's <code>vds.invariants.json</code>, because an invariant belongs to the code it
+        the repo's <code>daylight.invariants.json</code>, because an invariant belongs to the code it
         constrains — not to the tool looking at it.
       </p>
 

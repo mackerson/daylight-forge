@@ -45,7 +45,7 @@ console.log('\ncheck gate');
   check('says so rather than pretending to have checked',
     /none defined/.test(clean.out) && /none declared/.test(clean.out));
 
-  const invPath = path.join(tmp, 'vds.invariants.json');
+  const invPath = path.join(tmp, 'daylight.invariants.json');
   fs.writeFileSync(invPath, JSON.stringify([{
     id: 'helper-exists',
     prose: 'the helper module is reachable',
@@ -76,7 +76,7 @@ console.log('\ncheck gate');
 
   // A target violation must fail the gate on its own, with no invariants involved.
   fs.rmSync(invPath);
-  fs.writeFileSync(path.join(tmp, 'vds.target.json'), JSON.stringify({
+  fs.writeFileSync(path.join(tmp, 'daylight.target.json'), JSON.stringify({
     layers: [
       { name: 'entry', include: ['src/index.ts'], mayDependOn: [] },
       { name: 'lib', include: ['src/helper.ts'], mayDependOn: [] },

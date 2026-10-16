@@ -318,7 +318,7 @@ Three, all found by running it rather than by reading it:
 
 4. **Invariants were baked into the tool** (found by running it on itself). Shipping the fixture's
    invariants as code meant every other repo was measured against claims about *enclave* — five false
-   REDs and an L3 wrongly marked STALE. They now load from `<repo>/vds.invariants.json`, and a repo
+   REDs and an L3 wrongly marked STALE. They now load from `<repo>/daylight.invariants.json`, and a repo
    with none defined reports `UNPROVEN` rather than failing. Invariants describe a specific
    architecture, so they live with the code they constrain.
 5. **Vendored bundles were being analysed** (same run). A committed copy of three.js contributed

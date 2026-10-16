@@ -291,7 +291,7 @@ the measurements are under [docs/daylight/](docs/daylight/).
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--out <dir>` | `./out` | output directory. One per repository — it refuses to mix two. |
-| `--invariants-file <f>` | `<repo>/vds.invariants.json` | where the repo's invariants live |
+| `--invariants-file <f>` | `<repo>/daylight.invariants.json` | where the repo's invariants live |
 | `--include-tests` | off | put test files in the map. They are always read for reachability regardless. |
 | `--force` | off | overwrite an output directory belonging to a different repo |
 | `--max-cost <usd>` | — | hard ceiling on agent spend for the run |

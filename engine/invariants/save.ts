@@ -21,7 +21,7 @@ import type { Invariant } from './engine.ts';
  *    goes red, and going red is the entire point.
  */
 
-export const INVARIANTS_FILENAME = 'vds.invariants.json';
+export const INVARIANTS_FILENAME = 'daylight.invariants.json';
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
