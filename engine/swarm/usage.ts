@@ -186,3 +186,6 @@ export function credentialFor(envName: string, label: string | null, env: NodeJS
   return { present: typeof env[envName] === 'string' && env[envName] !== '', envName, label };
 }
 
+/** Budget arithmetic lives with the ledger of record; re-exported where the swap site looks (R-21). */
+export { missionSpend, spendRefusal, type MissionSpend } from '../mission/ledger.ts';
+

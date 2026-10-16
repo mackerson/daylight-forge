@@ -6,22 +6,41 @@
  * across lines; a figure nobody reported is `unknown`, never zero; a scraped figure is spend,
  * never knowledge; and no secret value reaches an event, an artifact, the database or a report.
  */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore } from '../mission/artifacts.ts';
+import { projectReportText } from '../mission/commands-report.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { EventLog } from '../mission/events.ts';
-import { costKnown, type ProjectIdentity, type TokenUsage } from '../mission/types.ts';
+import { exportMission, importMission } from '../mission/export.ts';
+import { dollarsOf, ledger, missionSpend, spendRefusal, totalOf, trailersFor } from '../mission/ledger.ts';
+import { newId } from '../mission/store.ts';
+import { costKnown, type ArtifactRef, type ProjectIdentity, type TokenUsage } from '../mission/types.ts';
 import type { Adapter } from '../swarm/adapters.ts';
 import { captureRun, type AttemptFinisher, type CaptureContext } from '../swarm/capture.ts';
 import { normalize, type Provider } from '../swarm/normalize.ts';
-import { credentialFor, LineSplitter, UsageAccumulator } from '../swarm/usage.ts';
+import { credentialFor, LineSplitter, missionSpend as usageMissionSpend, UsageAccumulator } from '../swarm/usage.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-ledger-'));
 process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
+
+// `commands.ts` does not dispatch `report --project` yet (the integrator adds that line), so the
+// CLI tests drive the module's own entry in a child, as the dispatch will.
+const driver = path.join(tmp, 'report-driver.mjs');
+fs.writeFileSync(driver, `
+  const { runProjectReport } = await import(${JSON.stringify(path.resolve(import.meta.dirname, '..', 'mission', 'commands-report.ts'))});
+  const argv = process.argv.slice(2);
+  const out = argv[argv.indexOf('--out') + 1];
+  process.exitCode = runProjectReport(argv.slice(1), () => out);
+`);
+const cli = (args: string[]) => {
+  const r = spawnSync(process.execPath, [driver, ...args], { encoding: 'utf8', env: { ...process.env } });
+  return { code: r.status, stdout: r.stdout, err: r.stderr };
+};
 
 /** A child that prints `lines` to stdout, each a separate write, then exits 0. */
 const printer = (lines: string[], opts: { name?: string; streamShape?: Provider } = {}): Adapter => ({
@@ -254,6 +273,257 @@ await (async () => {
   check('an attempt that reported nothing has unknown cost and tokens, not zero',
     silent.costUsd === null && silent.costSource === 'none' && silent.tokens.input === null && silent.usageSource === 'none');
   ctx.close();
+})();
+
+/**
+ * One project, every kind of row the ledger reads: a spec mission whose decomposer reported no
+ * cost, an approved work item, an implement mission with an author attempt, an accepted and
+ * applied candidate, review attempts at known, unknown and scanned cost, and an ingested session.
+ */
+function buildFixture(ctx: DaylightContext) {
+  const s = ctx.store;
+  const art = (text: string, kind: ArtifactRef['kind']) => {
+    const ref = ctx.artifacts.put(text, { kind, projectId: PROJECT.id, revision: 'base1' });
+    s.recordArtifact(ref);
+    return ref;
+  };
+  const finished = (taskId: string, runnerId: string, fin: Partial<Parameters<typeof s.finishAttempt>[1]>, start: Parameters<typeof s.startAttempt>[0] extends infer I ? Partial<I> : never = {}) => {
+    const a = s.startAttempt({ taskId, runnerId, ...start });
+    return s.finishAttempt(a.id, { state: 'completed', costUsd: null, ...fin });
+  };
+  const tokens = (input: number, output: number): TokenUsage => ({ input, output, cacheRead: 0, cacheWrite: 0 });
+
+  const spec = s.createMission({ projectId: PROJECT.id, kind: 'spec', objective: 'decompose', baseRevision: 'base1' });
+  const decompose = finished(s.createTask({ missionId: spec.id, role: 'decompose', objective: 'propose' }).id, 'agent:mock:plan', {});
+  const wInput = {
+    projectId: PROJECT.id, missionId: spec.id, attemptId: decompose.id, specArtifact: art('# Spec\n', 'spec'), specRevision: 'base1',
+    anchor: 'login', title: 'Login', statement: 'Users can log in', examples: ['ok'], negativeExamples: ['bad'], proposedBy: 'agent:mock:plan',
+  };
+  const w = s.createWorkItem({ ...wInput, id: newId('workItem') });
+  const approveItem = s.recordDecision({
+    missionId: spec.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'ok',
+    scope: { operation: 'approve-work-item', workItemId: w.id, contentDigest: w.contentDigest }, artifactIds: [],
+  });
+  s.setWorkItemStatus(w.id, 'proposed', 'approved', approveItem.id);
+
+  const impl = s.createMission({ projectId: PROJECT.id, kind: 'implement', objective: 'build login', baseRevision: 'base1', workItemId: w.id });
+  const { decision: grant } = s.authorizeMission({
+    missionId: impl.id, actor: HUMAN, rationale: 'go', permissions: { write: true, execute: false }, maxUsd: 1,
+  });
+  const author = finished(s.createTask({ missionId: impl.id, role: 'author', objective: 'write' }).id, 'agent:claude:sonnet',
+    { costUsd: 0.41, costSource: 'provider', tokens: tokens(12034, 3311), usageSource: 'provider', model: 'claude-sonnet-test' },
+    { sandbox: { profile: 'author', network: 'shared', write: true, exec: false, authorizeDecisionId: grant.id }, gateSetDigest: 'sha256:gs1' });
+  const diff = art('diff --git a/x b/x\n', 'diff');
+  const c = s.createCandidate({
+    missionId: impl.id, attemptId: author.id, projectId: PROJECT.id, baseCommit: 'base1', diffArtifact: diff,
+    summaryArtifact: art('{"files":1}', 'summary'), files: [], policyViolations: [], secretHits: 0, gateSetDigest: 'sha256:gs1',
+    profile: { name: 'author', network: 'shared', write: true, exec: false }, attemptState: 'completed',
+  });
+  s.updateCandidateVerdict(c.id, 'accepted-by-gates', ['all gates supported']);
+  const approve = s.recordDecision({
+    missionId: impl.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'good',
+    scope: { operation: 'approve-candidate', candidateId: c.id, diffDigest: diff.digest, gateSetDigest: 'sha256:gs1', baseCommit: 'base1' }, artifactIds: [],
+  });
+  const p = s.recordApplication({ candidateId: c.id, decisionId: approve.id, baseCommit: 'base1', commit: 'c0ffee'.padEnd(40, '0'), ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN });
+
+  const review = s.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'look', baseRevision: 'base2' });
+  const rt = () => s.createTask({ missionId: review.id, role: 'review', objective: 'r' }).id;
+  const known = finished(rt(), 'agent:claude:sonnet', { costUsd: 0.05, costSource: 'provider', tokens: tokens(100, 10), usageSource: 'provider', model: 'claude-sonnet-test' });
+  const unknown = finished(rt(), 'agent:codex:default', { tokens: { input: 70, output: 7, cacheRead: 20, cacheWrite: null }, usageSource: 'provider' });
+  const scanned = finished(rt(), 'agent:mock:scan', { costUsd: 0.2, costSource: 'stdout-scan' });
+
+  const work = s.createMission({ projectId: PROJECT.id, kind: 'work', objective: 'sessions', baseRevision: 'base2' });
+  const ingested = finished(s.createTask({ missionId: work.id, role: 'session', objective: 's' }).id, 'ingest:claude-code',
+    { tokens: tokens(500, 50), usageSource: 'transcript', model: 'claude-opus-test' }, { origin: 'ingested' });
+  return { spec, w, impl, author, c, p, review, known, unknown, scanned, work, ingested, decompose };
+}
+
+section('the ledger, by runner, model, origin, mission, work item and actor');
+{
+  const ctx = fresh('fixture');
+  const f = buildFixture(ctx);
+  const byRunner = ledger(ctx, { projectId: PROJECT.id, group: 'runner' });
+  const row = (l: typeof byRunner, key: string) => l.rows.find((r) => r.key === key);
+  const sonnet = row(byRunner, 'agent:claude:sonnet')!;
+  check('grouping by runner equals the hand count', sonnet.attempts === 2 && sonnet.usdKnown === 0.46 && sonnet.usdUnknownCount === 0
+    && sonnet.tokens.input === 12134 && sonnet.candidates.accepted === 1 && sonnet.candidates.applied === 1, JSON.stringify(sonnet));
+  check('a decision about a candidate is counted on its runner\'s row', sonnet.decisions === 1);
+  check('the gate set an attempt ran against is listed', sonnet.gateSetDigests.join() === 'sha256:gs1');
+  const codex = row(byRunner, 'agent:codex:default')!;
+  check('an unknown cost is a count, not a zero dollar', codex.usdUnknownCount === 1 && codex.usdKnown === 0 && dollarsOf(codex) === 'unknown');
+  const scan = row(byRunner, 'agent:mock:scan')!;
+  check('a scanned cost is never known', scan.usdKnown === 0 && scan.usdScanned === 0.2 && /scanned, not known/.test(dollarsOf(scan)));
+  check('tokens nobody reported are counted as unknown', scan.tokens.unknownCount === 1 && row(byRunner, 'agent:mock:plan')!.tokens.unknownCount === 1);
+  const t = totalOf(byRunner.rows);
+  check('the total is a floor that says how much is unknown and scanned',
+    dollarsOf(t) === '≥ $0.46 (3 unknown, $0.20 scanned, not known)', dollarsOf(t));
+
+  const byModel = ledger(ctx, { projectId: PROJECT.id, group: 'model' });
+  check('grouping by model uses the reported model', row(byModel, 'claude-sonnet-test')?.attempts === 2);
+  check('and labels an asked-for model as asked when none was reported', row(byModel, 'plan (asked; not reported)')?.attempts === 1
+    && row(byModel, 'unknown')?.attempts === 1, byModel.rows.map((r) => r.key).join());
+
+  const byOrigin = ledger(ctx, { projectId: PROJECT.id, group: 'origin' });
+  check('origin splits ingested work from Daylight\'s', row(byOrigin, 'ingested')?.attempts === 1 && row(byOrigin, 'daylight')?.attempts === 5);
+  check('ingested dollars are unknown, never estimated from tokens', dollarsOf(row(byOrigin, 'ingested')!) === 'unknown'
+    && row(byOrigin, 'ingested')!.tokens.input === 500);
+
+  const byMission = ledger(ctx, { projectId: PROJECT.id, group: 'mission' });
+  check('grouping by mission counts each mission\'s attempts and decisions', row(byMission, f.impl.id)?.attempts === 1
+    && row(byMission, f.impl.id)?.decisions === 2 && row(byMission, f.spec.id)?.decisions === 1);
+  const byItem = ledger(ctx, { projectId: PROJECT.id, group: 'work-item' });
+  check('grouping by work item puts the implement attempt under its item', row(byItem, f.w.id)?.attempts === 1 && row(byItem, 'none')?.attempts === 5);
+
+  const byActor = ledger(ctx, { projectId: PROJECT.id, group: 'actor' });
+  const human = row(byActor, HUMAN);
+  check('a human row carries decisions, never dollars or attempts', human?.attempts === 0 && human.decisions === 3
+    && human.usdKnown === 0 && dollarsOf(human) === '—');
+  check('decisions are counted by actor and operation', byRunner.decisions.map((d) => `${d.actor}:${d.operation}:${d.count}`).sort().join()
+    === [`${HUMAN}:approve-candidate:1`, `${HUMAN}:approve-work-item:1`, `${HUMAN}:authorize-mission:1`].join());
+  check('work items, applications and revisions are listed', byRunner.workItems.length === 1 && byRunner.workItems[0].status === 'approved'
+    && byRunner.applications.map((p) => p.id).join() === f.p.id
+    && byRunner.revisions.map((r) => `${r.revision}:${r.missions}:${r.attempts}`).join() === 'base1:2:2,base2:2:4');
+  const onlyIngested = ledger(ctx, { projectId: PROJECT.id, group: 'runner', origin: 'ingested' });
+  check('an origin filter keeps only that origin', onlyIngested.rows.map((r) => r.key).join() === 'ingest:claude-code'
+    && onlyIngested.decisions.length === 0 && onlyIngested.workItems.length === 0);
+  check('the ledger carries no timestamp', !/"(at|exportedAt|createdAt|generatedAt)"/.test(JSON.stringify({ ...byRunner, applications: [] })));
+  check('the ledger reads no other project', ledger(ctx, { projectId: 'git:bbbbbbbbbbbb', group: 'runner' }).rows.length === 0);
+
+  const text = projectReportText(ctx, PROJECT.id);
+  if (process.env.DAYLIGHT_LEDGER_SHOW) process.stdout.write(text);
+  check('the report shows an unknown-cost attempt as the word unknown', /`agent:codex:default` \| 1 \| unknown \|/.test(text), text);
+  check('a token field an attempt did not report is unknown, not 0', /`agent:codex:default` \| 1 \| unknown \| 70 \| 7 \| 20 \| unknown \|/.test(text));
+  check('and never prints a zero for it', !/`agent:codex:default` \| 1 \| \$0\.00/.test(text) && !/`agent:mock:plan` \| 1 \| \$0\.00/.test(text));
+  check('ingested work is labelled outside Daylight\'s controls', text.includes("Ingested — outside Daylight's controls")
+    && text.includes("ingested — outside Daylight's controls"));
+  check('the report has decisions, work items, candidates, applications and revisions',
+    ['## Decisions by actor', '## Work items', '## Candidates', '## Applications', '## Revisions'].every((h) => text.includes(h)));
+  check('no price table and no tokens turned into dollars', !/per (1k|million|token)|price/i.test(text));
+  ctx.close();
+}
+
+section('mission spend is the sum over every attempt, across runs');
+await (async () => {
+  const dir = 'spend';
+  let ctx = fresh(dir);
+  const m = ctx.store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'budget', baseRevision: 'base1', budget: { maxUsd: 0.12 } });
+  const mock = printer([JSON.stringify({ type: 'result', total_cost_usd: 0.05, num_turns: 1 })], { streamShape: 'claude' });
+  await captured(ctx, m.id, mock, 'agent:mock:yes');
+  ctx.close();
+  // A second run: a new process, a new context, the same mission.
+  ctx = openDaylight(path.join(tmp, dir));
+  const before = missionSpend(ctx, m.id);
+  check('a second run starts from what the first spent', before.spentUsd === 0.05 && before.knownUsd === 0.05 && before.costKnown);
+  check('so under a $0.12 ceiling it may go on', spendRefusal(before, 0.12) === null);
+  await captured(ctx, m.id, mock, 'agent:mock:yes');
+  await captured(ctx, m.id, mock, 'agent:mock:yes');
+  const after = missionSpend(ctx, m.id);
+  check('three $0.05 attempts across two runs are $0.15', after.spentUsd === 0.15, String(after.spentUsd));
+  check('and the next is refused under the ceiling', /budget exhausted/.test(spendRefusal(after, 0.12) ?? ''), String(spendRefusal(after, 0.12)));
+  await captured(ctx, m.id, printer([JSON.stringify({ total_cost_usd: 0.01 })]), 'agent:mock:scan');
+  await captured(ctx, m.id, printer(['quiet']), 'agent:mock:no');
+  const mixed = missionSpend(ctx, m.id);
+  check('a scanned figure counts toward spend, not toward known', mixed.spentUsd === 0.16 && mixed.knownUsd === 0.15 && mixed.scannedCount === 1);
+  check('an unknown figure makes the total a floor', mixed.unknownCount === 1 && !mixed.costKnown);
+  check('and an unknown cost blocks under a ceiling it might already be past', /cannot be enforced/.test(spendRefusal({ ...mixed, spentUsd: 0 }, 1) ?? ''));
+  check('the swap site can import it from swarm/usage.ts', usageMissionSpend === missionSpend);
+  ctx.close();
+})();
+
+section('trailers carry mission and attempt ids only');
+{
+  const m = newId('mission');
+  const a = newId('attempt');
+  const t = trailersFor(m, a);
+  check('exactly a Daylight-Mission and a Daylight-Attempt line', t.length === 2 && t[0] === `Daylight-Mission: ${m}` && t[1] === `Daylight-Attempt: ${a}`);
+  check('no dollars or tokens in git history', !t.some((l) => /cost|usd|token|\$/i.test(l)));
+  let refused = 0;
+  for (const [mm, aa] of [[`${m}\nDaylight-Cost: usd=9`, a], [m, 'a_short'], [a, m]]) {
+    try {
+      trailersFor(mm, aa);
+    } catch {
+      refused++;
+    }
+  }
+  check('anything but well-formed ids is refused, so nothing can be smuggled into a trailer', refused === 3);
+}
+
+section('export v2 carries the ledger: export → import → ledger is byte-equal');
+{
+  const ctx = fresh('roundtrip');
+  buildFixture(ctx);
+  const before = JSON.stringify(ledger(ctx, { projectId: PROJECT.id, group: 'runner' }));
+  const beforeModel = JSON.stringify(ledger(ctx, { projectId: PROJECT.id, group: 'model' }));
+  const files = ctx.store.missions(PROJECT.id).map((m) => JSON.parse(JSON.stringify(exportMission(ctx, m.id))));
+  ctx.close();
+  const into = openDaylight(path.join(tmp, 'roundtrip-into'));
+  for (const file of files) importMission(into, file);
+  check('the runner ledger survives the round trip byte for byte', JSON.stringify(ledger(into, { projectId: PROJECT.id, group: 'runner' })) === before);
+  check('and the model ledger', JSON.stringify(ledger(into, { projectId: PROJECT.id, group: 'model' })) === beforeModel);
+  into.close();
+}
+
+section('report --project: refusals and formats');
+{
+  const out = path.join(tmp, 'fixture');
+  const json = cli(['report', '--project', PROJECT.id, '--out', out, '--format', 'json', '--group', 'runner']);
+  const parsed = json.code === 0 ? JSON.parse(json.stdout) as { kind: string; rows: unknown[] } : null;
+  check('json is one Ledger document', parsed?.kind === 'daylight-ledger' && parsed.rows.length > 0, json.err);
+  const text = cli(['report', '--project', PROJECT.id, '--out', out]);
+  check('text is the whole ledger', text.code === 0 && text.stdout.includes('# Ledger') && text.stdout.includes('unknown'), text.err);
+  const bare = cli(['report', '--project', '--out', out]);
+  check('a bare --project means the one project this directory holds', bare.code === 0, bare.err);
+  const foreign = cli(['report', '--project', 'git:bbbbbbbbbbbb', '--out', out]);
+  check('a project this directory does not hold is refused', foreign.code === 1 && /not the project/.test(foreign.err), foreign.err);
+  check('a bad --group is a usage error', cli(['report', '--project', PROJECT.id, '--out', out, '--group', 'price']).code === 2);
+}
+
+section('no secret value reaches an event, an artifact, the database or a report');
+await (async () => {
+  const shaped = 'sk-ant-api03-PLANTEDFAKEKEYabcdefghijklmnop0123';
+  const unshaped = 'plantedfakecredentialvalue-0123456789';
+  const saved = { a: process.env.ANTHROPIC_API_KEY, b: process.env.DAYLIGHT_TEST_CREDENTIAL };
+  process.env.ANTHROPIC_API_KEY = shaped;
+  process.env.DAYLIGHT_TEST_CREDENTIAL = unshaped;
+  try {
+    const ctx = fresh('secrets');
+    const m = ctx.store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'leak', baseRevision: 'base1' });
+    const leaky: Adapter = {
+      name: 'mock', bin: process.execPath, perInvocationMcp: true, streamShape: 'claude',
+      argv: () => ['-e', `
+        const k = process.env.ANTHROPIC_API_KEY, u = process.env.DAYLIGHT_TEST_CREDENTIAL;
+        console.log('ANTHROPIC_API_KEY=' + k + ' DAYLIGHT_TEST_CREDENTIAL=' + u);
+        console.error('stderr also has ' + k + ' and ' + u);
+        console.log(JSON.stringify({ type: 'assistant', message: { id: 'msg_' + u, model: k, content: [{ type: 'tool_use', id: 't', name: 'Read', input: { path: k } }], usage: { input_tokens: 3 } } }));
+        console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 1, subtype: u }));
+      `],
+    };
+    const a = await captured(ctx, m.id, leaky, 'agent:mock:leak', {
+      credential: credentialFor('ANTHROPIC_API_KEY', 'forge-capped-1'),
+    });
+    const report = projectReportText(ctx, PROJECT.id);
+    const ledgerJson = JSON.stringify(ledger(ctx, { projectId: PROJECT.id, group: 'model' }));
+    const exported = JSON.stringify(exportMission(ctx, m.id));
+    ctx.close();
+    const bytes: Buffer[] = [];
+    const walk = (dir: string) => {
+      for (const n of fs.readdirSync(dir)) {
+        const p = path.join(dir, n);
+        if (fs.statSync(p).isDirectory()) walk(p);
+        else bytes.push(fs.readFileSync(p));
+      }
+    };
+    walk(path.join(tmp, 'secrets'));
+    const everything = Buffer.concat([...bytes, Buffer.from(report), Buffer.from(ledgerJson), Buffer.from(exported)]);
+    check('the planted key is in no file, event, report, ledger or export', !everything.includes(shaped) && !everything.includes('PLANTEDFAKEKEY'));
+    check('nor the planted unshaped credential', !everything.includes(unshaped));
+    check('the attempt still recorded its usage and cost', a.costUsd === 0.01 && a.tokens.input === 3);
+    check('and the credential as present, by name and label', a.credential === undefined
+      && exported.includes('"envName":"ANTHROPIC_API_KEY"') && exported.includes('"present":true'));
+  } finally {
+    if (saved.a === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.a;
+    if (saved.b === undefined) delete process.env.DAYLIGHT_TEST_CREDENTIAL; else process.env.DAYLIGHT_TEST_CREDENTIAL = saved.b;
+  }
 })();
 
 done();
