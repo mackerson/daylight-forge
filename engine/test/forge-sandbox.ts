@@ -15,12 +15,16 @@ import { detectSandbox, nodeBinary, sandboxArgv, type SandboxProfile } from '../
 import { authorFor, authorLauncher, authorServer, authorTools, AUTHOR_FILE_TOOLS, reviewLauncher, RUN_TOOL } from '../forge/authors.ts';
 import { captureCandidate } from '../forge/diff.ts';
 import {
-  execLaunch, execRefusal, MCP_CONFIG, NET_FILES, MCP_SHIM, MCP_SOCKET, mcpRuntimeDir, newMcpToken, profileLaunch,
+  execLaunch, execRefusal, MCP_CONFIG, MCP_HANDSHAKE, NET_FILES, MCP_SHIM, MCP_SOCKET, mcpRuntimeDir, newMcpToken, profileLaunch,
   registerRunTool, runExec, SandboxRefused, type Mount, type ProfileOptions,
 } from '../forge/sandbox.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type { Attempt, AttemptSandbox } from '../mission/types.ts';
+import { createServer, listenAttemptSocket } from '../mcp/server.ts';
+import { MissionStore } from '../mission/store.ts';
+import type { ProjectIdentity } from '../mission/types.ts';
+import { ClaimStore } from '../store/claims.ts';
 import { run as runAgent } from '../swarm/adapters.ts';
 import { harness } from './harness.ts';
 
@@ -61,6 +65,7 @@ fs.writeFileSync(path.join(repo, 'src', 'add.js'), 'module.exports = (a, b) => a
 git(['add', '.']);
 git(['commit', '-q', '-m', 'fixture']);
 const commit = git(['rev-parse', 'HEAD']);
+const PROJECT: ProjectIdentity = { id: 'git:aaaaaaaaaaaa', root: repo, name: 'fixture' };
 const out = path.join(tmp, 'out');
 fs.mkdirSync(out);
 fs.writeFileSync(path.join(out, 'daylight.db'), 'the ledger');
@@ -259,6 +264,98 @@ section('the system mounts are P0\'s');
 
 // ---- the real sandbox -------------------------------------------------------------
 
+// ---- the attempt socket: host side ---------------------------------------------------
+
+const store = new MissionStore(path.join(tmp, 'store'));
+store.ensureProject(PROJECT);
+const reviewMission = store.createMission({ projectId: PROJECT.id, kind: 'verify', objective: 'review it', baseRevision: commit });
+const reviewTask = store.createTask({ missionId: reviewMission.id, role: 'review', objective: 'review it' });
+const reviewToken = newMcpToken();
+const reviewAttempt = store.startAttempt({
+  taskId: reviewTask.id, runnerId: 'agent:mock:review', sessionId: 'sess-review',
+  sandbox: { profile: 'review', network: 'shared' }, mcpToken: reviewToken,
+});
+const otherTask = store.createTask({ missionId: reviewMission.id, role: 'review', objective: 'another reviewer' });
+const otherToken = newMcpToken();
+const otherAttempt = store.startAttempt({ taskId: otherTask.id, runnerId: 'agent:mock:other', sandbox: { profile: 'review' }, mcpToken: otherToken });
+
+const implement = store.createMission({
+  projectId: PROJECT.id, kind: 'implement', objective: 'change it', baseRevision: commit, adhoc: { actor: 'human:miz', rationale: 'test' },
+});
+const { decision: authorize } = store.authorizeMission({
+  missionId: implement.id, actor: 'human:miz', rationale: 'go', permissions: { write: true, execute: true }, maxUsd: null,
+});
+const authorTask = store.createTask({ missionId: implement.id, role: 'author', objective: 'write it' });
+const authorToken = newMcpToken();
+const execAttempt = store.startAttempt({
+  taskId: authorTask.id, runnerId: 'agent:mock:author', mcpToken: authorToken,
+  sandbox: { profile: 'author', network: 'shared', write: true, exec: true, authorizeDecisionId: authorize.id },
+});
+
+const toyServer = () => {
+  const s = new McpServer({ name: 'daylight', version: '0' });
+  s.registerTool('ping', { description: 'ping', inputSchema: {} }, async () => ({ content: [{ type: 'text' as const, text: 'pong' }] }));
+  return s;
+};
+
+/** Connect as a shim would, optionally handshake, send one JSON-RPC request, report what came back. */
+function hostClient(socket: string, handshake: string | null): Promise<{ closed: boolean; reply: string }> {
+  return new Promise((resolve) => {
+    const c = net.connect(socket);
+    let reply = '';
+    const finish = (closed: boolean) => {
+      c.destroy();
+      resolve({ closed, reply });
+    };
+    c.on('connect', () => {
+      if (handshake !== null) c.write(handshake);
+      c.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } } })}\n`);
+    });
+    c.on('data', (d) => {
+      reply += String(d);
+      if (reply.includes('\n')) finish(false);
+    });
+    c.on('close', () => finish(true));
+    c.on('error', () => finish(true));
+    setTimeout(() => finish(false), 3000).unref();
+  });
+}
+
+section('the attempt socket refuses every token but its attempt\'s');
+{
+  const rt = mcpRuntimeDir({ out, home });
+  const refusals: string[] = [];
+  const sock = await listenAttemptSocket({
+    socketPath: rt.socket, attemptId: reviewAttempt.id, resolve: (t) => store.attemptByMcpToken(t),
+    serve: toyServer, onRefused: (why) => refusals.push(why), handshakeTimeoutMs: 500,
+  });
+  check('the socket is the owner\'s only', (fs.statSync(rt.socket).mode & 0o077) === 0);
+  const good = await hostClient(rt.socket, `${MCP_HANDSHAKE} ${reviewToken}\n`);
+  check('its own token is served MCP', /"result"/.test(good.reply) && /protocolVersion/.test(good.reply), good.reply);
+  const wrong = await hostClient(rt.socket, `${MCP_HANDSHAKE} ${newMcpToken()}\n`);
+  check('a token that matches no attempt is refused before any MCP', wrong.closed && wrong.reply === '', wrong.reply);
+  const other = await hostClient(rt.socket, `${MCP_HANDSHAKE} ${otherToken}\n`);
+  check('another live attempt\'s token is refused', other.closed && other.reply === '', other.reply);
+  const none = await hostClient(rt.socket, null);
+  check('a connection that skips the handshake is refused', none.closed && none.reply === '', none.reply);
+  const bare = await hostClient(rt.socket, `${reviewToken}\n`);
+  check('a bare token without the handshake word is refused', bare.closed && bare.reply === '');
+  check('each refusal says why, without the token',
+    refusals.length === 4 && refusals.every((r) => !r.includes(reviewToken) && !r.includes(otherToken)), JSON.stringify(refusals));
+  check('only the one good connection was accepted', sock.accepted() === 1);
+  check('a second listener on the same path is refused', !!(await listenAttemptSocket({
+    socketPath: rt.socket, attemptId: reviewAttempt.id, resolve: () => null, serve: toyServer,
+  }).then(() => null, (e: Error) => e.message)));
+  store.finishAttempt(otherAttempt.id, { state: 'completed', costUsd: null });
+  const late = await hostClient(rt.socket, `${MCP_HANDSHAKE} ${otherToken}\n`);
+  check('a finished attempt\'s token finds nothing', late.closed);
+  check('the store keeps only the token\'s digest',
+    store.attempt(reviewAttempt.id)!.mcpTokenDigest?.startsWith('sha256:') === true && !JSON.stringify(store.attempt(reviewAttempt.id)).includes(reviewToken));
+  await sock.close();
+  check('closing removes the socket', !fs.existsSync(rt.socket));
+  rt.dispose();
+}
+
 const live = detectSandbox();
 if (!live.available) {
   console.log(`\nskipped: live sandbox cases need bwrap and prlimit (${live.why})`);
@@ -399,6 +496,142 @@ section('hooks in the materialised tree never run on the host');
   check('the real checkout is clean', git(['status', '--porcelain']) === '');
   ws.dispose();
   fresh.dispose();
+}
+
+/** A mock agent that speaks MCP through the shim its config names, and prints the replies. */
+const mcpMock = path.join(tmp, 'mock-mcp.cjs');
+fs.writeFileSync(mcpMock, `'use strict';
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const cfg = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).mcpServers.daylight;
+const plan = JSON.parse(process.argv[3]);
+const child = spawn(cfg.command, cfg.args, { env: { ...process.env, ...cfg.env }, stdio: ['pipe', 'pipe', 'inherit'] });
+const replies = {};
+let buf = '';
+const send = (m) => child.stdin.write(JSON.stringify(m) + '\\n');
+const msgs = [
+  { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'mock', version: '0' } } },
+  { jsonrpc: '2.0', method: 'notifications/initialized' },
+  { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+  ...plan.calls.map((c, i) => ({ jsonrpc: '2.0', id: 3 + i, method: 'tools/call', params: c })),
+];
+const want = msgs.filter((m) => m.id !== undefined).length;
+let next = 0;
+const pump = () => { while (next < msgs.length) { const m = msgs[next++]; send(m); if (m.id !== undefined) break; } };
+child.stdout.on('data', (d) => {
+  buf += d;
+  let nl;
+  while ((nl = buf.indexOf('\\n')) >= 0) {
+    const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+    const m = JSON.parse(line);
+    if (m.id !== undefined) { replies[m.id] = m; pump(); }
+    if (Object.keys(replies).length === want) { process.stdout.write(JSON.stringify(replies)); process.exit(0); }
+  }
+});
+child.on('exit', (code) => { process.stdout.write(JSON.stringify({ shimExit: code, replies })); process.exit(0); });
+pump();
+setTimeout(() => { process.stdout.write(JSON.stringify({ timeout: true, replies })); process.exit(0); }, 15000).unref();
+`);
+
+async function viaSocket(o: {
+  attempt: Attempt; token: string; serve: () => McpServer; plan: unknown; launcher: (mcp: { socket: string; token: string }) => ReturnType<typeof authorLauncher>; tree: string;
+}) {
+  const rt = mcpRuntimeDir({ out, home });
+  const refused: string[] = [];
+  const sock = await listenAttemptSocket({
+    socketPath: rt.socket, attemptId: o.attempt.id, resolve: (t) => store.attemptByMcpToken(t), serve: o.serve, onRefused: (w) => refused.push(w),
+  });
+  const r = await runAgent({ name: 'mock', bin: nodeBinary(), perInvocationMcp: true, argv: (run) => [mcpMock, run.mcpConfigPath, run.prompt] }, {
+    prompt: JSON.stringify(o.plan), cwd: o.tree, mcpConfigPath: MCP_CONFIG, session: 's', timeoutMs: 30_000,
+    launch: o.launcher({ socket: rt.socket, token: o.token }),
+  });
+  await sock.close();
+  rt.dispose();
+  let replies: Record<string, any> = {};
+  try {
+    replies = JSON.parse(r.stdout);
+  } catch {
+    replies = { raw: r.stdout, stderr: r.stderr };
+  }
+  return { replies, refused, accepted: sock.accepted(), r };
+}
+
+section('a mock reviewer under the review profile cannot write');
+{
+  const r = await runAgent(authorAdapter, {
+    prompt: JSON.stringify({
+      writes: [['/work/src/add.js', 'x'], ['/work/.git/x', 'x'], ['/work/new.txt', 'x'], ['/x', 'x'], ['/tmp/ok', 'x']],
+      reads: [path.join(out, 'daylight.db'), '/work/src/add.js'], lists: ['/work/.git'],
+    }),
+    cwd: repo, mcpConfigPath: MCP_CONFIG, session: 's', timeoutMs: 20_000,
+    launch: reviewLauncher({ attempt: reviewAttempt, repo, mounts: authorMounts, out, profile: live }),
+  });
+  const res = JSON.parse(r.stdout || '{}') as Record<string, Record<string, unknown>>;
+  check('/work is read-only', res.writes?.['/work/src/add.js'] === 'EROFS' && res.writes?.['/work/new.txt'] === 'EROFS', JSON.stringify(res.writes));
+  check('the repo\'s .git is an empty read-only directory', JSON.stringify(res.lists?.['/work/.git']) === '[]' && res.writes?.['/work/.git/x'] === 'EROFS');
+  check('the root is read-only and only /tmp is writable', res.writes?.['/x'] === 'EROFS' && res.writes?.['/tmp/ok'] === 'ok');
+  check('the repo is readable', String(res.reads?.['/work/src/add.js']).includes('a + b'));
+  check('<out> is absent', res.reads?.[path.join(out, 'daylight.db')] === 'ENOENT');
+  check('the real checkout is untouched', git(['status', '--porcelain']) === '');
+}
+
+section('a mock reviewer under the review profile reaches its MCP server only through the socket');
+{
+  const reviewOut = path.join(tmp, 'review-out');
+  execFileSync(process.execPath, [path.join(import.meta.dirname, '..', 'cli.ts'), 'map', repo, '--out', reviewOut, '--top', '0'], { stdio: 'ignore' });
+  const claimSession = reviewAttempt.sessionId!;
+  const { replies, accepted, r } = await viaSocket({
+    attempt: reviewAttempt, token: reviewToken, tree: repo,
+    serve: () => createServer({ dir: reviewOut, session: claimSession, agentTool: 'mock' }).server,
+    plan: { calls: [{ name: 'submit_claim', arguments: {
+      subject: 'src/add.js', predicate: 'purpose', value: 'adds two numbers', confidence: 0.8,
+      evidence: [{ file: 'src/add.js', line: 1 }],
+    } }] },
+    launcher: (mcp) => reviewLauncher({ attempt: reviewAttempt, repo, mounts: [mcpMock], mcp, out: reviewOut, profile: live }),
+  });
+  check('the reviewer\'s connection was accepted', accepted === 1, JSON.stringify(replies).slice(0, 300) + r.stderr.slice(0, 300));
+  check('it listed the review tools', JSON.stringify(replies['2'] ?? {}).includes('submit_claim'));
+  check('its claim was accepted over the socket', JSON.stringify(replies['3'] ?? {}).includes('accepted'), JSON.stringify(replies['3']));
+  const claims = new ClaimStore(path.join(reviewOut, 'claims.db'));
+  const mine = claims.claimsFor('src/add.js', 'purpose');
+  check('and landed in <out>\'s claim store, which the sandbox never saw', mine.some((c) => c.source.kind === 'agent' && c.source.sessionId === claimSession));
+}
+
+section('a mock author with exec calls run through the socket');
+{
+  const ws = createWorkspace(repo, commit);
+  fs.writeFileSync(path.join(ws.tree, 'net.js'), `
+const s = require('node:net').connect(${port}, '127.0.0.1');
+s.on('connect', () => { console.log('reached'); s.destroy(); });
+s.on('error', (e) => console.log('blocked:' + e.code));
+`);
+  const ran: string[][] = [];
+  const { replies, accepted } = await viaSocket({
+    attempt: execAttempt, token: authorToken, tree: ws.tree,
+    serve: () => authorServer({ attempt: execAttempt, tree: ws.tree, profile: live, onRun: (_r, c) => ran.push(c) }),
+    plan: { calls: [{ name: 'run', arguments: { argv: ['node', 'net.js'] } }] },
+    launcher: (mcp) => authorLauncher({ attempt: execAttempt, workspace: ws, mounts: [mcpMock], mcp, out, profile: live }),
+  });
+  const text = JSON.stringify(replies['3'] ?? {});
+  check('the author\'s connection was accepted', accepted === 1, JSON.stringify(replies).slice(0, 400));
+  check('run is offered to an author whose row holds exec', JSON.stringify(replies['2'] ?? {}).includes('"run"'));
+  check('the host ran the command in the exec sandbox', ran.length === 1 && text.includes('exitCode'), text);
+  check('which had no network although the author has network shared', text.includes('blocked:') && !text.includes('reached'), text);
+  ws.dispose();
+}
+
+section('a mock author presenting another attempt\'s token is refused by the server');
+{
+  const ws = createWorkspace(repo, commit);
+  const { replies, accepted, refused } = await viaSocket({
+    attempt: execAttempt, token: reviewToken, tree: ws.tree,
+    serve: () => authorServer({ attempt: execAttempt, tree: ws.tree, profile: live }),
+    plan: { calls: [{ name: 'run', arguments: { argv: ['node', '-v'] } }] },
+    launcher: (mcp) => authorLauncher({ attempt: execAttempt, workspace: ws, mounts: [mcpMock], mcp, out, profile: live }),
+  });
+  check('the connection is dropped before any MCP is served', accepted === 0 && refused.length === 1 && !replies['1'], JSON.stringify(replies).slice(0, 300));
+  check('nothing ran', !JSON.stringify(replies).includes('exitCode'));
+  ws.dispose();
 }
 
 section('the MCP runtime directory');

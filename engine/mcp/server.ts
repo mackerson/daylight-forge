@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -16,6 +17,7 @@ import {
   MAX_STATEMENT_BYTES, MAX_TITLE_CHARS, MAX_TOUCH_CHARS, MAX_TOUCHES, outboxFile, redactProposal, validateProposal,
   type OutboxLine, type ProposalContext,
 } from '../forge/proposal.ts';
+import { MCP_HANDSHAKE } from '../forge/sandbox.ts';
 
 /**
  * The MCP data plane. One server, stdio, spawned per agent session.
@@ -691,6 +693,105 @@ export function createDecomposeServer(opts: DecomposeServerOptions) {
     },
   );
   return { server };
+}
+
+// ---- the attempt socket (R11.2) ---------------------------------------------------
+
+export interface AttemptSocketOptions {
+  /** Host path of the socket. Must not exist yet; its directory should be a private 0700 one. */
+  socketPath: string;
+  /** The one attempt this socket serves. */
+  attemptId: string;
+  /** The live attempt a token belongs to (the store's `attemptByMcpToken`), or null. */
+  resolve: (token: string) => { id: string } | null;
+  /** A fresh server per accepted connection: an `McpServer` connects to one transport. */
+  serve: () => McpServer;
+  /** Told why a connection was dropped, without the token. */
+  onRefused?: (why: string) => void;
+  handshakeTimeoutMs?: number;
+}
+
+export interface AttemptSocket {
+  path: string;
+  /** Connections that passed the token check. */
+  accepted(): number;
+  close(): Promise<void>;
+}
+
+const MAX_HANDSHAKE_BYTES = 256;
+
+/**
+ * The host side of a sandbox's one MCP socket. A connection must open with
+ * `DAYLIGHT-MCP <token>\n`, and the token must resolve, through the store, to this socket's own
+ * attempt while that attempt is live; anything else is dropped before a byte of MCP is read.
+ * The token is never logged and the store only ever sees its digest.
+ */
+export async function listenAttemptSocket(o: AttemptSocketOptions): Promise<AttemptSocket> {
+  if (fs.existsSync(o.socketPath)) throw new Error(`${o.socketPath} already exists; an attempt socket is always new`);
+  let accepted = 0;
+  const live = new Set<net.Socket>();
+  const refuse = (sock: net.Socket, why: string) => {
+    o.onRefused?.(why);
+    sock.destroy();
+  };
+  const server = net.createServer((sock) => {
+    live.add(sock);
+    sock.on('close', () => live.delete(sock));
+    sock.on('error', () => {});
+    let head = Buffer.alloc(0);
+    const timer = setTimeout(() => refuse(sock, 'no handshake'), o.handshakeTimeoutMs ?? 5_000);
+    const onData = (chunk: Buffer) => {
+      head = Buffer.concat([head, chunk]);
+      const nl = head.indexOf(0x0a);
+      if (nl < 0) {
+        if (head.length > MAX_HANDSHAKE_BYTES) {
+          clearTimeout(timer);
+          sock.off('data', onData);
+          refuse(sock, 'handshake too long');
+        }
+        return;
+      }
+      clearTimeout(timer);
+      sock.off('data', onData);
+      sock.pause();
+      const line = head.subarray(0, nl).toString('utf8');
+      const rest = head.subarray(nl + 1);
+      const m = new RegExp(`^${MCP_HANDSHAKE} ([0-9a-f]{32,128})$`).exec(line);
+      if (!m) return refuse(sock, 'malformed handshake');
+      let owner: { id: string } | null;
+      try {
+        owner = o.resolve(m[1]);
+      } catch {
+        owner = null;
+      }
+      if (!owner) return refuse(sock, 'token matches no live attempt');
+      if (owner.id !== o.attemptId) return refuse(sock, `token belongs to another attempt, not ${o.attemptId}`);
+      accepted++;
+      if (rest.length) sock.unshift(rest);
+      const mcp = o.serve();
+      sock.on('close', () => { mcp.close().catch(() => {}); });
+      // Paused above so nothing is read before the transport listens; an explicit pause is
+      // not undone by adding a listener.
+      mcp.connect(new StdioServerTransport(sock, sock)).then(() => sock.resume(), () => sock.destroy());
+    };
+    sock.on('data', onData);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(o.socketPath, () => resolve());
+  });
+  fs.chmodSync(o.socketPath, 0o600);
+  return {
+    path: o.socketPath,
+    accepted: () => accepted,
+    close: () => new Promise<void>((resolve) => {
+      for (const s of live) s.destroy();
+      server.close(() => {
+        fs.rmSync(o.socketPath, { force: true });
+        resolve();
+      });
+    }),
+  };
 }
 
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
