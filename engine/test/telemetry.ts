@@ -365,7 +365,7 @@ await (async () => {
 
 section('an agent does not outlive the process that ran it');
 await (async () => {
-  // `vds:stop-job` sends SIGTERM to the CLI only. The agent it spawned, and anything the
+  // `daylight:stop-job` sends SIGTERM to the CLI only. The agent it spawned, and anything the
   // agent spawned, must go with it rather than keep writing claims for an attempt nobody owns.
   const marker = `DAYLIGHT_ORPHAN_MARKER_${process.pid}`;
   const parent = path.join(tmp, 'parent.mjs');

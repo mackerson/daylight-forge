@@ -163,7 +163,7 @@ export interface RunShape {
  * old private `Findings` made. The engine owns what a recorded event *is*, because the MCP
  * server is what writes them; these are the fields the panels happen to display.
  */
-export type VdsEvent = RunEvent & {
+export type AgentEvent = RunEvent & {
   ok?: boolean;
   predicate?: string;
   name?: string;
@@ -246,13 +246,13 @@ export interface QueryPayload {
   leases: Array<{ subject: string; session: string; until: number }>;
   /** What previous runs cost and bought; survives a restart, unlike a toast. */
   runs: RunRecord[];
-  events: VdsEvent[];
+  events: AgentEvent[];
   error?: string;
 }
 
 declare global {
   interface Window {
-    vds: {
+    daylight: {
       state(): Promise<{
         repo: string | null; dir: string; hasGraph: boolean; missingRepo?: string | null;
         watching?: boolean;
@@ -305,7 +305,7 @@ declare global {
       saveInvariant(p: { id: string; prose: string; predicate: string }): Promise<{
         ok?: boolean; file?: string; count?: number; replaced?: boolean; error?: string;
       }>;
-      onEvent(fn: (e: VdsEvent) => void): () => void;
+      onEvent(fn: (e: AgentEvent) => void): () => void;
       onJob(fn: (j: Job) => void): () => void;
       onDerived(fn: (p: { at: number }) => void): () => void;
       onJobStats(fn: (p: {

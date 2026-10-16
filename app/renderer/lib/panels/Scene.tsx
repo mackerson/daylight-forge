@@ -27,7 +27,7 @@ declare global {
      * For the headless harness: read the lifecycle counters and drive a lens change through
      * the real React path, so a shot can assert that switching lens twice created one renderer.
      */
-    __vdsScene?: { counters: SceneCounters; setChannel: (c: Channel) => void };
+    __daylightScene?: { counters: SceneCounters; setChannel: (c: Channel) => void };
   }
 }
 
@@ -197,13 +197,13 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
     { fps: 0, meanMs: 0, p95Ms: 0, worstMs: 0, samples: 0, visible: 0, draws: 0, tris: 0 },
   );
   useEffect(() => {
-    void window.vds.settings().then((s) => setSettings(normaliseSettings(s)));
+    void window.daylight.settings().then((s) => setSettings(normaliseSettings(s)));
   }, []);
   // Positions the user moved last time. Loaded once, keyed by node id, so a re-map keeps
   // every override whose node still exists and silently forgets the rest.
   useEffect(() => {
     if (!data?.dir) return;
-    void window.vds.layout().then((r) => {
+    void window.daylight.layout().then((r) => {
       if (r?.moved && Object.keys(r.moved).length) setMoved(r.moved);
     });
   }, [data?.dir]);
@@ -260,7 +260,7 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
     next.add(id);
     // Fetch before expanding, so the relayout happens once with the symbols in hand
     // rather than once empty and again when they arrive.
-    void window.vds.symbols({ file: id }).then((r) => {
+    void window.daylight.symbols({ file: id }).then((r) => {
       setSymbols((prev) => ({ ...prev, [id]: r.symbols ?? [] }));
       setExpanded(next);
     });
@@ -282,22 +282,22 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
       onGpu: setGpu,
       onStats: setStats,
       onAdapted: (learned, note) => {
-        void window.vds.settings({ allLevelsLimit: learned });
+        void window.daylight.settings({ allLevelsLimit: learned });
         setSettings((prev) => ({ ...prev, allLevelsLimit: learned }));
         setAdaptNote(note);
       },
       onMoved: (key, at) => {
         setMoved((prev) => ({ ...prev, [key]: at }));
-        void window.vds.layout({ repo: repoRef.current ?? '', moved: { ...movedRef.current, [key]: at } });
+        void window.daylight.layout({ repo: repoRef.current ?? '', moved: { ...movedRef.current, [key]: at } });
       },
       onToggleExpand: toggleExpand,
     }, { perf: !!perfFlags.perf, bench: Number(perfFlags.bench ?? 0), debugPick: !!perfFlags.debugPick });
     setCtrl(controller);
-    window.__vdsScene = { counters: controller.counters, setChannel: (c) => channelRef.current(c) };
+    window.__daylightScene = { counters: controller.counters, setChannel: (c) => channelRef.current(c) };
     return () => {
       controller.dispose();
       setCtrl((cur) => (cur === controller ? null : cur));
-      if (window.__vdsScene?.counters === controller.counters) delete window.__vdsScene;
+      if (window.__daylightScene?.counters === controller.counters) delete window.__daylightScene;
     };
     // `data` is read for its one-shot flags only; it must not be a dependency here or
     // every reload would be a new WebGL context, which is the bug this file replaced.
@@ -445,7 +445,7 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
                 // Off means "draw everything, I have measured this machine".
                 const next = settings.allLevelsLimit === 0 ? DEFAULT_SETTINGS.allLevelsLimit : 0;
                 setSettings({ ...settings, allLevelsLimit: next });
-                void window.vds.settings({ allLevelsLimit: next });
+                void window.daylight.settings({ allLevelsLimit: next });
               }}
             >
               {settings.allLevelsLimit === 0 ? 'restore limit' : 'draw everything'}
@@ -466,7 +466,7 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
                 className="link"
                 onClick={() => {
                   setMoved({});
-                  void window.vds.layout({ repo: data.repo ?? '', moved: {} });
+                  void window.daylight.layout({ repo: data.repo ?? '', moved: {} });
                 }}
               >
                 put {Object.keys(moved).length} moved node

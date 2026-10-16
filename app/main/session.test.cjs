@@ -94,7 +94,7 @@ console.log('\nand a directory belonging to someone else is refused');
 }
 
 /**
- * `vds:load` reads five JSON files out of the output directory and is called on mount, on
+ * `daylight:load` reads five JSON files out of the output directory and is called on mount, on
  * every action, on every finished job and on every derive — which fires whenever `claims.db`
  * moves. A running swarm had the process that draws the window re-parsing all of them twice a
  * second. Cached by mtime, which only helps if a rewritten file is still re-read: serving the

@@ -40,13 +40,13 @@ export function Author({ onSaved }: { onSaved: () => void }) {
 
   const check = async () => {
     setBusy(true);
-    setResult(await window.vds.tryInvariant({ predicate }));
+    setResult(await window.daylight.tryInvariant({ predicate }));
     setBusy(false);
   };
 
   const save = async () => {
     setBusy(true);
-    const r = await window.vds.saveInvariant({ id: id.trim(), prose, predicate });
+    const r = await window.daylight.saveInvariant({ id: id.trim(), prose, predicate });
     setBusy(false);
     if (r.error) setSaved(`could not save: ${r.error}`);
     else {
@@ -134,7 +134,7 @@ export function Author({ onSaved }: { onSaved: () => void }) {
             <ul className="rows">
               {result.violations.slice(0, 20).map((v, i) => (
                 <li key={i}>
-                  <button className="link mono" onClick={() => window.vds.reveal({ file: v.where, line: v.line })}>
+                  <button className="link mono" onClick={() => window.daylight.reveal({ file: v.where, line: v.line })}>
                     {v.where}{v.line ? `:${v.line}` : ''}
                   </button>{' '}
                   — {v.detail}

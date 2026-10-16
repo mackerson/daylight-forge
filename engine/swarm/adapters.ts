@@ -342,7 +342,7 @@ const spendOf = (p: SpendParts) => ({ cost: Math.max(p.total, p.generic, p.summe
  *
  * Each agent is its own group leader, so one signal reaches the agent and everything it
  * started. While any is live, a SIGTERM, SIGINT or SIGHUP to this process is turned into an
- * ordinary exit, and on exit every live group is killed: `vds:stop-job` signals the CLI only,
+ * ordinary exit, and on exit every live group is killed: `daylight:stop-job` signals the CLI only,
  * and an agent left running would keep writing claims for an attempt nobody owns. `exit`
  * listeners elsewhere (the mission runner's) run on that same exit.
  */

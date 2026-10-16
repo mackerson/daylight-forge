@@ -15,7 +15,7 @@ const { createHash } = require('node:crypto');
 /**
  * JSON out of an output directory, re-parsed only when the file changes.
  *
- * `vds:load` reads five of these, and it is called on mount, on every action, on every
+ * `daylight:load` reads five of these, and it is called on mount, on every action, on every
  * finished job and on every derive — and derive fires whenever `claims.db` moves, so a
  * running swarm had the process that draws the window re-parsing the whole output directory
  * every couple of seconds to hand back bytes it had already seen. Keyed by mtime, which is

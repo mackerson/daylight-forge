@@ -52,7 +52,7 @@ function Snippet({ ev }: { ev: Evidence }) {
   useEffect(() => {
     if (!open || state.lines || state.error || !ev.file) return;
     let live = true;
-    void window.vds.snippet({ file: ev.file, line: ev.line, context: 3 }).then((r) => {
+    void window.daylight.snippet({ file: ev.file, line: ev.line, context: 3 }).then((r) => {
       if (live) setState(r);
     });
     return () => { live = false; };
@@ -242,7 +242,7 @@ export function BeliefDetail({
 
   const decide = async (value: unknown, note: string) => {
     setBusy(true);
-    await window.vds.arbitrate({
+    await window.daylight.arbitrate({
       subject: belief.subject, predicate: belief.predicate, value, note,
     });
     setBusy(false);
@@ -440,7 +440,7 @@ export function BeliefDetail({
                   </span>
                   <button
                     className="where"
-                    onClick={() => window.vds.reveal({ file: e.file, line: e.line })}
+                    onClick={() => window.daylight.reveal({ file: e.file, line: e.line })}
                     title="open it in your editor"
                   >
                     {e.file}{e.line ? `:${e.line}` : ''}

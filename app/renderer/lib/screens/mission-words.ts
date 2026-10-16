@@ -1,5 +1,5 @@
 import type {
-  Attempt, DaylightEvent, ExecutionRecord, Experiment, Mission, MissionList, MissionUpdate, VdsEvent,
+  Attempt, DaylightEvent, ExecutionRecord, Experiment, Mission, MissionList, MissionUpdate, AgentEvent,
 } from '../types.ts';
 import type { Tone } from '../vocab.ts';
 
@@ -118,8 +118,8 @@ export const duration = (a: { startedAt: number; finishedAt?: number }, now = Da
  * `RunEvent` rather than teaching the scene a second shape. Only `tool.call` events have a
  * place on the map; process and cost events are for the timeline.
  */
-export function toRunEvents(events: DaylightEvent[]): VdsEvent[] {
-  const out: VdsEvent[] = [];
+export function toRunEvents(events: DaylightEvent[]): AgentEvent[] {
+  const out: AgentEvent[] = [];
   for (const e of events) {
     if (e.name !== 'tool.call') continue;
     const p = e.payload as Record<string, unknown>;

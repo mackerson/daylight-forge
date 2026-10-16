@@ -198,7 +198,7 @@ function runDerive() {
     { cwd: ROOT, env: nodeEnv(), timeout: 60_000 },
     (err) => {
       deriving = false;
-      if (!err) send('vds:derived', { at: Date.now() });
+      if (!err) send('daylight:derived', { at: Date.now() });
       else console.error(`derive failed: ${err.message}`);
       if (derivePending) {
         derivePending = false;
@@ -255,7 +255,7 @@ function startTail() {
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        send('vds:event', JSON.parse(line));
+        send('daylight:event', JSON.parse(line));
       } catch {
         // A malformed line is not worth killing the tail over.
       }
@@ -289,7 +289,7 @@ function startWatch() {
       if (WATCH_IGNORED.test(rel) || !WATCH_SOURCE.test(rel)) return;
       if (watchTimer) clearTimeout(watchTimer);
       watchTimer = setTimeout(() => {
-        send('vds:watch', { reason: rel });
+        send('daylight:watch', { reason: rel });
         runJob('map (watch)', ['map', state.repo, '--out', state.dir, '--top', '0']);
       }, 1200);
     });
@@ -306,7 +306,7 @@ function stopWatch() {
   watchTimer = null;
 }
 
-ipcMain.handle('vds:watch', (_e, on) => {
+ipcMain.handle('daylight:watch', (_e, on) => {
   if (on) startWatch();
   else stopWatch();
   return { watching: !!watcher };
@@ -330,7 +330,7 @@ function runJob(label, argv, { onExit } = {}) {
   });
   jobs.set(id, child);
   const startedAt = Date.now();
-  send('vds:job', { id, label, status: 'running', argv, startedAt });
+  send('daylight:job', { id, label, status: 'running', argv, startedAt });
 
   /**
    * Per-source spend, as the engine reports it on `##daylight` lines.
@@ -358,7 +358,7 @@ function runJob(label, argv, { onExit } = {}) {
          * disk and only needs the live channel for what happens next.
          */
         if (msg.campaign) {
-          send('vds:campaign', { id, sample: msg.campaign });
+          send('daylight:campaign', { id, sample: msg.campaign });
           continue;
         }
         /**
@@ -367,7 +367,7 @@ function runJob(label, argv, { onExit } = {}) {
          * it, so this is the signal and the database is the data.
          */
         if (msg.mission && typeof msg.mission === 'object' && typeof msg.mission.id === 'string') {
-          send('vds:mission-update', { id, mission: msg.mission });
+          send('daylight:mission-update', { id, mission: msg.mission });
           continue;
         }
         if (!msg.spend) continue;
@@ -384,7 +384,7 @@ function runJob(label, argv, { onExit } = {}) {
       stats.cost += v.cost;
       stats.turns += v.turns;
     }
-    send('vds:job-stats', {
+    send('daylight:job-stats', {
       id, ...stats,
       sources: [...bySource.entries()].map(([source, v]) => ({ source, ...v })),
     });
@@ -402,7 +402,7 @@ function runJob(label, argv, { onExit } = {}) {
       scan(partial.slice(0, at));
       partial = partial.slice(at + 1);
     }
-    send('vds:job-output', { id, stream, text });
+    send('daylight:job-output', { id, stream, text });
   };
   child.stdout.on('data', push('stdout'));
   child.stderr.on('data', push('stderr'));
@@ -410,7 +410,7 @@ function runJob(label, argv, { onExit } = {}) {
   child.on('close', (code) => {
     jobs.delete(id);
     const ok = code === 0;
-    send('vds:job', { id, label, status: ok ? 'done' : 'failed', code, startedAt });
+    send('daylight:job', { id, label, status: ok ? 'done' : 'failed', code, startedAt });
 
     // A focus run takes minutes, so the likeliest thing is nobody is watching. Tell the
     // desktop, not just the panel — otherwise you come back to a finished run and cannot
@@ -464,7 +464,7 @@ function createWindow() {
   });
 
   if (DEV_URL) win.loadURL(DEV_URL);
-  else win.loadURL('app://vds/index.html');
+  else win.loadURL('app://daylight/index.html');
 
   startTail();
 
@@ -560,7 +560,7 @@ function createWindow() {
 
 // ---- ipc --------------------------------------------------------------------
 
-ipcMain.handle('vds:state', () => ({
+ipcMain.handle('daylight:state', () => ({
   ...state,
   hasGraph: fs.existsSync(path.join(state.dir, 'graph.json')),
   missingRepo,
@@ -577,7 +577,7 @@ ipcMain.handle('vds:state', () => ({
  */
 let symbolIndex = { mtime: 0, byFile: null };
 
-ipcMain.handle('vds:symbols', (_e, { file }) => {
+ipcMain.handle('daylight:symbols', (_e, { file }) => {
   const p = path.join(state.dir, 'symbols.json');
   if (!fs.existsSync(p)) return { symbols: [] };
   try {
@@ -608,7 +608,7 @@ const settingsPath = () => path.join(app.getPath('userData'), 'render-settings.j
  * directory is shared. Keyed by node id, so a re-map keeps every override whose node still
  * exists and silently drops the rest.
  */
-ipcMain.handle('vds:layout', (_e, payload) => {
+ipcMain.handle('daylight:layout', (_e, payload) => {
   const file = path.join(state.dir, 'layout-overrides.json');
   if (!payload || typeof payload !== 'object') {
     try {
@@ -626,7 +626,7 @@ ipcMain.handle('vds:layout', (_e, payload) => {
   }
 });
 
-ipcMain.handle('vds:settings', (_e, patch) => {
+ipcMain.handle('daylight:settings', (_e, patch) => {
   let current = {};
   try {
     if (fs.existsSync(settingsPath())) current = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
@@ -671,7 +671,7 @@ function detectDiscreteGpu() {
   return discreteGpu;
 }
 
-ipcMain.handle('vds:load', () => {
+ipcMain.handle('daylight:load', () => {
   const stack = readJson('focus.json', null);
 
   /**
@@ -741,7 +741,7 @@ ipcMain.handle('vds:load', () => {
     /**
      * Whether a watcher is actually running.
      *
-     * The renderer used to hold this by itself, set only from what `vds:watch` returned — so
+     * The renderer used to hold this by itself, set only from what `daylight:watch` returned — so
      * choosing a new repo, which stops the watcher here, left the button reading "watching"
      * and needing two presses to start again. The process that owns the watcher is the one
      * that can answer.
@@ -758,7 +758,7 @@ ipcMain.handle('vds:load', () => {
 });
 
 
-ipcMain.handle('vds:query', () =>
+ipcMain.handle('daylight:query', () =>
   new Promise((resolve) => {
     execFile(
       NODE.bin,
@@ -784,7 +784,7 @@ ipcMain.handle('vds:query', () =>
  * answer changes while the app is open.
  */
 let adapterCache = null;
-ipcMain.handle('vds:adapters', (_e, { refresh } = {}) => {
+ipcMain.handle('daylight:adapters', (_e, { refresh } = {}) => {
   if (adapterCache && !refresh) return adapterCache;
   return new Promise((resolve) => {
     execFile(
@@ -805,11 +805,11 @@ ipcMain.handle('vds:adapters', (_e, { refresh } = {}) => {
 });
 
 /**
- * The believability report. Its own channel rather than part of `vds:query` because it
+ * The believability report. Its own channel rather than part of `daylight:query` because it
  * re-reads graph.json and recomputes the frontier, which is fine on demand and far too
  * expensive to do on every job event the way `query` is called.
  */
-ipcMain.handle('vds:quality', () =>
+ipcMain.handle('daylight:quality', () =>
   new Promise((resolve) => {
     execFile(
       NODE.bin,
@@ -827,7 +827,7 @@ ipcMain.handle('vds:quality', () =>
   }),
 );
 
-ipcMain.handle('vds:pick-repo', async () => {
+ipcMain.handle('daylight:pick-repo', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Choose a repository to map',
     properties: ['openDirectory'],
@@ -860,7 +860,7 @@ ipcMain.handle('vds:pick-repo', async () => {
   return state;
 });
 
-ipcMain.handle('vds:set-dir', async () => {
+ipcMain.handle('daylight:set-dir', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Choose an output directory',
     properties: ['openDirectory', 'createDirectory'],
@@ -898,17 +898,17 @@ ipcMain.handle('vds:set-dir', async () => {
   return state;
 });
 
-ipcMain.handle('vds:map', () => {
+ipcMain.handle('daylight:map', () => {
   if (!state.repo) return { error: 'no repo selected' };
   return { id: runJob('map', ['map', state.repo, '--out', state.dir]) };
 });
 
-ipcMain.handle('vds:refocus', () => {
+ipcMain.handle('daylight:refocus', () => {
   if (!state.repo) return { error: 'no repo selected' };
   return { id: runJob('focus', ['focus', state.repo, '--out', state.dir]) };
 });
 
-ipcMain.handle('vds:agent', (_e, opts = {}) => {
+ipcMain.handle('daylight:agent', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };
   // Reserve the job id up front so the agent's events carry it and the UI can tie the
   // two together — without that, several concurrent runs are one undifferentiated stream.
@@ -948,7 +948,7 @@ ipcMain.handle('vds:agent', (_e, opts = {}) => {
  * The same `vds run` a terminal would use — the ceilings are the only thing a person is for,
  * so they are the only thing the window passes.
  */
-ipcMain.handle('vds:run', (_e, opts = {}) => {
+ipcMain.handle('daylight:run', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };
   const argv = ['run', state.repo, '--out', state.dir, '--tools', opts.tools || 'claude'];
   if (opts.rounds) argv.push('--rounds', String(opts.rounds));
@@ -961,14 +961,14 @@ ipcMain.handle('vds:run', (_e, opts = {}) => {
   return { id: runJob('run', argv) };
 });
 
-ipcMain.handle('vds:stop-job', (_e, id) => {
+ipcMain.handle('daylight:stop-job', (_e, id) => {
   const child = jobs.get(id);
   if (!child) return { ok: false };
   child.kill('SIGTERM');
   return { ok: true };
 });
 
-ipcMain.handle('vds:arbitrate', (_e, { subject, predicate, value, note }) =>
+ipcMain.handle('daylight:arbitrate', (_e, { subject, predicate, value, note }) =>
   new Promise((resolve) => {
     execFile(
       NODE.bin,
@@ -997,7 +997,7 @@ ipcMain.handle('vds:arbitrate', (_e, { subject, predicate, value, note }) =>
  * file:line that opens a file manager is not that. Reads are contained to the repo and
  * bounded in size; nothing is executed.
  */
-ipcMain.handle('vds:snippet', (_e, { file, line, context = 4 }) => {
+ipcMain.handle('daylight:snippet', (_e, { file, line, context = 4 }) => {
   if (!state.repo) return { error: 'no repo' };
   const abs = path.resolve(state.repo, file);
   if (!abs.startsWith(path.resolve(state.repo))) return { error: 'outside repo' };
@@ -1021,7 +1021,7 @@ ipcMain.handle('vds:snippet', (_e, { file, line, context = 4 }) => {
  * that is the whole point of the gate. Without a preview that rule is a trap: you write the
  * claim, commit it, and find out from CI. With one it is a workflow.
  */
-ipcMain.handle('vds:try-invariant', (_e, { predicate }) =>
+ipcMain.handle('daylight:try-invariant', (_e, { predicate }) =>
   new Promise((resolve) => {
     if (!state.repo) return resolve({ error: 'no repo' });
     execFile(
@@ -1047,7 +1047,7 @@ ipcMain.handle('vds:try-invariant', (_e, { predicate }) =>
  * allowed lives in engine/invariants/save.ts, where it is tested — this is a transport, and
  * a second copy of the validation here would be a second thing to get wrong.
  */
-ipcMain.handle('vds:save-invariant', (_e, { id, prose, predicate }) =>
+ipcMain.handle('daylight:save-invariant', (_e, { id, prose, predicate }) =>
   new Promise((resolve) => {
     if (!state.repo) return resolve({ error: 'no repo' });
     execFile(
@@ -1072,7 +1072,7 @@ ipcMain.handle('vds:save-invariant', (_e, { id, prose, predicate }) =>
 );
 
 /** Open a cited file at its line in the user's editor. Never executes anything. */
-ipcMain.handle('vds:reveal', (_e, { file, line }) => {
+ipcMain.handle('daylight:reveal', (_e, { file, line }) => {
   if (!state.repo) return { ok: false };
   const abs = path.resolve(state.repo, file);
   if (!abs.startsWith(path.resolve(state.repo))) return { ok: false, error: 'outside repo' };
@@ -1096,7 +1096,7 @@ function safeUsername() {
  *
  * Every Mission Control read goes through here. The renderer never names a path or a
  * command: it names an operation, main builds the argv from its own state, and a failure
- * comes back as `{error}` the way `vds:query` already reports one.
+ * comes back as `{error}` the way `daylight:query` already reports one.
  */
 function cliJson(argv, { timeout = 60_000, maxBuffer = 64 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
@@ -1135,17 +1135,17 @@ const idOf = (v) => (typeof v === 'string' && /^[a-z]{1,3}_[0-9a-f]{8,64}$/.test
 const digestOf = (v) => (typeof v === 'string' && /^sha256:[0-9a-f]{64}$/.test(v) ? v : null);
 const num = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : null);
 
-ipcMain.handle('vds:missions', () =>
+ipcMain.handle('daylight:missions', () =>
   cliJson(['mission', 'list', '--out', state.dir, '--format', 'json']),
 );
 
-ipcMain.handle('vds:mission', (_e, { id } = {}) => {
+ipcMain.handle('daylight:mission', (_e, { id } = {}) => {
   const mid = idOf(id);
   if (!mid) return { error: 'not a mission id' };
   return cliJson(['mission', 'inspect', mid, '--out', state.dir, '--format', 'json']);
 });
 
-ipcMain.handle('vds:mission-create', (_e, opts = {}) => {
+ipcMain.handle('daylight:mission-create', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };
   const kind = opts.kind === 'verify' ? 'verify' : opts.kind === 'explore' ? 'explore' : null;
   const objective = str(opts.objective, 2000);
@@ -1165,9 +1165,9 @@ ipcMain.handle('vds:mission-create', (_e, opts = {}) => {
 
 /**
  * Running a mission is a job, like `agent` and `run`: its output streams through the job
- * channels, its `##daylight {"mission":…}` lines become `vds:mission-update`, and it can be stopped.
+ * channels, its `##daylight {"mission":…}` lines become `daylight:mission-update`, and it can be stopped.
  */
-ipcMain.handle('vds:mission-run', (_e, opts = {}) => {
+ipcMain.handle('daylight:mission-run', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };
   const mid = idOf(opts.id);
   if (!mid) return { error: 'not a mission id' };
@@ -1180,7 +1180,7 @@ ipcMain.handle('vds:mission-run', (_e, opts = {}) => {
   return { id: runJob(`mission:${mid.slice(0, 10)}${opts.dryRun ? ':dry' : ''}`, argv) };
 });
 
-ipcMain.handle('vds:mission-decide', (_e, opts = {}) => {
+ipcMain.handle('daylight:mission-decide', (_e, opts = {}) => {
   const mid = idOf(opts.id);
   const subject = str(opts.subject, 1000);
   const predicate = str(opts.predicate, 200);
@@ -1201,7 +1201,7 @@ ipcMain.handle('vds:mission-decide', (_e, opts = {}) => {
   return cliJson(argv, { timeout: 30_000 });
 });
 
-ipcMain.handle('vds:mission-close', (_e, opts = {}) => {
+ipcMain.handle('daylight:mission-close', (_e, opts = {}) => {
   const mid = idOf(opts.id);
   const outcome = ['succeeded', 'failed', 'inconclusive', 'cancelled'].includes(opts.outcome) ? opts.outcome : null;
   const reason = str(opts.reason, 4000);
@@ -1211,7 +1211,7 @@ ipcMain.handle('vds:mission-close', (_e, opts = {}) => {
   ], { timeout: 30_000 });
 });
 
-ipcMain.handle('vds:experiment-run', (_e, opts = {}) => {
+ipcMain.handle('daylight:experiment-run', (_e, opts = {}) => {
   if (!state.repo) return { error: 'no repo selected' };
   const xid = idOf(opts.id);
   if (!xid) return { error: 'not an experiment id' };
@@ -1227,7 +1227,7 @@ ipcMain.handle('vds:experiment-run', (_e, opts = {}) => {
  * Addressed by digest only, so the renderer cannot ask for a file — it can ask for content
  * the mission already recorded, which is the whole point of content addressing.
  */
-ipcMain.handle('vds:artifact', (_e, opts = {}) => {
+ipcMain.handle('daylight:artifact', (_e, opts = {}) => {
   const digest = digestOf(opts.id);
   if (!digest) return { error: 'not an artifact digest' };
   const argv = ['artifact', digest, '--out', state.dir, '--format', 'json'];
@@ -1236,17 +1236,17 @@ ipcMain.handle('vds:artifact', (_e, opts = {}) => {
   return cliJson(argv, { timeout: 30_000 });
 });
 
-ipcMain.handle('vds:dl-events', (_e, opts = {}) => {
+ipcMain.handle('daylight:dl-events', (_e, opts = {}) => {
   const since = num(opts.since, 0, Number.MAX_SAFE_INTEGER) ?? 0;
   const mid = idOf(opts.missionId);
   return readDaylightEvents(since, mid, num(opts.limit, 1, 5000) ?? 500);
 });
 
-ipcMain.handle('vds:demo-prepare', () => ({
+ipcMain.handle('daylight:demo-prepare', () => ({
   id: runJob('demo prepare (PLANTED fixture)', ['demo', 'prepare', '--out', state.dir, '--format', 'json']),
 }));
 
-ipcMain.handle('vds:demo-replay', async () => {
+ipcMain.handle('daylight:demo-replay', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Choose a mission recording',
     properties: ['openFile'],
@@ -1337,7 +1337,7 @@ async function pollDaylight() {
     const { events } = await readDaylightEvents(dlWatch.since, dlWatch.missionId, 500);
     if (events.length) {
       dlWatch.since = events[events.length - 1].sequence;
-      send('vds:dl-event', { missionId: dlWatch.missionId, events });
+      send('daylight:dl-event', { missionId: dlWatch.missionId, events });
     }
   } finally {
     dlWatch.busy = false;
@@ -1352,7 +1352,7 @@ function scheduleDaylightPoll() {
   dlWatch.timer = setTimeout(pollDaylight, jobs.size > 0 ? 1000 : 5000);
 }
 
-ipcMain.handle('vds:mission-watch', (_e, missionId) => {
+ipcMain.handle('daylight:mission-watch', (_e, missionId) => {
   const mid = idOf(missionId);
   if (mid !== dlWatch.missionId) {
     dlWatch.missionId = mid;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { VdsEvent } from '../types.ts';
+import type { AgentEvent } from '../types.ts';
 import {
   delayFor, elapsedAt, emitEvent, emitReset, formatElapsed, SPEEDS, speedLabel, timeline,
 } from '../replay.ts';
@@ -19,7 +19,7 @@ import {
 export function Scrubber({
   events, active, onActiveChange,
 }: {
-  events: VdsEvent[];
+  events: AgentEvent[];
   active: boolean;
   onActiveChange: (active: boolean) => void;
 }) {

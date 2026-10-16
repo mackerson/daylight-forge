@@ -28,7 +28,7 @@ const DEFAULT_SHAPE: RunShape = {
   rounds: 8,
 };
 
-const STORAGE_KEY = 'vds.runShape';
+const STORAGE_KEY = 'daylight.runShape';
 
 function loadShape(): RunShape {
   try {
@@ -115,7 +115,7 @@ export function Explore({
   const [adapters, setAdapters] = useState<AdapterStatus[] | null>(null);
 
   useEffect(() => {
-    void window.vds.adapters().then((r) => setAdapters(r.adapters ?? []));
+    void window.daylight.adapters().then((r) => setAdapters(r.adapters ?? []));
   }, []);
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(shape));

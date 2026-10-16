@@ -7,91 +7,91 @@ const { contextBridge, ipcRenderer } = require('electron');
  */
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 
-contextBridge.exposeInMainWorld('vds', {
-  state: () => invoke('vds:state'),
-  load: () => invoke('vds:load'),
-  query: () => invoke('vds:query'),
+contextBridge.exposeInMainWorld('daylight', {
+  state: () => invoke('daylight:state'),
+  load: () => invoke('daylight:load'),
+  query: () => invoke('daylight:query'),
 
-  pickRepo: () => invoke('vds:pick-repo'),
-  setDir: () => invoke('vds:set-dir'),
+  pickRepo: () => invoke('daylight:pick-repo'),
+  setDir: () => invoke('daylight:set-dir'),
 
-  adapters: (opts) => invoke('vds:adapters', opts),
-  quality: () => invoke('vds:quality'),
+  adapters: (opts) => invoke('daylight:adapters', opts),
+  quality: () => invoke('daylight:quality'),
 
-  map: () => invoke('vds:map'),
-  refocus: () => invoke('vds:refocus'),
-  agent: (opts) => invoke('vds:agent', opts),
-  run: (opts) => invoke('vds:run', opts),
-  stopJob: (id) => invoke('vds:stop-job', id),
+  map: () => invoke('daylight:map'),
+  refocus: () => invoke('daylight:refocus'),
+  agent: (opts) => invoke('daylight:agent', opts),
+  run: (opts) => invoke('daylight:run', opts),
+  stopJob: (id) => invoke('daylight:stop-job', id),
 
-  arbitrate: (payload) => invoke('vds:arbitrate', payload),
-  reveal: (payload) => invoke('vds:reveal', payload),
-  snippet: (payload) => invoke('vds:snippet', payload),
-  symbols: (payload) => invoke('vds:symbols', payload),
-  settings: (patch) => invoke('vds:settings', patch),
-  layout: (payload) => invoke('vds:layout', payload),
-  watch: (on) => invoke('vds:watch', on),
-  tryInvariant: (payload) => invoke('vds:try-invariant', payload),
-  saveInvariant: (payload) => invoke('vds:save-invariant', payload),
+  arbitrate: (payload) => invoke('daylight:arbitrate', payload),
+  reveal: (payload) => invoke('daylight:reveal', payload),
+  snippet: (payload) => invoke('daylight:snippet', payload),
+  symbols: (payload) => invoke('daylight:symbols', payload),
+  settings: (patch) => invoke('daylight:settings', patch),
+  layout: (payload) => invoke('daylight:layout', payload),
+  watch: (on) => invoke('daylight:watch', on),
+  tryInvariant: (payload) => invoke('daylight:try-invariant', payload),
+  saveInvariant: (payload) => invoke('daylight:save-invariant', payload),
   onWatch: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:watch', h);
-    return () => ipcRenderer.removeListener('vds:watch', h);
+    ipcRenderer.on('daylight:watch', h);
+    return () => ipcRenderer.removeListener('daylight:watch', h);
   },
 
   onCampaign: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:campaign', h);
-    return () => ipcRenderer.removeListener('vds:campaign', h);
+    ipcRenderer.on('daylight:campaign', h);
+    return () => ipcRenderer.removeListener('daylight:campaign', h);
   },
 
   onEvent: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:event', h);
-    return () => ipcRenderer.removeListener('vds:event', h);
+    ipcRenderer.on('daylight:event', h);
+    return () => ipcRenderer.removeListener('daylight:event', h);
   },
   onJob: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:job', h);
-    return () => ipcRenderer.removeListener('vds:job', h);
+    ipcRenderer.on('daylight:job', h);
+    return () => ipcRenderer.removeListener('daylight:job', h);
   },
   onJobStats: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:job-stats', h);
-    return () => ipcRenderer.removeListener('vds:job-stats', h);
+    ipcRenderer.on('daylight:job-stats', h);
+    return () => ipcRenderer.removeListener('daylight:job-stats', h);
   },
   onDerived: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:derived', h);
-    return () => ipcRenderer.removeListener('vds:derived', h);
+    ipcRenderer.on('daylight:derived', h);
+    return () => ipcRenderer.removeListener('daylight:derived', h);
   },
   onJobOutput: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:job-output', h);
-    return () => ipcRenderer.removeListener('vds:job-output', h);
+    ipcRenderer.on('daylight:job-output', h);
+    return () => ipcRenderer.removeListener('daylight:job-output', h);
   },
 
   // Mission Control. Same rule as everything above: named operations, validated in main.
-  missions: () => invoke('vds:missions'),
-  mission: (p) => invoke('vds:mission', p),
-  missionCreate: (p) => invoke('vds:mission-create', p),
-  missionRun: (p) => invoke('vds:mission-run', p),
-  missionDecide: (p) => invoke('vds:mission-decide', p),
-  missionClose: (p) => invoke('vds:mission-close', p),
-  experimentRun: (p) => invoke('vds:experiment-run', p),
-  artifact: (p) => invoke('vds:artifact', p),
-  dlEvents: (p) => invoke('vds:dl-events', p),
-  missionWatch: (id) => invoke('vds:mission-watch', id),
-  demoPrepare: () => invoke('vds:demo-prepare'),
-  demoReplay: () => invoke('vds:demo-replay'),
+  missions: () => invoke('daylight:missions'),
+  mission: (p) => invoke('daylight:mission', p),
+  missionCreate: (p) => invoke('daylight:mission-create', p),
+  missionRun: (p) => invoke('daylight:mission-run', p),
+  missionDecide: (p) => invoke('daylight:mission-decide', p),
+  missionClose: (p) => invoke('daylight:mission-close', p),
+  experimentRun: (p) => invoke('daylight:experiment-run', p),
+  artifact: (p) => invoke('daylight:artifact', p),
+  dlEvents: (p) => invoke('daylight:dl-events', p),
+  missionWatch: (id) => invoke('daylight:mission-watch', id),
+  demoPrepare: () => invoke('daylight:demo-prepare'),
+  demoReplay: () => invoke('daylight:demo-replay'),
   onDlEvent: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:dl-event', h);
-    return () => ipcRenderer.removeListener('vds:dl-event', h);
+    ipcRenderer.on('daylight:dl-event', h);
+    return () => ipcRenderer.removeListener('daylight:dl-event', h);
   },
   onMissionUpdate: (fn) => {
     const h = (_e, payload) => fn(payload);
-    ipcRenderer.on('vds:mission-update', h);
-    return () => ipcRenderer.removeListener('vds:mission-update', h);
+    ipcRenderer.on('daylight:mission-update', h);
+    return () => ipcRenderer.removeListener('daylight:mission-update', h);
   },
 });

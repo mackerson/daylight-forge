@@ -214,10 +214,10 @@ console.log(JSON.stringify({ reviewer: env.DAYLIGHT_MODEL }));
     say('### Single renderer across lens changes');
     say();
     const counters = shotAssert(selfOut,
-      "(async()=>{window.__vdsScene.setChannel('belief');await new Promise(r=>setTimeout(r,800));"
-      + "window.__vdsScene.setChannel('agent');await new Promise(r=>setTimeout(r,800));"
-      + 'return JSON.stringify(window.__vdsScene.counters)})()', {}, headless ? HEADLESS : []);
-    say(`After two lens switches, \`window.__vdsScene.counters\` = \`${counters ?? 'not measured'}\`.`);
+      "(async()=>{window.__daylightScene.setChannel('belief');await new Promise(r=>setTimeout(r,800));"
+      + "window.__daylightScene.setChannel('agent');await new Promise(r=>setTimeout(r,800));"
+      + 'return JSON.stringify(window.__daylightScene.counters)})()', {}, headless ? HEADLESS : []);
+    say(`After two lens switches, \`window.__daylightScene.counters\` = \`${counters ?? 'not measured'}\`.`);
     say('Expected: `renderers` 1, `projections` 1, `recolors` ≥ 2 — the WebGL context is created once per mount.');
   }
   say();

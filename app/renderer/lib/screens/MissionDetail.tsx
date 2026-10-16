@@ -51,7 +51,7 @@ export function MissionDetail({
   const [selection, setSelection] = useState<EvidenceSelection | null>(null);
   const [openAttempt, setOpenAttempt] = useState<string | null>(null);
   const [attemptFilter, setAttemptFilter] = useState<string | null>(null);
-  const [tools, setTools] = useState(() => localStorage.getItem('vds.missionRoster') ?? 'claude:sonnet,codex');
+  const [tools, setTools] = useState(() => localStorage.getItem('daylight.missionRoster') ?? 'claude:sonnet,codex');
   const [maxCost, setMaxCost] = useState(2);
   const [rationale, setRationale] = useState('');
   const [verdict, setVerdict] = useState<'true' | 'false' | 'custom'>('true');
@@ -61,7 +61,7 @@ export function MissionDetail({
   const [closeReason, setCloseReason] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
-  useEffect(() => { localStorage.setItem('vds.missionRoster', tools); }, [tools]);
+  useEffect(() => { localStorage.setItem('daylight.missionRoster', tools); }, [tools]);
 
   // Default the evidence pane to the thing most worth looking at: a concluded experiment,
   // else the first dispute. A blank pane on open would be a pane nobody finds.
