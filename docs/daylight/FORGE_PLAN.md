@@ -38,9 +38,7 @@ ledger M7. Gate dependency snapshots are P2 (ADR-28). Author exec is open, not d
 
 The sources are working papers outside the repository. They are cited here, not reproduced.
 
-- **Proposals A and B**: two independent planners worked against `daylight` @ 13a5775, from the
-  code. They disagreed on the author workspace, network policy, gate visibility, apply mechanics
-  and the schema table set.
+- **Proposals A and B**: two independent plans written from the code at `daylight` @ 13a5775.
 - **Security review**: 22 findings (5 High, 9 Medium, 8 Low). VERIFIED highs included host writes
   through committed symlinks (H1), a TOCTOU on the registered test (H2) and host git hooks firing
   from `git worktree add` (H3).
@@ -299,10 +297,13 @@ rulings.
 - **Context.** Sec H5: `<out>` inside the repo was readable by host-run reviewers.
 - **Decision.** The default is the XDG path in §4. Two checkouts of one project never share a
   claims db. `guardOutputDirectory` is unchanged. The reviewer mount is the repo only.
-- **Consequences.** R3 says this closes H5 for the default layout. The WS-R inventory disputes it:
-  reviewer file tools accept absolute paths, which it marks unverified for Claude Code. R8 does
-  not address the dispute.
-- **Status.** Decided for the location. Open for whether H5 is closed (§10).
+- **Consequences.** The move does **not** close H5 (R3 correction). Reviewers run unsandboxed
+  today with `cwd: root` (`orchestrate.ts:365`); the move only removes the relative
+  `out/claims.db` hop. R9.1 rules that WS2's sandbox gains a `review` profile alongside `author`
+  and `gate`: repo ro-bind, no `<out>`, network `shared`, no write. WS8 runs review attempts under
+  it when bwrap is present. Whether real `claude`/`codex` work under that profile needs one
+  authorised live spike. Until then the ledger records H5 as open.
+- **Status.** Decided for the location and the `review` profile. H5 itself is Open (§10).
 
 ### ADR-28 — Gates are zero-dependency or vendored (Q1)
 
@@ -367,6 +368,8 @@ rulings.
   - WS1 adds the row-side reaper for pending rows that survive a `/tmp` wipe.
   - WS5's brief must state that `adapters.ts:420` and `capture.ts:173` key on `cost.reported`, so
     all three rename together, with a `runMission` over-budget test.
+  - The node binary stays bound at its own host path (WS0 deviation 3 stands). PLAN F-1's
+    `/opt/node/bin/node` is withdrawn.
 - **Status.** Decided.
 
 ### ADR-33 — Integration order (R6)
@@ -392,9 +395,12 @@ rulings.
 ### ADR-35 — Exec inside the author sandbox
 
 - **Context.** The plan and proposal B had authors write text and never execute it, with a
-  `forge-author-no-exec` invariant in WS2. R7 puts exec to the owner as a separate question.
-- **Decision.** None yet. WS2 builds the sandbox so a profile flag can enable exec without
-  restructuring.
+  `forge-author-no-exec` invariant in WS2. R7 put exec to the owner on 2026-10-16 (R9.2):
+  - **(a)** exec allowed inside the author bwrap: rw detached tree, network `none`, prlimit,
+    gate tests never mounted. Exec is an explicit, recorded profile flag.
+  - **(b)** write only; the gates execute (PLAN as written).
+- **Decision.** None. The owner has not answered. The director *recommends* (a); that is a
+  recommendation, not a decision. WS2 builds the profile so either option is a flag.
 - **Consequences.** Whether `forge-author-no-exec` ships depends on the answer.
 - **Status.** Open, awaiting the owner (§10).
 
@@ -489,13 +495,13 @@ Each feature workstream adds one test file under `engine/test/` and uses mocks o
 | WS0 | P0 hardening | runner, sandbox, events, capture/normalize, adapters, store, orchestrate, export, project, MCP server, App.tsx | — | 30/30 reported; review asks for fixes 1–3 before merge |
 | WS-R | Rename | identifiers, env, config dir, default `<out>`, banners, MCP key, consistency test | WS0 | serial; names and out location only |
 | WS1 | Contracts + schema v2 | `mission/types.ts`, `db.ts`, `store.ts`, `export.ts` (v2 only), `forge/policy.ts` | WS-R | no migration; v1 refused; row-side reaper; `closeMission` rule |
-| WS2 | Workspace + author sandbox | `forge/workspace.ts`, `sandbox.ts`, `authors.ts`, `diff.ts` | WS1 | exec behind a profile flag (ADR-35); escape tests; both network modes |
+| WS2 | Workspace + author sandbox | `forge/workspace.ts`, `sandbox.ts`, `authors.ts`, `diff.ts` | WS1 | adds the `review` profile (ADR-27); author exec behind a profile flag (ADR-35); escape tests; both network modes |
 | WS3 | Gates | additive `target` in `experiment/runner.ts`, `forge/gate.ts`, `forge/verdict.ts` | WS1, WS0 | registers only via `registerExperiment` |
 | WS4 | Approve + apply + attribution | `forge/decide.ts`, `apply.ts`, `trailers.ts` | WS1, WS3 | trailers per ADR-29 |
 | WS5 | Ledger + usage | `mission/ledger.ts`, `report.ts`, usage into `attempt_usage` | WS1, WS0 | three-way `cost.reported` rename (ADR-32) |
 | WS6 | Transcript ingester | `ingest/claude-code.ts`, `ingest/commands.ts`, `redact` shapes, synthetic fixtures | WS1, WS5 | parser built against fixtures |
 | WS7 | Spec intake + work items | `forge/spec.ts`, `decompose.ts`, `propose_work_item` | WS1, WS0 | blind-filtered |
-| WS8 | Orchestration + CLI + needs | `forge/orchestrate.ts`, `commands.ts`, `mission/needs.ts`, ACCEPTANCE P1 section, `test:all` | WS2–WS7 | `forge-e2e.ts` covers the full loop |
+| WS8 | Orchestration + CLI + needs | `forge/orchestrate.ts`, `commands.ts`, `mission/needs.ts`, ACCEPTANCE P1 section, `test:all` | WS2–WS7 | `forge-e2e.ts` covers the full loop; review attempts run under the `review` profile when bwrap is present |
 | WS9 | UI | new IPC handlers, `CandidateReview.tsx`, `Ledger.tsx`, `WorkItems.tsx`, implement branch, needs strip | WS1; WS8 JSON | built against fixture JSON |
 
 **Final order (R6):**
@@ -573,29 +579,30 @@ not tests that pin old names, paths or v1 compatibility. RULINGS wins.
 
 ## 10. Open questions
 
-1. **Author exec inside the sandbox (ADR-35).** Awaiting the owner. The two options are:
-   - **(a)** no exec. Authors write text, code runs only in the no-network gate sandbox, and
-     `forge-author-no-exec` ships.
-   - **(b)** exec allowed inside the author sandbox through WS2's profile flag.
+Items 1–4 are R9's open items, recorded so that no writer invents an answer.
 
-   The wording actually put to the owner (the director's reply of 2026-10-16) is not among this
-   document's sources. This framing is a reading of PLAN, proposal B and R7.
-2. **Commit trailer attribution.** The owner asked WS0 for `Co-Authored-By: Claude Fable 5.1`.
-   WS0's 33 unpushed commits carry the harness-supplied `Co-Authored-By: Claude Opus 5.5`, which
-   matches the model that wrote them. The choice is:
-   - keep the Opus trailer;
-   - rewrite the 33 commits before merge. That is mechanical, but it rewrites history and needs
-     the owner's explicit go-ahead.
+1. **Sec H5: reviewer reach (R9.1, ADR-27).** Reviewers are not sandboxed today. The ruling is
+   that WS2 adds a `review` profile and WS8 runs review attempts under it when bwrap is present.
+   One authorised live spike must still confirm that real `claude`/`codex` work under that
+   profile; this is owner Q5 territory. Until then H5 is **Open** and the ledger says so.
+2. **Author exec inside the author sandbox (R9.2, ADR-35).** Put to the owner on 2026-10-16. The
+   options are:
+   - **(a)** allow exec inside the author bwrap: rw detached tree, network `none`, prlimit, gate
+     tests never mounted. Exec is an explicit, recorded profile flag. The director recommends
+     this option. That is a recommendation, not a decision.
+   - **(b)** write only, and the gates execute (PLAN as written).
 
-   This is separate from the `Co-Authored-By` line Daylight writes on applied candidates.
-3. **The live author run (Q5, ADR-31).** It needs the owner's authorisation. The target repository
-   is not chosen.
-4. **The live credential (Q4, ADR-30).** The policy is decided. Provisioning, the cap amount, and
-   which variable the adapter allowlists for it are not.
-5. **Is Sec H5 closed? (ADR-27).** R3 says yes for the default layout. The WS-R inventory says
-   reviewer tools still reach absolute paths. Unresolved.
-6. **Author-profile node binding.** F-1 binds node at `/opt/node/bin/node`. WS0 deviation 3 binds
-   it at its own path, to keep `experiment.ts:144` true. R5 does not list this deviation, and WS2
-   needs a ruling.
-7. **Ledger M4 blind half (= Sec L6).** It is pinned by `engine/test/orchestrate.ts:179`. R1 now
-   permits narrowing that test, but nobody has ruled.
+   The question is unanswered, so its status is **Open**. WS2 builds the profile so that either
+   option is a flag.
+3. **Commit trailer attribution (R9.3).** This covers Opus-written commits, including WS0's 33
+   unpushed commits. The options are:
+   - keep `Claude Opus 5.5`, the honest record. The director recommends this.
+   - rewrite the trailers to Fable 5.1, per the owner's global rule. This rewrites history.
+
+   The question is unanswered, so its status is **Open**. It is separate from the
+   `Co-Authored-By` line that Daylight writes on applied candidates.
+4. **The live author run (Q5) and its credential (Q4a) (R9.4, ADR-30, ADR-31).** Neither is
+   authorised, so the status is **Open**. The target repository, the credential's provisioning
+   and its cap are not chosen.
+5. **Ledger M4 blind half (= Sec L6).** This is pinned by `engine/test/orchestrate.ts:179`. R1 now
+   permits narrowing it, but nobody has ruled. (This item is not in R9.)
