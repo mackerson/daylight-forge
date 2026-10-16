@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EXPECTED_FIXTURE_COMMIT } from '../demo/fixture.ts';
-import { visibleToReviewer } from '../mcp/server.ts';
+import { createServer, visibleToReviewer } from '../mcp/server.ts';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type { Experiment, Mission } from '../mission/types.ts';
 import { ClaimStore } from '../store/claims.ts';
@@ -179,6 +179,36 @@ section('blind review filter');
   check('another mission\'s agent claims show', seen.includes(elsewhere));
   check('human and static claims show', seen.includes(human) && seen.includes(stat));
   check('no prefix means not blind', visibleToReviewer([mine, other], undefined, 'x').length === 2);
+}
+
+section('blind review holds on every read, not only claims');
+{
+  // Reviewer A has written a claim, a cluster, a defence and holds a lease. Reviewer B, blind
+  // to A in the same mission, must see none of it through the overview, focus state or
+  // frontier tools — and B's own disagreement must not come back as A's CONTRADICTED.
+  const dir = path.join(tmp, 'blind');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'graph.json'), JSON.stringify({ root: dir, commit: null, nodes: [], edges: [] }));
+  const A = { kind: 'agent' as const, tool: 'mock', model: 'a', sessionId: 'm_9:t_1:a1' };
+  const raw = new ClaimStore(path.join(dir, 'claims.db'));
+  const ev = [{ file: 'src/x.ts', line: 1 }, { file: 'src/x.ts', line: 2 }];
+  raw.submit({ subject: 'src/x.ts', predicate: 'bug_verdict', value: true, confidence: 0.9, source: A, evidence: ev });
+  raw.putCluster({ level: 2, name: 'A\'s subsystem', purpose: 'what A thinks', members: ['src/x.ts', 'src/y.ts'], source: A, evidence: ev });
+  raw.putDefence({ node: 'src/x.ts', reason: 'A says this is load-bearing', source: A });
+  raw.lease(['src/x.ts'], A.sessionId);
+  raw.close();
+
+  const { store } = createServer({ dir, session: 'm_9:t_2:a1', agentTool: 'mock', model: 'b', blindPrefix: 'm_9' });
+  store.submit({ subject: 'src/x.ts', predicate: 'bug_verdict', value: false, confidence: 0.7,
+    source: { kind: 'agent', tool: 'mock', model: 'b', sessionId: 'm_9:t_2:a1' }, evidence: ev });
+  check('B does not see A\'s defence', store.defences().length === 0, JSON.stringify(store.defences()));
+  check('or A\'s cluster', store.clusters().length === 0);
+  check('the counts B is shown are of what B can see', store.stats().claims === 1 && store.stats().clusters === 0, JSON.stringify(store.stats()));
+  check('B\'s belief is its own, not a contradiction with A', store.belief('src/x.ts', 'bug_verdict').status === 'INFERRED',
+    store.belief('src/x.ts', 'bug_verdict').status);
+  check('nothing reads as contested to B', store.contradictions().length === 0);
+  check('and A\'s lease does not steer B off A\'s subject', !store.leasedElsewhere('m_9:t_2:a1').has('src/x.ts'));
+  store.close();
 }
 
 section('the experiment, in the sandbox');
