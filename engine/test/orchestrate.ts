@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EXPECTED_FIXTURE_COMMIT } from '../demo/fixture.ts';
-import { visibleToReviewer } from '../mcp/server.ts';
+import { createServer, visibleToReviewer } from '../mcp/server.ts';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type { Experiment, Mission } from '../mission/types.ts';
 import { ClaimStore } from '../store/claims.ts';
@@ -176,9 +176,42 @@ section('blind review filter');
   const seen = visibleToReviewer([mine, other, elsewhere, human, stat], 'm_1', 'm_1:t_1:a1');
   check('the other reviewer in the mission is withheld', !seen.includes(other));
   check('my own claims show', seen.includes(mine));
-  check('another mission\'s agent claims show', seen.includes(elsewhere));
+  // ADR-6 as amended: independence holds across missions too — last week's reviewer on the
+  // same subject is as much someone else's answer as today's other reviewer.
+  check('another mission\'s agent claims are withheld too', !seen.includes(elsewhere));
+  check('and so is an agent claim with no session', !visibleToReviewer([claim(undefined)], 'm_1', 'm_1:t_1:a1').length);
   check('human and static claims show', seen.includes(human) && seen.includes(stat));
   check('no prefix means not blind', visibleToReviewer([mine, other], undefined, 'x').length === 2);
+}
+
+section('blind review holds on every read, not only claims');
+{
+  // Reviewer A has written a claim, a cluster, a defence and holds a lease. Reviewer B, blind
+  // to A in the same mission, must see none of it through the overview, focus state or
+  // frontier tools — and B's own disagreement must not come back as A's CONTRADICTED.
+  const dir = path.join(tmp, 'blind');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'graph.json'), JSON.stringify({ root: dir, commit: null, nodes: [], edges: [] }));
+  const A = { kind: 'agent' as const, tool: 'mock', model: 'a', sessionId: 'm_9:t_1:a1' };
+  const raw = new ClaimStore(path.join(dir, 'claims.db'));
+  const ev = [{ file: 'src/x.ts', line: 1 }, { file: 'src/x.ts', line: 2 }];
+  raw.submit({ subject: 'src/x.ts', predicate: 'bug_verdict', value: true, confidence: 0.9, source: A, evidence: ev });
+  raw.putCluster({ level: 2, name: 'A\'s subsystem', purpose: 'what A thinks', members: ['src/x.ts', 'src/y.ts'], source: A, evidence: ev });
+  raw.putDefence({ node: 'src/x.ts', reason: 'A says this is load-bearing', source: A });
+  raw.lease(['src/x.ts'], A.sessionId);
+  raw.close();
+
+  const { store } = createServer({ dir, session: 'm_9:t_2:a1', agentTool: 'mock', model: 'b', blindPrefix: 'm_9' });
+  store.submit({ subject: 'src/x.ts', predicate: 'bug_verdict', value: false, confidence: 0.7,
+    source: { kind: 'agent', tool: 'mock', model: 'b', sessionId: 'm_9:t_2:a1' }, evidence: ev });
+  check('B does not see A\'s defence', store.defences().length === 0, JSON.stringify(store.defences()));
+  check('or A\'s cluster', store.clusters().length === 0);
+  check('the counts B is shown are of what B can see', store.stats().claims === 1 && store.stats().clusters === 0, JSON.stringify(store.stats()));
+  check('B\'s belief is its own, not a contradiction with A', store.belief('src/x.ts', 'bug_verdict').status === 'INFERRED',
+    store.belief('src/x.ts', 'bug_verdict').status);
+  check('nothing reads as contested to B', store.contradictions().length === 0);
+  check('and A\'s lease does not steer B off A\'s subject', !store.leasedElsewhere('m_9:t_2:a1').has('src/x.ts'));
+  store.close();
 }
 
 section('the experiment, in the sandbox');
@@ -258,10 +291,10 @@ const recording = path.join(tmp, 'recording.json');
   check('the same mission id', replayed.mission.id === prepared.missionId);
   check('everything added once', replayed.added.events > 0 && replayed.skipped.events === 0 && replayed.added.claims === 3);
 
-  // Sequences are per output directory (the original shares its log with other missions)
-  // and claim ids are per store; everything else must agree byte for byte.
+  // Sequences are per output directory (the original shares its log with other missions);
+  // claim ids are remapped on import, so everything else must agree byte for byte.
   const strip = (v: Inspection) =>
-    JSON.stringify(v, (k, x) => (k === 'claimId' || k === 'sequence' || k === 'id' && typeof x === 'number' ? undefined : x));
+    JSON.stringify(v, (k, x) => (k === 'sequence' ? undefined : x));
   const a = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out, '--format', 'json']));
   const b = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out2, '--format', 'json']));
   check('inspect on the replay equals inspect on the original', strip(a) === strip(b),
@@ -271,6 +304,7 @@ const recording = path.join(tmp, 'recording.json');
   check('every artifact is present by digest and verifies', experiment.executions.every((x) => store2.has(x)) && store2.text(experiment.testArtifact).includes('an expired session is not served'));
   const report2 = run(['report', prepared.missionId, '--out', out2]);
   check('the replayed report is the original report', report2.out.replace(/\/repo2\b/g, '/repo') === reportMd.replace(/\/repo\b/g, '/repo'));
+  check('and names this machine\'s checkout, not the exporter\'s', report2.out.includes(`\`${repo2}\``), report2.out.split('\n').find((l) => l.includes('**Project.**')));
 
   const again = run(['mission', 'import', '--out', out2, '--file', recording, '--format', 'json']);
   const second = json<{ added: Record<string, number>; skipped: Record<string, number> }>(again);
@@ -288,6 +322,35 @@ section('a recording of one project does not land on another');
   check('import into another project\'s map is refused', r.code === 1 && /Refusing/.test(r.err), r.err.slice(-300));
   const forced = run(['mission', 'import', '--out', out3, '--file', recording, '--force', '--format', 'json']);
   check('--force overrides, explicitly', forced.code === 0 && json<{ mission: Mission }>(forced).mission.id === prepared.missionId);
+}
+
+section('an import that disagrees with what is already here says so');
+{
+  const out2 = path.join(tmp, 'out2');
+  const file = JSON.parse(fs.readFileSync(recording, 'utf8')) as {
+    mission: Mission; attempts: Array<{ costUsd: number | null }>;
+    artifacts: Record<string, { ref: { id: string; digest: string; kind: string } }>;
+  };
+  file.mission.objective = 'TAMPERED';
+  file.attempts[0].costUsd = 9999;
+  const tampered = path.join(tmp, 'tampered.json');
+  fs.writeFileSync(tampered, JSON.stringify(file));
+  const r = run(['mission', 'import', '--out', out2, '--file', tampered, '--format', 'json']);
+  check('rows that differ from the ones here are refused', r.code === 1 && /conflict/.test(r.err), r.err.slice(-300));
+  const forced = run(['mission', 'import', '--out', out2, '--file', tampered, '--force', '--format', 'json']);
+  const result = forced.code === 0 ? json<{ conflicts?: string[] }>(forced) : {};
+  check('--force imports anyway and lists every conflict', forced.code === 0
+    && ['mission', 'attempt'].every((k) => (result.conflicts ?? []).some((c) => c.startsWith(k))),
+    JSON.stringify(result.conflicts));
+  check('and keeps what was here', json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out2, '--format', 'json'])).mission.objective !== 'TAMPERED');
+
+  const misfiled = JSON.parse(fs.readFileSync(recording, 'utf8')) as typeof file;
+  const [first, second] = Object.keys(misfiled.artifacts);
+  misfiled.artifacts[first].ref = { ...misfiled.artifacts[second].ref };
+  const misfiledPath = path.join(tmp, 'misfiled.json');
+  fs.writeFileSync(misfiledPath, JSON.stringify(misfiled));
+  const m = run(['mission', 'import', '--out', path.join(tmp, 'out-misfiled'), '--file', misfiledPath, '--force']);
+  check('an artifact whose ref names another digest is refused', m.code === 1 && /does not name/.test(m.err), m.err.slice(-300));
 }
 
 section('a reviewer that fails blocks the mission; it does not fail it');
@@ -330,6 +393,168 @@ section('events');
   check('events can be read since a sequence', r.code === 0 && rows.length > 10);
   const tail = json<Array<{ sequence: number }>>(run(['events', '--out', out, '--since', String(rows[rows.length - 3].sequence), '--mission', prepared.missionId, '--format', 'json']));
   check('and since the tail returns just what followed', tail.length === 2);
+}
+
+section('an empty roster blocks a mission that is already running');
+{
+  const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'empty roster', '--scope', 'src/session-cache.ts', '--format', 'json']));
+  const first = json<{ mission: Mission }>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  check('a finished review leaves the mission running', first.mission.state === 'running');
+  const none = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'nosuchtool', '--format', 'json']);
+  check('a roster with nothing runnable still exits 0', none.code === 0, none.err.slice(-300));
+  const blocked = none.code === 0 ? json<{ mission: Mission }>(none).mission : null;
+  check('and blocks with the reason, rather than failing on running → running',
+    blocked?.state === 'blocked' && /no runnable agent/.test(blocked.outcomeReason ?? ''), blocked?.outcomeReason);
+  run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
+section('the budget is the mission\'s, across runs');
+{
+  const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'budget across runs',
+    '--scope', 'src/session-cache.ts', '--max-cost', '0.05', '--format', 'json']));
+  type Ran = { mission: Mission; attempts: Inspection['attempts']; spent: number; costKnown: boolean };
+  const first = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes', '--format', 'json']));
+  check('the first run spends what its reviewer reported', first.spent === 0.05 && first.costKnown, `${first.spent} ${first.costKnown}`);
+  const second = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  check('a second run starts from what the mission has already spent', second.spent === 0.05, String(second.spent));
+  check('so a spent budget blocks it before launching anyone',
+    second.mission.state === 'blocked' && /budget exhausted/.test(second.mission.outcomeReason ?? ''), second.mission.outcomeReason);
+  check('and the new reviewer never ran', !second.attempts.some((a) => a.runnerId === 'agent:mock:no'));
+  run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
+section('a ceiling holds under concurrency, unknown spend and a raised flag');
+{
+  type Ran = { mission: Mission; attempts: Inspection['attempts']; spent: number; costKnown: boolean };
+  const mk = (objective: string, maxCost: string) => json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify',
+    '--objective', objective, '--scope', 'src/session-cache.ts', '--max-cost', maxCost, '--format', 'json']));
+
+  const raise = mk('raise', '0.05');
+  const raised = run(['mission', 'run', raise.id, repo, '--out', out, '--tools', 'mock:yes', '--max-cost', '1', '--format', 'json']);
+  check('--max-cost above the mission\'s budget is refused', raised.code === 1 && /--raise-budget/.test(raised.err), raised.err.slice(-200));
+  const allowed = run(['mission', 'run', raise.id, repo, '--out', out, '--tools', 'mock:yes', '--max-cost', '1', '--raise-budget', '--format', 'json']);
+  check('and allowed when the raise is explicit', allowed.code === 0, allowed.err.slice(-200));
+
+  // Two reviewers that each report $0.05, launched together under a $0.06 ceiling.
+  const costly = path.join(tmp, 'mock-costly.mjs');
+  fs.writeFileSync(costly, `console.log(JSON.stringify({ total_cost_usd: 0.05 })); setTimeout(() => process.exit(0), 300);\n`);
+  const shared = mk('shared ceiling', '0.06');
+  const wave = json<Ran>(run(['mission', 'run', shared.id, repo, '--out', out, '--tools', 'mock:a,mock:b', '--concurrency', '2', '--format', 'json'],
+    { VDS_MOCK_ADAPTER: costly }));
+  const reviews = wave.attempts.filter((a) => a.runnerId.startsWith('agent:mock:'));
+  check('each reviewer in a wave gets its share of the remainder, not all of it',
+    reviews.length === 2 && reviews.every((a) => a.failure === 'over budget'), JSON.stringify(reviews.map((a) => a.failure)));
+
+  const unknown = mk('unknown spend', '1');
+  const blind = json<Ran>(run(['mission', 'run', unknown.id, repo, '--out', out, '--tools', 'mock:no,mock:yes', '--format', 'json']));
+  check('an attempt with unknown cost blocks the next wave under a ceiling',
+    blind.mission.state === 'blocked' && /unknown/.test(blind.mission.outcomeReason ?? ''), blind.mission.outcomeReason);
+  check('so the second reviewer did not run', !blind.attempts.some((a) => a.runnerId === 'agent:mock:yes'));
+  for (const m of [raise, shared, unknown]) run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
+}
+
+section('a mission compares and exports its own reviewers, not another mission\'s');
+{
+  // A fresh directory where one mission's two reviewers disagree, and no human has decided.
+  const out4 = path.join(tmp, 'out4');
+  const repo4 = path.join(tmp, 'repo4');
+  const first = json<Prepared>(run(['demo', 'prepare', '--out', out4, '--dest', repo4, '--format', 'json']));
+  const a = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', first.missionId, repo4, '--out', out4, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  check('the first mission has its dispute', a.comparison.disputes.length === 1);
+  // A second mission with a single reviewer has nobody to disagree with.
+  const m = json<Mission>(run(['mission', 'create', repo4, '--out', out4, '--kind', 'verify', '--objective', 'one reviewer',
+    '--scope', 'src/session-cache.ts', '--format', 'json']));
+  const r = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', m.id, repo4, '--out', out4, '--tools', 'mock:no', '--format', 'json']));
+  check('one reviewer\'s mission records no dispute from another mission\'s reviewers', r.comparison.disputes.length === 0, String(r.comparison.disputes.length));
+  const view = json<Inspection>(run(['mission', 'inspect', m.id, '--out', out4, '--format', 'json']));
+  check('and inspect agrees', view.disputes.length === 0, String(view.disputes.length));
+  check('its own claim is unverified, as a single source is', view.unverified.length === 1, String(view.unverified.length));
+  const file = path.join(tmp, 'one-reviewer.json');
+  run(['mission', 'export', m.id, '--out', out4, '--file', file]);
+  const exported = JSON.parse(fs.readFileSync(file, 'utf8')) as { claims: Claim[] };
+  check('its export carries no other mission\'s agent claims',
+    exported.claims.every((c) => c.source.kind !== 'agent' || (c.source.sessionId ?? '').startsWith(`${m.id}:`)),
+    exported.claims.map((c) => c.source.sessionId ?? c.source.kind).join(' '));
+  check('but does carry its own', exported.claims.some((c) => (c.source.sessionId ?? '').startsWith(`${m.id}:`)));
+
+  // The first mission is running with every task done and a dispute open: it is waiting on a
+  // person, and the state machine (rightly) has no state for that, so it is derived.
+  type Need = { kind: string; ref: string; why: string };
+  const disputed = json<Inspection & { needs?: Need[] }>(run(['mission', 'inspect', first.missionId, '--out', out4, '--format', 'json']));
+  check('a running mission with an open dispute says it needs a person', disputed.mission.state === 'running'
+    && disputed.needs?.length === 1 && disputed.needs[0].kind === 'dispute' && disputed.needs[0].ref.includes('src/session-cache.ts'),
+    JSON.stringify(disputed.needs));
+  const listed = json<{ missions: Mission[]; needs?: Record<string, Need[]> }>(run(['mission', 'list', '--out', out4, '--format', 'json']));
+  check('and the list says so per mission', listed.needs?.[first.missionId]?.[0]?.kind === 'dispute', JSON.stringify(listed.needs));
+  check('a mission with nothing open needs nobody', (listed.needs?.[m.id] ?? []).length === 0);
+
+  // out4 already numbers its own claims, so the recording's claims get new ids here. What the
+  // recording's rows point at must follow them.
+  const imported = run(['mission', 'import', '--out', out4, '--file', recording, '--format', 'json']);
+  check('a recording imports into a directory that has claims of its own', imported.code === 0, imported.err.slice(-300));
+  const replayed = json<Inspection & { decisions: Array<{ scope: { claimId?: number } }> }>(
+    run(['mission', 'inspect', prepared.missionId, '--out', out4, '--format', 'json']));
+  const store4 = new ClaimStore(path.join(out4, 'claims.db'));
+  const byId = (id: number | undefined) => store4.claimsFor('src/session-cache.ts').find((c) => c.id === id);
+  const decided = byId(replayed.decisions[0]?.scope.claimId);
+  check('the decision still points at the human claim it recorded', decided?.source.kind === 'human', JSON.stringify(decided?.source));
+  const disputedEvent = replayed.events.find((e) => e.name === 'claim.disputed');
+  const sides = (disputedEvent?.payload.sides ?? []) as Array<{ claimId: number; source: string }>;
+  check('and the dispute event\'s sides point at the reviewers\' claims here',
+    sides.length === 2 && sides.every((s) => {
+      const c = byId(s.claimId);
+      return !!c && `${c.source.kind}:${c.source.tool}:${c.source.model}` === s.source && (c.source.sessionId ?? '').startsWith(`${prepared.missionId}:`);
+    }),
+    JSON.stringify(sides));
+  store4.close();
+}
+
+section('a run that dies does not leave an attempt running for ever');
+{
+  // A reviewer that waits while MOCK_SLOW is set, so the CLI can be killed mid-attempt.
+  const slowMock = path.join(tmp, 'mock-slow.mjs');
+  fs.writeFileSync(slowMock, `
+if (process.env.MOCK_SLOW) { console.log('slow reviewer waiting'); await new Promise((r) => setTimeout(r, 30_000)); }
+process.exit(0);
+`);
+  const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'crash recovery', '--scope', 'src/session-cache.ts', '--format', 'json']));
+  const { spawn } = await import('node:child_process');
+  const startSlow = () => spawn(process.execPath, [CLI, 'mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], {
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, VDS_MOCK_ADAPTER: slowMock, MOCK_SLOW: '1' },
+  });
+  const untilStarted = (child: ReturnType<typeof startSlow>) => new Promise<void>((resolve) => {
+    child.stderr.on('data', (d) => { if (String(d).includes('started')) resolve(); });
+    setTimeout(resolve, 20_000);
+  });
+  const closed = (child: ReturnType<typeof startSlow>) => new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve();
+    else child.on('close', () => resolve());
+  });
+  const attemptsOf = () => json<Inspection>(run(['mission', 'inspect', m.id, '--out', out, '--format', 'json'])).attempts;
+
+  const stopped = startSlow();
+  await untilStarted(stopped);
+  const busy = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { VDS_MOCK_ADAPTER: slowMock });
+  check('a second run of a mission that is being run is refused', busy.code === 1 && /already being run/.test(busy.err), busy.err.slice(-200));
+  stopped.kill('SIGTERM');
+  await closed(stopped);
+  const afterStop = attemptsOf();
+  check('stopping the run cancels the attempt it had open', afterStop.length === 1 && afterStop[0].state === 'cancelled'
+    && /interrupted/.test(afterStop[0].failure ?? ''), JSON.stringify(afterStop.map((a) => [a.state, a.failure])));
+
+  const crashed = startSlow();
+  await untilStarted(crashed);
+  crashed.kill('SIGKILL');
+  await closed(crashed);
+  check('a killed run leaves its attempt running', attemptsOf().filter((a) => a.state === 'running').length === 1);
+  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { VDS_MOCK_ADAPTER: slowMock });
+  check('the next run proceeds', rerun.code === 0, rerun.err.slice(-300));
+  const after = attemptsOf();
+  check('and nothing is left running', after.every((a) => a.state !== 'running'), JSON.stringify(after.map((a) => a.state)));
+  check('the orphan is cancelled, saying why', after.filter((a) => a.state === 'cancelled' && /orphaned/.test(a.failure ?? '')).length === 1,
+    JSON.stringify(after.map((a) => [a.state, a.failure])));
+  check('and the retry completed on the same task', after.filter((a) => a.runnerId === 'agent:mock:slow' && a.state === 'completed').length === 1);
+  run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'test only']);
 }
 
 section('usage');

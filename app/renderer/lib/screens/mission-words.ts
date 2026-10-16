@@ -1,5 +1,5 @@
 import type {
-  Attempt, DaylightEvent, ExecutionRecord, Experiment, Mission, VdsEvent,
+  Attempt, DaylightEvent, ExecutionRecord, Experiment, Mission, MissionList, MissionUpdate, VdsEvent,
 } from '../types.ts';
 import type { Tone } from '../vocab.ts';
 
@@ -28,6 +28,27 @@ export function missionWord(m: Mission): Word {
     case 'ready': return { name: 'ready', tone: 'warn' };
     default: return { name: 'draft', tone: 'dim' };
   }
+}
+
+/**
+ * Does this mission want a person? `blocked` always does; a running one does when the
+ * engine derived a need for it — reviews done, reviewers disagreeing.
+ */
+export const needsPerson = (list: MissionList | null, m: Mission): boolean =>
+  m.state === 'blocked' || (list?.needs?.[m.id]?.length ?? 0) > 0;
+
+/**
+ * A pushed update merged into the row it belongs to. The push carries only what changed, so
+ * replacing the row with it left the list rendering `undefined.trim()`; and a push for a
+ * mission the list has not loaded yet adds nothing — the reload after the job brings it.
+ */
+export function mergeMissionUpdate(list: MissionList, update: MissionUpdate): MissionList {
+  if (!list.missions.some((m) => m.id === update.id)) return list;
+  return {
+    ...list,
+    missions: list.missions.map((m) =>
+      m.id === update.id ? { ...m, state: update.state, outcomeReason: update.outcomeReason ?? undefined } : m),
+  };
 }
 
 /**

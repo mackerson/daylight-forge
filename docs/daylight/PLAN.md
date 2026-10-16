@@ -56,6 +56,9 @@ ingests it into the table keyed by `session → attempt`.
 claims, so reviewer B would see A's answers. With `VDS_BLIND_PREFIX=<mission session prefix>`
 the server omits agent claims whose `source.sessionId` starts with that prefix and is not
 the caller's own. Human and static claims still show. Owned by DL-06.
+*Amended in WS0 (director ruling):* a blind reviewer sees no agent claim but its own — another
+mission's reviewers on the same subject are withheld too, since independence across missions
+is the same property.
 
 **ADR-7 — Live agent runs are recorded, never fabricated.** Tests use a mock adapter that is
 labelled `mock` in every artifact it produces. The demo replay is recorded from a real run

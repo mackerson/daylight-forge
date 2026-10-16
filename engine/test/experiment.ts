@@ -9,7 +9,7 @@
  * The sandbox cases run the real `bwrap` on this machine. Where it is not installed they are
  * skipped and said to be; the fail-closed cases run everywhere.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,7 +22,7 @@ import {
   commitOf, harnessDigestOf, registerExperiment, runExperiment, type ExperimentStoreLike,
 } from '../experiment/runner.ts';
 import {
-  checkAllowlist, detectSandbox, nodeBind, nodeBinary, sandboxArgv, sandboxCommand,
+  checkAllowlist, DEFAULT_LIMITS, detectSandbox, nodeBind, nodeBinary, sandboxArgv, sandboxCommand,
 } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { harness } from './harness.ts';
@@ -120,6 +120,15 @@ section('the allowlist');
     check(`\`${flag}\` is refused`, !checkAllowlist(['node', flag, 'x'], wt).ok);
   }
   check('an empty command is refused', !checkAllowlist([], wt).ok);
+  // A blocklist is walked around: `--env-file` loads NODE_OPTIONS from a committed file, and
+  // reporters, config files and openssl configs all load code by name.
+  for (const flag of ['--env-file=a.env', '--env-file-if-exists=a.env', '--test-reporter=./x.mjs', '--experimental-config-file=c.json',
+    '--openssl-config=o.cnf', '--experimental-test-module-mocks', '--stack-size=99999']) {
+    check(`\`${flag}\` is refused — only a named set of flags runs`, !checkAllowlist(['node', flag, 'test/a.js'], wt).ok);
+  }
+  for (const flag of ['--test-reporter=tap', '--test-reporter=dot', '--test-name-pattern=expiry', '--enable-source-maps', '--experimental-strip-types']) {
+    check(`\`${flag}\` is allowed`, checkAllowlist(['node', flag, 'test/a.js'], wt).ok);
+  }
   const mapped = sandboxCommand(['node', '--test', 'test/a.js', path.join(wt, 'src', 'b.js')], wt);
   check('inside the sandbox the command runs our own node', mapped[0] === nodeBinary());
   check('and paths are rewritten under /work',
@@ -144,9 +153,23 @@ section('the sandbox argv');
   check('a node outside /usr gets its install dir bound, one under /usr does not',
     bind ? argv.join(' ').includes(`--ro-bind ${bind} ${bind}`) : !argv.join(' ').includes('--ro-bind /home'),
     String(bind));
+  // A copied binary at ~/bin/node must not take ~ (and .ssh, .config) into the sandbox with it.
+  check('a node outside /usr is bound alone, never its directory or home', nodeBind('/home/someone/bin/node') === '/home/someone/bin/node',
+    String(nodeBind('/home/someone/bin/node')));
   let threw = false;
   try { sandboxArgv(UNAVAILABLE, { worktree: tmp, command: ['node', 'x.js'] }); } catch { threw = true; }
   check('an unavailable profile cannot produce an argv at all', threw);
+
+  const joined = argv.join(' ');
+  check('the private /tmp has a size ceiling', /--size \d+ --tmpfs \/tmp/.test(joined), joined);
+  check('nested user namespaces are disabled', argv.includes('--disable-userns') && argv.includes('--unshare-user'));
+  check('without a user scope there is no systemd-run in front', argv[0] === 'prlimit');
+  const scoped = sandboxArgv({ name: 'bwrap', available: true, scope: '/usr/bin/systemd-run' }, {
+    worktree: path.join(tmp, 'wt'), command: ['node', 'test/a.js'],
+  });
+  check('with one, memory and task ceilings wrap the whole launch',
+    scoped[0] === 'systemd-run' && scoped.join(' ').includes('-p MemoryMax=') && scoped.join(' ').includes('-p TasksMax=')
+      && scoped.findIndex((a) => a.endsWith('prlimit')) > scoped.indexOf('--'), scoped.slice(0, 12).join(' '));
 }
 
 section('revisions');
@@ -240,6 +263,104 @@ section('the runtime allowlist is a second check');
   check('nothing was spawned', named('experiment.run.started', e.id).length === 0);
 }
 
+section('a committed symlink is never followed out of the worktree');
+{
+  // The author controls the tree at the base revision, so a link in it can point anywhere the
+  // runner's uid can write. Placing the test must not follow it.
+  const outside = path.join(tmp, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'host file\n');
+  fs.symlinkSync(outside, path.join(repo, 'linked'));
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(repo, 'test', 'linked.js'));
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'symlinks']);
+  const linkedCommit = git(['rev-parse', 'HEAD']);
+  const avail = { sandbox: { name: 'bwrap' as const, available: true } };
+
+  const viaDir = register('process.exit(0);\n', { exitCode: 0 }, {
+    baseRevision: linkedCommit, testPath: 'linked/x.js', command: ['node', 'linked/x.js'],
+  });
+  const out = await run(viaDir, avail);
+  check('a symlinked parent directory concludes invalid', out.conclusion === 'invalid', out.conclusion);
+  check('and nothing was written outside the worktree', fs.readdirSync(outside).join() === 'secret.txt', fs.readdirSync(outside).join());
+  check('the record names the symlink', /symlink/.test(records(out)[0]?.why ?? ''), records(out)[0]?.why);
+  check('nothing ran', named('experiment.run.started', viaDir.id).length === 0);
+
+  const atPath = register('process.exit(0);\n', { exitCode: 0 }, {
+    baseRevision: linkedCommit, testPath: 'test/linked.js', command: ['node', 'test/linked.js'],
+  });
+  const out2 = await run(atPath, avail);
+  check('a symlink at the test path itself concludes invalid, as a symlink', out2.conclusion === 'invalid'
+    && /symlink/.test(records(out2)[0]?.why ?? ''), records(out2)[0]?.why);
+  check('and the host file it points at is untouched', fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8') === 'host file\n');
+}
+
+section('a tree the test cannot be placed in concludes invalid, never stays pending');
+{
+  fs.writeFileSync(path.join(repo, 'blocker'), 'a file where the test wants a directory\n');
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'blocker']);
+  const blocked = register('process.exit(0);\n', { exitCode: 0 }, {
+    baseRevision: git(['rev-parse', 'HEAD']), testPath: 'blocker/x.js', command: ['node', 'blocker/x.js'],
+  });
+  let out: Experiment | null = null;
+  let thrown = '';
+  try {
+    out = await run(blocked, { sandbox: { name: 'bwrap', available: true } });
+  } catch (err) {
+    thrown = (err as Error).message;
+  }
+  check('the run returns rather than throwing', out !== null, thrown);
+  check('and concludes invalid', out?.conclusion === 'invalid', out?.conclusion);
+  check('the stored row is concluded too', store.rows.get(blocked.id)?.conclusion === 'invalid', store.rows.get(blocked.id)?.conclusion);
+  check('with a concluded event', named('experiment.concluded', blocked.id).length === 1);
+}
+
+section('the repository\'s own git hooks and config do not run on the host');
+{
+  // The runner checks out a worktree with the repository's config. A hook or fsmonitor set
+  // there by anyone with write access to .git would otherwise run unsandboxed, as us.
+  const marker = path.join(tmp, 'hook-ran');
+  const hook = path.join(repo, '.git', 'hooks', 'post-checkout');
+  fs.writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  const fsmon = path.join(tmp, 'fsmonitor-ran');
+  const fsmonScript = path.join(tmp, 'fsmonitor.sh');
+  fs.writeFileSync(fsmonScript, `#!/bin/sh\ntouch ${JSON.stringify(fsmon)}\n`, { mode: 0o755 });
+  git(['config', 'core.fsmonitor', fsmonScript]);
+  const e = register('process.exit(0);\n', { exitCode: 0 });
+  // Refused after the checkout, so the checkout happens and nothing is spawned.
+  const out = await run({ ...e, command: ['python3', 'x.py'] }, { sandbox: { name: 'bwrap', available: true } });
+  check('the run got as far as a checkout', /python3/.test(records(out)[0]?.why ?? ''), records(out)[0]?.why);
+  check('a post-checkout hook in the repository did not fire', !fs.existsSync(marker));
+  check('nor did a configured fsmonitor', !fs.existsSync(fsmon));
+  fs.rmSync(hook);
+  git(['config', '--unset', 'core.fsmonitor']);
+
+  // A clean/smudge driver named in .git/config (shared by every linked worktree) and switched
+  // on by a committed .gitattributes runs on checkout — also as us, also on the host. One
+  // reached through an include counts too.
+  const smudged = path.join(tmp, 'smudge-ran');
+  const processed = path.join(tmp, 'process-ran');
+  const included = path.join(tmp, 'included-ran');
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt filter=evil\n*.dat filter=proc\n*.inc filter=inc\n');
+  for (const f of ['0.inc', 'a.txt', 'b.dat']) fs.writeFileSync(path.join(repo, f), 'data\n');
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'filters']);
+  git(['config', 'filter.evil.smudge', `sh -c 'touch ${smudged}; cat'`]);
+  git(['config', 'filter.evil.required', 'true']);
+  git(['config', 'filter.proc.process', `sh -c 'touch ${processed}; exit 1'`]);
+  const inc = path.join(tmp, 'included.gitconfig');
+  fs.writeFileSync(inc, `[filter "inc"]\n\tsmudge = "sh -c 'touch ${included}; cat'"\n`);
+  git(['config', 'include.path', inc]);
+  const filtered = register('process.exit(0);\n', { exitCode: 0 }, { baseRevision: git(['rev-parse', 'HEAD']) });
+  const fout = await run({ ...filtered, command: ['python3', 'x.py'] }, { sandbox: { name: 'bwrap', available: true } });
+  check('a repo with filter drivers still checks out', /python3/.test(records(fout)[0]?.why ?? ''), records(fout)[0]?.why);
+  check('a smudge filter from repo config did not run on the host', !fs.existsSync(smudged));
+  check('nor a long-running process filter', !fs.existsSync(processed));
+  check('nor one reached through an include', !fs.existsSync(included));
+  for (const k of ['filter.evil.smudge', 'filter.evil.required', 'filter.proc.process', 'include.path']) git(['config', '--unset', k]);
+}
+
 // ---- the real sandbox -------------------------------------------------------------
 
 if (!live.available) {
@@ -322,6 +443,125 @@ if (!live.available) {
     check('an identical file already there is fine', (await run(same)).conclusion === 'supported');
   }
 
+  section('an edited experiment row does not match its harness digest');
+  {
+    // The row says which artifact is the test and what counts as a match; it lives in a
+    // database the same uid can UPDATE. The runner re-derives the digest instead of trusting it.
+    const e = register('console.log("ok");\n', { exitCode: 0, stdoutIncludes: ['ok'] });
+    const prediction = await run({ ...e, prediction: { exitCode: 0, stdoutIncludes: ['anything'] } }, { runs: 1 });
+    check('a rewritten prediction concludes invalid', prediction.conclusion === 'invalid', prediction.conclusion);
+    check('and says the harness digest no longer holds', /harness digest/.test(records(prediction)[0]?.why ?? ''), records(prediction)[0]?.why);
+    const moved = await run({ ...e, testArtifact: { ...e.testArtifact, path: 'test/elsewhere.js' } }, { runs: 1 });
+    check('a rewritten test path concludes invalid', moved.conclusion === 'invalid', moved.conclusion);
+    check('nothing ran for either', named('experiment.run.started', e.id).length === 0);
+    check('the untouched row still runs', (await run(e, { runs: 1 })).conclusion === 'supported');
+    check('the registered expectation names the test path', JSON.parse(artifacts.text(e.expectedArtifact)).testPath === e.testArtifact.path);
+    const legacyExpected = artifacts.put(JSON.stringify(e.prediction, null, 2), { kind: 'expected', projectId: e.projectId });
+    const legacy = await run({
+      ...e, expectedArtifact: legacyExpected,
+      harnessDigest: harnessDigestOf(e.testArtifact.digest, legacyExpected.digest, e.command, e.sandboxProfile),
+    }, { runs: 1 });
+    check('a row registered before the path was covered still runs, and says so',
+      legacy.conclusion === 'supported' && legacy.limitations.some((l) => l.includes('test path was covered')), legacy.conclusion);
+  }
+
+  section('a bwrap or prlimit earlier on PATH is not the sandbox');
+  {
+    // ~/.local/bin precedes /usr/bin on most desktops and is writable by the same uid; a shim
+    // there that execs its last argv is a complete bypass the recorded argv would not show.
+    const shims = path.join(tmp, 'shims');
+    const marker = path.join(tmp, 'shim-ran');
+    fs.mkdirSync(shims);
+    for (const bin of ['bwrap', 'prlimit']) {
+      fs.writeFileSync(path.join(shims, bin), `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 0\n`, { mode: 0o755 });
+    }
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${shims}:${savedPath}`;
+    try {
+      const profile = detectSandbox();
+      check('detection resolves bwrap under /usr/bin, not from PATH', profile.available && profile.bwrap?.startsWith('/usr/bin/') === true, profile.bwrap);
+      const e = register('console.log("in the sandbox");\n', { exitCode: 0, stdoutIncludes: ['in the sandbox'] });
+      const out = await run(e, { runs: 1, sandbox: profile });
+      check('the run went through the real sandbox', out.conclusion === 'supported', out.conclusion);
+      check('and no shim ran', !fs.existsSync(marker));
+      check('the result records the binaries that were used', records(out)[0]?.sandboxBinaries?.prlimit.startsWith('/usr/bin/') === true);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  }
+
+  section('resource ceilings hold inside the sandbox');
+  {
+    const tight = { cpuSeconds: 60, fileSizeBytes: 1 << 20, openFiles: 1024, tmpBytes: 2 << 20 };
+    const fill = register(
+      'const fs = require("fs"); const mb = Buffer.alloc(1 << 20);\n' +
+        'try { for (let i = 0; i < 8; i++) fs.writeFileSync(`/tmp/f${i}`, mb); console.log("tmp unbounded"); }\n' +
+        'catch (e) { console.log("tmp full", e.code); }\n',
+      { exitCode: 0, stdoutIncludes: ['tmp full ENOSPC'] },
+    );
+    const filled = await run(fill, { runs: 1, limits: tight });
+    check('/tmp inside the sandbox stops at its size ceiling', filled.conclusion === 'supported',
+      records(filled)[0]?.stdoutRef ? artifacts.text(records(filled)[0].stdoutRef!) : filled.conclusion);
+    const userns = register(
+      'const r = require("child_process").spawnSync("/usr/bin/unshare", ["-U", "true"]); console.log("unshare", r.status === 0 ? "allowed" : "refused");\n',
+      { exitCode: 0, stdoutIncludes: ['unshare refused'] },
+    );
+    check('a test cannot create a nested user namespace', (await run(userns, { runs: 1 })).conclusion === 'supported');
+    if (live.scope) {
+      const forks = register(
+        'const cp = require("child_process"); let failed = 0; const kids = [];\n' +
+          'for (let i = 0; i < 64; i++) { try { const k = cp.spawn("/usr/bin/sleep", ["5"]); k.on("error", () => failed++); kids.push(k); } catch { failed++; } }\n' +
+          'setTimeout(() => { console.log("forks failed", failed > 0); kids.forEach((k) => k.kill()); }, 500);\n',
+        { exitCode: 0, stdoutIncludes: ['forks failed true'] },
+      );
+      check('the task ceiling stops a test that forks without bound',
+        (await run(forks, { runs: 1, limits: { ...DEFAULT_LIMITS, tasks: 32 } })).conclusion === 'supported');
+    } else {
+      console.log('  skipped: no systemd user scope here, so no memory or task ceiling to test');
+    }
+  }
+
+  section('a sandbox that fails to start is not a test result');
+  {
+    // Infrastructure failure must never be evidence either way: a prediction of exit 127 must
+    // not be "supported" because the launcher could not find its own libraries.
+    const e = register('process.exit(0);\n', { exitCode: 127 });
+    const missing = await run(e, { runs: 1, sandbox: { ...live, prlimit: path.join(tmp, 'no-such-prlimit') } });
+    check('a launcher that cannot be spawned concludes invalid', missing.conclusion === 'invalid', missing.conclusion);
+    check('and the record says the sandbox did not start', records(missing)[0]?.status === 'invalid'
+      && /did not start/.test(records(missing)[0]?.why ?? ''), records(missing)[0]?.why);
+    const starved = await run(e, { runs: 1, limits: { cpuSeconds: 60, fileSizeBytes: 1 << 20, openFiles: 3 } });
+    check('bwrap dying before the command concludes invalid, not supported', starved.conclusion === 'invalid', starved.conclusion);
+  }
+
+  section('tamper between runs');
+  {
+    // A same-uid process rewriting the worktree copy after the first run: what runs second
+    // must still be the registered bytes, and the rewrite must poison the experiment.
+    const e = register('console.log("registered bytes");\n', { exitCode: 0, stdoutIncludes: ['TAMPERED'] });
+    const rel = e.testArtifact.path!;
+    const tamperer = {
+      append: (ev: DaylightEventInput) => {
+        sink.append(ev);
+        if (ev.name !== 'experiment.run.finished' || ev.payload.runIndex !== 0) return ev;
+        for (const d of fs.readdirSync(os.tmpdir()).filter((x) => x.startsWith('daylight-experiment-'))) {
+          const f = path.join(os.tmpdir(), d, 'work', rel);
+          if (fs.existsSync(f)) {
+            fs.chmodSync(f, 0o644);
+            fs.writeFileSync(f, 'console.log("TAMPERED — unregistered code ran");\n');
+          }
+        }
+        return ev;
+      },
+    };
+    const out = await run(e, { events: tamperer });
+    const rs = records(out);
+    check('a rewrite between runs concludes invalid, not inconclusive or supported', out.conclusion === 'invalid', out.conclusion);
+    check('the second run still executed the registered bytes',
+      !!rs[1]?.stdoutRef && !artifacts.text(rs[1].stdoutRef).includes('TAMPERED'), rs[1]?.stdoutRef ? artifacts.text(rs[1].stdoutRef) : 'no stdout');
+    check('and its record says the worktree copy changed', /changed/.test(rs[1]?.why ?? ''), rs[1]?.why);
+  }
+
   section('the sandbox confines');
   {
     const net = register(
@@ -349,6 +589,16 @@ if (!live.available) {
 
     const which = register('console.log("node", process.version);\n', { exitCode: 0, stdoutIncludes: [`node ${process.version}`] });
     check('the test runs on the same node as the harness', (await run(which, { runs: 1 })).conclusion === 'supported');
+
+    if (nodeBind(nodeBinary())) {
+      const beside = register(
+        'const p = require("path").dirname(process.execPath); console.log("beside", require("fs").readdirSync(p).join(","));\n',
+        { exitCode: 0, stdoutIncludes: ['beside node\n'] },
+      );
+      const seen = await run(beside, { runs: 1 });
+      check('nothing next to the node binary is visible inside', seen.conclusion === 'supported',
+        records(seen)[0]?.stdoutRef ? artifacts.text(records(seen)[0].stdoutRef!) : seen.conclusion);
+    }
   }
 
   section('forced off, every registered experiment is refused');
@@ -362,6 +612,86 @@ if (!live.available) {
     check('without a sandbox every experiment concludes invalid with a denied record', allInvalid);
     check('and none of them created a worktree', worktreeCount() === before);
   }
+}
+
+section('a runner that was killed is cleaned up after by the next one');
+{
+  // SIGKILL skips every finally: the worktree, git's bookkeeping for it and a pending row
+  // are what a dead runner leaves. The next run sweeps what a dead process owned.
+  class LookupStore extends StubStore {
+    experiment(id: string) { return this.rows.get(id) ?? null; }
+    // Ids distinct from the main stub's, so event lookups by id cannot match the wrong row.
+    override createExperiment(input: Parameters<StubStore['createExperiment']>[0]): Experiment {
+      const e = super.createExperiment(input);
+      this.rows.delete(e.id);
+      const renamed = { ...e, id: `x_sweep_${e.id}` };
+      this.rows.set(renamed.id, renamed);
+      return renamed;
+    }
+  }
+  const lookup = new LookupStore();
+  const inLookup = (testPath: string) => registerExperiment({
+    store: lookup, artifacts, events: sink, missionId: 'm_test', projectId: 'git:fixture', baseRevision: commit,
+    subject: 'src/add.js', predicate: 'bug_verdict', claimIds: [], hypothesis: 'h',
+    prediction: { exitCode: 0 }, testSource: 'process.exit(0);\n', testPath, command: ['node', testPath],
+  });
+  const orphan = inLookup('test/orphan.js');
+  const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+  git(['worktree', 'add', '-q', '--detach', path.join(stale, 'work'), commit]);
+  fs.writeFileSync(path.join(stale, 'owner.json'), JSON.stringify({ pid: dead, experimentId: orphan.id, repoRoot: repo, startedAt: 1 }));
+  check('the planted worktree is registered', worktreeCount() === 2);
+
+  const e = inLookup('test/next.js');
+  await runExperiment(e, { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
+  check('the dead runner\'s directory is gone', !fs.existsSync(stale));
+  check('and so is its worktree', worktreeCount() === 1, String(worktreeCount()));
+  const row = lookup.rows.get(orphan.id);
+  check('its pending experiment is concluded invalid', row?.conclusion === 'invalid', row?.conclusion);
+  check('saying the runner died', row?.limitations.some((l) => l.includes('runner died')) === true);
+  check('with a concluded event', named('experiment.concluded', orphan.id).length === 1);
+
+  const live = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+  fs.writeFileSync(path.join(live, 'owner.json'), JSON.stringify({ pid: process.pid, experimentId: 'x_live', repoRoot: repo, startedAt: 1 }));
+  await runExperiment(e, { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
+  check('a directory owned by a live process is left alone', fs.existsSync(live));
+  fs.rmSync(live, { recursive: true, force: true });
+
+  // owner.json sits in a shared /tmp and is input, not instruction. A planted one that names
+  // another repository, or whose `work` is a symlink to a real worktree, must change nothing.
+  const victim = path.join(tmp, 'victim');
+  fs.mkdirSync(victim);
+  const vgit = (args: string[]) =>
+    execFileSync('git', ['-C', victim, ...args], { encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  vgit(['init', '-q']);
+  fs.writeFileSync(path.join(victim, 'f'), '1\n');
+  vgit(['add', '.']);
+  vgit(['commit', '-q', '-m', 'victim']);
+  const precious = path.join(tmp, 'precious-wt');
+  vgit(['worktree', 'add', '-q', '--detach', precious, 'HEAD']);
+  fs.writeFileSync(path.join(precious, 'uncommitted.txt'), 'hours of work\n');
+  const target = inLookup('test/target.js');
+  const plant = (repoRoot: string, work: (dir: string) => void) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+    work(d);
+    fs.writeFileSync(path.join(d, 'owner.json'), JSON.stringify({ pid: dead, experimentId: target.id, repoRoot, startedAt: 1 }));
+    return d;
+  };
+  const foreign = plant(victim, (d) => fs.symlinkSync(precious, path.join(d, 'work')));
+  const linked = plant(repo, (d) => fs.symlinkSync(precious, path.join(d, 'work')));
+  const misfiled = plant(repo, (d) => {
+    fs.mkdirSync(path.join(d, 'work'));
+    fs.writeFileSync(path.join(d, 'work', '.git'), `gitdir: ${path.join(victim, '.git', 'worktrees', 'precious-wt')}\n`);
+  });
+  await runExperiment(inLookup('test/next2.js'), { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
+  check('a planted owner naming another repository is left alone', fs.existsSync(foreign));
+  check('as is one whose work is a symlink', fs.existsSync(linked));
+  check('and one whose worktree belongs to another repository', fs.existsSync(misfiled));
+  check('the real worktree and its uncommitted work survive', fs.existsSync(path.join(precious, 'uncommitted.txt')));
+  check('the other repository still lists it', vgit(['worktree', 'list', '--porcelain']).includes(precious));
+  check('and the experiment the planted files named is still pending', lookup.rows.get(target.id)?.conclusion === 'pending',
+    lookup.rows.get(target.id)?.conclusion);
+  for (const d of [foreign, linked, misfiled]) fs.rmSync(d, { recursive: true, force: true });
 }
 
 section('nothing is left behind');

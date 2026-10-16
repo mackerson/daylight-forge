@@ -10,6 +10,7 @@
  * Every adapter here is a mock — `node -e` printing lines — and says so in its runner id.
  * No agent CLI is spawned.
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,7 +19,7 @@ import { EventLog, runEventId } from '../mission/events.ts';
 import { redact, secretsFromEnv } from '../mission/redact.ts';
 import type { ArtifactRef } from '../mission/types.ts';
 import type { RunEvent } from '../replay/types.ts';
-import type { Adapter } from '../swarm/adapters.ts';
+import { run, type Adapter } from '../swarm/adapters.ts';
 import { captureRun, describeArgv, type AttemptFinisher } from '../swarm/capture.ts';
 import { normalize } from '../swarm/normalize.ts';
 import { harness } from './harness.ts';
@@ -121,6 +122,9 @@ section('normalising provider output');
     normalize('codex', codexCall).some((e) => e.name === 'tool.call' && e.payload.tool === 'get_overview'));
   check('a codex started item is not double-counted',
     normalize('codex', JSON.stringify({ type: 'item.started', item: { type: 'mcp_tool_call', tool: 'x' } })).length === 0);
+  check('a codex updated item is not a second call',
+    !normalize('codex', JSON.stringify({ type: 'item.updated', item: { id: 'i1', type: 'mcp_tool_call', tool: 'x', status: 'in_progress' } }))
+      .some((e) => e.name === 'tool.call'));
   check('codex never reports a cost', !normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5 } })).some((e) => e.name === 'cost.reported'));
 
   check('the prompt is replaced in a described argv',
@@ -161,6 +165,17 @@ section('the event log');
   check('a line with a nested payload key order difference is still one event',
     runEventId({ at: 1, session: 's', agent: 'a', model: null, tool: 't', x: 1, y: 2 } as RunEvent)
       === runEventId({ tool: 't', y: 2, x: 1, at: 1, session: 's', agent: 'a', model: null } as RunEvent));
+  // Two get_slice calls in one millisecond that differ only below the top level are two calls.
+  const sliceA = { at: 90, session: 'm_1:a_9', agent: 'claude', model: 'sonnet', tool: 'get_slice', args: { node: 'a.ts', hops: 1 } } as RunEvent;
+  const sliceB = { ...sliceA, args: { node: 'b.ts', hops: 1 } } as RunEvent;
+  check('lines differing only in a nested field get different ids', runEventId(sliceA) !== runEventId(sliceB));
+  const nestedDir = path.join(tmp, 'log-nested');
+  fs.mkdirSync(nestedDir);
+  const nestedLog = new EventLog(nestedDir);
+  check('and both are ingested', nestedLog.ingestRunEvents([sliceA, sliceB], resolve) === 2);
+  nestedLog.close();
+  check('nested key order still does not matter',
+    runEventId(sliceA) === runEventId({ ...sliceA, args: { hops: 1, node: 'a.ts' } } as RunEvent));
   log.close();
 
   const reopened = new EventLog(dir);
@@ -277,6 +292,111 @@ await (async () => {
   check('reported cost reaches the attempt', store.calls[0].result.costUsd === 0.42);
   check('and agrees with the adapter\'s own spend parser', r.cost === 0.42 && r.turns === 2);
   events.close();
+})();
+
+section('one cost.reported per attempt, and usage under one name for every provider');
+await (async () => {
+  const dir = path.join(tmp, 'usage');
+  fs.mkdirSync(dir);
+  const events = new EventLog(dir);
+  const artifacts = new ArtifactStore(dir);
+  const store = new Finisher();
+  const claudeLike: Adapter = {
+    name: 'claude', bin: process.execPath, perInvocationMcp: true,
+    argv: () => ['-e', `console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.3, num_turns: 4,
+      usage: { input_tokens: 120, output_tokens: 40, cache_read_input_tokens: 900, cache_creation_input_tokens: 60 } }));`],
+  };
+  await captureRun(
+    claudeLike,
+    { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 'm_1:a_4', timeoutMs: 10_000 },
+    ctxFor(dir, events, artifacts, store, 'a_4', { runnerId: 'agent:claude:test' }),
+  );
+  const ev = events.forAttempt('a_4');
+  const reported = ev.filter((e) => e.name === 'cost.reported');
+  check('the log holds exactly one cost.reported for the attempt', reported.length === 1, String(reported.length));
+  const summed = reported.reduce((n, e) => n + (Number(e.payload.costUsd) || 0), 0);
+  check('so summing it gives the attempt\'s cost, not twice that', summed === store.calls[0].result.costUsd, `${summed}`);
+  check('the provider\'s own figure is kept, under its own name', ev.some((e) => e.name === 'provider.cost' && e.payload.costUsd === 0.3));
+  const usage = ev.find((e) => e.name === 'cost.usage');
+  check('claude usage becomes cost.usage with cache reads and writes',
+    usage?.payload.inputTokens === 120 && usage.payload.outputTokens === 40 && usage.payload.cacheReadTokens === 900 && usage.payload.cacheWriteTokens === 60,
+    JSON.stringify(usage?.payload));
+  events.close();
+
+  const codexUsage = normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 3, output_tokens: 2 } }))
+    .find((e) => e.name === 'cost.usage');
+  // A spend figure scraped out of raw stdout is a guess, and says so; only a figure the
+  // provider reported in its own structured result is known.
+  const scraped = new Finisher();
+  const scrapeDir = path.join(tmp, 'scraped');
+  fs.mkdirSync(scrapeDir);
+  const scrapeEvents = new EventLog(scrapeDir);
+  await captureRun(
+    { name: 'mock', bin: process.execPath, perInvocationMcp: true, argv: () => ['-e', 'console.log(JSON.stringify({ total_cost_usd: 0.2 }))'] },
+    { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 'm_1:a_5', timeoutMs: 10_000 },
+    ctxFor(scrapeDir, scrapeEvents, new ArtifactStore(scrapeDir), scraped, 'a_5'),
+  );
+  const scrapedCost = scrapeEvents.forAttempt('a_5').find((e) => e.name === 'cost.reported');
+  check('a cost found only by scanning stdout is recorded as not known',
+    scrapedCost?.payload.costUsd === 0.2 && scrapedCost.payload.known === false && scrapedCost.payload.costSource === 'stdout-scan',
+    JSON.stringify(scrapedCost?.payload));
+  scrapeEvents.close();
+
+  // Repository text echoed unescaped into a provider's stream must not move the budget.
+  const echoing: Adapter = {
+    name: 'claude', bin: process.execPath, perInvocationMcp: true,
+    argv: () => ['-e', `console.log(JSON.stringify({ type: 'user', content: { total_cost_usd: 99, cost: 50 } }));
+      setTimeout(() => console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 1 })), 50);`],
+  };
+  const echoed = await run(echoing, { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 's', timeoutMs: 10_000, maxCost: 1 });
+  check('a provider with structured cost is not killed by cost-shaped text in its stream', echoed.ok && !echoed.overBudget,
+    `ok=${echoed.ok} overBudget=${echoed.overBudget}`);
+  const overrun: Adapter = {
+    name: 'claude', bin: process.execPath, perInvocationMcp: true,
+    argv: () => ['-e', `console.log(JSON.stringify({ type: 'result', total_cost_usd: 2, num_turns: 1 })); setTimeout(() => {}, 5000);`],
+  };
+  const killed = await run(overrun, { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 's', timeoutMs: 10_000, maxCost: 1 });
+  check('but its own reported cost over the ceiling still stops it', killed.overBudget && !killed.ok);
+
+  check('codex usage is the same event, cached input included',
+    codexUsage?.payload.inputTokens === 5 && codexUsage.payload.cacheReadTokens === 3 && codexUsage.payload.outputTokens === 2 && codexUsage.payload.cacheWriteTokens === null,
+    JSON.stringify(codexUsage?.payload));
+})();
+
+section('an agent does not outlive the process that ran it');
+await (async () => {
+  // `vds:stop-job` sends SIGTERM to the CLI only. The agent it spawned, and anything the
+  // agent spawned, must go with it rather than keep writing claims for an attempt nobody owns.
+  const marker = `VDS_ORPHAN_MARKER_${process.pid}`;
+  const parent = path.join(tmp, 'parent.mjs');
+  fs.writeFileSync(parent, `
+    const { run } = await import(${JSON.stringify(path.resolve(import.meta.dirname, '..', 'swarm', 'adapters.ts'))});
+    const agent = { name: 'mock', bin: process.execPath, perInvocationMcp: true, argv: () => ['-e',
+      'require("child_process").spawn("/usr/bin/sleep", ["30"], { stdio: "ignore" }); console.log("ready"); setInterval(() => {}, 1000);',
+      ${JSON.stringify(marker)}] };
+    await run(agent, { prompt: 'x', cwd: process.cwd(), mcpConfigPath: '/dev/null', session: 's', timeoutMs: 60_000,
+      onOutput: (_s, t) => { if (t.includes('ready')) console.log('agent ready'); } });
+  `);
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, [parent], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise<void>((resolve) => {
+    child.stdout.on('data', (d) => { if (String(d).includes('agent ready')) resolve(); });
+    setTimeout(resolve, 8000);
+  });
+  const pgrep = () => {
+    try {
+      return execFileSync('pgrep', ['-f', marker], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  };
+  check('the agent was running', pgrep() !== '');
+  child.kill('SIGTERM');
+  await new Promise((r) => child.on('close', r));
+  await new Promise((r) => setTimeout(r, 500));
+  const left = pgrep();
+  check('after SIGTERM to the parent, the agent is gone', left === '', left);
+  if (left) for (const pid of left.split('\n')) try { process.kill(Number(pid), 'SIGKILL'); } catch { /* gone */ }
 })();
 
 done();

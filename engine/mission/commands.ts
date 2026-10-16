@@ -5,7 +5,7 @@ import { redact } from './redact.ts';
 import { openDaylight, type DaylightContext } from './context.ts';
 import { importMission, readExport, writeExport } from './export.ts';
 import {
-  closeMission, createMission, decide, inspectMission, proposeExperiment, runMission,
+  closeMission, createMission, decide, inspectMission, needsOf, proposeExperiment, runMission,
   runMissionExperiment,
 } from './orchestrate.ts';
 import { renderReport } from './report.ts';
@@ -123,10 +123,14 @@ async function mission(sub: string | undefined, p: Parsed, out: string, asJson: 
       return 0;
     }
     case 'list': {
-      const data = withContext(out, (ctx) => ({
-        project: mappedProject(out),
-        missions: ctx.store.missions(),
-      }));
+      const data = withContext(out, (ctx) => {
+        const missions = ctx.store.missions();
+        return {
+          project: mappedProject(out),
+          missions,
+          needs: Object.fromEntries(missions.map((m) => [m.id, needsOf(ctx, m)])),
+        };
+      });
       if (asJson) json(data);
       else {
         if (!data.missions.length) say('no missions');
@@ -163,6 +167,7 @@ async function mission(sub: string | undefined, p: Parsed, out: string, asJson: 
         tools: list(last(p, 'tools') ?? 'claude'),
         model: last(p, 'model'),
         maxCost: num(last(p, 'max-cost')),
+        raiseBudget: last(p, 'raise-budget') === 'true',
         dryRun: last(p, 'dry-run') === 'true',
         timeoutMs: num(last(p, 'timeout')) !== undefined ? num(last(p, 'timeout'))! * 1000 : undefined,
         concurrency: num(last(p, 'concurrency')),

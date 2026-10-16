@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { buildStack } from '../focus/stack.ts';
 import type { Graph } from '../graph/types.ts';
 import { ClaimStore, EvidenceRequired, type Source } from '../store/claims.ts';
+import type { Claim } from '../store/types.ts';
 import { frontier } from '../swarm/frontier.ts';
 
 /**
@@ -35,10 +36,10 @@ export interface ServerOptions {
   agentTool: string;
   model?: string;
   /**
-   * Blind review. Agent claims whose session starts with this prefix — the other reviewers
-   * in the same mission — are withheld from every read, so a second reviewer forms its own
-   * answer rather than inheriting the first one's. The caller's own claims still show, and
-   * so do human and static ones, which are not the thing independence protects against.
+   * Blind review: set to the mission id. Every agent claim but the caller's own is withheld
+   * from every read — the other reviewers in this mission, and any other mission's reviewers
+   * on the same subjects — so a reviewer forms its own answer rather than inheriting one.
+   * Human and static claims still show; they are not what independence protects against.
    */
   blindPrefix?: string;
 }
@@ -53,11 +54,77 @@ export function visibleToReviewer<T extends { source: Source }>(
   claims: T[], blindPrefix: string | undefined, ownSession: string,
 ): T[] {
   if (!blindPrefix) return claims;
-  return claims.filter((c) => {
-    if (c.source.kind !== 'agent') return true;
-    const session = c.source.sessionId ?? '';
-    return session === ownSession || !session.startsWith(blindPrefix);
-  });
+  // Another mission's reviewer is no less someone else's answer than this mission's: an
+  // earlier review of the same subject, shown to a blind reviewer, is the anchoring blind
+  // review exists to prevent.
+  return claims.filter((c) => c.source.kind !== 'agent' || c.source.sessionId === ownSession);
+}
+
+/**
+ * The claim store as a blind reviewer is allowed to read it.
+ *
+ * Filtering only the claims a tool returns was not enough: the overview's counts, the focus
+ * state's clusters and defences (names, purposes, reasons written by the other reviewer),
+ * the frontier's scores and the belief a contradiction reports were all derived from every
+ * claim. Every read is narrowed here instead, so a tool cannot forget to. Writes and the
+ * claim rows themselves are the base store's; the narrowing is in what is derived from them.
+ */
+export class BlindReviewStore extends ClaimStore {
+  private readonly seen: (source: Source) => boolean;
+  private readonly blindPrefix: string;
+
+  constructor(dbPath: string, blindPrefix: string, ownSession: string) {
+    super(dbPath);
+    this.blindPrefix = blindPrefix;
+    this.seen = (source) => visibleToReviewer([{ source }], blindPrefix, ownSession).length === 1;
+  }
+
+  override belief(subject: string, predicate: string, currentHash?: string, admit?: (c: Claim) => boolean) {
+    return super.belief(subject, predicate, currentHash, (c) => this.seen(c.source) && (admit?.(c) ?? true));
+  }
+
+  override clusters(level?: number) {
+    return super.clusters(level).filter((c) => this.seen(c.source));
+  }
+
+  override elisions(level?: number) {
+    return super.elisions(level).filter((e) => this.seen(e.source));
+  }
+
+  override defences() {
+    return super.defences().filter((d) => this.seen(d.source));
+  }
+
+  override legacyVerdicts() {
+    return super.legacyVerdicts().filter((v) => this.seen(v.source));
+  }
+
+  /**
+   * The other reviewers' leases do not steer this one: independence means the same subjects.
+   * Leases from outside this mission still do — they are concurrent work, not answers.
+   */
+  override leasedElsewhere(session: string): Set<string> {
+    return new Set(
+      this.activeLeases()
+        .filter((l) => l.session !== session && !l.session.startsWith(this.blindPrefix))
+        .map((l) => l.subject),
+    );
+  }
+
+  override stats() {
+    const base = super.stats();
+    const subjects = new Set<string>();
+    let claims = 0;
+    for (const { subject, predicate } of this.allSubjects()) {
+      const n = this.claimsFor(subject, predicate).filter((c) => this.seen(c.source)).length;
+      claims += n;
+      if (n) subjects.add(subject);
+    }
+    return {
+      ...base, claims, subjects: subjects.size,
+      clusters: this.clusters().length, elisions: this.elisions().length, defences: this.defences().length,
+    };
+  }
 }
 
 export function loadGraph(dir: string): Graph {
@@ -127,7 +194,8 @@ export function unescapeText(value: unknown): unknown {
 
 export function createServer(opts: ServerOptions) {
   const graph = loadGraph(opts.dir);
-  const store = new ClaimStore(path.join(opts.dir, 'claims.db'));
+  const dbPath = path.join(opts.dir, 'claims.db');
+  const store = opts.blindPrefix ? new BlindReviewStore(dbPath, opts.blindPrefix, opts.session) : new ClaimStore(dbPath);
   const source: Source = {
     kind: 'agent',
     tool: opts.agentTool,
@@ -379,8 +447,8 @@ export function createServer(opts: ServerOptions) {
           confidence: a.confidence, evidence: a.evidence, source,
         });
         emit('flag_contradiction', { ok: true, subject: a.subject, predicate: a.predicate });
-        // The belief is derived from every claim, but a blind reviewer is only shown its own
-        // share of them — the status stays honest, the other side's text stays unseen.
+        // For a blind reviewer the store derives the belief from what it may see, so neither
+        // the other side's text nor a status that only exists because of it comes back.
         const belief = store.belief(a.subject, a.predicate);
         return ok({ accepted: true, belief: { ...belief, claims: visible(belief.claims) } });
       } catch (err) {

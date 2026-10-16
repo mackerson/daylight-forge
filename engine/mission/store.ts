@@ -33,6 +33,19 @@ export class IllegalTransition extends Error {
 
 const id = (prefix: string) => `${prefix}_${randomUUID().replace(/-/g, '')}`;
 
+/**
+ * Scope paths in the one spelling claims use: repo-relative, no `./`, no trailing or doubled
+ * slash. Matching is by string prefix, so `src/` or `./src` typed into a form would otherwise
+ * match nothing and the mission would report that nothing in scope is disputed.
+ */
+function normaliseScope(scope: MissionScope): MissionScope {
+  if (!scope.paths) return scope;
+  const paths = scope.paths
+    .map((p) => path.posix.normalize(p.trim()).replace(/^(\.\/)+/, '').replace(/\/+$/, ''))
+    .filter((p) => p && p !== '.');
+  return { ...scope, paths };
+}
+
 const DEFAULT_PERMISSIONS: MissionPermissions = {
   read: true, write: false, execute: false, deploy: false,
 };
@@ -134,7 +147,7 @@ export class MissionStore {
       kind: input.kind,
       objective: input.objective,
       baseRevision: input.baseRevision,
-      scope: input.scope ?? {},
+      scope: normaliseScope(input.scope ?? {}),
       permissions: { ...DEFAULT_PERMISSIONS, ...input.permissions },
       budget: input.budget ?? {},
       requirementIds: input.requirementIds ?? [],
@@ -304,9 +317,22 @@ export class MissionStore {
 
   // ---- attempts --------------------------------------------------------------
 
-  /** Opens an attempt and moves its task to `running`, via `leased` when it was queued. */
+  /**
+   * Opens an attempt and moves its task to `running`, via `leased` when it was queued.
+   *
+   * One live attempt per task. A second one stacked on a task whose first never finished
+   * (its process died) would leave the first `running` for ever and let whichever finishes
+   * last decide the task; the dead one has to be cancelled first, which is what
+   * `cancelRunningAttempts` is for.
+   */
   startAttempt(input: StartAttemptInput): Attempt {
     let t = this.requireTask(input.taskId);
+    const live = this.db
+      .prepare(`SELECT id FROM attempts WHERE task_id=? AND state IN ('starting','running') LIMIT 1`)
+      .get(t.id) as { id: string } | undefined;
+    if (live) {
+      throw new IllegalTransition('task', t.id, `running (attempt ${live.id} has not finished)`, 'a second attempt');
+    }
     if (t.state === 'queued') t = this.transitionTask(t.id, 'leased');
     if (t.state === 'leased') t = this.transitionTask(t.id, 'running');
     if (t.state !== 'running') {
@@ -351,24 +377,47 @@ export class MissionStore {
       throw new IllegalTransition('attempt', attemptId, a.state, result.state);
     }
     const at = this.now();
-    this.db
-      .prepare(
-        `UPDATE attempts SET state=?, finished_at=?, cost_usd=?, exit_code=?, signal=?,
-           timed_out=?, failure=?, artifacts=?
-         WHERE id=?`,
-      )
-      .run(
-        result.state, at, result.costUsd, result.exitCode ?? null, result.signal ?? null,
-        result.timedOut ? 1 : 0, result.failure ?? null,
-        JSON.stringify(result.artifacts ?? []), attemptId,
-      );
-    for (const ref of result.artifacts ?? []) this.recordArtifact(ref);
+    // One transaction: a crash between the attempt row and its task would leave the attempt
+    // finished and the task running, which no later run can tell from a live attempt.
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `UPDATE attempts SET state=?, finished_at=?, cost_usd=?, exit_code=?, signal=?,
+             timed_out=?, failure=?, artifacts=?
+           WHERE id=?`,
+        )
+        .run(
+          result.state, at, result.costUsd, result.exitCode ?? null, result.signal ?? null,
+          result.timedOut ? 1 : 0, result.failure ?? null,
+          JSON.stringify(result.artifacts ?? []), attemptId,
+        );
+      for (const ref of result.artifacts ?? []) this.recordArtifact(ref);
 
-    const t = this.requireTask(a.taskId);
-    if (t.state === 'running') {
-      this.transitionTask(t.id, result.state === 'completed' ? 'done' : 'failed');
+      const t = this.requireTask(a.taskId);
+      if (t.state === 'running') {
+        this.transitionTask(t.id, result.state === 'completed' ? 'done' : 'failed');
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
     }
     return this.requireAttempt(attemptId);
+  }
+
+  /**
+   * Cancel every attempt of a mission that is still marked live, with `failure` as the reason,
+   * failing their tasks so they can be retried. For attempts whose owning process is known to
+   * be gone; the caller decides that, this only records it.
+   */
+  cancelRunningAttempts(missionId: string, failure: string): Attempt[] {
+    const ids = (
+      this.db
+        .prepare(`SELECT id FROM attempts WHERE mission_id=? AND state IN ('starting','running') ORDER BY started_at, id`)
+        .all(missionId) as Array<{ id: string }>
+    ).map((r) => r.id);
+    return ids.map((id) => this.finishAttempt(id, { state: 'cancelled', costUsd: null, failure }));
   }
 
   attempt(attemptId: string): Attempt | null {

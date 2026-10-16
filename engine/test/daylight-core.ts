@@ -101,6 +101,25 @@ section('project identity');
   check('and an unversioned revision', currentRevision(plain).label === 'unversioned');
   check('two different plain directories are two projects',
     identifyProject(path.join(tmp, 'repo')).id !== p.id);
+
+  // A shallow clone's root commit is the graft boundary, not the project's first commit, so
+  // its identity would be some other project's. Refused rather than guessed.
+  const shallow = path.join(tmp, 'shallow');
+  execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo}`, shallow], { stdio: 'ignore' });
+  let shallowWhy = '';
+  try {
+    identifyProject(shallow);
+  } catch (err) {
+    shallowWhy = (err as Error).message;
+  }
+  check('a shallow clone is refused, saying how to fix it', /shallow/.test(shallowWhy) && /unshallow/.test(shallowWhy), shallowWhy);
+
+  // When git cannot say whether the tree is clean, the revision must not claim it is.
+  const broken = path.join(tmp, 'broken-index');
+  execFileSync('git', ['clone', '-q', repo, broken], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(broken, '.git', 'index'), 'not an index');
+  const unknown = currentRevision(broken);
+  check('a status that fails labels the revision +unknown', unknown.label.endsWith('+unknown') && unknown.dirty, unknown.label);
 }
 
 section('artifacts');

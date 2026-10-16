@@ -14,7 +14,9 @@ import { available } from '../swarm/adapters.ts';
 import type { Belief, ClaimStatus } from '../store/types.ts';
 import type { DaylightContext } from './context.ts';
 import { requireMappedRepo } from './context.ts';
-import { compare, type Comparison, type Dispute, type DisputeSide } from './disputes.ts';
+import {
+  compare, MISSION_CLAIM_FILTER, missionClaims, type Comparison, type Dispute, type DisputeSide,
+} from './disputes.ts';
 import { currentRevision } from './project.ts';
 import type {
   ArtifactRef, Attempt, DaylightEvent, Decision, Experiment, ExpectedObservation, Mission,
@@ -188,6 +190,8 @@ export interface RunMissionOptions {
   tools: string[];
   model?: string;
   maxCost?: number;
+  /** Lets `maxCost` exceed the budget recorded on the mission. Without it that is refused. */
+  raiseBudget?: boolean;
   dryRun?: boolean;
   timeoutMs?: number;
   concurrency?: number;
@@ -216,6 +220,49 @@ export interface RunMissionReport {
   costKnown: boolean;
 }
 
+/**
+ * The claim one process holds on running a mission: `<out>/mission-run.<id>.pid`.
+ *
+ * While it is held by a live process, a second run is refused rather than stacked on the
+ * first. When it names a process that is gone — or is absent — whatever attempts the
+ * mission still marks `running` have no owner, and the run that takes the claim cancels them
+ * before it starts anything. Released on return and on process exit; a SIGKILL leaves the
+ * file, which names a dead pid and so is taken over.
+ */
+function takeRunClaim(out: string, missionId: string): () => void {
+  const file = path.join(out, `mission-run.${missionId}.pid`);
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+      return () => {
+        try {
+          if (fs.readFileSync(file, 'utf8').trim() === String(process.pid)) fs.unlinkSync(file);
+        } catch {
+          // Already gone.
+        }
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    const holder = Number(fs.readFileSync(file, 'utf8').trim());
+    if (holder !== process.pid && processAlive(holder)) {
+      throw new Error(`mission ${missionId} is already being run by process ${holder}`);
+    }
+    fs.rmSync(file, { force: true });
+  }
+  throw new Error(`could not claim mission ${missionId} for this run`);
+}
+
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Review tasks already on the mission, by the source they are pinned to. */
 function reviewTasksBySource(tasks: Task[]): Map<string, Task> {
   const out = new Map<string, Task>();
@@ -231,6 +278,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     throw new Error(`mission ${mission.id} is closed (${mission.outcome}); it cannot be run again`);
   }
   if (mission.state === 'draft') throw new Error(`mission ${mission.id} is still a draft`);
+  const budget = mission.budget.maxUsd;
+  if (opts.maxCost !== undefined && budget !== undefined && opts.maxCost > budget && !opts.raiseBudget) {
+    throw new Error(
+      `--max-cost $${opts.maxCost} is above mission ${mission.id}'s budget of $${budget}; ` +
+        'pass --raise-budget to spend past what the mission was created with',
+    );
+  }
   const { root, project } = requireMappedRepo(ctx.out, opts.repo);
   if (project.id !== mission.projectId) {
     throw new Error(
@@ -304,13 +358,41 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     opts.onProgress?.(mission, why);
   };
 
+  // Attempts this process opened and has not finished. If the process is stopped — the shell
+  // sends SIGTERM, which the adapter layer turns into an exit — they are recorded as
+  // cancelled on the way out rather than left `running` for ever.
+  const open = new Set<string>();
+  const releaseClaim = takeRunClaim(ctx.out, mission.id);
+  const onExit = () => {
+    for (const id of open) {
+      try {
+        ctx.store.finishAttempt(id, { state: 'cancelled', costUsd: null, failure: 'interrupted: the run was stopped' });
+      } catch {
+        // Finished in the meantime.
+      }
+    }
+    releaseClaim();
+  };
+  process.on('exit', onExit);
+  const finish = <T>(value: T): T => {
+    process.off('exit', onExit);
+    releaseClaim();
+    return value;
+  };
+  for (const orphan of ctx.store.cancelRunningAttempts(mission.id, 'orphaned: the process running it is gone')) {
+    lifecycle(ctx, mission, 'attempt.orphaned', { failure: orphan.failure }, { taskId: orphan.taskId, attemptId: orphan.id });
+  }
+
   if (!runnable.length) {
     // `blocked` is re-entered through `running` so the new reason replaces the old one and
-    // the transition table stays the only path between states.
-    mission = ctx.store.transitionMission(mission.id, 'running');
-    lifecycle(ctx, mission, 'mission.started', { roster: opts.tools });
+    // the transition table stays the only path between states. A mission already running
+    // (a finished review waiting on a person, or a crashed run) goes straight to blocked.
+    if (mission.state !== 'running') {
+      mission = ctx.store.transitionMission(mission.id, 'running');
+      lifecycle(ctx, mission, 'mission.started', { roster: opts.tools });
+    }
     block(`no runnable agent in roster: ${unavailable.join(', ') || opts.tools.join(', ')}`);
-    return report();
+    return finish(report());
   }
 
   if (mission.state === 'ready' || mission.state === 'blocked') {
@@ -331,13 +413,17 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   const cmd = serverCommand();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const ceiling = opts.maxCost ?? mission.budget.maxUsd;
-  let spent = 0;
-  let costKnown = true;
+  // The budget is the mission's, so a run starts from what every earlier attempt recorded —
+  // the ledger's figure, not an adapter's — and a null anywhere makes the total a floor.
+  const recorded = ctx.store.tasks(mission.id).flatMap((t) => ctx.store.attempts(t.id));
+  let spent = recorded.reduce((n, a) => n + (a.costUsd ?? 0), 0);
+  let costKnown = recorded.every((a) => a.costUsd !== null);
   const failures: string[] = [];
   const queue = [...todo];
   const limit = Math.max(1, opts.concurrency ?? 1);
 
-  const launch = async (plan: ReviewPlan): Promise<void> => {
+  const unknownCost: string[] = [];
+  const launch = async (plan: ReviewPlan, share: number | undefined): Promise<void> => {
     const { spec } = plan;
     const adapter = adapterFor(spec.tool)!;
     const key = specKey(spec);
@@ -347,6 +433,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     // the mission id first so the server can withhold the other reviewers' claims by prefix.
     const session = `${mission.id}:${task.id}:a${task.attemptIds.length + 1}`;
     const attempt = ctx.store.startAttempt({ taskId: task.id, runnerId, sessionId: session });
+    open.add(attempt.id);
     lifecycle(ctx, mission, 'attempt.started', { runnerId, session }, { taskId: task.id, attemptId: attempt.id });
     opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} started`);
 
@@ -368,7 +455,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         model: spec.model,
         timeoutMs,
         maxTurns: 40,
-        maxCost: ceiling ? Math.max(0, ceiling - spent) : undefined,
+        maxCost: share,
       },
       {
         store: ctx.store,
@@ -383,8 +470,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         onChunk: opts.onChunk ? (s, t) => opts.onChunk!(attempt.id, s, t) : undefined,
       },
     );
-    spent += result.cost;
-    if (result.ok && result.cost === 0) costKnown = false;
+    open.delete(attempt.id);
+    const costUsd = ctx.store.attempt(attempt.id)?.costUsd ?? null;
+    spent += costUsd ?? 0;
+    if (costUsd === null) {
+      costKnown = false;
+      unknownCost.push(key);
+    }
     ingestMcpEvents(ctx, mission.id);
     if (!result.ok) {
       const why = result.timedOut ? 'timed out' : result.overBudget ? 'over budget' : `exit ${result.exitCode}`;
@@ -399,21 +491,34 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
       failures.push(`budget exhausted before ${left}: spent $${spent.toFixed(2)} of $${ceiling.toFixed(2)}`);
       break;
     }
+    // A ceiling only holds while spend is known. Once an agent in this run finished without
+    // reporting a cost, the next wave could already be over it; a person reruns to go on.
+    if (ceiling && unknownCost.length) {
+      const left = queue.map((p) => specKey(p.spec)).join(', ');
+      failures.push(
+        `cost unknown for ${unknownCost.join(', ')}, so the $${ceiling.toFixed(2)} ceiling cannot be enforced; ` +
+          `not launching ${left}`,
+      );
+      break;
+    }
+    // Every attempt in a wave starts at once; each gets its share of what is left, or each
+    // would believe it had the whole remainder to itself.
     const wave = queue.splice(0, limit);
-    await Promise.all(wave.map(launch));
+    const share = ceiling ? Math.max(0, ceiling - spent) / wave.length : undefined;
+    await Promise.all(wave.map((p) => launch(p, share)));
   }
 
   if (failures.length) {
     block(failures.join('; '));
-    return report(undefined, spent, costKnown);
+    return finish(report(undefined, spent, costKnown));
   }
 
   if (compareTask && ctx.store.task(compareTask.id)!.state !== 'done') {
     const comparison = runCompare(ctx, ctx.store.mission(mission.id)!, compareTask.id);
     opts.onProgress?.(ctx.store.mission(mission.id)!, `compared: ${comparison.disputes.length} dispute(s)`);
-    return report(comparison, spent, costKnown);
+    return finish(report(comparison, spent, costKnown));
   }
-  return report(compare(ctx.claims, mission.scope), spent, costKnown);
+  return finish(report(compare(ctx.claims, mission.scope, missionClaims(mission.id)), spent, costKnown));
 }
 
 /**
@@ -423,7 +528,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
  */
 export function runCompare(ctx: DaylightContext, mission: Mission, taskId: string): Comparison {
   const attempt = ctx.store.startAttempt({ taskId, runnerId: 'static:vds' });
-  const comparison = compare(ctx.claims, mission.scope);
+  const comparison = compare(ctx.claims, mission.scope, missionClaims(mission.id));
   const meta = { projectId: mission.projectId, revision: mission.baseRevision };
   const artifacts: ArtifactRef[] = [];
   const base = { taskId, attemptId: attempt.id };
@@ -453,7 +558,7 @@ export function runCompare(ctx: DaylightContext, mission: Mission, taskId: strin
     });
   }
   const summary = ctx.artifacts.put(JSON.stringify({
-    missionId: mission.id, scope: mission.scope,
+    missionId: mission.id, scope: mission.scope, claims: MISSION_CLAIM_FILTER,
     disputes: comparison.disputes.map(disputeRecord),
     unverified: comparison.unverified.map(beliefRecord),
     settled: comparison.settled.map(beliefRecord),
@@ -522,6 +627,33 @@ export interface InspectedDispute {
   decisionId?: string;
 }
 
+/**
+ * Something a person has to do before the mission can move, derived and never stored.
+ *
+ * A mission whose reviews are done and whose reviewers disagree is `running` — the state
+ * table has no "waiting on you", and should not: a dispute is not a failure, so `blocked`
+ * would be the wrong word. But it is the one moment the product exists to produce, so it is
+ * computed here and the list counts it.
+ */
+export interface Need {
+  kind: 'blocked' | 'dispute';
+  ref: string;
+  why: string;
+}
+
+export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Comparison): Need[] {
+  if (mission.state === 'closed') return [];
+  if (mission.state === 'blocked') {
+    return [{ kind: 'blocked', ref: mission.id, why: mission.outcomeReason ?? 'blocked' }];
+  }
+  const tasks = ctx.store.tasks(mission.id);
+  if (!tasks.length || tasks.some((t) => t.state !== 'done')) return [];
+  const disputes = (comparison ?? compare(ctx.claims, mission.scope, missionClaims(mission.id))).disputes;
+  return disputes
+    .filter((d) => d.belief.status === 'CONTRADICTED')
+    .map((d) => ({ kind: 'dispute', ref: `${d.subject} ${d.predicate}`, why: 'the reviewers disagree; a person decides' }));
+}
+
 export interface Inspection {
   mission: Mission;
   tasks: Task[];
@@ -532,6 +664,7 @@ export interface Inspection {
   unverified: Belief[];
   settled: Belief[];
   events: DaylightEvent[];
+  needs: Need[];
 }
 
 interface ComparisonRecord {
@@ -544,13 +677,14 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
   const tasks = ctx.store.tasks(missionId);
   const attempts = tasks.flatMap((t) => ctx.store.attempts(t.id));
   const decisions = ctx.store.decisions(missionId);
-  const comparison = compare(ctx.claims, mission.scope);
+  const admit = missionClaims(mission.id);
+  const comparison = compare(ctx.claims, mission.scope, admit);
 
   // Recorded first, then whatever is contradicted right now and was not recorded yet.
   const byKey = new Map<string, InspectedDispute>();
   const key = (d: { subject: string; predicate: string }) => `${d.subject}\u0000${d.predicate}`;
   const settle = (d: { subject: string; predicate: string; sameEvidence: boolean; sides: DisputeSide[] }) => {
-    const status = ctx.claims.belief(d.subject, d.predicate).status;
+    const status = ctx.claims.belief(d.subject, d.predicate, undefined, admit).status;
     const decision = decisions.find((x) => x.subject === d.subject && x.predicate === d.predicate);
     byKey.set(key(d), {
       subject: d.subject, predicate: d.predicate, status, sameEvidence: d.sameEvidence,
@@ -581,6 +715,7 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
     unverified: comparison.unverified,
     settled: comparison.settled,
     events: all.slice(-eventLimit),
+    needs: needsOf(ctx, mission, comparison),
   };
 }
 

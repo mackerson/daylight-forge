@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore } from '../mission/artifacts.ts';
+import { inScope } from '../mission/disputes.ts';
 import { IllegalTransition, MissionStore } from '../mission/store.ts';
 import type { ProjectIdentity } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -148,6 +149,59 @@ section('an exit code is not an outcome');
   const a3 = store.startAttempt({ taskId: t2.id, runnerId: 'runner:experiment' });
   check('a retry is a second attempt on the same task', store.attempts(t2.id).length === 2 && a3.id !== a2.id);
   check('and the failed attempt is still there', store.attempt(a2.id)!.state === 'failed');
+  store.close();
+}
+
+section('a task runs one attempt at a time');
+{
+  const store = new MissionStore(path.join(tmp, 'one-attempt'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
+  const t = store.createTask({ missionId: m.id, role: 'review', objective: 'review' });
+  const a1 = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a', sessionId: `${m.id}:${t.id}:a1` });
+  const second = throws(() => store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a', sessionId: `${m.id}:${t.id}:a2` }));
+  check('a second attempt on a task with one running is refused', second instanceof IllegalTransition, second?.message);
+  check('and names the attempt still running', !!second && second.message.includes(a1.id), second?.message);
+  check('the task still has just the one attempt', store.attempts(t.id).length === 1);
+
+  const cancelled = store.cancelRunningAttempts(m.id, 'orphaned: owning process gone');
+  check('a mission\'s running attempts can be cancelled with a reason', cancelled.length === 1
+    && store.attempt(a1.id)!.state === 'cancelled' && store.attempt(a1.id)!.failure === 'orphaned: owning process gone');
+  check('which fails the task so it can be retried', store.task(t.id)!.state === 'failed');
+  check('and leaves nothing running', store.cancelRunningAttempts(m.id, 'x').length === 0);
+  store.close();
+}
+
+section('finishing an attempt is all or nothing');
+{
+  const store = new MissionStore(path.join(tmp, 'atomic'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
+  const t = store.createTask({ missionId: m.id, role: 'review', objective: 'review' });
+  const a = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a' });
+  // An artifact row the schema refuses, part-way through the finish.
+  const bad = { id: 'sha256:bad', kind: 'log', digest: 'sha256:bad', projectId: null } as unknown as Parameters<MissionStore['recordArtifact']>[0];
+  const err = throws(() => store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, artifacts: [bad] }));
+  check('a finish that fails part-way throws', !!err);
+  check('and leaves the attempt as it was', store.attempt(a.id)!.state === 'running' && store.attempt(a.id)!.costUsd === null,
+    store.attempt(a.id)!.state);
+  check('with its task still running, not half-moved', store.task(t.id)!.state === 'running');
+  check('so it can still be finished properly', store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1 }).state === 'completed'
+    && store.task(t.id)!.state === 'done');
+  store.close();
+}
+
+section('scope paths are normalised when a mission is created');
+{
+  const store = new MissionStore(path.join(tmp, 'scope'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({
+    projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r',
+    scope: { paths: ['src/', './lib', 'a//b/', 'docs'] },
+  });
+  check('trailing slashes, ./ and doubled slashes are dropped', m.scope.paths?.join() === 'src,lib,a/b,docs', m.scope.paths?.join());
+  check('and read back the same', store.mission(m.id)!.scope.paths?.join() === 'src,lib,a/b,docs');
+  check('so `src/` scopes src/a.ts', inScope('src/a.ts', m.scope) && inScope('lib/x/y.ts#f', m.scope) && !inScope('srcx/a.ts', m.scope));
   store.close();
 }
 

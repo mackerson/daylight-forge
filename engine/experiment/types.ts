@@ -39,6 +39,8 @@ export interface ExecutionRecord {
   /** The full argv as spawned, with the worktree path replaced by `<worktree>`. */
   sandboxArgv: string[];
   sandboxProfile: string;
+  /** The absolute launcher binaries, as resolved at detection. Absent when nothing was spawned. */
+  sandboxBinaries?: { prlimit: string; bwrap: string; scope?: string };
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;

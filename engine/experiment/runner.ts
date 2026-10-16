@@ -3,14 +3,15 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ArtifactStore } from '../mission/artifacts.ts';
+import type { Readable, Writable } from 'node:stream';
+import { ArtifactStore, canonicalJson } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
-  checkAllowlist, DEFAULT_LIMITS, detectSandbox, SANDBOX_LIMITATIONS, sandboxArgv,
-  type SandboxLimits, type SandboxProfile,
+  checkAllowlist, DEFAULT_LIMITS, detectSandbox, NO_SCOPE_LIMITATION, SANDBOX_LIMITATIONS, sandboxArgv,
+  sandboxBinaries, scopeEnv, SYSTEM_PATH, type SandboxLimits, type SandboxProfile,
 } from './sandbox.ts';
 import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
 
@@ -21,7 +22,9 @@ import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
  * asked for. The test and its prediction are artifacts, registered before anything runs and
  * covered by one digest, so the thing being tested cannot be rewritten to match whatever came
  * out; at run time the test is copied *from the artifact store into the worktree*, and a
- * worktree that already holds a different file at that path is refused. And the revision is
+ * worktree that already holds a different file at that path is refused. Each run then sees
+ * the registered bytes bound in from the runner's memory, not the worktree copy, which the
+ * same uid could rewrite between runs. And the revision is
  * a commit — a `+dirty` tree is uncommitted code nobody else can check out, so an experiment
  * on it is recorded as invalid rather than run.
  *
@@ -42,6 +45,8 @@ export interface ExperimentStoreLike {
     id: string,
     patch: { executions?: ArtifactRef[]; conclusion?: ExperimentConclusion; limitations?: string[] },
   ): Experiment;
+  /** When present, lets the sweep conclude what a dead runner left pending. */
+  experiment?(id: string): Experiment | null;
 }
 
 export interface EventSink {
@@ -90,6 +95,36 @@ export function harnessDigestOf(
     .digest('hex')}`;
 }
 
+/**
+ * Does the row still describe the experiment that was registered?
+ *
+ * The row — which artifact is the test, where it goes, what counts as a match — is a plain
+ * UPDATE away for any process with this uid, so at run time it is checked against the digest
+ * rather than believed. `legacy` is a row registered before the path was part of it.
+ */
+export function harnessHolds(
+  x: Experiment, artifacts: ArtifactStore,
+): { ok: true; legacy: boolean } | { ok: false; why: string } {
+  const edited = (what: string) => ({
+    ok: false as const,
+    why: `the harness digest no longer holds: ${what} on the experiment row is not what was registered`,
+  });
+  if (harnessDigestOf(x.testArtifact.digest, x.expectedArtifact.digest, x.command, x.sandboxProfile) !== x.harnessDigest) {
+    return edited('the test, prediction, command or profile');
+  }
+  let registered: Record<string, unknown>;
+  try {
+    registered = JSON.parse(artifacts.text(x.expectedArtifact)) as Record<string, unknown>;
+  } catch (err) {
+    return { ok: false, why: `the registered prediction cannot be read: ${(err as Error).message}` };
+  }
+  const { testPath, ...prediction } = registered;
+  if (canonicalJson(prediction) !== canonicalJson(x.prediction)) return edited('the prediction');
+  if (testPath === undefined) return { ok: true, legacy: true };
+  if (testPath !== x.testArtifact.path) return edited('the test path');
+  return { ok: true, legacy: false };
+}
+
 export function registerExperiment(input: RegisterInput): Experiment {
   if (isEmptyPrediction(input.prediction)) {
     throw new InvalidExperiment(
@@ -110,7 +145,9 @@ export function registerExperiment(input: RegisterInput): Experiment {
   const testArtifact = input.artifacts.put(input.testSource, {
     ...meta, kind: 'test', path: rel, label: 'registered test',
   });
-  const expectedArtifact = input.artifacts.put(JSON.stringify(input.prediction, null, 2), {
+  // Where the test is placed decides what runs, so it is part of the protected expectation
+  // and, through that artifact's digest, of the harness digest.
+  const expectedArtifact = input.artifacts.put(JSON.stringify({ ...input.prediction, testPath: rel }, null, 2), {
     ...meta, kind: 'expected', label: 'prediction', mediaType: 'application/json',
   });
 
@@ -161,10 +198,58 @@ export interface RunContext {
 
 const STREAM_CAP = 2 * 1024 * 1024;
 
+/**
+ * Git as the runner runs it: none of the repository's hooks, fsmonitor or ssh command, no
+ * user or system config, and none of the caller's GIT_* variables. A linked worktree shares
+ * the main repo's `.git/config`, which anyone with write access to the checkout can edit,
+ * and a checkout runs `post-checkout` — on the host, outside the sandbox, as us.
+ */
+export const HARDENED_GIT_CONFIG = [
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.sshCommand=false',
+];
+
+export const hardenedGitEnv = (): Record<string, string> => ({
+  PATH: process.env.PATH ?? '/usr/bin:/bin',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+});
+
 const git = (root: string, args: string[]): string =>
-  execFileSync('git', ['-C', root, ...args], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+  execFileSync('git', [...HARDENED_GIT_CONFIG, '-C', root, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, env: hardenedGitEnv(),
   }).trim();
+
+/**
+ * `-c` overrides that switch off every clean/smudge driver the repository's config names.
+ *
+ * A driver in `.git/config` (or a file it includes) plus a committed `.gitattributes` runs on
+ * checkout, on the host. There is no wildcard for `filter.*`, so the names are listed first —
+ * with `--includes`, which `--local` leaves off — and each is blanked. `required=false`
+ * because a required driver with no command fails the checkout instead of skipping it.
+ */
+export function filterOverrides(root: string): string[] {
+  let names: string;
+  try {
+    names = execFileSync(
+      'git',
+      [...HARDENED_GIT_CONFIG, '-C', root, 'config', '--includes', '--local', '--name-only', '--get-regexp', '^filter\\.'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000, env: hardenedGitEnv() },
+    );
+  } catch {
+    // Exit 1 is "no filter configured"; anything else surfaces at the checkout.
+    return [];
+  }
+  const drivers = new Set<string>();
+  for (const key of names.split('\n').map((k) => k.trim()).filter(Boolean)) {
+    const driver = key.slice('filter.'.length, key.lastIndexOf('.'));
+    if (driver && !/[=\s]/.test(driver)) drivers.add(driver);
+  }
+  return [...drivers].flatMap((d) => [
+    '-c', `filter.${d}.smudge=`, '-c', `filter.${d}.process=`, '-c', `filter.${d}.required=false`,
+  ]);
+}
 
 /** The commit a revision label names, or why it cannot be used. */
 export function commitOf(baseRevision: string): { commit: string } | { why: string } {
@@ -204,17 +289,37 @@ function observe(
   return { observed, matches };
 }
 
-/** Spawn and wait, with a wall-clock ceiling that is actually enforced. */
+/** The child's fd that carries the registered test into the sandbox. */
+const TEST_FD = 3;
+/** The child's fd bwrap reports on once the command has been started inside the sandbox. */
+const STATUS_FD = 4;
+
+/**
+ * Spawn and wait, with a wall-clock ceiling that is actually enforced. `feed`, when given, is
+ * written to the child's fd 3 and closed — bwrap reads it into the sandbox at setup.
+ */
 function execute(
-  argv: string[], timeoutMs: number,
-): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean }> {
+  argv: string[], timeoutMs: number, feed: Buffer | undefined, bin: string,
+): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean; spawnError?: string; started: boolean }> {
   return new Promise((resolve) => {
     // The outer process is prlimit, which execs bwrap; the sandbox has --die-with-parent, so
-    // killing this one pid takes the whole tree with it.
-    const child = spawn(argv[0], argv.slice(1), {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+    // killing this one pid takes the whole tree with it. `bin` is the absolute launcher and
+    // the PATH it resolves bwrap on is the system's, never the caller's.
+    const child = spawn(bin, argv.slice(1), {
+      argv0: argv[0],
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+      env: { PATH: SYSTEM_PATH, ...scopeEnv() },
     });
+    const pipe = child.stdio[TEST_FD] as Writable;
+    // A launcher that dies before reading closes the pipe; that failure is reported by the
+    // exit status, not by an unhandled EPIPE here.
+    pipe.on('error', () => {});
+    pipe.end(feed ?? Buffer.alloc(0));
+    let status = '';
+    (child.stdio[STATUS_FD] as Readable).on('data', (d: Buffer) => {
+      if (status.length < 4096) status += d.toString('utf8');
+    });
+    const started = () => status.includes('"child-pid"');
     let stdout = '';
     let stderr = '';
     let truncated = false;
@@ -231,8 +336,8 @@ function execute(
       if (onto === 'stdout') stdout = bounded;
       else stderr = bounded;
     };
-    child.stdout.on('data', take('stdout'));
-    child.stderr.on('data', take('stderr'));
+    child.stdout!.on('data', take('stdout'));
+    child.stderr!.on('data', take('stderr'));
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -242,16 +347,184 @@ function execute(
 
     child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ exitCode: null, signal: null, timedOut, stdout, stderr: `${stderr}${err.message}`, truncated });
+      resolve({ exitCode: null, signal: null, timedOut, stdout, stderr: `${stderr}${err.message}`, truncated, spawnError: err.message, started: false });
     });
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
-      resolve({ exitCode, signal, timedOut, stdout, stderr, truncated });
+      resolve({ exitCode, signal, timedOut, stdout, stderr, truncated, started: started() });
     });
   });
 }
 
+/**
+ * The first symlink met walking `rel` down from `root`, as a repo-relative path, or null.
+ * A component that does not exist ends the walk: nothing below it can be a link yet.
+ */
+function symlinkOnPath(root: string, rel: string): string | null {
+  let at = root;
+  for (const part of rel.split('/').filter(Boolean)) {
+    at = path.join(at, part);
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(at);
+    } catch {
+      return null;
+    }
+    if (st.isSymbolicLink()) return path.relative(root, at);
+  }
+  return null;
+}
+
+/**
+ * Why the sandbox itself never got as far as the command, or null when it did.
+ *
+ * Exit codes cannot tell this apart — bwrap, prlimit and systemd-run exit 1, 126 or 127 for
+ * their own failures, which is exactly what a known-red test may predict. bwrap reports the
+ * sandboxed child's pid on its status fd once it has one, so no report means the chain died
+ * before bwrap got that far; and bwrap's own setup errors, after that point, are prefixed
+ * with its name. A test that imitates the prefix only makes its own experiment invalid,
+ * which is the direction a false positive is allowed to go.
+ */
+function launchFailure(run: { stderr: string; spawnError?: string; started: boolean }): string | null {
+  if (run.spawnError) return `the sandbox did not start: ${run.spawnError}`;
+  if (!run.started) return `the sandbox did not start: ${run.stderr.split('\n')[0].slice(0, 300) || 'no status from bwrap'}`;
+  const m = /^(bwrap|prlimit): .*/.exec(run.stderr);
+  return m ? `the sandbox did not start: ${m[0].slice(0, 300)}` : null;
+}
+
+/** Is `file` still a regular file holding exactly `bytes`? A symlink in its place is not. */
+function sameFile(file: string, bytes: Buffer): boolean {
+  try {
+    return fs.lstatSync(file).isFile() && fs.readFileSync(file).equals(bytes);
+  } catch {
+    return false;
+  }
+}
+
+const SCRATCH_PREFIX = 'daylight-experiment-';
+const OWNER_FILE = 'owner.json';
+
+interface ScratchOwner { pid: number; experimentId: string; repoRoot: string; startedAt: number }
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Clean up after runners that died without reaching their `finally` — SIGKILL, OOM, power.
+ *
+ * Each run leaves `owner.json` in its scratch directory. One whose process is gone is taken
+ * apart: its worktree removed and pruned, the directory deleted, and the experiment it was
+ * running, if it is in this store and still pending, concluded `invalid`.
+ *
+ * `owner.json` is input from a shared /tmp, not an instruction: a planted one could name any
+ * repository and point `work` at a real worktree full of uncommitted work. So only a
+ * directory this uid made with mode 0700, whose owner names *this* run's repository, whose
+ * `work` is a real directory (not a link) registered as a worktree *of that repository*, is
+ * swept; and only a row of this project is concluded. Anything else is reported and left
+ * exactly as it is.
+ */
+export function sweepAbandoned(
+  ctx: { repoRoot: string; projectId: string; store: ExperimentStoreLike; events?: EventSink },
+  tmp: string = os.tmpdir(),
+): number {
+  let swept = 0;
+  const uid = process.getuid?.();
+  const repoRoot = path.resolve(ctx.repoRoot);
+  let worktreesDir: string | null = null;
+  try {
+    worktreesDir = fs.realpathSync(path.join(repoRoot, '.git', 'worktrees'));
+  } catch {
+    // No linked worktrees at all: nothing here can be one of ours.
+  }
+  const leave = (dir: string, why: string) =>
+    process.stderr.write(`daylight: left ${dir} alone: ${why}\n`);
+  for (const name of fs.readdirSync(tmp).filter((n) => n.startsWith(SCRATCH_PREFIX))) {
+    const dir = path.join(tmp, name);
+    let owner: ScratchOwner;
+    try {
+      const st = fs.lstatSync(dir);
+      if (!st.isDirectory() || st.uid !== uid || (st.mode & 0o077) !== 0) continue;
+      owner = JSON.parse(fs.readFileSync(path.join(dir, OWNER_FILE), 'utf8')) as ScratchOwner;
+    } catch {
+      continue;
+    }
+    if (!Number.isInteger(owner.pid) || owner.pid <= 0 || processAlive(owner.pid)) continue;
+    if (typeof owner.repoRoot !== 'string' || path.resolve(owner.repoRoot) !== repoRoot) {
+      leave(dir, 'its owner names another repository');
+      continue;
+    }
+    const work = path.join(dir, 'work');
+    const whyNot = foreignWorktree(work, worktreesDir);
+    if (whyNot) {
+      leave(dir, whyNot);
+      continue;
+    }
+    try {
+      git(repoRoot, ['worktree', 'remove', '--force', work]);
+    } catch {
+      // Already removed, or the repository is gone; the directory still goes.
+    }
+    try {
+      git(repoRoot, ['worktree', 'prune']);
+    } catch {
+      // As above.
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    swept++;
+
+    const x = typeof owner.experimentId === 'string' ? ctx.store.experiment?.(owner.experimentId) : null;
+    if (x && x.conclusion === 'pending' && x.projectId === ctx.projectId) {
+      const why = `runner died: process ${owner.pid} exited before concluding the experiment`;
+      ctx.store.updateExperiment(x.id, { conclusion: 'invalid', limitations: [...x.limitations, why] });
+      ctx.events?.append({
+        projectId: x.projectId, missionId: x.missionId, category: 'experiment', name: 'experiment.concluded',
+        payload: { experimentId: x.id, conclusion: 'invalid', runs: 0, why },
+      });
+    }
+  }
+  return swept;
+}
+
+/**
+ * Why `work` is not a linked worktree of the repository whose `.git/worktrees` is given, or
+ * null when it is: a real directory, holding a regular `.git` file whose `gitdir:` resolves
+ * inside that directory. A missing `work` is fine — the runner died before the checkout.
+ */
+function foreignWorktree(work: string, worktreesDir: string | null): string | null {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(work);
+  } catch {
+    return null;
+  }
+  if (!st.isDirectory()) return 'its work is not a plain directory';
+  let gitFile: string;
+  try {
+    const g = path.join(work, '.git');
+    if (!fs.lstatSync(g).isFile()) return 'its work/.git is not a regular file';
+    gitFile = fs.readFileSync(g, 'utf8');
+  } catch {
+    return 'its work has no .git file';
+  }
+  const m = /^gitdir: (.+)$/m.exec(gitFile);
+  if (!m || !worktreesDir) return 'its work is not a worktree of this repository';
+  let gitdir: string;
+  try {
+    gitdir = fs.realpathSync(path.resolve(work, m[1].trim()));
+  } catch {
+    return 'its worktree metadata does not exist';
+  }
+  return gitdir.startsWith(`${worktreesDir}${path.sep}`) ? null : 'its work is a worktree of another repository';
+}
+
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
+  sweepAbandoned({ ...ctx, projectId: experiment.projectId });
   const now = ctx.now ?? (() => Date.now());
   const runs = Math.max(1, ctx.runs ?? 2);
   const timeoutMs = ctx.timeoutMs ?? 60_000;
@@ -324,11 +597,13 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
     return finish();
   }
 
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), SCRATCH_PREFIX));
   const worktree = path.join(base, 'work');
+  const owner: ScratchOwner = { pid: process.pid, experimentId: experiment.id, repoRoot: ctx.repoRoot, startedAt };
+  fs.writeFileSync(path.join(base, OWNER_FILE), JSON.stringify(owner));
   try {
     try {
-      git(ctx.repoRoot, ['worktree', 'add', '--detach', worktree, rev.commit]);
+      git(ctx.repoRoot, [...filterOverrides(ctx.repoRoot), 'worktree', 'add', '--detach', worktree, rev.commit]);
     } catch (err) {
       refuse('invalid', `could not check out ${rev.commit.slice(0, 12)}: ${String((err as Error).message).split('\n').pop()}`, startedAt);
       return finish();
@@ -342,21 +617,50 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       refuse('invalid', `test path ${testRel} escapes the worktree`, startedAt);
       return finish();
     }
-    const registered = ctx.artifacts.get(experiment.testArtifact);
-    if (fs.existsSync(target)) {
-      const existing = fs.readFileSync(target);
-      if (!existing.equals(registered)) {
-        refuse(
-          'invalid',
-          `${testRel} already exists at ${rev.commit.slice(0, 12)} with different content from the ` +
-            'registered test; the registered artifact is the protected one and is not overwritten',
-          startedAt,
+    // The tree at the base revision is the author's, and a link committed in it can point at
+    // any directory this uid can write. String containment above says nothing about that.
+    const link = symlinkOnPath(root, testRel);
+    if (link) {
+      refuse('invalid', `${link} is a symlink in the checked-out tree; the test is never placed through one`, startedAt);
+      return finish();
+    }
+    // A committed file where a directory is needed, a corrupt artifact: either way the test
+    // cannot be placed, and an exception here would leave the row pending for ever.
+    let registered: Buffer;
+    try {
+      registered = ctx.artifacts.get(experiment.testArtifact);
+      if (fs.existsSync(target)) {
+        const existing = fs.readFileSync(target);
+        if (!existing.equals(registered)) {
+          refuse(
+            'invalid',
+            `${testRel} already exists at ${rev.commit.slice(0, 12)} with different content from the ` +
+              'registered test; the registered artifact is the protected one and is not overwritten',
+            startedAt,
+          );
+          return finish();
+        }
+      } else {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const parent = fs.realpathSync(path.dirname(target));
+        if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) {
+          refuse('invalid', `the directory for ${testRel} resolves outside the worktree`, startedAt);
+          return finish();
+        }
+        const fd = fs.openSync(
+          target,
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+          0o644,
         );
-        return finish();
+        try {
+          fs.writeFileSync(fd, registered);
+        } finally {
+          fs.closeSync(fd);
+        }
       }
-    } else {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, registered);
+    } catch (err) {
+      refuse('invalid', `the registered test could not be placed at ${testRel}: ${(err as Error).message}`, startedAt);
+      return finish();
     }
 
     const allowed = checkAllowlist(experiment.command, worktree);
@@ -364,32 +668,54 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       refuse('invalid', `command refused: ${allowed.why}`, startedAt);
       return finish();
     }
+    const harness = harnessHolds(experiment, ctx.artifacts);
+    if (!harness.ok) {
+      refuse('invalid', harness.why, startedAt);
+      return finish();
+    }
+    if (harness.legacy) {
+      limitations.push('registered before the test path was covered by the harness digest; the path on the row is trusted as is');
+    }
 
+    const binaries = sandboxBinaries(profile);
+    if (!binaries.scope) limitations.push(NO_SCOPE_LIMITATION);
     for (let i = 0; i < runs; i++) {
       const runStarted = now();
+      // The test is bound into the sandbox from the verified buffer on every run. The worktree
+      // copy is only the mount point, and a same-uid process can rewrite it between runs.
       const argv = sandboxArgv(profile, {
         worktree,
         command: experiment.command,
         limits: ctx.limits ?? DEFAULT_LIMITS,
         env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id },
+        files: [{ fd: TEST_FD, path: testRel }],
+        statusFd: STATUS_FD,
       });
       const shown = argv.map((a) => (a === worktree || a === root ? '<worktree>' : a));
       emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
 
-      const run = await execute(argv, timeoutMs);
+      const run = await execute(argv, timeoutMs, registered, binaries.scope ?? binaries.prlimit);
       const label = (s: string) => `run ${i} ${s}`;
       const stdoutRef = ctx.artifacts.put(run.stdout, { ...meta, kind: 'log', label: label('stdout') });
       const stderrRef = ctx.artifacts.put(run.stderr, { ...meta, kind: 'log', label: label('stderr') });
       if (run.truncated) limitations.push(`run ${i}: output exceeded ${STREAM_CAP} bytes and was cut`);
       const { observed, matches } = observe(experiment.prediction, run);
+      // Something rewrote the copy while we held the worktree. The bytes that ran were still
+      // the registered ones, but a harness under attack is not one to draw a conclusion from.
+      const drifted = !sameFile(target, registered);
+      const unstarted = launchFailure(run);
+      const status: ExecutionStatus = drifted || unstarted ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
       record({
         experimentId: experiment.id, runIndex: i,
-        status: run.timedOut ? 'timeout' : 'ran',
-        why: run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined,
+        status,
+        why: drifted
+          ? `the worktree copy of ${testRel} changed during the experiment; something else is writing to it`
+          : unstarted ?? (run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined),
         command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
+        sandboxBinaries: binaries,
         exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
         durationMs: now() - runStarted, stdoutRef, stderrRef,
-        prediction: experiment.prediction, observed, matchesPrediction: matches,
+        prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,
         harnessDigest: experiment.harnessDigest, startedAt: runStarted, finishedAt: now(),
       });
     }

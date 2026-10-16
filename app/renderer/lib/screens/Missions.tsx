@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Mission, MissionCreateOptions, MissionList } from '../types.ts';
-import { missionWord, shortId, shortRev, objectiveTitle } from './mission-words.ts';
+import { missionWord, needsPerson, shortId, shortRev, objectiveTitle } from './mission-words.ts';
 
 /**
  * Mission Control, the list.
@@ -37,7 +37,7 @@ export function Missions({
     return rank(a) - rank(b) || b.updatedAt - a.updatedAt;
   });
   const running = missions.filter((m) => m.state === 'running').length;
-  const blocked = missions.filter((m) => m.state === 'blocked').length;
+  const needYou = missions.filter((m) => needsPerson(list, m)).length;
 
   const create = async () => {
     if (!objective.trim()) return;
@@ -104,7 +104,7 @@ export function Missions({
 
           {list?.project && (
             <div className="num">
-              project {list.project.id} · {list.project.name} · {running} running · {blocked} blocked on you
+              project {list.project.id} · {list.project.name} · {running} running · {needYou} need you
             </div>
           )}
 

@@ -83,6 +83,13 @@ export interface Dispute {
 }
 
 /** `vds mission inspect <id> --format json`. */
+/** Something a person has to do before a mission can move; derived by the engine. */
+export interface MissionNeed {
+  kind: 'blocked' | 'dispute';
+  ref: string;
+  why: string;
+}
+
 export interface MissionInspect {
   mission: Mission;
   tasks: Task[];
@@ -91,13 +98,28 @@ export interface MissionInspect {
   decisions: Decision[];
   disputes: Dispute[];
   events: DaylightEvent[];
+  needs?: MissionNeed[];
+}
+
+/**
+ * What a running `mission run` pushes on each state change: a few fields, not a Mission.
+ * `note` is progress text for a console, not part of the mission.
+ */
+export interface MissionUpdate {
+  id: string;
+  state: Mission['state'];
+  outcomeReason: string | null;
+  note?: string;
 }
 
 /** `vds mission list --format json`. */
 export interface MissionList {
   project: ProjectIdentity | null;
   missions: Mission[];
+  /** By mission id. Absent from older builds and the bundled sample. */
+  needs?: Record<string, MissionNeed[]>;
 }
+
 
 export interface MissionCreateOptions {
   kind: MissionKind;
@@ -314,7 +336,7 @@ declare global {
       missionWatch(missionId: string | null): Promise<{ watching: string | null }>;
       onDlEvent(fn: (p: { missionId: string; events: DaylightEvent[] }) => void): () => void;
       /** A `mission run` job reported a state change on a `##vds {"mission":…}` line. */
-      onMissionUpdate(fn: (p: { id: string; mission: Mission }) => void): () => void;
+      onMissionUpdate(fn: (p: { id: string; mission: MissionUpdate }) => void): () => void;
       demoPrepare(): Promise<{ id?: string; error?: string }>;
       /** Main opens the file picker; the renderer never names a path. */
       demoReplay(): Promise<{ id?: string; error?: string; canceled?: boolean }>;

@@ -12,7 +12,10 @@ import path from 'node:path';
  * files. Memory is deliberately *not* bounded by address space: V8 reserves large virtual
  * ranges at start-up and an `--as` limit kills a healthy node before it runs a line. The
  * wall-clock timeout in the runner and the CPU ceiling here are what bound a runaway, and
- * every result says so in its limitations.
+ * every result says so in its limitations. Where a systemd user manager is reachable the whole
+ * launch also runs in a transient scope with `MemoryMax` and `TasksMax` — a cgroup bounds the
+ * resident memory and the process count that per-process rlimits cannot (`RLIMIT_CPU` resets
+ * in every forked child). The private `/tmp` is RAM-backed, so it has a size of its own.
  *
  * Fail closed. Without `bwrap` and `prlimit` on this machine there is no profile, and the
  * runner records the experiment as `invalid: sandbox unavailable` rather than running the
@@ -23,19 +26,54 @@ export interface SandboxProfile {
   name: 'bwrap';
   available: boolean;
   why?: string;
+  /** Absolute paths resolved at detection; an injected profile without them gets the defaults. */
+  bwrap?: string;
+  prlimit?: string;
+  /** `systemd-run`, absolute, when a user scope was shown to work at detection. */
+  scope?: string;
 }
+
+/**
+ * Where the sandbox's own tools are looked up, and the PATH the launcher runs with. Never
+ * the user's PATH: `~/.local/bin` and friends precede `/usr/bin` on most desktops, and a
+ * same-uid shim named `bwrap` there would be a sandbox that is not one.
+ */
+export const SYSTEM_PATH = '/usr/bin:/bin';
+const SYSTEM_BIN = '/usr/bin/';
 
 export interface SandboxLimits {
   cpuSeconds: number;
   fileSizeBytes: number;
   openFiles: number;
+  /** Size of the private /tmp. */
+  tmpBytes?: number;
+  /** cgroup ceilings, applied only under a systemd user scope. */
+  memoryBytes?: number;
+  tasks?: number;
 }
 
 export const DEFAULT_LIMITS: SandboxLimits = {
   cpuSeconds: 60,
   fileSizeBytes: 64 * 1024 * 1024,
   openFiles: 1024,
+  tmpBytes: 256 * 1024 * 1024,
+  memoryBytes: 2 * 1024 * 1024 * 1024,
+  tasks: 256,
 };
+
+/** Said on every result that ran without a user scope. */
+export const NO_SCOPE_LIMITATION =
+  'no memory or process-count ceiling: no systemd user scope was available to put the run in';
+
+/** The variables systemd-run needs to reach the user manager. Neither is a credential. */
+export function scopeEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']) {
+    const v = process.env[k];
+    if (v) env[k] = v;
+  }
+  return env;
+}
 
 /** Where the worktree appears inside the sandbox. Commands run with this as cwd. */
 export const WORK = '/work';
@@ -46,25 +84,65 @@ export const SANDBOX_LIMITATIONS = [
   'no network inside the sandbox',
 ];
 
-function onPath(bin: string): boolean {
-  try {
-    execFileSync('which', [bin], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+/** `name` as installed by the system — resolved under /usr/bin, root-owned, not group/world-writable. */
+function systemBinary(name: string): string | null {
+  for (const dir of SYSTEM_PATH.split(':')) {
+    let real: string;
+    try {
+      real = fs.realpathSync(path.join(dir, name));
+    } catch {
+      continue;
+    }
+    if (!real.startsWith(SYSTEM_BIN)) continue;
+    const st = fs.statSync(real);
+    if (st.isFile() && st.uid === 0 && (st.mode & 0o022) === 0) return real;
   }
+  return null;
 }
 
 export function detectSandbox(): SandboxProfile {
-  const missing = ['bwrap', 'prlimit'].filter((b) => !onPath(b));
-  if (missing.length) {
+  const bwrap = systemBinary('bwrap');
+  const prlimit = systemBinary('prlimit');
+  const missing = [bwrap ? null : 'bwrap', prlimit ? null : 'prlimit'].filter(Boolean);
+  if (!bwrap || !prlimit) {
     return {
       name: 'bwrap',
       available: false,
-      why: `${missing.join(' and ')} not on PATH; install bubblewrap and util-linux`,
+      why: `${missing.join(' and ')} not installed under ${SYSTEM_BIN} (root-owned); install bubblewrap and util-linux`,
     };
   }
-  return { name: 'bwrap', available: true };
+  return { name: 'bwrap', available: true, bwrap, prlimit, ...(userScope() ? { scope: userScope()! } : {}) };
+}
+
+let scopeProbe: string | null | undefined;
+
+/**
+ * `systemd-run` if a transient user scope can actually be created here, else null. Probed
+ * once per process: a CI runner or a container has the binary and no user manager, and a
+ * launcher that fails at run time is a failed experiment, not a sandbox.
+ */
+function userScope(): string | null {
+  if (scopeProbe !== undefined) return scopeProbe;
+  const bin = systemBinary('systemd-run');
+  scopeProbe = null;
+  if (!bin) return scopeProbe;
+  try {
+    execFileSync(bin, ['--user', '--scope', '--quiet', '--collect', '-p', 'TasksMax=8', '--', '/usr/bin/true'], {
+      stdio: 'ignore', timeout: 10_000, env: { PATH: SYSTEM_PATH, ...scopeEnv() },
+    });
+    scopeProbe = bin;
+  } catch {
+    // No user manager reachable; the run goes ahead without cgroup ceilings and says so.
+  }
+  return scopeProbe;
+}
+
+/** The binaries a profile launches, absolute. */
+export function sandboxBinaries(profile: SandboxProfile): { prlimit: string; bwrap: string; scope?: string } {
+  return {
+    prlimit: profile.prlimit ?? '/usr/bin/prlimit', bwrap: profile.bwrap ?? '/usr/bin/bwrap',
+    ...(profile.scope ? { scope: profile.scope } : {}),
+  };
 }
 
 /**
@@ -79,13 +157,14 @@ export function nodeBinary(): string {
 }
 
 /**
- * The directory to bind so this node works inside the sandbox, or null when it is already
- * under `/usr`. The installation root (parent of `bin/`), so a version manager's `lib/`
- * sits beside the binary the way node expects.
+ * What to bind so this node works inside the sandbox, or null when it is already under
+ * `/usr`: the binary itself, at its own path, and nothing beside it. Binding its installation
+ * root bound whatever that root happened to be — for a copy at `~/bin/node`, the whole home
+ * directory. A nodejs.org build needs only libc and libstdc++ from `/usr` to run a test.
  */
 export function nodeBind(bin: string): string | null {
   if (bin.startsWith('/usr/')) return null;
-  return path.dirname(path.dirname(bin));
+  return bin;
 }
 
 const REFUSED_FLAGS = new Set([
@@ -94,12 +173,26 @@ const REFUSED_FLAGS = new Set([
 ]);
 
 /**
+ * The flags a command may carry, and for those that take one, which values. Everything else
+ * is refused: node grows flags that load code by name every release (`--env-file` reads
+ * NODE_OPTIONS from a committed file, reporters and config files are modules), and a
+ * blocklist only ever names the ones somebody already noticed.
+ */
+const ALLOWED_FLAGS: Record<string, ((value: string) => boolean) | null> = {
+  '--test': null,
+  '--enable-source-maps': null,
+  '--experimental-strip-types': null,
+  '--test-reporter': (v) => v === 'spec' || v === 'tap' || v === 'dot',
+  '--test-name-pattern': (v) => v.length > 0,
+};
+
+/**
  * Is this a command the runner will execute at all?
  *
- * Only `node`, only on files inside the worktree. Flags that evaluate or preload code from
- * an argument are refused because they let a command smuggle in a test that was never
- * registered. A `--flag=value` is judged by the flag name; a bare non-flag argument is
- * treated as a path and must resolve inside the worktree, whether or not it exists yet.
+ * Only `node`, only on files inside the worktree, with only the flags above. Flags that
+ * evaluate or preload code from an argument would let a command smuggle in a test that was
+ * never registered. A `--flag=value` is judged by name and value; a bare non-flag argument
+ * is treated as a path and must resolve inside the worktree, whether or not it exists yet.
  */
 export function checkAllowlist(
   command: string[], worktree: string,
@@ -117,6 +210,14 @@ export function checkAllowlist(
           ok: false,
           why: `\`${name}\` evaluates or preloads code from outside the registered test`,
         };
+      }
+      if (!(name in ALLOWED_FLAGS)) {
+        return { ok: false, why: `\`${name}\` is not one of the flags an experiment may use: ${Object.keys(ALLOWED_FLAGS).join(', ')}` };
+      }
+      const takesValue = ALLOWED_FLAGS[name];
+      const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : null;
+      if (takesValue ? value === null || !takesValue(value) : value !== null) {
+        return { ok: false, why: `\`${arg}\` is not an allowed use of \`${name}\`` };
       }
       continue;
     }
@@ -153,24 +254,46 @@ export function sandboxArgv(
     command: string[];
     limits?: SandboxLimits;
     env?: Record<string, string>;
+    /**
+     * Files laid over the worktree from file descriptors the runner feeds, so their bytes
+     * come from the runner's memory rather than from a directory the same uid can rewrite.
+     * `path` is worktree-relative and must already exist there as a mount point.
+     */
+    files?: Array<{ fd: number; path: string }>;
+    /** bwrap writes JSON status here, including the child's pid once it has started it. */
+    statusFd?: number;
   },
 ): string[] {
   if (!profile.available) {
     throw new Error(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
   }
-  const limits = opts.limits ?? DEFAULT_LIMITS;
+  const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const bin = nodeBinary();
   const bind = nodeBind(bin);
+  const scope = profile.scope
+    ? [
+        'systemd-run', '--user', '--scope', '--quiet', '--collect',
+        '-p', `MemoryMax=${limits.memoryBytes}`, '-p', 'MemorySwapMax=0', '-p', `TasksMax=${limits.tasks}`,
+        '--',
+      ]
+    : [];
   const argv = [
-    'prlimit',
+    ...scope,
+    // Under a scope, systemd-run resolves this one, so it is named by the path detection found.
+    scope.length ? (profile.prlimit ?? '/usr/bin/prlimit') : 'prlimit',
     `--cpu=${limits.cpuSeconds}`,
     `--fsize=${limits.fileSizeBytes}`,
     `--nofile=${limits.openFiles}`,
     '--',
     'bwrap',
     '--unshare-all',
+    // Explicit so --disable-userns has a namespace to seal; nested user namespaces are kernel
+    // attack surface a test has no use for.
+    '--unshare-user',
+    '--disable-userns',
     '--die-with-parent',
     '--new-session',
+    ...(opts.statusFd !== undefined ? ['--json-status-fd', String(opts.statusFd)] : []),
     '--clearenv',
     '--setenv', 'PATH', bind ? `${path.dirname(bin)}:/usr/bin:/bin` : '/usr/bin:/bin',
     '--setenv', 'HOME', '/tmp',
@@ -190,8 +313,11 @@ export function sandboxArgv(
   argv.push(
     '--proc', '/proc',
     '--dev', '/dev',
-    '--tmpfs', '/tmp',
+    '--size', String(limits.tmpBytes), '--tmpfs', '/tmp',
     '--ro-bind', path.resolve(opts.worktree), WORK,
+  );
+  for (const f of opts.files ?? []) argv.push('--ro-bind-data', String(f.fd), path.posix.join(WORK, f.path));
+  argv.push(
     '--chdir', WORK,
     '--',
     ...sandboxCommand(opts.command, opts.worktree),
