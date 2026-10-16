@@ -101,6 +101,8 @@ export function attemptRefusal(
   if (!SANDBOX_PROFILES.includes(s.profile)) return `attempt ${a.id} sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(s.profile)}`;
   if (s.exec && !s.write) return `attempt ${a.id} asks for exec without write; exec runs over the attempt's own writable tree`;
   if (s.write) {
+    // Write is to the author's detached workspace (R7); no other profile has a writable tree.
+    if (s.profile !== 'author') return `attempt ${a.id} asks for write under the ${s.profile} profile; only the author profile writes`;
     if (!s.authorizeDecisionId) return `attempt ${a.id} asks for write without naming the authorize decision that granted it`;
     if (!grantsWrite(grant, mission.id)) {
       return `decision ${s.authorizeDecisionId} is not a human authorize-mission decision granting write on mission ${mission.id}`;
@@ -716,8 +718,8 @@ export class MissionStore {
       .all(...(projectId ? [projectId] : []));
     return rows.map((r) => this.rowToAttempt(r)).filter((a) => {
       const grant = a.sandbox?.authorizeDecisionId ?? null;
-      const d = grant !== null ? this.decision(grant) : null;
-      return !grantsWrite(d, a.missionId);
+      const mission = this.mission(a.missionId);
+      return !mission || attemptRefusal(a, mission, grant !== null ? this.decision(grant) : null) !== null;
     });
   }
 

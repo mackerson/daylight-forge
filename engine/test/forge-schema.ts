@@ -305,6 +305,12 @@ let authorId: string;
   check('another mission\'s authorize decision does not grant write here', !!throws(() => store.startAttempt({
     taskId: author.id, runnerId: 'agent:mock:a', sandbox: { profile: 'author', write: true, authorizeDecisionId: otherAuth.id },
   })));
+  for (const profile of ['none', 'review', 'gate'] as const) {
+    check(`write under the ${profile} profile is refused, grant or not`, !!throws(() => store.startAttempt({
+      taskId: author.id, runnerId: 'agent:mock:a', sandbox: { profile, write: true, authorizeDecisionId: decision.id },
+    })));
+  }
+  check('and the task did not move for any of them', store.task(author.id)!.state === 'queued');
   check('exec without write is refused', !!throws(() => store.startAttempt({
     taskId: author.id, runnerId: 'agent:mock:a', sandbox: { profile: 'author', exec: true },
   })));
@@ -348,8 +354,12 @@ let authorId: string;
   check('a row edited to point at another mission\'s grant is found by the invariant',
     store.unauthorizedWriteAttempts(PROJECT.id).map((x) => x.id).join() === a.id);
   raw.prepare('UPDATE attempts SET authorize_decision_id=? WHERE id=?').run(decision.id, a.id);
-  raw.close();
   check('and clears once it is put back', store.unauthorizedWriteAttempts().length === 0);
+  raw.prepare("UPDATE attempts SET sandbox_profile='review' WHERE id=?").run(a.id);
+  check('a write attempt edited onto a non-author profile is found by the invariant',
+    store.unauthorizedWriteAttempts().map((x) => x.id).join() === a.id);
+  raw.prepare("UPDATE attempts SET sandbox_profile='author' WHERE id=?").run(a.id);
+  raw.close();
 }
 
 section('usage');
@@ -630,6 +640,9 @@ section('import enforces R7 and R12 the way the store does');
   refusedWhole('grant from an agent', {
     ...file, decisions: file.decisions.map((d) => (d.scope.operation === 'authorize-mission' ? { ...d, actor: 'agent:claude:opus' } : d)),
   }, /human/);
+  refusedWhole('write on a non-author profile', {
+    ...file, attempts: file.attempts.map((a) => (a.sandbox?.write ? { ...a, sandbox: { ...a.sandbox, profile: 'review' as const } } : a)),
+  }, /author/);
   // The reviewer's second forgery: ingested attempts on an implement mission.
   refusedWhole('ingested attempts on an implement mission', {
     ...file, attempts: file.attempts.map((a) => ({ ...a, origin: 'ingested' as const, sandbox: null })),
