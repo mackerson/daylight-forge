@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import type { Claim } from '../store/types.ts';
-import { digestOf } from './artifacts.ts';
+import { canonicalJson, digestOf } from './artifacts.ts';
 import { inScope, missionClaims } from './disputes.ts';
 import type { DaylightContext } from './context.ts';
 import { mappedProject } from './context.ts';
@@ -146,6 +146,32 @@ export interface ImportResult {
   mission: Mission;
   added: { tasks: number; attempts: number; experiments: number; decisions: number; events: number; artifacts: number; claims: number };
   skipped: { events: number; artifacts: number; claims: number };
+  /** Rows the file gives an id that is already here with different content. Kept as here. */
+  conflicts: string[];
+}
+
+/**
+ * Rows in the file whose id is already here with different content.
+ *
+ * Ids are preserved on import, so a matching id is supposed to mean the same record. When it
+ * does not — the file was edited, or this directory moved on — an INSERT OR IGNORE would keep
+ * one side silently and report success.
+ */
+function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
+  const out: string[] = [];
+  const differs = (what: string, id: string, here: unknown, there: unknown) => {
+    if (here !== null && here !== undefined && canonicalJson(here) !== canonicalJson(there)) {
+      out.push(`${what} ${id} differs from the one in this directory`);
+    }
+  };
+  differs('mission', file.mission.id, ctx.store.mission(file.mission.id), file.mission);
+  for (const t of file.tasks) differs('task', t.id, ctx.store.task(t.id), t);
+  for (const a of file.attempts) differs('attempt', a.id, ctx.store.attempt(a.id), a);
+  for (const x of file.experiments) differs('experiment', x.id, ctx.store.experiment(x.id), x);
+  const decisionsHere = new Map(ctx.store.decisions(file.mission.id).map((d) => [d.id, d]));
+  for (const d of file.decisions) differs('decision', d.id, decisionsHere.get(d.id), d);
+  for (const [id, blob] of Object.entries(file.artifacts)) differs('artifact', id, ctx.store.artifact(id), blob.ref);
+  return out;
 }
 
 /** The same assertion, by the same source, at the same time: already here. */
@@ -171,6 +197,19 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
       `${ctx.out} is a map of project ${here.id} (${here.root}); the export is of ` +
         `${file.project.id} (${file.project.root}). Refusing to file one project's mission ` +
         'under another. Pass --force if this really is the same repository.',
+    );
+  }
+
+  for (const [id, blob] of Object.entries(file.artifacts)) {
+    if (blob.ref?.id !== id || blob.ref.digest !== id) {
+      throw new Error(`artifact ${id} in the export carries a ref that does not name it; refusing to file it under the wrong record`);
+    }
+  }
+  const conflicts = importConflicts(ctx, file);
+  if (conflicts.length && !opts.force) {
+    throw new Error(
+      `${conflicts.length} conflict(s) between the export and ${ctx.out}: ${conflicts.slice(0, 5).join('; ')}` +
+        `${conflicts.length > 5 ? '; …' : ''}. Pass --force to import the rest and keep what is here.`,
     );
   }
 
@@ -305,5 +344,5 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
 
   const mission = ctx.store.mission(file.mission.id);
   if (!mission) throw new Error(`import of ${file.mission.id} wrote nothing readable`);
-  return { mission, added, skipped };
+  return { mission, added, skipped, conflicts };
 }

@@ -291,6 +291,37 @@ section('a recording of one project does not land on another');
   check('--force overrides, explicitly', forced.code === 0 && json<{ mission: Mission }>(forced).mission.id === prepared.missionId);
 }
 
+section('an import that disagrees with what is already here says so');
+{
+  const out2 = path.join(tmp, 'out2');
+  const file = JSON.parse(fs.readFileSync(recording, 'utf8')) as {
+    mission: Mission; attempts: Array<{ costUsd: number | null }>;
+    artifacts: Record<string, { ref: { id: string; digest: string; kind: string } }>;
+  };
+  file.mission.objective = 'TAMPERED';
+  file.attempts[0].costUsd = 9999;
+  const someId = Object.keys(file.artifacts)[0];
+  file.artifacts[someId].ref.kind = 'decision';
+  const tampered = path.join(tmp, 'tampered.json');
+  fs.writeFileSync(tampered, JSON.stringify(file));
+  const r = run(['mission', 'import', '--out', out2, '--file', tampered, '--format', 'json']);
+  check('rows that differ from the ones here are refused', r.code === 1 && /conflict/.test(r.err), r.err.slice(-300));
+  const forced = run(['mission', 'import', '--out', out2, '--file', tampered, '--force', '--format', 'json']);
+  const result = forced.code === 0 ? json<{ conflicts?: string[] }>(forced) : {};
+  check('--force imports anyway and lists every conflict', forced.code === 0
+    && ['mission', 'attempt', 'artifact'].every((k) => (result.conflicts ?? []).some((c) => c.startsWith(k))),
+    JSON.stringify(result.conflicts));
+  check('and keeps what was here', json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out2, '--format', 'json'])).mission.objective !== 'TAMPERED');
+
+  const misfiled = JSON.parse(fs.readFileSync(recording, 'utf8')) as typeof file;
+  const [first, second] = Object.keys(misfiled.artifacts);
+  misfiled.artifacts[first].ref = { ...misfiled.artifacts[second].ref };
+  const misfiledPath = path.join(tmp, 'misfiled.json');
+  fs.writeFileSync(misfiledPath, JSON.stringify(misfiled));
+  const m = run(['mission', 'import', '--out', path.join(tmp, 'out-misfiled'), '--file', misfiledPath, '--force']);
+  check('an artifact whose ref names another digest is refused', m.code === 1 && /does not name/.test(m.err), m.err.slice(-300));
+}
+
 section('a reviewer that fails blocks the mission; it does not fail it');
 {
   const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'crash test', '--scope', 'src/session-cache.ts', '--format', 'json']));
