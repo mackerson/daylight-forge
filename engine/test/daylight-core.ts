@@ -136,6 +136,55 @@ section('project identity');
   check('a status that fails labels the revision +unknown', unknown.label.endsWith('+unknown') && unknown.dirty, unknown.label);
 }
 
+section('project identity runs no repository code');
+{
+  // identifyProject and currentRevision are the first git calls on a directory Daylight was
+  // only told about. A repository can carry its own hooks, an fsmonitor command and filter
+  // drivers in .git/config; none of them may run on the host (R14 D-7).
+  const repo = path.join(tmp, 'hostile');
+  fs.mkdirSync(repo);
+  const marker = path.join(tmp, 'hostile-ran');
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x',
+  };
+  const run = (args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env }).trim();
+  run(['init', '-q']);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt filter=evil\n');
+  run(['add', '.']);
+  run(['commit', '-q', '-m', 'first']);
+  const first = run(['rev-parse', 'HEAD']);
+  const script = path.join(tmp, 'hostile.sh');
+  fs.writeFileSync(script, `#!/bin/sh\necho "$0 $*" >> ${marker}\ncat\n`, { mode: 0o755 });
+  for (const hook of ['post-index-change', 'post-checkout', 'reference-transaction']) {
+    fs.writeFileSync(path.join(repo, '.git', 'hooks', hook), `#!/bin/sh\necho ${hook} >> ${marker}\n`, { mode: 0o755 });
+  }
+  run(['config', 'core.fsmonitor', script]);
+  run(['config', 'filter.evil.clean', script]);
+  run(['config', 'filter.evil.smudge', script]);
+  // Racily clean: same size, new content, so status has to look at it through the filter.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  const plain = { id: identifyProject(repo), rev: currentRevision(repo) };
+  check('the hostile repo is still identified', plain.id.id === `git:${first.slice(0, 12)}` && plain.rev.commit === first);
+  check('and its tree is seen as changed', plain.rev.dirty);
+  check('no hook, fsmonitor or filter driver ran', !fs.existsSync(marker),
+    fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '');
+  const saved = process.env.GIT_DIR;
+  process.env.GIT_DIR = path.join(tmp, 'not-a-git-dir');
+  let id;
+  let rev;
+  try {
+    id = identifyProject(repo);
+    rev = currentRevision(repo);
+  } finally {
+    if (saved === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = saved;
+  }
+  check('an inherited GIT_DIR does not redirect identity', id.id === `git:${first.slice(0, 12)}`, id.id);
+  check('nor the revision', rev.commit === first, String(rev.commit));
+}
+
 section('artifacts');
 {
   const store = new ArtifactStore(tmp);
