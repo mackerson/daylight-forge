@@ -1259,6 +1259,9 @@ export class MissionStore {
   // ---- candidates ------------------------------------------------------------------
 
   createCandidate(input: CreateCandidateInput): Candidate {
+    if (input.profile.name !== 'author') {
+      throw new Error(`a candidate comes from the author profile, not ${String(input.profile.name)}`);
+    }
     const a = this.requireAttempt(input.attemptId);
     if (a.missionId !== input.missionId) {
       throw new Error(`attempt ${a.id} is not an attempt of mission ${input.missionId}`);

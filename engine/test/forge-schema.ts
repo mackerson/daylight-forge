@@ -464,10 +464,13 @@ let candidateId: string;
     missionId: mission.id, attemptId: authorId, projectId: PROJECT.id, baseCommit: 'base1', diffArtifact: diff,
     summaryArtifact: art('{"files":1}', 'summary'), narrativeArtifact: art('I did it', 'narrative'), files,
     policyViolations: [], secretHits: 0, gateSetDigest: lock.gateSetDigest,
-    profile: { name: 'author-bwrap' as const, network: 'none' as const, write: true, exec: false },
+    profile: { name: 'author' as const, network: 'none' as const, write: true, exec: false },
     attemptState: 'completed' as const,
   };
   check('a candidate under another project is refused', !!throws(() => store.createCandidate({ ...cInput, projectId: OTHER.id })));
+  check('a candidate names the author profile, the attempt vocabulary', !!throws(() => store.createCandidate({
+    ...cInput, profile: { ...cInput.profile, name: 'author-bwrap' as never },
+  })));
   check('a candidate from another mission\'s attempt is refused', !!throws(() => store.createCandidate({ ...cInput, missionId: spec.id })));
   const c = store.createCandidate(cInput);
   candidateId = c.id;

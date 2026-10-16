@@ -535,7 +535,8 @@ export interface Candidate {
   policyViolations: PolicyViolation[];
   secretHits: number;
   gateSetDigest: string;
-  profile: { name: 'author-bwrap'; network: NetworkMode; write: boolean; exec: boolean };
+  /** `name` uses the attempt's vocabulary (`Attempt.sandbox.profile`), so it is always `author`. */
+  profile: { name: Extract<SandboxProfileName, 'author'>; network: NetworkMode; write: boolean; exec: boolean };
   /** Recorded and shown at approve time; never a verdict input (ADR-19). */
   attemptState: AttemptState;
   attemptFailure?: string;
