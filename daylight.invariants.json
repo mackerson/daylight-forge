@@ -74,5 +74,16 @@
       },
       "callee": "random"
     }
+  },
+  {
+    "id": "no-pre-rename-identifiers",
+    "prose": "No symbol in the map, and no file it maps, is named after the pre-rename product. The CLI is daylight, the env prefix is DAYLIGHT_, and nothing keeps the old names alive.",
+    "rationale": "The rename carries no compatibility layer (R2, R3), so an old name that survives is either dead or a fallback nobody ruled on. This is the graph half of the rule; the graph sees symbols and source files, not prose, so the full-text half (docs, strings, config, tests, with the frozen P0 records exempt) is engine/test/naming.ts in test:all.",
+    "predicate": {
+      "type": "absent",
+      "select": {
+        "name": "(^|[^A-Za-z])[vV][dD][sS]([^a-z]|$)|[a-z]V[dD][sS]([^a-z]|$)|visual-[d]esloppify"
+      }
+    }
   }
 ]
