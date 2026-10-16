@@ -463,35 +463,43 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       refuse('invalid', `${link} is a symlink in the checked-out tree; the test is never placed through one`, startedAt);
       return finish();
     }
-    const registered = ctx.artifacts.get(experiment.testArtifact);
-    if (fs.existsSync(target)) {
-      const existing = fs.readFileSync(target);
-      if (!existing.equals(registered)) {
-        refuse(
-          'invalid',
-          `${testRel} already exists at ${rev.commit.slice(0, 12)} with different content from the ` +
-            'registered test; the registered artifact is the protected one and is not overwritten',
-          startedAt,
+    // A committed file where a directory is needed, a corrupt artifact: either way the test
+    // cannot be placed, and an exception here would leave the row pending for ever.
+    let registered: Buffer;
+    try {
+      registered = ctx.artifacts.get(experiment.testArtifact);
+      if (fs.existsSync(target)) {
+        const existing = fs.readFileSync(target);
+        if (!existing.equals(registered)) {
+          refuse(
+            'invalid',
+            `${testRel} already exists at ${rev.commit.slice(0, 12)} with different content from the ` +
+              'registered test; the registered artifact is the protected one and is not overwritten',
+            startedAt,
+          );
+          return finish();
+        }
+      } else {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const parent = fs.realpathSync(path.dirname(target));
+        if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) {
+          refuse('invalid', `the directory for ${testRel} resolves outside the worktree`, startedAt);
+          return finish();
+        }
+        const fd = fs.openSync(
+          target,
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+          0o644,
         );
-        return finish();
+        try {
+          fs.writeFileSync(fd, registered);
+        } finally {
+          fs.closeSync(fd);
+        }
       }
-    } else {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      const parent = fs.realpathSync(path.dirname(target));
-      if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) {
-        refuse('invalid', `the directory for ${testRel} resolves outside the worktree`, startedAt);
-        return finish();
-      }
-      const fd = fs.openSync(
-        target,
-        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
-        0o644,
-      );
-      try {
-        fs.writeFileSync(fd, registered);
-      } finally {
-        fs.closeSync(fd);
-      }
+    } catch (err) {
+      refuse('invalid', `the registered test could not be placed at ${testRel}: ${(err as Error).message}`, startedAt);
+      return finish();
     }
 
     const allowed = checkAllowlist(experiment.command, worktree);

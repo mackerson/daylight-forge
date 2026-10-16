@@ -272,6 +272,27 @@ section('a committed symlink is never followed out of the worktree');
   check('and the host file it points at is untouched', fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8') === 'host file\n');
 }
 
+section('a tree the test cannot be placed in concludes invalid, never stays pending');
+{
+  fs.writeFileSync(path.join(repo, 'blocker'), 'a file where the test wants a directory\n');
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'blocker']);
+  const blocked = register('process.exit(0);\n', { exitCode: 0 }, {
+    baseRevision: git(['rev-parse', 'HEAD']), testPath: 'blocker/x.js', command: ['node', 'blocker/x.js'],
+  });
+  let out: Experiment | null = null;
+  let thrown = '';
+  try {
+    out = await run(blocked, { sandbox: { name: 'bwrap', available: true } });
+  } catch (err) {
+    thrown = (err as Error).message;
+  }
+  check('the run returns rather than throwing', out !== null, thrown);
+  check('and concludes invalid', out?.conclusion === 'invalid', out?.conclusion);
+  check('the stored row is concluded too', store.rows.get(blocked.id)?.conclusion === 'invalid', store.rows.get(blocked.id)?.conclusion);
+  check('with a concluded event', named('experiment.concluded', blocked.id).length === 1);
+}
+
 section('the repository\'s own git hooks and config do not run on the host');
 {
   // The runner checks out a worktree with the repository's config. A hook or fsmonitor set
