@@ -172,12 +172,26 @@ const REFUSED_FLAGS = new Set([
 ]);
 
 /**
+ * The flags a command may carry, and for those that take one, which values. Everything else
+ * is refused: node grows flags that load code by name every release (`--env-file` reads
+ * NODE_OPTIONS from a committed file, reporters and config files are modules), and a
+ * blocklist only ever names the ones somebody already noticed.
+ */
+const ALLOWED_FLAGS: Record<string, ((value: string) => boolean) | null> = {
+  '--test': null,
+  '--enable-source-maps': null,
+  '--experimental-strip-types': null,
+  '--test-reporter': (v) => v === 'spec' || v === 'tap' || v === 'dot',
+  '--test-name-pattern': (v) => v.length > 0,
+};
+
+/**
  * Is this a command the runner will execute at all?
  *
- * Only `node`, only on files inside the worktree. Flags that evaluate or preload code from
- * an argument are refused because they let a command smuggle in a test that was never
- * registered. A `--flag=value` is judged by the flag name; a bare non-flag argument is
- * treated as a path and must resolve inside the worktree, whether or not it exists yet.
+ * Only `node`, only on files inside the worktree, with only the flags above. Flags that
+ * evaluate or preload code from an argument would let a command smuggle in a test that was
+ * never registered. A `--flag=value` is judged by name and value; a bare non-flag argument
+ * is treated as a path and must resolve inside the worktree, whether or not it exists yet.
  */
 export function checkAllowlist(
   command: string[], worktree: string,
@@ -195,6 +209,14 @@ export function checkAllowlist(
           ok: false,
           why: `\`${name}\` evaluates or preloads code from outside the registered test`,
         };
+      }
+      if (!(name in ALLOWED_FLAGS)) {
+        return { ok: false, why: `\`${name}\` is not one of the flags an experiment may use: ${Object.keys(ALLOWED_FLAGS).join(', ')}` };
+      }
+      const takesValue = ALLOWED_FLAGS[name];
+      const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : null;
+      if (takesValue ? value === null || !takesValue(value) : value !== null) {
+        return { ok: false, why: `\`${arg}\` is not an allowed use of \`${name}\`` };
       }
       continue;
     }

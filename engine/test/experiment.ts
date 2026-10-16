@@ -120,6 +120,15 @@ section('the allowlist');
     check(`\`${flag}\` is refused`, !checkAllowlist(['node', flag, 'x'], wt).ok);
   }
   check('an empty command is refused', !checkAllowlist([], wt).ok);
+  // A blocklist is walked around: `--env-file` loads NODE_OPTIONS from a committed file, and
+  // reporters, config files and openssl configs all load code by name.
+  for (const flag of ['--env-file=a.env', '--env-file-if-exists=a.env', '--test-reporter=./x.mjs', '--experimental-config-file=c.json',
+    '--openssl-config=o.cnf', '--experimental-test-module-mocks', '--stack-size=99999']) {
+    check(`\`${flag}\` is refused — only a named set of flags runs`, !checkAllowlist(['node', flag, 'test/a.js'], wt).ok);
+  }
+  for (const flag of ['--test-reporter=tap', '--test-reporter=dot', '--test-name-pattern=expiry', '--enable-source-maps', '--experimental-strip-types']) {
+    check(`\`${flag}\` is allowed`, checkAllowlist(['node', flag, 'test/a.js'], wt).ok);
+  }
   const mapped = sandboxCommand(['node', '--test', 'test/a.js', path.join(wt, 'src', 'b.js')], wt);
   check('inside the sandbox the command runs our own node', mapped[0] === nodeBinary());
   check('and paths are rewritten under /work',
