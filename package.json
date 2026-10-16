@@ -29,7 +29,7 @@
     "import": "node engine/cli.ts import",
     "calibrate": "node engine/tools/calibrate.ts",
     "package": "node engine/tools/package.ts",
-    "bench": "DAYLIGHT_BENCH=6 DAYLIGHT_SHOT=/tmp/vds-bench.png DAYLIGHT_SHOT_DELAY=17000 electron app/main/main.cjs",
+    "bench": "DAYLIGHT_BENCH=6 DAYLIGHT_SHOT=/tmp/daylight-bench.png DAYLIGHT_SHOT_DELAY=17000 electron app/main/main.cjs",
     "gui:dgpu": "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia electron app/main/main.cjs --ozone-platform=x11 --use-angle=gl",
     "adapters": "node engine/cli.ts adapters",
     "quality": "node engine/cli.ts quality",

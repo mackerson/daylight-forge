@@ -33,7 +33,7 @@ const { check, section, done } = harness();
 
 const ENGINE = path.resolve(import.meta.dirname, '..');
 const CLI = path.join(ENGINE, 'cli.ts');
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-acceptance-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-acceptance-'));
 const out = path.join(tmp, 'out');
 const repo = path.join(tmp, 'repo');
 const mock = path.join(tmp, 'mock-reviewer.mjs');

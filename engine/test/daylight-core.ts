@@ -18,7 +18,7 @@ import {
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-daylight-core-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-daylight-core-'));
 
 section('schema and migrations');
 {

@@ -31,7 +31,7 @@ const check = (name, cond, detail = '') => {
   }
 };
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-session-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-session-'));
 /** A directory that holds a map of `root`, without paying to make a real one. */
 const mapped = (name, root) => {
   const dir = path.join(tmp, name);

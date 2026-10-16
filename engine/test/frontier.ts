@@ -22,7 +22,7 @@ const graph: Graph = JSON.parse(fs.readFileSync(path.join(dir, 'graph.json'), 'u
 const findings = JSON.parse(fs.readFileSync(path.join(dir, 'findings.json'), 'utf8'));
 const structure = JSON.parse(fs.readFileSync(path.join(dir, 'structure.json'), 'utf8'));
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-frontier-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-frontier-'));
 const store = new ClaimStore(path.join(tmp, 'f.db'));
 
 console.log('\nstructural findings on the frontier');

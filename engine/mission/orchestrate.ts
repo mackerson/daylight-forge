@@ -527,7 +527,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
  * provider's silence.
  */
 export function runCompare(ctx: DaylightContext, mission: Mission, taskId: string): Comparison {
-  const attempt = ctx.store.startAttempt({ taskId, runnerId: 'static:vds' });
+  const attempt = ctx.store.startAttempt({ taskId, runnerId: 'static:daylight' });
   const comparison = compare(ctx.claims, mission.scope, missionClaims(mission.id));
   const meta = { projectId: mission.projectId, revision: mission.baseRevision };
   const artifacts: ArtifactRef[] = [];
@@ -539,7 +539,7 @@ export function runCompare(ctx: DaylightContext, mission: Mission, taskId: strin
     });
     artifacts.push(ref);
     ctx.events.append({
-      projectId: mission.projectId, missionId: mission.id, ...base, actorId: 'static:vds',
+      projectId: mission.projectId, missionId: mission.id, ...base, actorId: 'static:daylight',
       category: 'claim', name: 'claim.disputed', artifactIds: [ref.id],
       payload: {
         subject: d.subject, predicate: d.predicate, sameEvidence: d.sameEvidence,
@@ -549,7 +549,7 @@ export function runCompare(ctx: DaylightContext, mission: Mission, taskId: strin
   }
   for (const b of comparison.unverified) {
     ctx.events.append({
-      projectId: mission.projectId, missionId: mission.id, ...base, actorId: 'static:vds',
+      projectId: mission.projectId, missionId: mission.id, ...base, actorId: 'static:daylight',
       category: 'claim', name: 'claim.unverified',
       payload: {
         subject: b.subject, predicate: b.predicate, confidence: b.confidence,
@@ -691,7 +691,7 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
       sides: d.sides, decisionId: decision?.id,
     });
   };
-  for (const a of attempts.filter((a) => a.runnerId === 'static:vds')) {
+  for (const a of attempts.filter((a) => a.runnerId === 'static:daylight')) {
     for (const ref of a.artifacts.filter((r) => r.label === 'comparison')) {
       if (!ctx.artifacts.has(ref)) continue;
       try {

@@ -302,7 +302,7 @@ export async function drive(options: DriveOptions): Promise<DriveReport> {
   const store = new ClaimStore(path.join(dir, 'claims.db'));
   const statsBefore = store.stats();
   const claimsBefore = statsBefore.claims;
-  const session = options.session ?? `vds-${Date.now()}`;
+  const session = options.session ?? `daylight-${Date.now()}`;
 
   const { runnable, unavailable } = planRoster(tools.map((t) => parseSpec(t, model)));
 

@@ -23,7 +23,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-parallel-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-parallel-'));
 const write = (rel: string, body: string) => {
   const abs = path.join(tmp, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -128,7 +128,7 @@ console.log('\ninheritance is not duplication');
    * in one place and a space in the other. Two invisible characters that do not match look
    * exactly like a guard that is working.
    */
-  const t3 = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-par3-'));
+  const t3 = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-par3-'));
   const w3 = (rel: string, body: string) => {
     const abs = path.join(t3, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -175,7 +175,7 @@ console.log('\ninheritance is not duplication');
 
 console.log('\nsmall and empty inputs');
 {
-  const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-par2-'));
+  const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-par2-'));
   fs.mkdirSync(path.join(t2, 'src'), { recursive: true });
   fs.writeFileSync(path.join(t2, 'package.json'), JSON.stringify({ name: 'x', main: 'src/a.ts' }));
   fs.writeFileSync(path.join(t2, 'src/a.ts'), 'export const one = () => 1;\n');

@@ -28,7 +28,7 @@ function run(argv: string[], cwd: string): { code: number; out: string } {
 }
 
 // A tiny repo we can deliberately break, so the gate is tested on a failure it caused.
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-check-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-check-'));
 fs.mkdirSync(path.join(tmp, 'src'));
 fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ name: 'fx', main: 'src/index.ts' }));
 fs.writeFileSync(path.join(tmp, 'src/index.ts'), "import { helper } from './helper.ts';\nexport const go = () => helper();\n");

@@ -15,7 +15,7 @@ import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-fixture-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-fixture-'));
 const REPO = path.resolve(import.meta.dirname, '..', '..');
 const CLI = path.join(REPO, 'engine', 'cli.ts');
 const TSC = path.join(REPO, 'node_modules', '.bin', 'tsc');

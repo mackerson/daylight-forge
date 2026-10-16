@@ -18,7 +18,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-extract-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-extract-'));
 const write = (rel: string, body: string) => {
   const abs = path.join(tmp, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });

@@ -26,7 +26,7 @@ const DOC = path.join(ROOT, 'docs', 'daylight', 'MEASURED.md');
 const TENK = process.env.DAYLIGHT_BENCH_10K;
 const skipRenderer = process.argv.includes('--skip-renderer');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-bench-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-bench-'));
 const lines: string[] = [];
 const say = (s = '') => { lines.push(s); console.log(s); };
 const seconds = (ns: bigint) => (Number(ns) / 1e9).toFixed(2);

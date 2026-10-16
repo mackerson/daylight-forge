@@ -113,12 +113,12 @@ console.log('\nreadout');
 console.log('\nagainst a real events file');
 {
   // The shape on disk, not a shape invented for the test.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-replay-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-replay-'));
   const file = path.join(tmp, 'events.jsonl');
   fs.writeFileSync(file, [
-    '{"at": 1786937738852, "session": "vds-claude-0", "agent": "multi", "model": null, "tool": "get_overview"}',
-    '{"at": 1786937797276, "session": "vds-claude-0", "agent": "multi", "model": null, "tool": "get_slice", "node": "engine/mcp/server.ts", "hops": 1}',
-    '{"at": 1786937796818, "session": "vds-claude-1", "agent": "multi", "model": null, "tool": "get_slice", "node": "engine/focus/stack.ts", "hops": 1}',
+    '{"at": 1786937738852, "session": "daylight-claude-0", "agent": "multi", "model": null, "tool": "get_overview"}',
+    '{"at": 1786937797276, "session": "daylight-claude-0", "agent": "multi", "model": null, "tool": "get_slice", "node": "engine/mcp/server.ts", "hops": 1}',
+    '{"at": 1786937796818, "session": "daylight-claude-1", "agent": "multi", "model": null, "tool": "get_slice", "node": "engine/focus/stack.ts", "hops": 1}',
   ].join('\n') + '\n');
 
   const parsed: RunEvent[] = fs.readFileSync(file, 'utf8')
@@ -127,7 +127,7 @@ console.log('\nagainst a real events file');
 
   check('reads the file the MCP server actually writes', t.length === 3);
   check('two sessions interleave into one ordered timeline',
-    t[1].session === 'vds-claude-1' && t[2].session === 'vds-claude-0',
+    t[1].session === 'daylight-claude-1' && t[2].session === 'daylight-claude-0',
     t.map((e) => e.session).join(','));
   check('the run reads as under a minute',
     formatElapsed(elapsedAt(t, t.length)) === '0:58', formatElapsed(elapsedAt(t, t.length)));

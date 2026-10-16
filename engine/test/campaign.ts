@@ -145,7 +145,7 @@ section('an unpriced adapter makes the budget an estimate, not a lie');
  */
 section('a campaign runs rounds, samples each one, and stops itself');
 {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-campaign-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-campaign-'));
   const repo = path.join(tmp, 'repo');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'r', main: 'src/index.ts' }));

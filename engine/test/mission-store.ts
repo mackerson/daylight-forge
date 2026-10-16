@@ -16,7 +16,7 @@ import type { ProjectIdentity } from '../mission/types.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-mission-store-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-mission-store-'));
 
 const PROJECT: ProjectIdentity = { id: 'git:aaaaaaaaaaaa', root: '/repo/a', name: 'a' };
 const OTHER: ProjectIdentity = { id: 'git:bbbbbbbbbbbb', root: '/repo/b', name: 'b' };

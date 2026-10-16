@@ -133,7 +133,7 @@ export async function captureRun(
   };
   const scrub = (text: string) => redact(text, ctx.secrets).text;
   const provider = providerOf(adapter.name);
-  const spillDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-capture-'));
+  const spillDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-capture-'));
   const cap = ctx.memoryBytes ?? DEFAULT_MEMORY;
   const streams = {
     stdout: new StreamCapture(cap, spillDir, 'stdout'),

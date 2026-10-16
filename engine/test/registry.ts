@@ -80,7 +80,7 @@ console.log('\ndispatch');
 
 console.log('\na second language, end to end');
 {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-registry-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-registry-'));
   const write = (rel: string, body: string) => {
     const abs = path.join(tmp, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });

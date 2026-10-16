@@ -25,7 +25,7 @@ import { normalize } from '../swarm/normalize.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-telemetry-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-telemetry-'));
 
 /** A mock adapter: node printing `lines` of `tag` with a pause between each. */
 const mock = (tag: string, lines: number, extra = ''): Adapter => ({

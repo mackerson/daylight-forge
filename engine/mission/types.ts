@@ -179,7 +179,7 @@ export interface Task {
 
 /**
  * Who or what executed an attempt, as a string the UI can group by:
- * `agent:<tool>:<model>`, `human`, `static:vds`, `runner:experiment`.
+ * `agent:<tool>:<model>`, `human`, `static:daylight`, `runner:experiment`.
  */
 export type RunnerId = string;
 

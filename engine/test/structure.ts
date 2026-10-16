@@ -13,7 +13,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-structure-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-structure-'));
 const write = (rel: string, body: string) => {
   const abs = path.join(tmp, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -90,7 +90,7 @@ console.log('\ntest reachability');
    * only visible callers sat in files the walk had refused to open. High tier is the one
    * people act on without checking, which makes a false one the most expensive kind.
    */
-  const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-tests-'));
+  const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-tests-'));
   const w2 = (rel: string, body: string) => {
     const abs = path.join(t2, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
