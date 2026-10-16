@@ -7,7 +7,7 @@ Lineage: `docs/DAYLIGHT_SPEC_v0.1.md` (product spec) and `docs/daylight/PLAN.md`
 coordination plan, ADR-1 to ADR-7, now a frozen P0 record). ADR numbering continues at ADR-8.
 This is a new document, not an edit of the P0 plan (R8.3).
 
-Precedence: the director rulings of 2026-10-16 (R1–R8) override the reconciled plan. Where they
+Precedence: the director rulings of 2026-10-16 (R1–R9) override the reconciled plan. Where they
 conflict, this document says "RULINGS wins" in one line.
 
 ## 1. Purpose and scope
@@ -16,18 +16,17 @@ P1 Forge turns Daylight from a system that reviews code into one that writes cod
 "protected specification → scoped author workspace → independent test → approved merge" (spec §2,
 §7). It delivers four things:
 
-1. **Implement-mission runner.** A human authorises write for one mission and locks acceptance
-   gates. An author agent edits a detached workspace inside a bubblewrap profile. Daylight captures
-   the diff as a content-addressed candidate and evaluates it against the locked gates in the gate
-   sandbox. A human approves, and Daylight applies it as a new git ref with Daylight trailers.
+1. **Implement-mission runner.** A human authorises write and locks gates. An author edits a
+   detached workspace under bubblewrap. The diff becomes a candidate that is evaluated against
+   the locked gates. A human approves, and Daylight applies it as a new ref with trailers.
 2. **Ledger.** Per-turn tokens and per-attempt cost by actor, model, mission and work item.
    Unknown is never summed as zero or estimated. Every application gets a case-study line.
 3. **Transcript ingester.** Imports Claude Code sessions as `work` missions, storing digests and
    counts, never text.
 4. **UI.** Candidate review, ledger and work-item screens, plus a derived `needs` strip.
 
-Spec intake (spec → proposed work items → human approval) is in scope because it produces the
-acceptance criteria that implement missions run against.
+Spec intake (spec → proposed work items → human approval) is in scope; it produces the
+acceptance criteria.
 
 Deferred (PLAN §5): egress proxy, Docker/VM profile, repair loops, rebase onto a moved HEAD,
 `--onto-current` and merge automation, CI/PR gates, model routing, codex/grok/opencode authors,
@@ -36,23 +35,22 @@ ledger M7. Gate dependency snapshots are P2 (ADR-28). Author exec is open, not d
 
 ## 2. How we got here
 
-The sources are working papers outside the repository. They are cited here, not reproduced.
+Sources are working papers outside the repository, cited, not reproduced.
 
 - **Proposals A and B**: two independent plans written from the code at `daylight` @ 13a5775.
-- **Security review**: 22 findings (5 High, 9 Medium, 8 Low). VERIFIED highs included host writes
-  through committed symlinks (H1), a TOCTOU on the registered test (H2) and host git hooks firing
-  from `git worktree add` (H3).
-- **Ledger review**: 32 findings (6 High, 12 Medium, 14 Low). They included orphaned `running`
-  attempts (H1), double `cost.reported` (H5) and disputed missions reading "0 need you" (H6).
-- **Reconciled plan**: resolved 16 conflicts. A finding an audit had VERIFIED outranked either
-  proposal. The plan defined WS0 (P0 hardening) and WS1–WS9.
-- **WS0 report**: 30 of 30 findings fixed. `pnpm test:all` went from 1,197 to 1,332 passing. Five
-  deviations from the plan were declared.
-- **WS0 review**: 26 CLOSED, 3 PARTIAL (Sec H3, Ledger M4, M9), 1 REGRESSION (Sec M8 sweep). It
-  recommends merge after three fixes: the sweep trust boundary, neutralising smudge/process
-  filters, and legacy event-id dedupe.
-- **Rulings R1–R8**: made with the owner. They withdraw P0 compatibility, rename the product,
-  answer owner questions Q1–Q5, make write mode first-class, and insert WS-R before WS1.
+- **Security review**: 22 findings (5 High, 9 Medium, 8 Low), e.g. symlink write-out (H1) and
+  host git hooks from `git worktree add` (H3).
+- **Ledger review**: 32 findings (6 High, 12 Medium, 14 Low), e.g. orphaned attempts (H1).
+- **Reconciled plan**: resolved 16 conflicts, VERIFIED audit findings outranking either proposal,
+  and defined WS0–WS9.
+- **WS0**: 30 of 30 findings fixed, five deviations declared. The independent review found 26
+  CLOSED, 3 PARTIAL and 1 REGRESSION, and asked for three fixes. Two landed (fec9b36 sweep trust
+  boundary, 1ed128f smudge/process filters), as did 878cf7e, which amended ADR-6 by director
+  ruling. WS0 is merged into `daylight` at 0334326 (35 Opus-attributed commits, 1,343 tests
+  passing). The third fix, legacy event-id dedupe, did not land (§7).
+- **Rulings R1–R9**: made with the owner. They withdraw P0 compatibility, rename the product,
+  answer Q1–Q5, make write mode first-class, insert WS-R before WS1, and record what is still
+  open (R9).
 - **WS-R inventory**: 604 old-name occurrences in 86 files. It raised five questions; R8 answers
   them.
 
@@ -72,7 +70,8 @@ Daylight Software Forge, and it's time to get that right."
 - the sandbox boundary: ADR-3 bubblewrap + prlimit, fail closed, and ADR-4 protected acceptance as
   hardened by WS0.
 
-ADR-1, ADR-2, ADR-5, ADR-6 and ADR-7 also stand.
+ADR-1, ADR-2, ADR-5 and ADR-7 also stand. ADR-6 stands as amended in WS0 (878cf7e, director
+ruling): a blind reviewer sees no agent claim but its own, plus human and static claims.
 
 **Broken (R1, R2):**
 
@@ -98,18 +97,14 @@ WS-R lands before any other P1 code, so this document uses the new names through
 | 10k bench map | not moved, not read; the bench takes its path from `DAYLIGHT_BENCH_10K` |
 | MCP server key | renamed in the same commit as the fixture reviewer prompt and the adapter allowlist; the fixture's pinned commit is re-recorded |
 
-WS-R changes only names and the default out location. The test count stays the same or goes up.
-It adds two checks:
-
-- an invariant that no old-name identifiers remain outside CHANGELOG and history docs;
-- a static test that every tool named in the fixture reviewer prompt is in the adapter allowlist
-  (R8.5).
+WS-R changes only names and the default out location; the test count must not drop. It adds an
+invariant (no old-name identifiers outside CHANGELOG/history docs) and a static test that every
+tool in the fixture reviewer prompt is in the adapter allowlist (R8.5).
 
 Frozen P0 records keep the old names verbatim, each with a one-line banner saying the CLI is now
 `daylight`: TODO.md, `docs/daylight/{BASELINE,MEASURED,ACCEPTANCE,PLAN}.md`,
-`docs/DAYLIGHT_SPEC_v0.1.md` and `.codemap/*`. R8 does not name the new IPC channel prefix,
-invariants file name or progress-envelope prefix. WS-R picks them, and this document refers to
-them generically.
+`docs/DAYLIGHT_SPEC_v0.1.md` and `.codemap/*`. WS-R picks the unnamed replacements (IPC
+channel prefix, invariants file, progress-envelope prefix).
 
 ## 5. Decisions (ADR-8 onward)
 
@@ -127,8 +122,8 @@ rulings.
   - the `ls-tree -r` count must equal the files on disk;
   - every git call uses the hardened environment (`GIT_CONFIG_GLOBAL=/dev/null`,
     `GIT_CONFIG_NOSYSTEM=1`, `core.hooksPath=/dev/null`, `core.fsmonitor=false`).
-- **Consequences.** The author sees no git metadata and never writes to the real `.git`. Code
-  never runs in the workspace.
+- **Consequences.** The author sees no git metadata and never writes to the real `.git`. Whether
+  code runs in the workspace depends on R9.2 (ADR-35). Under option (b) it never does.
 - **Status.** Decided.
 
 ### ADR-9 — Authorize and gate lock are separate human acts (resolution 2)
@@ -168,7 +163,7 @@ rulings.
 ### ADR-12 — Version constants split; v1 refused (resolution 5, amended by R2)
 
 - **Context.** One constant fed the event stamp, the export header and the DB, and
-  `telemetry.ts:141` asserts that events carry `1`.
+  the P0 telemetry test asserts that events carry `1` (`engine/test/telemetry.ts:145` at 0334326).
 - **Decision.** Separate DB, event and export versions (§6). The plan's v1 dual-read is dropped:
   a v1 export is refused. RULINGS wins.
 - **Consequences.** P0 recordings no longer replay.
@@ -205,7 +200,7 @@ rulings.
 
 ### ADR-16 — Disputes do not change mission state (resolution 9)
 
-- **Decision.** No state-machine change. `orchestrate.ts:131,226` keep asserting `running`.
+- **Decision.** No state-machine change. `engine/test/orchestrate.ts` keeps asserting `running` (lines 131, 259, 402 at 0334326).
 - **Consequences.** H6 is a projection bug, fixed by ADR-13.
 - **Status.** Decided.
 
@@ -276,8 +271,8 @@ rulings.
 ### ADR-24 — Breaking changes allowed (R1)
 
 - **Decision.** As in §3.
-- **Consequences.** Tests that pin old names, paths or v1 compatibility may change. Tests of the
-  preserved guarantees may not.
+- **Consequences.** Tests pinning old names, paths or v1 may change; preserved-guarantee tests
+  may not.
 - **Status.** Decided.
 
 ### ADR-25 — No v1 compatibility (R2)
@@ -298,8 +293,8 @@ rulings.
 - **Decision.** The default is the XDG path in §4. Two checkouts of one project never share a
   claims db. `guardOutputDirectory` is unchanged. The reviewer mount is the repo only.
 - **Consequences.** The move does **not** close H5 (R3 correction). Reviewers run unsandboxed
-  today with `cwd: root` (`orchestrate.ts:365`); the move only removes the relative
-  `out/claims.db` hop. R9.1 rules that WS2's sandbox gains a `review` profile alongside `author`
+  today with `cwd: root` (`engine/mission/orchestrate.ts:452` at 0334326); the move only removes
+  the relative `out/claims.db` hop. R9.1 rules that WS2's sandbox gains a `review` profile alongside `author`
   and `gate`: repo ro-bind, no `<out>`, network `shared`, no write. WS8 runs review attempts under
   it when bwrap is present. Whether real `claude`/`codex` work under that profile needs one
   authorised live spike. Until then the ledger records H5 as open.
@@ -308,8 +303,7 @@ rulings.
 ### ADR-28 — Gates are zero-dependency or vendored (Q1)
 
 - **Decision.** Option (a). Install snapshots are P2.
-- **Consequences.** A repo whose gates need `node_modules` must vendor them, or it cannot be gated
-  in P1.
+- **Consequences.** Gates needing `node_modules` must vendor them in P1.
 - **Status.** Decided.
 
 ### ADR-29 — No dollars or tokens in git history (Q3)
@@ -335,7 +329,8 @@ rulings.
   ```
 
   Author and committer are the approving human's git identity, labelled asserted. The mock author
-  is `Daylight mock adapter (test double) <mock@daylight.invalid>`. Trailers are written with
+  is `Daylight mock adapter (test double) <mock@daylight.invalid>`; unmapped tools get
+  `<agent@daylight.invalid>`. Trailers are written with
   `git interpret-trailers`, and a test parses them back.
 - **Consequences.** Cost is visible only through `daylight report --project`.
 - **Status.** Decided.
@@ -365,8 +360,8 @@ rulings.
   and WS8 move logic onto them. No workaround is removed before its replacement is in and tested.
 - **Consequences.**
   - Two liveness sources coexist for a while, which the WS0 review warned against.
-  - WS1 adds the row-side reaper for pending rows that survive a `/tmp` wipe.
-  - WS5's brief must state that `adapters.ts:420` and `capture.ts:173` key on `cost.reported`, so
+  - From the WS0 review (§3, §7), not R5: WS1 adds the row-side reaper for pending rows that
+    survive a `/tmp` wipe, and WS5's brief must state that `adapters.ts:420` and `capture.ts:173` key on `cost.reported`, so
     all three rename together, with a `runMission` over-budget test.
   - The node binary stays bound at its own host path (WS0 deviation 3 stands). PLAN F-1's
     `/opt/node/bin/node` is withdrawn.
@@ -460,9 +455,8 @@ Type additions (F-6, in summary):
   (`p_`) and `Need`.
 - `CandidateVerdict` is one of `pending`, `accepted-by-gates`, `rejected-by-gates`,
   `gates-inconclusive`, `gates-invalid`, `policy-violation`, `no-diff`, `stale-base`.
-- `Decision.scope.operation` names the act: `authorize-mission`, `lock-gates`, approve or reject
-  of a work item, and approve, reject or override of a candidate.
-- Events stay at `schemaVersion 1` and carry ids and digests, never prose.
+- `Decision.scope.operation` names the act (authorize, lock, work-item and candidate decisions).
+- Events stay at `schemaVersion 1`; payloads carry ids and digests, never prose.
 
 **Verdict** (pure over rows). `accepted-by-gates` requires all of the following:
 
@@ -473,9 +467,9 @@ Type additions (F-6, in summary):
 - every locked gate and holdout is `supported` on this `diffDigest` at the locked `harnessDigest`;
 - every baseline is `falsified` or overridden.
 
-Any `invalid` gives `gates-invalid`. A timeout or flaky result gives `gates-inconclusive`.
-Anything else gives `rejected-by-gates`. A test proves the verdict never reads the exit code,
-attempt state, narrative or reviewer claims.
+Otherwise: any `invalid` → `gates-invalid`; timeout or flaky → `gates-inconclusive`; else
+`rejected-by-gates`. A test proves the verdict ignores exit code, attempt state, narrative and
+reviewer claims.
 
 ## 7. Workstreams
 
@@ -492,7 +486,7 @@ Each feature workstream adds one test file under `engine/test/` and uses mocks o
 
 | WS | Name | Owns (summary) | Depends on | Notes |
 |---|---|---|---|---|
-| WS0 | P0 hardening | runner, sandbox, events, capture/normalize, adapters, store, orchestrate, export, project, MCP server, App.tsx | — | 30/30 reported; review asks for fixes 1–3 before merge |
+| WS0 | P0 hardening | runner, sandbox, events, capture/normalize, adapters, store, orchestrate, export, project, MCP server, App.tsx | — | merged at 0334326; legacy event-id dedupe outstanding (tracked below) |
 | WS-R | Rename | identifiers, env, config dir, default `<out>`, banners, MCP key, consistency test | WS0 | serial; names and out location only |
 | WS1 | Contracts + schema v2 | `mission/types.ts`, `db.ts`, `store.ts`, `export.ts` (v2 only), `forge/policy.ts` | WS-R | no migration; v1 refused; row-side reaper; `closeMission` rule |
 | WS2 | Workspace + author sandbox | `forge/workspace.ts`, `sandbox.ts`, `authors.ts`, `diff.ts` | WS1 | adds the `review` profile (ADR-27); author exec behind a profile flag (ADR-35); escape tests; both network modes |
@@ -513,9 +507,11 @@ Each feature workstream adds one test file under `engine/test/` and uses mocks o
 5. WS4 → WS8 → WS9 merge → acceptance.
 6. One authorised live author run (needs Q5 and a Q4 credential).
 
-**Status per the sources.** The WS0 review says merge after fixes 1–3. This document does not
-record them as done. WS-R is inventoried and its questions are answered. No feature workstream
-has started.
+**Status (verified at `daylight` 0334326).** WS0 is merged. One review item is outstanding and is
+tracked here: ws0-review R1, legacy event-id dedupe (Medium). An `<out>` dir that predates WS0 can
+double-ingest events with nested payloads once. The WS0 writer accepted this under R2, which makes
+such dirs disposable. The review suggests WS1 or a standalone ~5-line `events.ts` patch as owner.
+WS-R is inventoried and its questions are answered. No feature workstream has started.
 
 **CLI (F-8, new names).**
 
@@ -529,20 +525,21 @@ has started.
 - `mission list|inspect` gain `needs`, `candidates`, `gateEvaluations`, `applications` and
   `usage`.
 
-The `--out`, `--format json` and exit-code contracts are unchanged. For authorize, lock,
-approve/override and apply, a native main-process dialog names the digest, gates and ref, and
-main supplies `--confirm`. The renderer never names a path, actor or ref.
+The `--out`, `--format json` and exit-code contracts are unchanged. Human decisions go through
+a native main-process dialog naming digest, gates and ref; main supplies `--confirm`. The
+renderer never names a path, actor or ref.
 
 ## 8. Live model spend
 
-Live model spend requires explicit owner authorisation, as under ADR-7. Every test and every
-acceptance step uses mock adapters (`DAYLIGHT_MOCK_ADAPTER`, `mock:<x>`), labelled `mock` in every
-artifact. The one live author run needs the owner's Q5 yes and a Q4 credential. No writer,
-reviewer or integrator starts a live run on their own judgement.
+Live model spend requires explicit owner authorisation (ADR-7). Every test and acceptance step
+uses mock adapters (`DAYLIGHT_MOCK_ADAPTER`, `mock:<x>`), labelled `mock` in every artifact. No
+writer, reviewer or integrator starts a live run on their own judgement.
 
 ## 9. Acceptance criteria (mocks only)
 
-On the fixture, a human can do each of the following.
+The fixture is the planted repository `fixtures/daylight-demo`: its defect was placed
+deliberately, as `DEFECT.md` and `docs/daylight/DEMO.md` say. On it, a human can do each of the
+following.
 
 1. **Spec intake.** `daylight spec register`, then two blind mock decomposers. See one
    `spec-ambiguity` need. Approve one work item. Neither proposal was visible to the other.
@@ -550,9 +547,8 @@ On the fixture, a human can do each of the following.
    `mission.authorized`, with `write:true` on the mission, the attempt row and the UI.
 3. **Gates.** Register a gate and a holdout and baseline both `falsified`. A vacuous third gate is
    refused at lock. Lock with a rationale and the digest.
-4. **Run.** `forge run` the mock author in bwrap. The workspace is created and removed and the
-   real checkout is untouched. There is a candidate summary and a redacted diff, and the narrative
-   is labelled unverified.
+4. **Run.** `forge run` the mock author in bwrap: workspace created and removed, real checkout
+   untouched, candidate summary, redacted diff, narrative labelled unverified.
 5. **Verdicts.** `accepted-by-gates` for a correct diff. `no-diff` for a mock that exits 0
    printing "all tests pass". A policy violation for an edit to `.daylight-gates/**`.
    `secret-in-diff` for a mock that writes `/proc/self/environ`.
@@ -574,8 +570,7 @@ Repository-wide checks:
 - The R7 write/authorize invariant holds, and no "author cannot write" invariant exists.
 - The WS-R identifier invariant and the prompt/allowlist consistency test pass.
 
-The plan asked for "every P0 assertion intact". Under R1 that covers the preserved guarantees,
-not tests that pin old names, paths or v1 compatibility. RULINGS wins.
+PLAN's "every P0 assertion intact" now covers only the preserved guarantees. RULINGS wins.
 
 ## 10. Open questions
 
@@ -594,8 +589,8 @@ Items 1–4 are R9's open items, recorded so that no writer invents an answer.
 
    The question is unanswered, so its status is **Open**. WS2 builds the profile so that either
    option is a flag.
-3. **Commit trailer attribution (R9.3).** This covers Opus-written commits, including WS0's 33
-   unpushed commits. The options are:
+3. **Commit trailer attribution (R9.3).** This covers Opus-written commits: WS0's 35 unpushed commits
+   (the merge 0334326 carries Fable 5.1) and this document's own commits. The options are:
    - keep `Claude Opus 5.5`, the honest record. The director recommends this.
    - rewrite the trailers to Fable 5.1, per the owner's global rule. This rewrites history.
 
@@ -604,5 +599,9 @@ Items 1–4 are R9's open items, recorded so that no writer invents an answer.
 4. **The live author run (Q5) and its credential (Q4a) (R9.4, ADR-30, ADR-31).** Neither is
    authorised, so the status is **Open**. The target repository, the credential's provisioning
    and its cap are not chosen.
-5. **Ledger M4 blind half (= Sec L6).** This is pinned by `engine/test/orchestrate.ts:179`. R1 now
-   permits narrowing it, but nobody has ruled. (This item is not in R9.)
+Not open, recorded for the case study:
+
+- **Ledger M4 blind half (= Sec L6): closed.** It was ruled by the director and merged in WS0
+  (878cf7e): ADR-6 is amended in `docs/daylight/PLAN.md` and asserted at
+  `engine/test/orchestrate.ts:182`.
+- **Legacy event-id dedupe (ws0-review R1): tracked, not landed** (§7).
