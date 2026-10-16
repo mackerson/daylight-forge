@@ -21,6 +21,16 @@ export function digestOf(bytes: Buffer | string): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
+/**
+ * JSON with every object's keys sorted, at every depth. A replacer *array* is not this: it
+ * whitelists the top-level key names at every depth, so nested keys not among them vanish.
+ */
+export const canonicalJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) =>
+    x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : x);
+
 export class ArtifactStore {
   readonly dir: string;
 

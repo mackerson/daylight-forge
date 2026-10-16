@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import { ArtifactStore } from '../mission/artifacts.ts';
+import { ArtifactStore, canonicalJson } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
 } from '../mission/types.ts';
@@ -94,12 +94,6 @@ export function harnessDigestOf(
     .update(`${testDigest}\n${expectedDigest}\n${JSON.stringify(command)}\n${sandboxProfile}`)
     .digest('hex')}`;
 }
-
-const canonicalJson = (v: unknown): string =>
-  JSON.stringify(v, (_k, x) =>
-    x && typeof x === 'object' && !Array.isArray(x)
-      ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-      : x);
 
 /**
  * Does the row still describe the experiment that was registered?

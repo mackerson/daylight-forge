@@ -161,6 +161,17 @@ section('the event log');
   check('a line with a nested payload key order difference is still one event',
     runEventId({ at: 1, session: 's', agent: 'a', model: null, tool: 't', x: 1, y: 2 } as RunEvent)
       === runEventId({ tool: 't', y: 2, x: 1, at: 1, session: 's', agent: 'a', model: null } as RunEvent));
+  // Two get_slice calls in one millisecond that differ only below the top level are two calls.
+  const sliceA = { at: 90, session: 'm_1:a_9', agent: 'claude', model: 'sonnet', tool: 'get_slice', args: { node: 'a.ts', hops: 1 } } as RunEvent;
+  const sliceB = { ...sliceA, args: { node: 'b.ts', hops: 1 } } as RunEvent;
+  check('lines differing only in a nested field get different ids', runEventId(sliceA) !== runEventId(sliceB));
+  const nestedDir = path.join(tmp, 'log-nested');
+  fs.mkdirSync(nestedDir);
+  const nestedLog = new EventLog(nestedDir);
+  check('and both are ingested', nestedLog.ingestRunEvents([sliceA, sliceB], resolve) === 2);
+  nestedLog.close();
+  check('nested key order still does not matter',
+    runEventId(sliceA) === runEventId({ ...sliceA, args: { hops: 1, node: 'a.ts' } } as RunEvent));
   log.close();
 
   const reopened = new EventLog(dir);

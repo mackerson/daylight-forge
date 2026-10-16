@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { RunEvent } from '../replay/types.ts';
+import { canonicalJson } from './artifacts.ts';
 import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
 import { DAYLIGHT_SCHEMA_VERSION } from './types.ts';
 import type { DaylightEvent, DaylightEventInput } from './types.ts';
@@ -158,10 +159,11 @@ export class EventLog {
  *
  * Over the whole line rather than a chosen subset: two calls by one agent to one tool at the
  * same millisecond are rare but real (a batch of `get_slice`s), and only differ in payload.
+ * For a flat line this is byte-identical to what earlier builds hashed, so ids already in a
+ * log are found again on re-ingest.
  */
 export function runEventId(line: RunEvent): string {
-  const canonical = JSON.stringify(line, Object.keys(line).sort());
-  return `ev_mcp_${createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;
+  return `ev_mcp_${createHash('sha256').update(canonicalJson(line)).digest('hex').slice(0, 32)}`;
 }
 
 function rowToEvent(r: any): DaylightEvent {
