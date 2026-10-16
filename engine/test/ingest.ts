@@ -140,6 +140,9 @@ section('parseLine and vetting are pure and keep no text');
   check('an outside path is counted, not named', 'outside' in vetPath('/etc/passwd', null, repo.root) && 'outside' in vetPath(path.join(repo.root, '..', 'x'), null, repo.root));
   check('a path with a secret shape is dropped', 'dropped' in vetPath(path.join(repo.root, PLANTED_KEY), null, repo.root));
   check('a path with a control character is dropped', 'dropped' in vetPath(`${repo.root}/a\nb`, null, repo.root));
+  for (const [name, ch] of [['right-to-left override', '‮'], ['line separator', ' '], ['next line', '\u0085'], ['zero-width space', '​']]) {
+    check(`a path with a ${name} is dropped`, 'dropped' in vetPath(`${repo.root}/src/a${ch}b.ts`, null, repo.root));
+  }
   const id = eventId(MAIN, '', 'usage:msg_x');
   check('event ids are ev_cc_ and deterministic', id === eventId(MAIN, '', 'usage:msg_x') && id.startsWith('ev_cc_') && isEntityId('event', id));
   check('the agent is part of the event id', id !== eventId(MAIN, 'a1', 'usage:msg_x'));

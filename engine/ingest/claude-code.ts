@@ -37,7 +37,9 @@ const PROVIDER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,99}$/;
 const TOOL = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,99}$/;
 const HEX40 = /(?<![0-9a-fA-F])[0-9a-f]{40}(?![0-9a-fA-F])/g;
-const CONTROL = /[\u0000-\u001f\u007f]/;
+// Control and format characters, and the Unicode line breaks: a path holding one can display as
+// another path (U+202E) or break a terminal line, so it is dropped rather than shown.
+const CONTROL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const MAX_SHA_CANDIDATES_PER_LINE = 1000;
 
 /** Line types seen in real transcripts that carry nothing the ledger keeps. */
