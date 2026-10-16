@@ -7,6 +7,7 @@ import type { Readable, Writable } from 'node:stream';
 import { ArtifactStore, canonicalJson } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
+  NewExperiment,
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
@@ -38,9 +39,7 @@ import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
  * structurally keeps the runner testable against a two-method stub.
  */
 export interface ExperimentStoreLike {
-  createExperiment(
-    input: Omit<Experiment, 'id' | 'executions' | 'conclusion' | 'createdAt' | 'updatedAt'>,
-  ): Experiment;
+  createExperiment(input: NewExperiment): Experiment;
   updateExperiment(
     id: string,
     patch: { executions?: ArtifactRef[]; conclusion?: ExperimentConclusion; limitations?: string[] },

@@ -124,7 +124,7 @@ section('an exit code is not an outcome');
   check('an attempt starts with unknown cost, not zero', a.costUsd === null);
   check('the task lists the attempt', store.task(t.id)!.attemptIds.join() === a.id);
 
-  const finished = store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.42 });
+  const finished = store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.42, costSource: 'provider' });
   check('the attempt is completed', finished.state === 'completed' && finished.exitCode === 0);
   check('and has a finish time', typeof finished.finishedAt === 'number');
   check('its task is done', store.task(t.id)!.state === 'done');
@@ -181,12 +181,12 @@ section('finishing an attempt is all or nothing');
   const a = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:a' });
   // An artifact row the schema refuses, part-way through the finish.
   const bad = { id: 'sha256:bad', kind: 'log', digest: 'sha256:bad', projectId: null } as unknown as Parameters<MissionStore['recordArtifact']>[0];
-  const err = throws(() => store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, artifacts: [bad] }));
+  const err = throws(() => store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, costSource: 'provider', artifacts: [bad] }));
   check('a finish that fails part-way throws', !!err);
   check('and leaves the attempt as it was', store.attempt(a.id)!.state === 'running' && store.attempt(a.id)!.costUsd === null,
     store.attempt(a.id)!.state);
   check('with its task still running, not half-moved', store.task(t.id)!.state === 'running');
-  check('so it can still be finished properly', store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1 }).state === 'completed'
+  check('so it can still be finished properly', store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, costSource: 'provider' }).state === 'completed'
     && store.task(t.id)!.state === 'done');
   store.close();
 }
@@ -215,7 +215,7 @@ section('cost: null is unknown, 0 is zero');
   const a1 = store.startAttempt({ taskId: t1.id, runnerId: 'agent:mock:x' });
   const a2 = store.startAttempt({ taskId: t2.id, runnerId: 'agent:mock:y' });
   store.finishAttempt(a1.id, { state: 'completed', exitCode: 0, costUsd: null });
-  store.finishAttempt(a2.id, { state: 'completed', exitCode: 0, costUsd: 0 });
+  store.finishAttempt(a2.id, { state: 'completed', exitCode: 0, costUsd: 0, costSource: 'provider' });
   check('a runner that reported nothing reads back as null', store.attempt(a1.id)!.costUsd === null);
   check('a runner that reported zero reads back as zero', store.attempt(a2.id)!.costUsd === 0);
   check('and the two are distinguishable', store.attempt(a1.id)!.costUsd !== store.attempt(a2.id)!.costUsd);
@@ -263,7 +263,7 @@ section('sessions and artifacts');
   check('the worktree is kept', store.attempt(a.id)!.worktree === '/tmp/wt');
 
   const log = blobs.put('stdout line\n', { kind: 'log', projectId: PROJECT.id, label: 'stdout' });
-  store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, artifacts: [log] });
+  store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: 0.1, costSource: 'provider', artifacts: [log] });
   check('finishing with artifacts attaches them to the attempt',
     store.attempt(a.id)!.artifacts.length === 1 && store.attempt(a.id)!.artifacts[0].digest === log.digest);
   check('and records them in the artifact table', store.artifact(log.id)?.kind === 'log');
@@ -368,6 +368,27 @@ section('two output directories do not see each other');
     })));
   a.close();
   b.close();
+}
+
+section('schema 2 attempt and experiment defaults');
+{
+  const store = new MissionStore(path.join(tmp, 'v2-defaults'), clock());
+  store.ensureProject(PROJECT);
+  const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
+  const t = store.createTask({ missionId: m.id, role: 'review', objective: 'r' });
+  const a = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:x' });
+  check('a P0 attempt is recorded read-only, unsandboxed', !a.sandbox!.write && !a.sandbox!.exec && a.sandbox!.profile === 'none');
+  check('with no usage and no cost source', a.usageSource === 'none' && a.costSource === 'none'
+    && a.tokens.input === null && a.tokens.output === null);
+  check('a figure with no cost source is refused, not assumed known',
+    !!throws(() => store.finishAttempt(a.id, { state: 'completed', costUsd: 0.05 })) && store.attempt(a.id)!.state === 'running');
+  const done = store.finishAttempt(a.id, { state: 'completed', costUsd: 0.05, costSource: 'stdout-scan' });
+  check('a labelled figure keeps its label', done.costSource === 'stdout-scan' && done.costUsd === 0.05);
+  check('closing a non-implement mission as succeeded needs no application', (() => {
+    store.transitionMission(m.id, 'ready');
+    return store.closeMission(m.id, 'succeeded', 'answered').outcome === 'succeeded';
+  })());
+  store.close();
 }
 
 done();

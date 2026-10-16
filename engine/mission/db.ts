@@ -1,5 +1,7 @@
+import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { DAYLIGHT_SCHEMA_VERSION } from './types.ts';
+import { pathToFileURL } from 'node:url';
+import { DAYLIGHT_DB_VERSION } from './types.ts';
 
 /**
  * The Daylight database: one `daylight.db` beside `claims.db` in an output directory.
@@ -12,29 +14,34 @@ import { DAYLIGHT_SCHEMA_VERSION } from './types.ts';
  * Same concurrency posture as the claim store: WAL and a busy timeout, because the MCP
  * server, the driver and the Electron shell all open this at once while a swarm runs.
  *
- * Migrations are numbered and recorded in `daylight_meta`; `openDaylightDb` applies whatever
- * the file is behind on. A test asserts opening twice is a no-op and that the version lands.
+ * There is one schema and no migrations (RULINGS R2). A fresh file gets schema 2; a file at
+ * any other version, or with tables and no version at all, is refused with one line saying
+ * to delete it and re-map, and is left exactly as it was found. P0 data is disposable, and
+ * a half-understood upgrade path is a second schema nobody tests.
  */
 
 export const DAYLIGHT_DB = 'daylight.db';
 
-const MIGRATIONS: Array<{ version: number; sql: string }> = [
-  {
-    version: 1,
-    sql: `
-CREATE TABLE IF NOT EXISTS daylight_meta (
+/**
+ * Schema 2. The P0 tables with the Forge columns folded in, and the Forge tables.
+ *
+ * Every Forge row carries its project, and a revision where it has one, so a query by
+ * project needs no join and one repository's rows can never be read as another's.
+ */
+const SCHEMA = `
+CREATE TABLE daylight_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS projects (
+CREATE TABLE projects (
   id         TEXT PRIMARY KEY,
   root       TEXT NOT NULL,
   name       TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS missions (
+CREATE TABLE missions (
   id                  TEXT PRIMARY KEY,
   project_id          TEXT NOT NULL REFERENCES projects(id),
   parent_id           TEXT,
@@ -46,6 +53,7 @@ CREATE TABLE IF NOT EXISTS missions (
   budget              TEXT NOT NULL,
   requirement_ids     TEXT NOT NULL,
   acceptance_gate_ids TEXT NOT NULL,
+  work_item_id        TEXT REFERENCES work_items(id),
   state               TEXT NOT NULL,
   outcome             TEXT,
   outcome_reason      TEXT,
@@ -53,9 +61,9 @@ CREATE TABLE IF NOT EXISTS missions (
   updated_at          INTEGER NOT NULL,
   closed_at           INTEGER
 );
-CREATE INDEX IF NOT EXISTS missions_project ON missions(project_id, created_at);
+CREATE INDEX missions_project ON missions(project_id, created_at);
 
-CREATE TABLE IF NOT EXISTS tasks (
+CREATE TABLE tasks (
   id               TEXT PRIMARY KEY,
   mission_id       TEXT NOT NULL REFERENCES missions(id),
   project_id       TEXT NOT NULL,
@@ -69,30 +77,82 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS tasks_mission ON tasks(mission_id, created_at);
+CREATE INDEX tasks_mission ON tasks(mission_id, created_at);
 
-CREATE TABLE IF NOT EXISTS attempts (
-  id          TEXT PRIMARY KEY,
-  mission_id  TEXT NOT NULL REFERENCES missions(id),
-  task_id     TEXT NOT NULL REFERENCES tasks(id),
-  project_id  TEXT NOT NULL,
-  runner_id   TEXT NOT NULL,
-  session_id  TEXT,
-  worktree    TEXT,
-  state       TEXT NOT NULL,
-  started_at  INTEGER NOT NULL,
-  finished_at INTEGER,
-  cost_usd    REAL,
-  exit_code   INTEGER,
-  signal      TEXT,
-  timed_out   INTEGER NOT NULL DEFAULT 0,
-  failure     TEXT,
-  artifacts   TEXT NOT NULL
+CREATE TABLE attempts (
+  id                 TEXT PRIMARY KEY,
+  mission_id         TEXT NOT NULL REFERENCES missions(id),
+  task_id            TEXT NOT NULL REFERENCES tasks(id),
+  project_id         TEXT NOT NULL,
+  runner_id          TEXT NOT NULL,
+  session_id         TEXT,
+  worktree           TEXT,
+  state              TEXT NOT NULL,
+  started_at         INTEGER NOT NULL,
+  finished_at        INTEGER,
+  cost_usd           REAL,
+  exit_code          INTEGER,
+  signal             TEXT,
+  timed_out          INTEGER NOT NULL DEFAULT 0,
+  failure            TEXT,
+  artifacts          TEXT NOT NULL,
+  input_tokens       INTEGER,
+  output_tokens      INTEGER,
+  cache_read_tokens  INTEGER,
+  cache_write_tokens INTEGER,
+  usage_source       TEXT NOT NULL DEFAULT 'none' CHECK (usage_source IN ('provider','transcript','none')),
+  cost_source        TEXT NOT NULL DEFAULT 'none' CHECK (cost_source IN ('provider','stdout-scan','none')),
+  model              TEXT,
+  parent_attempt_id  TEXT REFERENCES attempts(id),
+  gate_set_digest    TEXT,
+  pid                INTEGER,
+  heartbeat_at       INTEGER,
+  origin             TEXT NOT NULL DEFAULT 'daylight' CHECK (origin IN ('daylight','ingested')),
+  -- NULL exactly for an ingested attempt: Daylight granted it nothing and cannot say what it had.
+  sandbox_profile    TEXT CHECK (sandbox_profile IN ('none','review','author','gate')),
+  sandbox_network    TEXT CHECK (sandbox_network IN ('none','shared')),
+  sandbox_write      INTEGER CHECK (sandbox_write IN (0,1)),
+  sandbox_exec       INTEGER CHECK (sandbox_exec IN (0,1)),
+  authorize_decision_id TEXT REFERENCES decisions(id),
+  -- {present, envName, label}: which credential, never its value.
+  credential         TEXT,
+  -- sha256 of the per-attempt MCP socket token (R11.2), never the token.
+  mcp_token_digest   TEXT UNIQUE,
+  -- A cost nobody reported is not a cost (R10.2).
+  CHECK (cost_source <> 'none' OR cost_usd IS NULL),
+  CHECK ((origin = 'ingested') = (sandbox_profile IS NULL)),
+  CHECK ((sandbox_profile IS NULL) = (sandbox_network IS NULL)
+    AND (sandbox_profile IS NULL) = (sandbox_write IS NULL)
+    AND (sandbox_profile IS NULL) = (sandbox_exec IS NULL)),
+  CHECK (origin = 'daylight' OR authorize_decision_id IS NULL),
+  -- R7, as a constraint as well as a store check: write never stands without its grant.
+  CHECK (sandbox_write = 0 OR sandbox_write IS NULL OR authorize_decision_id IS NOT NULL),
+  CHECK (sandbox_exec = 0 OR sandbox_exec IS NULL OR sandbox_write = 1)
 );
-CREATE INDEX IF NOT EXISTS attempts_task ON attempts(task_id, started_at);
-CREATE INDEX IF NOT EXISTS attempts_session ON attempts(session_id);
+CREATE INDEX attempts_task ON attempts(task_id, started_at);
+CREATE INDEX attempts_session ON attempts(session_id);
+CREATE INDEX attempts_mission_state ON attempts(mission_id, state);
 
-CREATE TABLE IF NOT EXISTS experiments (
+CREATE TABLE attempt_usage (
+  attempt_id         TEXT NOT NULL REFERENCES attempts(id),
+  project_id         TEXT NOT NULL,
+  seq                INTEGER NOT NULL,
+  request_id         TEXT,
+  at                 INTEGER NOT NULL,
+  model              TEXT,
+  input_tokens       INTEGER,
+  output_tokens      INTEGER,
+  cache_read_tokens  INTEGER,
+  cache_write_tokens INTEGER,
+  cost_usd           REAL,
+  cost_source        TEXT NOT NULL DEFAULT 'none' CHECK (cost_source IN ('provider','stdout-scan','none')),
+  source             TEXT NOT NULL CHECK (source IN ('provider','transcript')),
+  CHECK (cost_source <> 'none' OR cost_usd IS NULL),
+  PRIMARY KEY (attempt_id, seq),
+  UNIQUE (attempt_id, request_id)
+);
+
+CREATE TABLE experiments (
   id                TEXT PRIMARY KEY,
   mission_id        TEXT NOT NULL REFERENCES missions(id),
   project_id        TEXT NOT NULL,
@@ -110,12 +170,15 @@ CREATE TABLE IF NOT EXISTS experiments (
   executions        TEXT NOT NULL,
   conclusion        TEXT NOT NULL,
   limitations       TEXT NOT NULL,
+  role              TEXT NOT NULL DEFAULT 'probe' CHECK (role IN ('probe','gate','holdout')),
+  locked_by         TEXT REFERENCES decisions(id),
+  started_at        INTEGER,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS experiments_mission ON experiments(mission_id, created_at);
+CREATE INDEX experiments_mission ON experiments(mission_id, created_at);
 
-CREATE TABLE IF NOT EXISTS decisions (
+CREATE TABLE decisions (
   id           TEXT PRIMARY KEY,
   mission_id   TEXT NOT NULL REFERENCES missions(id),
   project_id   TEXT NOT NULL,
@@ -130,9 +193,9 @@ CREATE TABLE IF NOT EXISTS decisions (
   artifact_ids TEXT NOT NULL,
   at           INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS decisions_mission ON decisions(mission_id, at);
+CREATE INDEX decisions_mission ON decisions(mission_id, at);
 
-CREATE TABLE IF NOT EXISTS artifacts (
+CREATE TABLE artifacts (
   id         TEXT PRIMARY KEY,
   kind       TEXT NOT NULL,
   digest     TEXT NOT NULL,
@@ -145,7 +208,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS events (
+CREATE TABLE events (
   sequence       INTEGER PRIMARY KEY AUTOINCREMENT,
   id             TEXT NOT NULL UNIQUE,
   schema_version INTEGER NOT NULL,
@@ -160,11 +223,118 @@ CREATE TABLE IF NOT EXISTS events (
   artifact_ids   TEXT,
   payload        TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS events_mission ON events(mission_id, sequence);
-CREATE INDEX IF NOT EXISTS events_attempt ON events(attempt_id, sequence);
-`,
-  },
-];
+CREATE INDEX events_mission ON events(mission_id, sequence);
+CREATE INDEX events_attempt ON events(attempt_id, sequence);
+
+-- mission_id and attempt_id name the spec mission and decompose attempt that proposed the
+-- item. No foreign keys: an implement mission's export carries its work item, not them.
+CREATE TABLE work_items (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id),
+  mission_id        TEXT NOT NULL,
+  attempt_id        TEXT,
+  proposal_artifact TEXT,
+  content_digest    TEXT NOT NULL,
+  spec_artifact     TEXT NOT NULL,
+  spec_revision     TEXT NOT NULL,
+  anchor            TEXT NOT NULL,
+  title             TEXT NOT NULL,
+  statement         TEXT NOT NULL,
+  examples          TEXT NOT NULL,
+  negative_examples TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected','superseded')),
+  proposed_by       TEXT NOT NULL,
+  decision_id       TEXT,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+CREATE INDEX work_items_project ON work_items(project_id, created_at);
+
+CREATE TABLE candidates (
+  id                 TEXT PRIMARY KEY,
+  mission_id         TEXT NOT NULL REFERENCES missions(id),
+  attempt_id         TEXT NOT NULL REFERENCES attempts(id),
+  project_id         TEXT NOT NULL,
+  base_commit        TEXT NOT NULL,
+  diff_artifact      TEXT NOT NULL,
+  summary_artifact   TEXT NOT NULL,
+  narrative_artifact TEXT,
+  files              TEXT NOT NULL,
+  policy_violations  TEXT NOT NULL,
+  secret_hits        INTEGER NOT NULL,
+  gate_set_digest    TEXT NOT NULL,
+  profile            TEXT NOT NULL,
+  attempt_state      TEXT NOT NULL,
+  attempt_failure    TEXT,
+  verdict            TEXT NOT NULL,
+  verdict_reasons    TEXT NOT NULL,
+  created_at         INTEGER NOT NULL
+);
+CREATE INDEX candidates_mission ON candidates(mission_id, created_at);
+
+CREATE TABLE gate_evaluations (
+  id             TEXT PRIMARY KEY,
+  mission_id     TEXT NOT NULL REFERENCES missions(id),
+  project_id     TEXT NOT NULL,
+  revision       TEXT NOT NULL,
+  experiment_id  TEXT NOT NULL REFERENCES experiments(id),
+  candidate_id   TEXT REFERENCES candidates(id),
+  target         TEXT NOT NULL CHECK (target IN ('base','candidate')),
+  diff_digest    TEXT,
+  harness_digest TEXT NOT NULL,
+  executions     TEXT NOT NULL,
+  conclusion     TEXT NOT NULL,
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX gate_evals_candidate ON gate_evaluations(candidate_id);
+CREATE INDEX gate_evals_mission ON gate_evaluations(mission_id, created_at);
+
+CREATE TABLE applications (
+  id           TEXT PRIMARY KEY,
+  candidate_id TEXT NOT NULL UNIQUE REFERENCES candidates(id),
+  mission_id   TEXT NOT NULL REFERENCES missions(id),
+  decision_id  TEXT NOT NULL REFERENCES decisions(id),
+  project_id   TEXT NOT NULL,
+  base_commit  TEXT NOT NULL,
+  commit_sha   TEXT NOT NULL,
+  ref          TEXT NOT NULL,
+  applied_by   TEXT NOT NULL,
+  at           INTEGER NOT NULL
+);
+CREATE INDEX applications_mission ON applications(mission_id);
+
+-- A subagent's transcript shares its parent's session id, so the key is the pair; agent_id
+-- is '' for the session's main transcript.
+CREATE TABLE ingest_sources (
+  session_id    TEXT NOT NULL,
+  agent_id      TEXT NOT NULL DEFAULT '',
+  project_id    TEXT NOT NULL,
+  path_digest   TEXT NOT NULL,
+  prefix_digest TEXT NOT NULL,
+  bytes_seen  INTEGER NOT NULL,
+  lines_seen  INTEGER NOT NULL,
+  mission_id  TEXT NOT NULL REFERENCES missions(id),
+  attempt_id  TEXT NOT NULL REFERENCES attempts(id),
+  ingested_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, agent_id)
+);
+CREATE INDEX ingest_sources_project ON ingest_sources(project_id, mission_id);
+`;
+
+/** A database this build will not read. The message is one line and says what to do. */
+export class IncompatibleDatabase extends Error {
+  /** `found` is the schema version, 0 for none, or `not-sqlite` for a file that is no database. */
+  constructor(file: string, found: number | 'not-sqlite') {
+    const what = found === 'not-sqlite' ? 'not a SQLite file, so not a'
+      : found ? `a schema ${found}` : 'an unversioned';
+    super(
+      `${file} is ${what} Daylight database; this build reads ` +
+        `schema ${DAYLIGHT_DB_VERSION} only and never migrates. Delete it and re-map ` +
+        '(daylight map <repo> --out <dir>).',
+    );
+    this.name = 'IncompatibleDatabase';
+  }
+}
 
 export function schemaVersion(db: DatabaseSync): number {
   const hasMeta = db
@@ -177,41 +347,82 @@ export function schemaVersion(db: DatabaseSync): number {
   return row ? Number(row.value) : 0;
 }
 
-/** Apply pending migrations. Returns the versions applied, in order — empty when up to date. */
-export function migrate(db: DatabaseSync): number[] {
-  const applied: number[] = [];
-  let current = schemaVersion(db);
-  for (const m of MIGRATIONS) {
-    if (m.version <= current) continue;
-    db.exec('BEGIN');
-    try {
-      db.exec(m.sql);
-      db.prepare(
-        "INSERT INTO daylight_meta (key, value) VALUES ('schema_version', ?) " +
-          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-      ).run(String(m.version));
+const hasTables = (db: DatabaseSync): boolean =>
+  !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
+
+/**
+ * The version of an existing file, read without writing to it, or null when there is nothing
+ * there yet. A read-write open would already have changed the file (WAL switch, `-wal` and
+ * `-shm` beside it) before it could tell it was refusing, and even a read-only open of a WAL
+ * file leaves `-shm` and `-wal` behind. So a file with no `-wal` is read `immutable`, which
+ * creates nothing; one with a `-wal` is in use, its sidecars already exist, and only a normal
+ * read-only open sees the committed state in it.
+ */
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
+
+function existingVersion(file: string): number | 'not-sqlite' | null {
+  if (!fs.existsSync(file) || fs.statSync(file).size === 0) return null;
+  const head = Buffer.alloc(SQLITE_HEADER.length);
+  const fd = fs.openSync(file, 'r');
+  try {
+    fs.readSync(fd, head, 0, head.length, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (!head.equals(SQLITE_HEADER)) return 'not-sqlite';
+  let target: string | URL = file;
+  if (!fs.existsSync(`${file}-wal`)) {
+    target = pathToFileURL(file);
+    target.searchParams.set('immutable', '1');
+  }
+  const db = new DatabaseSync(target, { readOnly: true });
+  try {
+    return hasTables(db) ? schemaVersion(db) : null;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Create schema 2 on an empty database, or confirm it is there. Returns true when it created
+ * it. Anything else is refused: there is no older schema this knows how to read.
+ */
+export function ensureSchema(db: DatabaseSync, file = 'daylight.db'): boolean {
+  if (schemaVersion(db) === DAYLIGHT_DB_VERSION) return false;
+  // IMMEDIATE takes the write lock before looking, so two processes opening one fresh
+  // directory cannot both decide it is empty.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const found = schemaVersion(db);
+    if (found === DAYLIGHT_DB_VERSION) {
       db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
+      return false;
     }
-    current = m.version;
-    applied.push(m.version);
+    if (found !== 0 || hasTables(db)) throw new IncompatibleDatabase(file, found);
+    db.exec(SCHEMA);
+    db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('schema_version', ?)")
+      .run(String(DAYLIGHT_DB_VERSION));
+    db.exec('COMMIT');
+    return true;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
   }
-  if (current !== DAYLIGHT_SCHEMA_VERSION) {
-    throw new Error(
-      `daylight.db is at schema ${current}; this build writes schema ${DAYLIGHT_SCHEMA_VERSION}`,
-    );
-  }
-  return applied;
 }
 
 export function openDaylightDb(file: string): DatabaseSync {
+  const found = existingVersion(file);
+  if (found !== null && found !== DAYLIGHT_DB_VERSION) throw new IncompatibleDatabase(file, found);
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA busy_timeout = 10000');
-  db.exec('PRAGMA foreign_keys = ON');
-  migrate(db);
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 10000');
+    db.exec('PRAGMA foreign_keys = ON');
+    ensureSchema(db, file);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   return db;
 }
 

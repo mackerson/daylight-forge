@@ -9,10 +9,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
-import { migrate, openDaylightDb, schemaVersion } from '../mission/db.ts';
+import { ensureSchema, openDaylightDb, schemaVersion } from '../mission/db.ts';
 import { currentRevision, identifyProject, shortRevision } from '../mission/project.ts';
 import {
-  ATTEMPT_TRANSITIONS, canTransition, DAYLIGHT_SCHEMA_VERSION, MISSION_TRANSITIONS,
+  ATTEMPT_TRANSITIONS, canTransition, DAYLIGHT_DB_VERSION, ID_PREFIX, isEntityId, MISSION_TRANSITIONS,
+  WORK_ITEM_TRANSITIONS,
   TASK_TRANSITIONS,
 } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -20,13 +21,14 @@ import { harness } from './harness.ts';
 const { check, section, done } = harness();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-daylight-core-'));
 
-section('schema and migrations');
+section('schema');
 {
   const file = path.join(tmp, 'daylight.db');
   const db = openDaylightDb(file);
   check('a fresh database lands on the current schema',
-    schemaVersion(db) === DAYLIGHT_SCHEMA_VERSION, String(schemaVersion(db)));
-  check('re-running migrations is a no-op', migrate(db).length === 0);
+    schemaVersion(db) === DAYLIGHT_DB_VERSION, String(schemaVersion(db)));
+  check('the current schema is 2', DAYLIGHT_DB_VERSION === 2);
+  check('ensuring the schema again is a no-op', ensureSchema(db) === false);
   const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
     .map((r) => r.name);
   for (const t of ['projects', 'missions', 'tasks', 'attempts', 'experiments', 'decisions', 'artifacts', 'events']) {
@@ -34,7 +36,7 @@ section('schema and migrations');
   }
   db.close();
   const again = openDaylightDb(file);
-  check('reopening an existing file does not rerun migrations', schemaVersion(again) === DAYLIGHT_SCHEMA_VERSION);
+  check('reopening an existing file does not recreate the schema', schemaVersion(again) === DAYLIGHT_DB_VERSION);
   check('and the claim store is untouched — no claims table here', !tables.includes('claims'));
   again.close();
 }
@@ -50,6 +52,18 @@ section('state tables');
   check('a completed attempt cannot be reopened', ATTEMPT_TRANSITIONS.completed.length === 0);
   check('an unknown state has no transitions rather than throwing',
     !canTransition(MISSION_TRANSITIONS, 'nonsense' as never, 'ready'));
+  check('a work item leaves proposed only to approved, rejected or superseded',
+    WORK_ITEM_TRANSITIONS.proposed.join() === 'approved,rejected,superseded');
+  check('a rejected work item is terminal', WORK_ITEM_TRANSITIONS.rejected.length === 0);
+}
+
+section('id prefixes');
+{
+  const prefixes = Object.values(ID_PREFIX);
+  check('every entity kind has its own prefix', new Set(prefixes).size === prefixes.length);
+  check('the P0 prefixes are unchanged', ['m', 't', 'a', 'x', 'd', 'ev'].every((p) => prefixes.includes(p as never)));
+  check('isEntityId checks prefix and length', isEntityId('mission', `m_${'a'.repeat(32)}`)
+    && !isEntityId('mission', `t_${'a'.repeat(32)}`) && !isEntityId('mission', 'm_abc'));
 }
 
 section('project identity');
@@ -120,6 +134,55 @@ section('project identity');
   fs.writeFileSync(path.join(broken, '.git', 'index'), 'not an index');
   const unknown = currentRevision(broken);
   check('a status that fails labels the revision +unknown', unknown.label.endsWith('+unknown') && unknown.dirty, unknown.label);
+}
+
+section('project identity runs no repository code');
+{
+  // identifyProject and currentRevision are the first git calls on a directory Daylight was
+  // only told about. A repository can carry its own hooks, an fsmonitor command and filter
+  // drivers in .git/config; none of them may run on the host (R14 D-7).
+  const repo = path.join(tmp, 'hostile');
+  fs.mkdirSync(repo);
+  const marker = path.join(tmp, 'hostile-ran');
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x',
+  };
+  const run = (args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env }).trim();
+  run(['init', '-q']);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt filter=evil\n');
+  run(['add', '.']);
+  run(['commit', '-q', '-m', 'first']);
+  const first = run(['rev-parse', 'HEAD']);
+  const script = path.join(tmp, 'hostile.sh');
+  fs.writeFileSync(script, `#!/bin/sh\necho "$0 $*" >> ${marker}\ncat\n`, { mode: 0o755 });
+  for (const hook of ['post-index-change', 'post-checkout', 'reference-transaction']) {
+    fs.writeFileSync(path.join(repo, '.git', 'hooks', hook), `#!/bin/sh\necho ${hook} >> ${marker}\n`, { mode: 0o755 });
+  }
+  run(['config', 'core.fsmonitor', script]);
+  run(['config', 'filter.evil.clean', script]);
+  run(['config', 'filter.evil.smudge', script]);
+  // Racily clean: same size, new content, so status has to look at it through the filter.
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'two\n');
+  const plain = { id: identifyProject(repo), rev: currentRevision(repo) };
+  check('the hostile repo is still identified', plain.id.id === `git:${first.slice(0, 12)}` && plain.rev.commit === first);
+  check('and its tree is seen as changed', plain.rev.dirty);
+  check('no hook, fsmonitor or filter driver ran', !fs.existsSync(marker),
+    fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '');
+  const saved = process.env.GIT_DIR;
+  process.env.GIT_DIR = path.join(tmp, 'not-a-git-dir');
+  let id;
+  let rev;
+  try {
+    id = identifyProject(repo);
+    rev = currentRevision(repo);
+  } finally {
+    if (saved === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = saved;
+  }
+  check('an inherited GIT_DIR does not redirect identity', id.id === `git:${first.slice(0, 12)}`, id.id);
+  check('nor the revision', rev.commit === first, String(rev.commit));
 }
 
 section('artifacts');

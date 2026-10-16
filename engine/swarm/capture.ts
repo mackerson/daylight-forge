@@ -34,6 +34,7 @@ export interface AttemptFinisher {
       signal?: string | null;
       timedOut?: boolean;
       costUsd: number | null;
+      costSource?: 'provider' | 'stdout-scan' | 'none';
       failure?: string;
       artifacts?: ArtifactRef[];
     },
@@ -338,6 +339,7 @@ export async function captureRun(
     signal: result.signal,
     timedOut: result.timedOut,
     costUsd,
+    costSource,
     failure,
     artifacts: [promptRef, ...logs],
   });

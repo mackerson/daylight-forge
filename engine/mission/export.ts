@@ -7,10 +7,12 @@ import { inScope, missionClaims } from './disputes.ts';
 import type { DaylightContext } from './context.ts';
 import { mappedProject } from './context.ts';
 import { DAYLIGHT_DB, openDaylightDb } from './db.ts';
+import { attemptRefusal, decisionRefusal, grantsWrite } from './store.ts';
 import type {
-  ArtifactRef, Attempt, DaylightEvent, Decision, Experiment, Mission, ProjectIdentity, Task,
+  Application, ArtifactRef, Attempt, Candidate, DaylightEvent, Decision, Experiment, GateEvaluation,
+  IngestSource, Mission, ProjectIdentity, Task, UsageTurn, WorkItem,
 } from './types.ts';
-import { DAYLIGHT_SCHEMA_VERSION } from './types.ts';
+import { EXPORT_SCHEMA_VERSION } from './types.ts';
 
 /**
  * A mission, whole, as one file — and the same mission back again.
@@ -24,10 +26,12 @@ import { DAYLIGHT_SCHEMA_VERSION } from './types.ts';
  * The import writes rows directly rather than through `MissionStore`, which mints ids. The
  * schema it writes to is the one `db.ts` owns, and the test round-trips an exported mission
  * through `inspect` on both sides to hold the two in agreement.
+ *
+ * Format 2 carries the Forge rows. A format-1 file is refused, not upgraded (RULINGS R2).
  */
 
 export interface MissionExport {
-  schemaVersion: typeof DAYLIGHT_SCHEMA_VERSION;
+  schemaVersion: typeof EXPORT_SCHEMA_VERSION;
   kind: 'daylight-mission';
   exportedAt: number;
   project: ProjectIdentity;
@@ -37,6 +41,14 @@ export interface MissionExport {
   experiments: Experiment[];
   decisions: Decision[];
   events: DaylightEvent[];
+  /** The mission's own work item, and those proposed in it when it is a spec mission. */
+  workItems: WorkItem[];
+  candidates: Candidate[];
+  gateEvaluations: GateEvaluation[];
+  applications: Application[];
+  /** Every attempt's `attempt_usage` rows, by attempt then seq. */
+  usage: UsageTurn[];
+  ingestSources: IngestSource[];
   /**
    * Every claim in the mission's scope that the mission's comparison is drawn from — its
    * own reviewers' agent claims, and human and static ones (`missionClaims`). The disputes, the beliefs and the
@@ -59,22 +71,33 @@ function collectArtifactRefs(ctx: DaylightContext, parts: Omit<MissionExport, 'a
     const r = ctx.store.artifact(id);
     if (r) refs.set(id, r);
   };
+  const addExecution = (r: ArtifactRef) => {
+    add(r);
+    if (!ctx.artifacts.has(r)) return;
+    try {
+      const rec = JSON.parse(ctx.artifacts.text(r)) as ExecutionRecord;
+      add(rec.stdoutRef);
+      add(rec.stderrRef);
+    } catch {
+      // A result that is not JSON is still exported as bytes; it just names no logs.
+    }
+  };
   for (const a of parts.attempts) a.artifacts.forEach(add);
   for (const x of parts.experiments) {
     add(x.testArtifact);
     add(x.expectedArtifact);
-    for (const r of x.executions) {
-      add(r);
-      if (!ctx.artifacts.has(r)) continue;
-      try {
-        const rec = JSON.parse(ctx.artifacts.text(r)) as ExecutionRecord;
-        add(rec.stdoutRef);
-        add(rec.stderrRef);
-      } catch {
-        // A result that is not JSON is still exported as bytes; it just names no logs.
-      }
-    }
+    x.executions.forEach(addExecution);
   }
+  for (const w of parts.workItems) {
+    add(w.specArtifact);
+    add(w.proposalArtifact);
+  }
+  for (const c of parts.candidates) {
+    add(c.diffArtifact);
+    add(c.summaryArtifact);
+    add(c.narrativeArtifact);
+  }
+  for (const g of parts.gateEvaluations) g.executions.forEach(addExecution);
   for (const d of parts.decisions) d.artifactIds.forEach(addId);
   for (const e of parts.events) (e.artifactIds ?? []).forEach(addId);
   return refs;
@@ -86,13 +109,21 @@ export function exportMission(ctx: DaylightContext, missionId: string): MissionE
   const project = ctx.store.project(mission.projectId);
   if (!project) throw new Error(`mission ${missionId} names project ${mission.projectId}, which is not recorded`);
   const tasks = ctx.store.tasks(missionId);
+  const attempts = tasks.flatMap((t) => ctx.store.attempts(t.id));
+  const workItems = ctx.store.workItems(mission.projectId).filter((w) => w.missionId === missionId || w.id === mission.workItemId);
   const parts = {
     mission,
     tasks,
-    attempts: tasks.flatMap((t) => ctx.store.attempts(t.id)),
+    attempts,
     experiments: ctx.store.experiments(missionId),
     decisions: ctx.store.decisions(missionId),
     events: ctx.events.forMission(missionId),
+    workItems,
+    candidates: ctx.store.candidates(missionId),
+    gateEvaluations: ctx.store.gateEvaluations({ missionId }),
+    applications: ctx.store.applications(missionId),
+    usage: attempts.flatMap((a) => ctx.store.usageRows(a.id)),
+    ingestSources: ctx.store.ingestSources(mission.projectId, { missionId }),
   };
   const claims: Claim[] = [];
   const seen = new Set<string>();
@@ -113,7 +144,7 @@ export function exportMission(ctx: DaylightContext, missionId: string): MissionE
       : { ref, encoding: 'base64', content: bytes.toString('base64') };
   }
   return {
-    schemaVersion: DAYLIGHT_SCHEMA_VERSION,
+    schemaVersion: EXPORT_SCHEMA_VERSION,
     kind: 'daylight-mission',
     exportedAt: Date.now(),
     project,
@@ -130,21 +161,37 @@ export function writeExport(ctx: DaylightContext, missionId: string, file: strin
   return out;
 }
 
+const V2_LISTS = [
+  'tasks', 'attempts', 'experiments', 'decisions', 'events', 'claims', 'workItems', 'candidates',
+  'gateEvaluations', 'applications', 'usage', 'ingestSources',
+] as const;
+
 export function readExport(file: string): MissionExport {
-  const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<MissionExport>;
-  if (parsed.kind !== 'daylight-mission' || parsed.schemaVersion !== DAYLIGHT_SCHEMA_VERSION) {
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<MissionExport> & { schemaVersion?: unknown };
+  if (parsed.kind === 'daylight-mission' && parsed.schemaVersion !== EXPORT_SCHEMA_VERSION) {
     throw new Error(
-      `${file} is not a Daylight mission export at schema ${DAYLIGHT_SCHEMA_VERSION}` +
-        (parsed.kind ? ` (got ${parsed.kind} v${String(parsed.schemaVersion)})` : ''),
+      `${file} is a format ${String(parsed.schemaVersion)} Daylight mission export; this build reads format ` +
+        `${EXPORT_SCHEMA_VERSION} only and never upgrades. Delete it and re-run the mission.`,
     );
   }
+  if (parsed.kind !== 'daylight-mission') {
+    throw new Error(`${file} is not a Daylight mission export${parsed.kind ? ` (got ${String(parsed.kind)})` : ''}`);
+  }
   if (!parsed.mission || !parsed.project) throw new Error(`${file} has no mission in it`);
+  for (const k of V2_LISTS) {
+    if (!Array.isArray(parsed[k])) throw new Error(`${file} is missing ${k}; not a complete format ${EXPORT_SCHEMA_VERSION} export`);
+  }
+  if (!parsed.artifacts || typeof parsed.artifacts !== 'object') throw new Error(`${file} carries no artifacts table`);
   return parsed as MissionExport;
 }
 
 export interface ImportResult {
   mission: Mission;
-  added: { tasks: number; attempts: number; experiments: number; decisions: number; events: number; artifacts: number; claims: number };
+  added: {
+    tasks: number; attempts: number; experiments: number; decisions: number; events: number; artifacts: number;
+    claims: number; workItems: number; candidates: number; gateEvaluations: number; applications: number;
+    usage: number; ingestSources: number;
+  };
   skipped: { events: number; artifacts: number; claims: number };
   /** Rows the file gives an id that is already here with different content. Kept as here. */
   conflicts: string[];
@@ -197,10 +244,51 @@ function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
   for (const x of file.experiments) differs('experiment', x.id, ctx.store.experiment(x.id), x);
   const decisionsHere = new Map(ctx.store.decisions(file.mission.id).map((d) => [d.id, d]));
   for (const d of file.decisions) differs('decision', d.id, decisionsHere.get(d.id), d);
+  for (const w of file.workItems) differs('work item', w.id, ctx.store.workItem(w.id), w);
+  for (const c of file.candidates) differs('candidate', c.id, ctx.store.candidate(c.id), c);
+  const gatesHere = new Map(ctx.store.gateEvaluations({ missionId: file.mission.id }).map((g) => [g.id, g]));
+  for (const g of file.gateEvaluations) differs('gate evaluation', g.id, gatesHere.get(g.id), g);
+  for (const p of file.applications) differs('application', p.id, ctx.store.application(p.candidateId), p);
+  for (const u of file.usage) {
+    differs('usage', `${u.attemptId}#${u.seq}`, ctx.store.usageRows(u.attemptId).find((h) => h.seq === u.seq), u);
+  }
+  for (const s of file.ingestSources) {
+    differs('ingest source', `${s.sessionId}/${s.agentId}`, ctx.store.ingestSource(s.sessionId, s.agentId), s);
+  }
   // Artifacts are not compared: an artifact row is one per digest and keeps whichever label
   // first wrote those bytes (an empty stderr is the same artifact in every run), so the file's
   // ref legitimately differs from the row here. The bytes are verified against the digest.
   return out;
+}
+
+/**
+ * The first row in the file that the store would never have written, or null.
+ *
+ * Import writes rows directly, so the rules `startAttempt` and `recordDecision` enforce (R7: no
+ * write without a human authorize decision of the mission; R12: ingested attempts only on work
+ * missions, with no sandbox record) are asked again here, of the whole file, before anything
+ * is written. A grant may be in the file or already in this directory.
+ */
+function forgedRowRefusal(ctx: DaylightContext, file: MissionExport): string | null {
+  const m = file.mission;
+  const inFile = new Map(file.decisions.map((d) => [d.id, d]));
+  for (const d of file.decisions) {
+    if (d.missionId !== m.id) return `decision ${d.id} belongs to ${d.missionId}, not mission ${m.id}`;
+    const why = decisionRefusal(d);
+    if (why) return why;
+  }
+  if (m.permissions.write) {
+    const granted = m.kind === 'implement' && [...inFile.values(), ...ctx.store.decisions(m.id)].some((d) => grantsWrite(d, m.id));
+    if (!granted) return `mission ${m.id} holds write without a human authorize-mission decision granting it`;
+  }
+  for (const a of file.attempts) {
+    if (a.missionId !== m.id) return `attempt ${a.id} belongs to ${a.missionId}, not mission ${m.id}`;
+    const grantId = a.sandbox?.authorizeDecisionId;
+    const grant = grantId ? inFile.get(grantId) ?? ctx.store.decision(grantId) : null;
+    const why = attemptRefusal(a, m, grant);
+    if (why) return why;
+  }
+  return null;
 }
 
 /** The same assertion, by the same source, at the same time: already here. */
@@ -234,6 +322,8 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
       throw new Error(`artifact ${id} in the export carries a ref that does not name it; refusing to file it under the wrong record`);
     }
   }
+  const forged = forgedRowRefusal(ctx, file);
+  if (forged) throw new Error(`refusing the import: ${forged}`);
   // Claims already here, by the id the file gives them; the rest are numbered as they land.
   const claimIds = new Map<number, number>();
   for (const c of file.claims ?? []) {
@@ -248,7 +338,10 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     );
   }
 
-  const added = { tasks: 0, attempts: 0, experiments: 0, decisions: 0, events: 0, artifacts: 0, claims: 0 };
+  const added = {
+    tasks: 0, attempts: 0, experiments: 0, decisions: 0, events: 0, artifacts: 0, claims: 0,
+    workItems: 0, candidates: 0, gateEvaluations: 0, applications: 0, usage: 0, ingestSources: 0,
+  };
   const skipped = { events: 0, artifacts: 0, claims: 0 };
 
   // Claims go through the store's own boundary, evidence rules and all, with their original
@@ -283,24 +376,45 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
   // Rows go in with the file's ids. Same schema as the store writes; INSERT OR IGNORE makes a
   // second import of the same file a no-op row by row.
   const db = openDaylightDb(path.join(ctx.out, DAYLIGHT_DB));
+  const json = (v: unknown) => (v === undefined ? null : JSON.stringify(v));
   try {
     db.exec('BEGIN');
+    // Rows reference each other (attempt → its authorize decision, child → parent attempt,
+    // gate → its lock); checking at COMMIT lets them land in any order and still be whole.
+    db.exec('PRAGMA defer_foreign_keys = ON');
     // The project's identity travels; where it is checked out does not. The exporter's root
     // is a path on their machine, and `experiment run` defaults to the recorded root — so a
     // root already known here is kept, and a new one is this directory's map when it has one.
     if (!ctx.store.project(file.project.id)) {
       ctx.store.ensureProject(here && here.id === file.project.id ? { ...file.project, root: here.root } : file.project);
     }
+    const workItem = db.prepare(
+      `INSERT OR IGNORE INTO work_items
+       (id, project_id, mission_id, attempt_id, proposal_artifact, content_digest, spec_artifact,
+        spec_revision, anchor, title, statement, examples, negative_examples, status, proposed_by,
+        decision_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const w of file.workItems) {
+      const r = workItem.run(
+        w.id, w.projectId, w.missionId, w.attemptId ?? null, json(w.proposalArtifact), w.contentDigest,
+        JSON.stringify(w.specArtifact), w.specRevision, w.anchor, w.title, w.statement,
+        JSON.stringify(w.examples), JSON.stringify(w.negativeExamples), w.status, w.proposedBy,
+        w.decisionId ?? null, w.createdAt, w.updatedAt,
+      );
+      added.workItems += Number(r.changes);
+    }
     const m = file.mission;
     db.prepare(
       `INSERT OR IGNORE INTO missions
        (id, project_id, parent_id, kind, objective, base_revision, scope, permissions, budget,
-        requirement_ids, acceptance_gate_ids, state, outcome, outcome_reason, created_at, updated_at, closed_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        requirement_ids, acceptance_gate_ids, work_item_id, state, outcome, outcome_reason, created_at,
+        updated_at, closed_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       m.id, m.projectId, m.parentId ?? null, m.kind, m.objective, m.baseRevision,
       JSON.stringify(m.scope), JSON.stringify(m.permissions), JSON.stringify(m.budget),
-      JSON.stringify(m.requirementIds), JSON.stringify(m.acceptanceGateIds), m.state,
+      JSON.stringify(m.requirementIds), JSON.stringify(m.acceptanceGateIds), m.workItemId ?? null, m.state,
       m.outcome ?? null, m.outcomeReason ?? null, m.createdAt, m.updatedAt, m.closedAt ?? null,
     );
     const task = db.prepare(
@@ -319,14 +433,23 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     const attempt = db.prepare(
       `INSERT OR IGNORE INTO attempts
        (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state, started_at,
-        finished_at, cost_usd, exit_code, signal, timed_out, failure, artifacts)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        finished_at, cost_usd, exit_code, signal, timed_out, failure, artifacts, input_tokens,
+        output_tokens, cache_read_tokens, cache_write_tokens, usage_source, cost_source, model,
+        parent_attempt_id, gate_set_digest, pid, heartbeat_at, origin, sandbox_profile, sandbox_network,
+        sandbox_write, sandbox_exec, authorize_decision_id, credential, mcp_token_digest)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const a of file.attempts) {
       const r = attempt.run(
         a.id, a.missionId, a.taskId, a.projectId, a.runnerId, a.sessionId ?? null, a.worktree ?? null,
         a.state, a.startedAt, a.finishedAt ?? null, a.costUsd, a.exitCode ?? null, a.signal ?? null,
         a.timedOut ? 1 : 0, a.failure ?? null, JSON.stringify(a.artifacts),
+        a.tokens.input, a.tokens.output, a.tokens.cacheRead, a.tokens.cacheWrite, a.usageSource,
+        a.costSource, a.model ?? null, a.parentAttemptId ?? null, a.gateSetDigest ?? null,
+        a.pid ?? null, a.heartbeatAt ?? null, a.origin, a.sandbox?.profile ?? null, a.sandbox?.network ?? null,
+        a.sandbox ? (a.sandbox.write ? 1 : 0) : null, a.sandbox ? (a.sandbox.exec ? 1 : 0) : null,
+        a.sandbox?.authorizeDecisionId ?? null,
+        json(a.credential), a.mcpTokenDigest ?? null,
       );
       added.attempts += Number(r.changes);
     }
@@ -334,15 +457,16 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
       `INSERT OR IGNORE INTO experiments
        (id, mission_id, project_id, claim_ids, subject, predicate, hypothesis, prediction, base_revision,
         test_artifact, expected_artifact, harness_digest, command, sandbox_profile, executions, conclusion,
-        limitations, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        limitations, role, locked_by, started_at, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const x of local.experiments) {
       const r = experiment.run(
         x.id, x.missionId, x.projectId, JSON.stringify(x.claimIds), x.subject, x.predicate, x.hypothesis,
         JSON.stringify(x.prediction), x.baseRevision, JSON.stringify(x.testArtifact),
         JSON.stringify(x.expectedArtifact), x.harnessDigest, JSON.stringify(x.command), x.sandboxProfile,
-        JSON.stringify(x.executions), x.conclusion, JSON.stringify(x.limitations), x.createdAt, x.updatedAt,
+        JSON.stringify(x.executions), x.conclusion, JSON.stringify(x.limitations), x.role,
+        x.lockedBy ?? null, x.startedAt ?? null, x.createdAt, x.updatedAt,
       );
       added.experiments += Number(r.changes);
     }
@@ -358,6 +482,73 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
         JSON.stringify(d.artifactIds), d.at,
       );
       added.decisions += Number(r.changes);
+    }
+    const usage = db.prepare(
+      `INSERT OR IGNORE INTO attempt_usage
+       (attempt_id, project_id, seq, request_id, at, model, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens, cost_usd, cost_source, source)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const u of file.usage) {
+      const r = usage.run(
+        u.attemptId, u.projectId, u.seq, u.requestId, u.at, u.model, u.tokens.input, u.tokens.output,
+        u.tokens.cacheRead, u.tokens.cacheWrite, u.costUsd, u.costSource, u.source,
+      );
+      added.usage += Number(r.changes);
+    }
+    const candidate = db.prepare(
+      `INSERT OR IGNORE INTO candidates
+       (id, mission_id, attempt_id, project_id, base_commit, diff_artifact, summary_artifact,
+        narrative_artifact, files, policy_violations, secret_hits, gate_set_digest, profile,
+        attempt_state, attempt_failure, verdict, verdict_reasons, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const c of file.candidates) {
+      const r = candidate.run(
+        c.id, c.missionId, c.attemptId, c.projectId, c.baseCommit, JSON.stringify(c.diffArtifact),
+        JSON.stringify(c.summaryArtifact), json(c.narrativeArtifact), JSON.stringify(c.files),
+        JSON.stringify(c.policyViolations), c.secretHits, c.gateSetDigest, JSON.stringify(c.profile),
+        c.attemptState, c.attemptFailure ?? null, c.verdict, JSON.stringify(c.verdictReasons), c.createdAt,
+      );
+      added.candidates += Number(r.changes);
+    }
+    const gate = db.prepare(
+      `INSERT OR IGNORE INTO gate_evaluations
+       (id, mission_id, project_id, revision, experiment_id, candidate_id, target, diff_digest,
+        harness_digest, executions, conclusion, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const g of file.gateEvaluations) {
+      const r = gate.run(
+        g.id, g.missionId, g.projectId, g.revision, g.experimentId, g.candidateId ?? null, g.target,
+        g.diffDigest, g.harnessDigest, JSON.stringify(g.executions), g.conclusion, g.createdAt,
+      );
+      added.gateEvaluations += Number(r.changes);
+    }
+    const application = db.prepare(
+      `INSERT OR IGNORE INTO applications
+       (id, candidate_id, mission_id, decision_id, project_id, base_commit, commit_sha, ref, applied_by, at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const p of file.applications) {
+      const r = application.run(
+        p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.ref,
+        p.appliedBy, p.at,
+      );
+      added.applications += Number(r.changes);
+    }
+    const ingest = db.prepare(
+      `INSERT OR IGNORE INTO ingest_sources
+       (session_id, agent_id, project_id, path_digest, prefix_digest, bytes_seen, lines_seen, mission_id,
+        attempt_id, ingested_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const s of file.ingestSources) {
+      const r = ingest.run(
+        s.sessionId, s.agentId, s.projectId, s.pathDigest, s.prefixDigest, s.bytesSeen, s.linesSeen,
+        s.missionId, s.attemptId, s.ingestedAt,
+      );
+      added.ingestSources += Number(r.changes);
     }
     db.exec('COMMIT');
   } catch (err) {
