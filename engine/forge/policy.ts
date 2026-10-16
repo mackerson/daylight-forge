@@ -68,7 +68,8 @@ export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): Po
   const modes = [file.mode, file.previousMode];
   if (modes.includes('symlink')) rules.push('symlink');
   if (modes.includes('gitlink')) rules.push('gitlink');
-  if (file.mode === 'executable' && file.change !== 'deleted') rules.push('exec-mode');
+  // Becoming executable is refused; editing a script that already was one is not (ADR-21).
+  if (file.mode === 'executable' && file.change !== 'deleted' && file.previousMode !== 'executable') rules.push('exec-mode');
   return rules;
 }
 

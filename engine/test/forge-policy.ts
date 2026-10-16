@@ -50,6 +50,9 @@ const ROWS: Array<[string, Partial<CandidateFile>, PolicyRule[]]> = [
   ['src/was-link', { mode: 'file', previousMode: 'symlink' }, ['symlink']],
   ['vendor/sub', { mode: 'gitlink' }, ['gitlink']],
   ['src/run.sh', { mode: 'executable' }, ['exec-mode']],
+  ['src/new.sh', { mode: 'executable', change: 'added', previousMode: undefined }, ['exec-mode']],
+  ['src/tool.sh', { mode: 'executable', previousMode: 'executable' }, []],
+  ['src/was-exec.sh', { mode: 'file', previousMode: 'executable' }, []],
   ['src/gone.sh', { mode: 'executable', change: 'deleted' }, []],
   ['lib/outside.ts', {}, ['outside-scope']],
 ];
