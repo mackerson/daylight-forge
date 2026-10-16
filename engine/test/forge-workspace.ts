@@ -138,6 +138,16 @@ const artifacts = new ArtifactStore(path.join(tmp, 'out'));
   check('and reproduces the author\'s file', fs.readFileSync(path.join(fresh.tree, 'src', 'add.js'), 'utf8').includes('b + a'));
   const re = captureCandidate(fresh);
   check('and the same digest', 'diffDigest' in re && re.diffDigest === d.diffDigest);
+  const elsewhere = fs.mkdtempSync(path.join(tmp, 'cwd-'));
+  const cwd = process.cwd();
+  process.chdir(elsewhere);
+  const third = createWorkspace(repo, base);
+  const fromElsewhere = applyDiff(third, d.diff, d.diffDigest);
+  process.chdir(cwd);
+  check('applying from another cwd writes into the workspace, never the cwd',
+    'ok' in fromElsewhere && fs.readdirSync(elsewhere).length === 0 && fs.existsSync(path.join(third.tree, 'src', 'new.js')),
+    fs.readdirSync(elsewhere).join(','));
+  third.dispose();
   const wrong = applyDiff(createWorkspace(repo, base), d.diff, `sha256:${'0'.repeat(64)}`);
   check('a diff whose bytes are not the digest is invalid', 'invalid' in wrong);
   fresh.dispose();
