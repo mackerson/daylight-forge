@@ -17,6 +17,7 @@ import {
   vetPath, vetTool,
 } from '../ingest/claude-code.ts';
 import { readNewLines } from '../ingest/cursor.ts';
+import { runIngestCommand } from '../ingest/commands.ts';
 import { openDaylight } from '../mission/context.ts';
 import { redact } from '../mission/redact.ts';
 import { isEntityId } from '../mission/types.ts';
@@ -89,6 +90,24 @@ function rowCounts(): Record<string, number> {
     return Object.fromEntries(TABLES.map((t) => [t, (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n]));
   } finally {
     db.close();
+  }
+}
+
+function capture(fn: () => number): { code: number; stdout: string; stderr: string } {
+  const w = process.stdout.write.bind(process.stdout);
+  const e = process.stderr.write.bind(process.stderr);
+  const original = console.error;
+  let stdout = '';
+  let stderr = '';
+  process.stdout.write = ((s: string) => { stdout += s; return true; }) as typeof process.stdout.write;
+  process.stderr.write = ((s: string) => { stderr += s; return true; }) as typeof process.stderr.write;
+  console.error = (...a: unknown[]) => { stderr += `${a.join(' ')}\n`; };
+  try {
+    return { code: fn(), stdout, stderr };
+  } finally {
+    process.stdout.write = w;
+    process.stderr.write = e;
+    console.error = original;
   }
 }
 
@@ -280,6 +299,39 @@ section('a symlinked transcript is refused');
   const r5 = ingestAll();
   check('it is counted, and nothing is ingested from it', r5.skipped.refusedFiles === 1 && JSON.stringify(before) === JSON.stringify(rowCounts()));
   fs.rmSync(link);
+}
+
+// ---------------------------------------------------------------------------------
+section('the command, through its module');
+{
+  const run = (args: string[]) => capture(() => runIngestCommand(args, { projectsDir }));
+  const before = rowCounts();
+  const refused = run(['claude-code', '--out', out, '--session', FOREIGN_SESSION]);
+  check('--session on another project\'s session is refused with exit 2', refused.code === 2 && refused.stderr.includes('another project'), refused.stderr);
+  const gone = run(['claude-code', '--out', out, '--session', GONE_SESSION]);
+  check('--session on a session whose cwd is gone is refused with exit 2', gone.code === 2);
+  check('a refused session leaves no row', JSON.stringify(before) === JSON.stringify(rowCounts()));
+  check('a malformed session id is a usage error', run(['claude-code', '--out', out, '--session', '../../etc']).code === 2);
+  check('--session and --all together are a usage error', run(['claude-code', '--out', out, '--session', MAIN, '--all']).code === 2);
+  check('neither is a usage error', run(['claude-code', '--out', out]).code === 2);
+  check('an unknown session is an error, not a guess', run(['claude-code', '--out', out, '--session', '55555555-5555-4555-8555-555555555555']).code === 1);
+  const ok = run(['claude-code', '--out', out, '--session', MAIN, '--format', 'json']);
+  const parsed = JSON.parse(ok.stdout) as { sessions: { seen: number } };
+  check('--session on this project\'s session runs', ok.code === 0 && parsed.sessions.seen === 1);
+  const noMap = path.join(tmp, 'empty-out');
+  check('an out with no map is an error', run(['claude-code', '--out', noMap, '--all']).code === 1);
+
+  const list = run(['list', '--out', out, '--format', 'json']);
+  const listing = JSON.parse(list.stdout) as { sources: Array<{ agentId: string; pathDigest: string }>; skipped: { foreign: number } | null; controls: string };
+  check('ingest list prints every cursor', list.code === 0 && listing.sources.length === 3);
+  check('ingest list carries the last run\'s skip counts', listing.skipped?.foreign === 1);
+  check('ingest list names no transcript path', !list.stdout.includes(projectsDir) && listing.sources.every((s) => /^[0-9a-f]{64}$/.test(s.pathDigest)));
+  check('ingest list says where the work happened', listing.controls === OUTSIDE_CONTROLS);
+  const fresh = path.join(tmp, 'fresh-out');
+  fs.mkdirSync(fresh);
+  fs.writeFileSync(path.join(fresh, 'view.json'), JSON.stringify({ root: repo.root }));
+  const empty = JSON.parse(run(['list', '--out', fresh, '--format', 'json']).stdout) as { skipped: unknown; sources: unknown[] };
+  check('with no run yet, skipped is null rather than zero', empty.skipped === null && empty.sources.length === 0);
 }
 
 done();
