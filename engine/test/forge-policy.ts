@@ -6,7 +6,8 @@
  * refusals are listed one by one.
  */
 import {
-  assertHumanDecision, checkPolicy, confirmCodeOf, DecisionRefused, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations,
+  assertHumanDecision, checkPolicy, confirmCodeOf, DecisionRefused, guardCheck, MAX_DIFF_BYTES, MAX_DIFF_FILES,
+  pathViolations,
 } from '../forge/policy.ts';
 import { digestOf } from '../mission/artifacts.ts';
 import type { CandidateFile, PolicyRule } from '../mission/types.ts';
@@ -100,6 +101,13 @@ section('the human decision guard');
   const wrong = refused({}, 'human:miz', '00000000');
   check('a wrong confirm is refused', !!wrong);
   check('and the refusal does not print the right code', !!wrong && !wrong.message.includes(code));
+  check('guardCheck says nothing for a decision that would pass', guardCheck({}, 'human:miz', code, digest) === null);
+  check('guardCheck returns the reason instead of throwing', /CLAUDECODE/.test(guardCheck({ CLAUDECODE: '1' }, 'human:miz', code, digest) ?? ''));
+  check('guardCheck and the assert agree on every refusal', [
+    [{ DAYLIGHT_SESSION: 's' }, 'human:miz', code], [{}, 'agent:x:y', code], [{}, 'human:miz', 'ffffffff'], [{}, 'human:miz', undefined],
+  ].every(([env, actor, c]) => guardCheck(env as Record<string, string>, actor as string, c as string | undefined, digest)
+    === refused(env as Record<string, string>, actor as string, c as string | undefined)?.message));
+  check('guardCheck on a non-digest returns a reason', guardCheck({}, 'human:miz', 'x', 'nope') !== null);
   check('a non-digest is refused', (() => {
     try {
       assertHumanDecision({}, 'human:miz', 'abcd1234', 'not-a-digest');

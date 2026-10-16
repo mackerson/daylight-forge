@@ -17,6 +17,7 @@ import { openDaylight } from '../mission/context.ts';
 import { IncompatibleDatabase, openDaylightDb, schemaVersion } from '../mission/db.ts';
 import { EventLog } from '../mission/events.ts';
 import { exportMission, importMission, readExport } from '../mission/export.ts';
+import { confirmDigest } from '../forge/confirm.ts';
 import { gateSetDigestOf, MissionStore, newId, workItemContentDigest } from '../mission/store.ts';
 import type { ArtifactRef, CandidateFile, Mission, ProjectIdentity } from '../mission/types.ts';
 import {
@@ -318,8 +319,8 @@ let authorId: string;
   });
   authorId = a.id;
   const back = store.attempt(a.id)!;
-  check('write, exec, network and profile are stamped on the attempt row', back.sandbox.write && !back.sandbox.exec
-    && back.sandbox.network === 'none' && back.sandbox.profile === 'author' && back.sandbox.authorizeDecisionId === decision.id);
+  check('write, exec, network and profile are stamped on the attempt row', back.sandbox!.write && !back.sandbox!.exec
+    && back.sandbox!.network === 'none' && back.sandbox!.profile === 'author' && back.sandbox!.authorizeDecisionId === decision.id);
   check('a credential is recorded by name and label only', back.credential?.envName === 'ANTHROPIC_API_KEY' && back.credential.label === 'forge-capped-1');
   check('a credential label shaped like a value is refused', !!throws(() => store.startAttempt({
     taskId: store.createTask({ missionId: mission.id, role: 'author', objective: 'x' }).id, runnerId: 'agent:mock:a',
@@ -334,7 +335,7 @@ let authorId: string;
   check('a default attempt is read-only, unsandboxed, shared network', (() => {
     const r = store.createTask({ missionId: review.id, role: 'review', objective: 'r' });
     const s = store.startAttempt({ taskId: r.id, runnerId: 'agent:mock:r' }).sandbox;
-    return !s.write && !s.exec && s.network === 'shared' && s.profile === 'none' && s.authorizeDecisionId === null;
+    return !s!.write && !s!.exec && s!.network === 'shared' && s!.profile === 'none' && s!.authorizeDecisionId === null;
   })());
 
   check('no attempt holds write without its grant', store.unauthorizedWriteAttempts().length === 0);
@@ -481,16 +482,63 @@ section('experiment reaper');
   check('another project is never reaped', store.reapPendingExperiments({ projectId: OTHER.id, startedBefore: 1e15 }).length === 0);
 }
 
-section('ingest sources');
+section('ingested attempts and ingest sources');
 {
   const work = store.createMission({ projectId: PROJECT.id, kind: 'work', objective: 'sessions', baseRevision: 'b' });
   const task = store.createTask({ missionId: work.id, role: 'session', objective: 's' });
-  const a = store.startAttempt({ taskId: task.id, runnerId: 'agent:claude:sonnet' });
-  const src = { sessionId: 'sess-1', projectId: PROJECT.id, pathDigest: digestOf('/p'), bytesSeen: 10, linesSeen: 2, missionId: work.id, attemptId: a.id, ingestedAt: 1 };
+  const a = store.startAttempt({ taskId: task.id, runnerId: 'ingest:claude-code', origin: 'ingested', at: 500 });
+  check('an ingested attempt has no sandbox record', a.origin === 'ingested' && a.sandbox === null
+    && store.attempt(a.id)!.sandbox === null && store.attempt(a.id)!.origin === 'ingested');
+  check('and keeps the time it actually started', store.attempt(a.id)!.startedAt === 500);
+  check('an ingested attempt with a sandbox record is refused', !!throws(() => store.startAttempt({
+    taskId: store.createTask({ missionId: work.id, role: 'session', objective: 's2' }).id, runnerId: 'ingest:claude-code',
+    origin: 'ingested', sandbox: { write: false },
+  })));
+  check('an ingested attempt outside a work mission is refused', !!throws(() => store.startAttempt({
+    taskId: store.createTask({ missionId: spec.id, role: 'decompose', objective: 'i' }).id, runnerId: 'ingest:claude-code', origin: 'ingested',
+  })));
+  check('the write invariant does not count ingested attempts', store.unauthorizedWriteAttempts().length === 0);
+  const raw = new DatabaseSync(path.join(out, 'daylight.db'));
+  check('the database refuses a sandbox record on an ingested attempt', !!throws(() =>
+    raw.prepare("UPDATE attempts SET sandbox_profile='author', sandbox_network='none', sandbox_write=0, sandbox_exec=0 WHERE id=?").run(a.id)));
+  check('and a daylight attempt without one', !!throws(() =>
+    raw.prepare('UPDATE attempts SET sandbox_profile=NULL, sandbox_network=NULL, sandbox_write=NULL, sandbox_exec=NULL WHERE id=?').run(authorId)));
+  raw.close();
+  const ended = store.finishAttempt(a.id, { state: 'completed', costUsd: null, at: 900 });
+  check('finishAttempt keeps an explicit end time', ended.finishedAt === 900);
+
+  const sub = store.startAttempt({
+    taskId: store.createTask({ missionId: work.id, role: 'session', objective: 'sub' }).id, runnerId: 'ingest:claude-code',
+    origin: 'ingested', parentAttemptId: a.id,
+  });
+  const src = {
+    sessionId: 'sess-1', agentId: '', projectId: PROJECT.id, pathDigest: digestOf('/p'), prefixDigest: digestOf('first ten'),
+    bytesSeen: 10, linesSeen: 2, missionId: work.id, attemptId: a.id, ingestedAt: 1,
+  };
   store.recordIngestSource(src);
   store.recordIngestSource({ ...src, linesSeen: 5 });
-  check('an ingest source upserts its progress', store.ingestSource('sess-1')?.linesSeen === 5 && store.ingestSources(work.id).length === 1);
+  store.recordIngestSource({ ...src, agentId: 'agent-7', attemptId: sub.id, linesSeen: 1 });
+  check('an ingest source upserts its progress', store.ingestSource('sess-1')?.linesSeen === 5);
+  check('a subagent shares the session id under its own key', store.ingestSource('sess-1', 'agent-7')?.attemptId === sub.id
+    && store.ingestSources(PROJECT.id, { missionId: work.id }).length === 2);
+  check('ingest sources list by project', store.ingestSources(PROJECT.id).length === 2 && store.ingestSources(OTHER.id).length === 0);
   check('a session already ingested into another project is refused', !!throws(() => store.recordIngestSource({ ...src, projectId: OTHER.id })));
+  check('a Daylight-run attempt cannot be an ingest source', !!throws(() => store.recordIngestSource({ ...src, attemptId: authorId, missionId: mission.id })));
+  check('content-derived event ids are event ids', isEntityId('event', `ev_cc_${'a'.repeat(64)}`)
+    && isEntityId('event', `ev_mcp_${'b'.repeat(32)}`) && isEntityId('event', `ev_${'c'.repeat(32)}`) && !isEntityId('event', 'ev_cc_xyz'));
+}
+
+section('a supplied event id is appended once');
+{
+  const dir = path.join(tmp, 'events-dupe');
+  fs.mkdirSync(dir);
+  const log = new EventLog(dir);
+  const id = `ev_cc_${'d'.repeat(64)}`;
+  const first = log.append({ projectId: PROJECT.id, category: 'cost', name: 'cost.usage', payload: { n: 1 } }, id);
+  const second = log.append({ projectId: PROJECT.id, category: 'cost', name: 'cost.usage', payload: { n: 2 } }, id);
+  check('a second append under the same id is ignored, not an error', log.forMission('x').length === 0 && log.head() === 1);
+  check('and returns the event already there', second.sequence === first.sequence && second.payload.n === 1);
+  log.close();
 }
 
 section('finishAttempt records usage and cost source');
@@ -510,6 +558,21 @@ section('finishAttempt records usage and cost source');
     store.finishAttempt(store.startAttempt({ taskId: store.createTask({ missionId: spec.id, role: 'decompose', objective: 'z' }).id, runnerId: 'r' }).id,
       { state: 'failed', costUsd: 0.1, costSource: 'none' })));
   check('projectAttempts is scoped to one project', store.projectAttempts(PROJECT.id).length > 0 && store.projectAttempts(OTHER.id).length === 0);
+}
+section('confirm digests');
+{
+  const ctx = { store };
+  const lockDigest = store.lockDecision(mission.id)!.scope.gateSetDigest;
+  const lock = confirmDigest(ctx, 'lock-gates', mission.id);
+  check('lock-gates confirms the gate-set digest the lock records', lock.digest === lockDigest && lock.digest8 === lock.digest.slice(7, 15));
+  check('and lists each gate', lock.lines.length === 3);
+  check('a candidate act confirms the diff digest', confirmDigest(ctx, 'approve-candidate', candidateId).digest
+    === store.candidate(candidateId)!.diffArtifact.digest && confirmDigest(ctx, 'apply', candidateId).digest8.length === 8);
+  check('a work-item act confirms the content digest', confirmDigest(ctx, 'approve-work-item', w.id).digest === w.contentDigest);
+  const auth = confirmDigest(ctx, 'authorize-mission', mission.id);
+  check('authorize confirms a stable digest of the mission', auth.digest === confirmDigest(ctx, 'authorize-mission', mission.id).digest
+    && auth.digest !== confirmDigest(ctx, 'authorize-mission', spec.id).digest);
+  check('an unknown subject is refused', !!throws(() => confirmDigest(ctx, 'lock-gates', 'm_nope')));
 }
 store.close();
 
@@ -532,7 +595,7 @@ section('export format 2 round-trips the Forge rows');
   check('import adds every Forge row', result.added.workItems === 1 && result.added.candidates === 1
     && result.added.gateEvaluations === 2 && result.added.applications === 1 && result.added.usage === 2);
   const a = dst.store.attempt(authorId)!;
-  check('the attempt keeps its sandbox stamp and grant', a.sandbox.write && a.sandbox.authorizeDecisionId === file.attempts.find((x) => x.id === authorId)!.sandbox.authorizeDecisionId);
+  check('the attempt keeps its sandbox stamp and grant', a.sandbox!.write && a.sandbox!.authorizeDecisionId === file.attempts.find((x) => x.id === authorId)!.sandbox!.authorizeDecisionId);
   check('the imported rows equal the exported ones', JSON.stringify(dst.store.candidate(candidateId)) === JSON.stringify(file.candidates[0])
     && JSON.stringify(dst.store.usageRows(authorId)) === JSON.stringify(file.usage));
   check('the write invariant holds after import', dst.store.unauthorizedWriteAttempts().length === 0);
