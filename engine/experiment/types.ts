@@ -1,4 +1,4 @@
-import type { ArtifactRef, ExpectedObservation } from '../mission/types.ts';
+import type { ArtifactRef, ExpectedObservation, GateTarget } from '../mission/types.ts';
 
 /**
  * Experiment-runner shapes, free of any runtime import.
@@ -55,4 +55,12 @@ export interface ExecutionRecord {
   harnessDigest: string;
   startedAt: number;
   finishedAt: number;
+  /** A gate run's subject: the base, or one candidate's diff by digest. Absent on a P0 probe run. */
+  target?: ExecutionTarget;
+}
+
+export interface ExecutionTarget {
+  kind: GateTarget;
+  /** `sha256:<hex>` of the applied diff; null on the base. */
+  diffDigest: string | null;
 }
