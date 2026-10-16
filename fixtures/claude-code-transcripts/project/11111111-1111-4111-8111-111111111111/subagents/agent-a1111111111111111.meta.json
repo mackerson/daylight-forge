@@ -1,0 +1,1 @@
+{"x-synthetic-fixture":"Hand-written synthetic subagent meta for engine/test/ingest.ts. Its model differs from the one on its lines, which must win (R12.4).","agentType":"general-purpose","description":"SENTINEL-TRANSCRIPT-TEXT-9F3K","toolUseId":"toolu_fixture_spawn_1","spawnDepth":1,"model":"claude-fixture-meta-a1"}

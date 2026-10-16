@@ -1141,6 +1141,33 @@ export class MissionStore {
     return { input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite') };
   }
 
+  /**
+   * Set an attempt's token totals to the sum of its `attempt_usage` rows, in one transaction.
+   * For an attempt that gains turns after it finished — an ingested transcript that grew — whose
+   * totals `finishAttempt` can no longer write. An attempt with no rows is left as it is.
+   */
+  refreshUsageTotals(attemptId: string): Attempt {
+    this.requireAttempt(attemptId);
+    this.db.exec('BEGIN');
+    try {
+      const rows = this.usageRows(attemptId);
+      if (rows.length) {
+        this.db
+          .prepare(
+            `UPDATE attempts SET input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_write_tokens=?,
+               usage_source=CASE WHEN usage_source='none' THEN ? ELSE usage_source END
+             WHERE id=?`,
+          )
+          .run(...tokenColumns(this.usageTotals(attemptId)), rows[0].source, attemptId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return this.requireAttempt(attemptId);
+  }
+
   /** Every attempt of a project, oldest first: the ledger's one join (Ledger L11). */
   projectAttempts(projectId: string, opts: { since?: number } = {}): Attempt[] {
     return this.db
