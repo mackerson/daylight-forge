@@ -21,6 +21,8 @@ import {
 import { createWorkspace } from '../forge/workspace.ts';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type { Attempt, AttemptSandbox } from '../mission/types.ts';
+import type { Graph } from '../graph/types.ts';
+import { evaluate, type Invariant } from '../invariants/engine.ts';
 import { createServer, listenAttemptSocket } from '../mcp/server.ts';
 import { MissionStore } from '../mission/store.ts';
 import type { ProjectIdentity } from '../mission/types.ts';
@@ -251,6 +253,20 @@ section('real providers stay unavailable for implement');
   check('claude is unavailable, and says why', c.status === 'unavailable' && /R4 Q5/.test(c.why));
   check('so are the others', ['codex', 'grok', 'opencode'].every((t) => authorFor(t).status === 'unavailable'));
   check('mock without DAYLIGHT_MOCK_ADAPTER is unavailable', authorFor('mock', {}).status === 'unavailable');
+}
+
+section('the R7 invariant: one place emits a read-write mount');
+{
+  const invariants = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'daylight.invariants.json'), 'utf8')) as Invariant[];
+  const inv = invariants.find((i) => i.id === 'forge-rw-bind-needs-authorization');
+  check('it is registered beside the P0 invariants', !!inv);
+  const graphWith = (files: string[]) => ({ nodes: [], edges: [], calls: [], literals: files.map((file) => ({ value: '--bind', file, line: 1, callee: 'push' })) }) as unknown as Graph;
+  if (inv) {
+    check('green with the bind in forge/sandbox.ts alone', evaluate(graphWith(['engine/forge/sandbox.ts']), inv).status === 'green');
+    check('red when a second engine file emits --bind', evaluate(graphWith(['engine/forge/sandbox.ts', 'engine/swarm/adapters.ts']), inv).status === 'red');
+    check('red when no file does (the guard cannot vanish quietly)', evaluate(graphWith([]), inv).status === 'red');
+    check('tests asserting on the flag do not count', evaluate(graphWith(['engine/forge/sandbox.ts', 'engine/test/forge-sandbox.ts']), inv).status === 'green');
+  }
 }
 
 section('the system mounts are P0\'s');

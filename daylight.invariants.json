@@ -136,5 +136,19 @@
       "callee": "assertHumanDecision",
       "min": 2
     }
+  },
+  {
+    "id": "forge-rw-bind-needs-authorization",
+    "prose": "A sandbox gets a read-write mount only from engine/forge/sandbox.ts, where the author profile refuses it without the authorize decision that granted the attempt write, and the exec sandbox refuses it unless the attempt row holds exec over that grant.",
+    "rationale": "R7: write is a mode, granted only by a human authorize-mission decision and stamped on the attempt. A second place that emits bwrap's --bind would be a write path that never asks; the store refuses the row (unauthorizedWriteAttempts), this keeps the mount honest to it. The graph sees call arguments, so a --bind spelled inside an array literal is not caught here; engine/test/forge-sandbox.ts asserts the mount lists themselves.",
+    "predicate": {
+      "type": "literal-fanin",
+      "value": "--bind",
+      "within": {
+        "file": "^engine/(?!test/)"
+      },
+      "maxFiles": 1,
+      "minSites": 1
+    }
   }
 ]
