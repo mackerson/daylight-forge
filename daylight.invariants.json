@@ -85,5 +85,17 @@
         "name": "(^|[^A-Za-z])[vV][dD][sS]([^a-z]|$)|[a-z]V[dD][sS]([^a-z]|$)|visual-[d]esloppify"
       }
     }
+  },
+  {
+    "id": "ingest-stores-only-vetted-facts",
+    "prose": "Stored transcript-derived strings are only relative paths, model names, tool names, provider ids and repo-verified shas. The ingester writes nothing to disk itself: every fact goes through the mission store, the event log or the artifact store, after assertVetted has checked each string in it.",
+    "rationale": "A transcript is prompts, model prose, file contents and tool output that may hold a secret (PLAN resolution 8). This is the graph half: no file write from engine/ingest/ that could go around the vetting. The runtime half is assertVetted at every write, and engine/test/ingest.ts scans all of <out> for a planted sentinel and a planted key.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^engine/ingest/"
+      },
+      "callee": "(^|\\.)(writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|writeSync|copyFileSync|renameSync|symlinkSync)$"
+    }
   }
 ]
