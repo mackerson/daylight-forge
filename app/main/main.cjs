@@ -811,9 +811,9 @@ ipcMain.handle('daylight:query', () =>
 /**
  * What agent CLIs are on this machine, and what each can actually do.
  *
- * Cached, because answering it spawns every installed binary to ask what models it has.
- * `refresh` is there for after a `grok login` or an install, which is the only time the
- * answer changes while the app is open.
+ * Opening the launcher runs no provider CLI: the plain listing only looks on PATH. Asking
+ * each installed binary what models it has means executing it, so that happens only on
+ * `refresh` — the launcher's "refresh models", pressed by a person. Cached either way.
  */
 let adapterCache = null;
 ipcMain.handle('daylight:adapters', (_e, { refresh } = {}) => {
@@ -821,7 +821,7 @@ ipcMain.handle('daylight:adapters', (_e, { refresh } = {}) => {
   return new Promise((resolve) => {
     execFile(
       NODE.bin,
-      nodeArgs(['adapters', '--probe', '--out', state.dir, '--format', 'json']),
+      nodeArgs(['adapters', ...(refresh ? ['--probe'] : []), '--out', state.dir, '--format', 'json']),
       { cwd: ROOT, env: nodeEnv(), timeout: 60_000 },
       (err, stdout) => {
         if (err) return resolve({ error: err.message, adapters: [] });
