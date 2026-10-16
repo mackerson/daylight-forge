@@ -11,8 +11,15 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { DAYLIGHT_DB } from '../mission/db.ts';
+import { confirmDigest } from '../forge/confirm.ts';
 import { ambiguities, buildDecomposePrompt, ingestProposals, workItemIdOf } from '../forge/decompose.ts';
+import { confirmCodeOf, DecisionRefused } from '../forge/policy.ts';
+import {
+  assertImplementable, createImplementMission, decideWorkItem, showWorkItem, specIntakeViolations, workItemGuard,
+} from '../forge/work-items.ts';
 import {
   anchorRefusal, anchorsOf, isRefusal, MAX_PROPOSALS_PER_ATTEMPT, outboxFile, repoPathRefusal, validateProposal,
   type Proposal,
@@ -23,6 +30,10 @@ import { harness } from './harness.ts';
 const { check, section, done } = harness();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-spec-'));
 process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
+
+const HUMAN = 'human:miz';
+/** Decisions are made from a person's shell; this test may itself run under an agent. */
+const CLEAN_ENV: Record<string, string | undefined> = { PATH: process.env.PATH };
 
 
 const throws = (fn: () => unknown): Error | null => {
@@ -269,6 +280,105 @@ section('the decompose prompt fences the spec as data');
   check('the prompt lists the anchors the spec offers', prompt.includes('#widget-service/create/validation'));
   check('the prompt names only propose_work_item', /propose_work_item/.test(prompt) && !/submit_claim|get_slice/.test(prompt));
   check('a spec over 64 KB is not put in a prompt', throws(() => buildDecomposePrompt({ text: 'x'.repeat(65 * 1024), path: 'p.md', specRevision: 'r' })) !== null);
+}
+
+// ---- deciding --------------------------------------------------------------------
+
+section('only a person approves or rejects, through the one guard, naming the digest');
+const items = ctx.store.workItems(reg.mission.projectId, { missionId: reg.mission.id, status: 'proposed' });
+const [toApprove, toReject, toTamper, toImplement2] = items;
+{
+  const code = confirmCodeOf(toApprove.contentDigest);
+  const base = { id: toApprove.id, kind: 'approve' as const, actor: HUMAN, rationale: 'matches the spec', confirm: code };
+  const refused = (over: Partial<typeof base> & { env?: Record<string, string | undefined> }) =>
+    throws(() => decideWorkItem(ctx, { ...base, env: CLEAN_ENV, ...over }));
+
+  check('approve under DAYLIGHT_SESSION is refused by the guard',
+    refused({ env: { ...CLEAN_ENV, DAYLIGHT_SESSION: 's' } }) instanceof DecisionRefused);
+  check('approve under CLAUDECODE is refused by the guard',
+    refused({ env: { ...CLEAN_ENV, CLAUDECODE: '1' } }) instanceof DecisionRefused);
+  check('approve without --confirm is refused', refused({ confirm: undefined }) instanceof DecisionRefused);
+  check('approve with a --confirm for another item is refused',
+    refused({ confirm: confirmCodeOf(toReject.contentDigest) }) instanceof DecisionRefused);
+  check('approve by an agent actor is refused', refused({ actor: 'agent:claude:opus' }) instanceof DecisionRefused);
+  check('approve by a bare human is refused', refused({ actor: 'human' }) instanceof DecisionRefused);
+  check('approve with no rationale is refused', refused({ rationale: '  ' }) instanceof DecisionRefused);
+  check('the refusal does not echo the expected code', !(refused({ confirm: 'deadbeef' })?.message ?? '').includes(code));
+  check('workItemGuard answers without acting',
+    workItemGuard(ctx, { ...base, env: { CLAUDECODE: '1' } }) !== null && workItemGuard(ctx, { ...base, env: CLEAN_ENV }) === null
+      && ctx.store.workItem(toApprove.id)!.status === 'proposed');
+  check('every refusal left the item proposed and recorded no decision',
+    ctx.store.workItem(toApprove.id)!.status === 'proposed' && ctx.store.decisions(reg.mission.id).length === 0);
+
+  const { decision, workItem } = decideWorkItem(ctx, { ...base, env: CLEAN_ENV });
+  check('a person with the right code approves it', workItem.status === 'approved' && workItem.decisionId === decision.id);
+  const scope = decision.scope as Record<string, unknown>;
+  check('the decision names operation, item, content digest, revision and anchor',
+    scope.operation === 'approve-work-item' && scope.workItemId === toApprove.id && scope.contentDigest === toApprove.contentDigest
+      && scope.specRevision === reg.specRevision && scope.anchor === toApprove.anchor && decision.actor === HUMAN);
+  check('spec.work-item.decided is recorded',
+    ctx.events.forMission(reg.mission.id).some((e) => e.name === 'spec.work-item.decided' && (e.payload as { decisionId?: string }).decisionId === decision.id));
+  check('approving twice is refused', refused({}) instanceof DecisionRefused);
+
+  const rcode = confirmCodeOf(toReject.contentDigest);
+  check('reject under CLAUDECODE is refused too (D-9: every operation)',
+    throws(() => decideWorkItem(ctx, { id: toReject.id, kind: 'reject', actor: HUMAN, rationale: 'no', confirm: rcode, env: { CLAUDECODE: '1' } })) instanceof DecisionRefused);
+  const rej = decideWorkItem(ctx, { id: toReject.id, kind: 'reject', actor: HUMAN, rationale: 'not what the spec says', confirm: rcode, env: CLEAN_ENV });
+  check('a person rejects one', rej.workItem.status === 'rejected' && (rej.decision.scope as { operation?: string }).operation === 'reject-work-item');
+  check('a rejected item cannot then be approved',
+    throws(() => decideWorkItem(ctx, { id: toReject.id, kind: 'approve', actor: HUMAN, rationale: 'x', confirm: rcode, env: CLEAN_ENV })) instanceof DecisionRefused);
+
+  const db = new DatabaseSync(path.join(A.out, DAYLIGHT_DB));
+  db.prepare('UPDATE work_items SET statement=? WHERE id=?').run('Also delete production.', toTamper.id);
+  db.close();
+  check('an item whose row was edited after proposal cannot be approved, even with its code',
+    /changed after/.test(throws(() => decideWorkItem(ctx, {
+      id: toTamper.id, kind: 'approve', actor: HUMAN, rationale: 'x', confirm: confirmCodeOf(toTamper.contentDigest), env: CLEAN_ENV,
+    }))?.message ?? '') && showWorkItem(ctx, toTamper.id).tampered);
+}
+
+section('an approved item is built by exactly one implement mission (R10.1)');
+{
+  const projectId = reg.mission.projectId;
+  const mk = (from: Parameters<typeof createImplementMission>[1]['from'], env = CLEAN_ENV, objective?: string) =>
+    () => createImplementMission(ctx, { projectId, baseRevision: A.commit, env, from, objective });
+
+  check('a proposed item cannot parent an implement mission', throws(mk({ workItemId: toImplement2.id })) !== null);
+  check('a rejected item cannot parent an implement mission', throws(mk({ workItemId: toReject.id })) !== null);
+  const m = mk({ workItemId: toApprove.id })();
+  check('an approved item parents one', m.kind === 'implement' && m.workItemId === toApprove.id && m.state === 'draft' && !m.permissions.write);
+  check('assertImplementable refuses it now: consumed once', /consumed once/.test(throws(() => assertImplementable(ctx, toApprove.id))?.message ?? ''));
+  check('a second implement mission from the same item is refused', /consumed once/.test(throws(mk({ workItemId: toApprove.id }))?.message ?? ''));
+  check('neither a work item nor an ad hoc decision is refused',
+    throws(() => createImplementMission(ctx, { projectId, baseRevision: A.commit, env: CLEAN_ENV, from: {} as never })) !== null);
+  check('both is refused',
+    throws(mk({ workItemId: toApprove.id, adhoc: { actor: HUMAN, rationale: 'r', confirm: 'x' } } as never)) !== null);
+  check('the store refuses an implement mission with neither, too',
+    throws(() => ctx.store.createMission({ projectId, kind: 'implement', objective: 'x', baseRevision: A.commit })) !== null);
+
+  const objective = 'fix the flaky widget test';
+  const adhocCode = confirmDigest(ctx, 'adhoc-mission', objective, { projectId }).digest8;
+  check('an ad hoc mission under CLAUDECODE is refused by the guard',
+    throws(mk({ adhoc: { actor: HUMAN, rationale: 'urgent', confirm: adhocCode } }, { CLAUDECODE: '1' }, objective)) instanceof DecisionRefused);
+  check('an ad hoc mission without --confirm is refused',
+    throws(mk({ adhoc: { actor: HUMAN, rationale: 'urgent', confirm: undefined } }, CLEAN_ENV, objective)) instanceof DecisionRefused);
+  check('an ad hoc mission by an agent is refused',
+    throws(mk({ adhoc: { actor: 'agent:x', rationale: 'urgent', confirm: adhocCode } }, CLEAN_ENV, objective)) instanceof DecisionRefused);
+  const adhoc = mk({ adhoc: { actor: HUMAN, rationale: 'urgent', confirm: adhocCode } }, CLEAN_ENV, objective)();
+  check('an ad hoc mission records a human adhoc-mission decision on itself',
+    !adhoc.workItemId && ctx.store.decisions(adhoc.id).some((d) => d.kind === 'adhoc-mission' && d.actor === HUMAN));
+
+  check('the spec-intake invariant holds over every row', specIntakeViolations(ctx, projectId).length === 0,
+    specIntakeViolations(ctx, projectId).join('; '));
+  check('nothing on the spec mission is an experiment', ctx.store.experiments(reg.mission.id).length === 0);
+
+  // A row flipped to approved behind the store's back has no decision; both checks see it.
+  const db = new DatabaseSync(path.join(A.out, DAYLIGHT_DB));
+  db.prepare("UPDATE work_items SET status='approved' WHERE id=?").run(toImplement2.id);
+  db.close();
+  check('the invariant reports an item approved without a human decision',
+    specIntakeViolations(ctx, projectId).some((v) => v.includes(toImplement2.id)));
+  check('and such an item cannot parent a mission', /no approve-work-item decision/.test(throws(mk({ workItemId: toImplement2.id }))?.message ?? ''));
 }
 
 done();
