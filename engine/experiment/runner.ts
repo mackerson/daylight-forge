@@ -45,6 +45,8 @@ export interface ExperimentStoreLike {
     id: string,
     patch: { executions?: ArtifactRef[]; conclusion?: ExperimentConclusion; limitations?: string[] },
   ): Experiment;
+  /** When present, lets the sweep conclude what a dead runner left pending. */
+  experiment?(id: string): Experiment | null;
 }
 
 export interface EventSink {
@@ -365,7 +367,73 @@ function sameFile(file: string, bytes: Buffer): boolean {
   }
 }
 
+const SCRATCH_PREFIX = 'daylight-experiment-';
+const OWNER_FILE = 'owner.json';
+
+interface ScratchOwner { pid: number; experimentId: string; repoRoot: string; startedAt: number }
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Clean up after runners that died without reaching their `finally` — SIGKILL, OOM, power.
+ *
+ * Each run leaves `owner.json` in its scratch directory. One whose process is gone is taken
+ * apart: its worktree removed and pruned from the repository it named, the directory deleted,
+ * and the experiment it was running, if it is in this store and still pending, concluded
+ * `invalid`. Only directories this uid created with mode 0700 are considered; anything else
+ * in a shared /tmp is not ours to delete.
+ */
+export function sweepAbandoned(
+  ctx: { store: ExperimentStoreLike; events?: EventSink }, tmp: string = os.tmpdir(),
+): number {
+  let swept = 0;
+  const uid = process.getuid?.();
+  for (const name of fs.readdirSync(tmp).filter((n) => n.startsWith(SCRATCH_PREFIX))) {
+    const dir = path.join(tmp, name);
+    let owner: ScratchOwner;
+    try {
+      const st = fs.lstatSync(dir);
+      if (!st.isDirectory() || st.uid !== uid || (st.mode & 0o077) !== 0) continue;
+      owner = JSON.parse(fs.readFileSync(path.join(dir, OWNER_FILE), 'utf8')) as ScratchOwner;
+    } catch {
+      continue;
+    }
+    if (!Number.isInteger(owner.pid) || owner.pid <= 0 || processAlive(owner.pid)) continue;
+    try {
+      git(owner.repoRoot, ['worktree', 'remove', '--force', path.join(dir, 'work')]);
+    } catch {
+      // Already removed, or the repository is gone; the directory still goes.
+    }
+    try {
+      git(owner.repoRoot, ['worktree', 'prune']);
+    } catch {
+      // As above.
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    swept++;
+
+    const x = ctx.store.experiment?.(owner.experimentId);
+    if (x && x.conclusion === 'pending') {
+      const why = `runner died: process ${owner.pid} exited before concluding the experiment`;
+      ctx.store.updateExperiment(x.id, { conclusion: 'invalid', limitations: [...x.limitations, why] });
+      ctx.events?.append({
+        projectId: x.projectId, missionId: x.missionId, category: 'experiment', name: 'experiment.concluded',
+        payload: { experimentId: x.id, conclusion: 'invalid', runs: 0, why },
+      });
+    }
+  }
+  return swept;
+}
+
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
+  sweepAbandoned(ctx);
   const now = ctx.now ?? (() => Date.now());
   const runs = Math.max(1, ctx.runs ?? 2);
   const timeoutMs = ctx.timeoutMs ?? 60_000;
@@ -438,8 +506,10 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
     return finish();
   }
 
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), SCRATCH_PREFIX));
   const worktree = path.join(base, 'work');
+  const owner: ScratchOwner = { pid: process.pid, experimentId: experiment.id, repoRoot: ctx.repoRoot, startedAt };
+  fs.writeFileSync(path.join(base, OWNER_FILE), JSON.stringify(owner));
   try {
     try {
       git(ctx.repoRoot, ['worktree', 'add', '--detach', worktree, rev.commit]);

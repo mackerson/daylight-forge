@@ -9,7 +9,7 @@
  * The sandbox cases run the real `bwrap` on this machine. Where it is not installed they are
  * skipped and said to be; the fail-closed cases run everywhere.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -524,6 +524,50 @@ if (!live.available) {
     check('without a sandbox every experiment concludes invalid with a denied record', allInvalid);
     check('and none of them created a worktree', worktreeCount() === before);
   }
+}
+
+section('a runner that was killed is cleaned up after by the next one');
+{
+  // SIGKILL skips every finally: the worktree, git's bookkeeping for it and a pending row
+  // are what a dead runner leaves. The next run sweeps what a dead process owned.
+  class LookupStore extends StubStore {
+    experiment(id: string) { return this.rows.get(id) ?? null; }
+    // Ids distinct from the main stub's, so event lookups by id cannot match the wrong row.
+    override createExperiment(input: Parameters<StubStore['createExperiment']>[0]): Experiment {
+      const e = super.createExperiment(input);
+      this.rows.delete(e.id);
+      const renamed = { ...e, id: `x_sweep_${e.id}` };
+      this.rows.set(renamed.id, renamed);
+      return renamed;
+    }
+  }
+  const lookup = new LookupStore();
+  const inLookup = (testPath: string) => registerExperiment({
+    store: lookup, artifacts, events: sink, missionId: 'm_test', projectId: 'git:fixture', baseRevision: commit,
+    subject: 'src/add.js', predicate: 'bug_verdict', claimIds: [], hypothesis: 'h',
+    prediction: { exitCode: 0 }, testSource: 'process.exit(0);\n', testPath, command: ['node', testPath],
+  });
+  const orphan = inLookup('test/orphan.js');
+  const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+  git(['worktree', 'add', '-q', '--detach', path.join(stale, 'work'), commit]);
+  fs.writeFileSync(path.join(stale, 'owner.json'), JSON.stringify({ pid: dead, experimentId: orphan.id, repoRoot: repo, startedAt: 1 }));
+  check('the planted worktree is registered', worktreeCount() === 2);
+
+  const e = inLookup('test/next.js');
+  await runExperiment(e, { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
+  check('the dead runner\'s directory is gone', !fs.existsSync(stale));
+  check('and so is its worktree', worktreeCount() === 1, String(worktreeCount()));
+  const row = lookup.rows.get(orphan.id);
+  check('its pending experiment is concluded invalid', row?.conclusion === 'invalid', row?.conclusion);
+  check('saying the runner died', row?.limitations.some((l) => l.includes('runner died')) === true);
+  check('with a concluded event', named('experiment.concluded', orphan.id).length === 1);
+
+  const live = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+  fs.writeFileSync(path.join(live, 'owner.json'), JSON.stringify({ pid: process.pid, experimentId: 'x_live', repoRoot: repo, startedAt: 1 }));
+  await runExperiment(e, { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
+  check('a directory owned by a live process is left alone', fs.existsSync(live));
+  fs.rmSync(live, { recursive: true, force: true });
 }
 
 section('nothing is left behind');
