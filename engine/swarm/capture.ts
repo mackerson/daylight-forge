@@ -229,7 +229,9 @@ export async function captureRun(
 
   const onLine = (line: string) => {
     for (const ev of normalize(provider, line)) {
-      if (ev.name === 'cost.reported') {
+      // The provider's figure arrives as `provider.cost`; the attempt's own `cost.reported` is
+      // appended once, below, so a reader summing that name counts each attempt once.
+      if (ev.name === 'provider.cost') {
         const c = ev.payload.costUsd;
         if (typeof c === 'number') reportedCost = c;
         const t = ev.payload.turns;
@@ -239,10 +241,6 @@ export async function captureRun(
       events.append({
         ...base,
         ...ev,
-        // The attempt's own `cost.reported` is appended once, below. The provider's figure is
-        // kept beside it under another name, so a reader summing cost.reported over the log
-        // counts each attempt once rather than twice.
-        name: ev.name === 'cost.reported' ? 'provider.cost' : ev.name,
         payload: Object.fromEntries(
           Object.entries(ev.payload).map(([k, v]) => [k, typeof v === 'string' ? scrub(v) : v]),
         ),

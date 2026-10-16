@@ -462,7 +462,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       if (!line.trim()) return;
       if (structured) {
         for (const ev of normalize(provider, line)) {
-          if (ev.name !== 'cost.reported') continue;
+          if (ev.name !== 'provider.cost') continue;
           if (typeof ev.payload.costUsd === 'number') fromProvider.cost = ev.payload.costUsd;
           if (typeof ev.payload.turns === 'number') fromProvider.turns = ev.payload.turns;
         }

@@ -45,30 +45,51 @@ const num = (v: unknown): number | null =>
 /**
  * Token usage, one event shape whatever the provider called its fields. A field the
  * provider did not report is null, never 0 — the same rule as cost.
+ *
+ * `scope` says what the counts cover. A `turn` is one provider request: claude names it by
+ * `message.id` and repeats that id on every line of a message split across lines; codex gives
+ * a turn no id, so the accumulator numbers them. A `summary` is the provider's own end-of-run
+ * total: a cross-check on the turns, never added to them.
  */
 function usageEvent(
-  usage: unknown, fields: { input: string; output: string; cacheRead: string; cacheWrite?: string },
+  usage: unknown,
+  fields: { input: string; output: string; cacheRead: string; cacheWrite?: string },
+  meta: { scope: 'turn' | 'summary'; requestId: string | null; model: string | null; costUsd?: number | null },
 ): NormalizedEvent[] {
-  if (!usage || typeof usage !== 'object') return [];
-  const u = usage as Record<string, unknown>;
+  const hasUsage = !!usage && typeof usage === 'object' && !Array.isArray(usage);
+  const costUsd = meta.costUsd ?? null;
+  if (!hasUsage && costUsd === null) return [];
+  const u = (hasUsage ? usage : {}) as Record<string, unknown>;
   return [{
     category: 'cost',
     name: 'cost.usage',
     payload: {
+      scope: meta.scope,
+      requestId: meta.requestId,
+      model: meta.model,
       inputTokens: num(u[fields.input]),
       outputTokens: num(u[fields.output]),
       cacheReadTokens: num(u[fields.cacheRead]),
       cacheWriteTokens: fields.cacheWrite ? num(u[fields.cacheWrite]) : null,
+      costUsd,
     },
   }];
 }
+
+const CLAUDE_USAGE = {
+  input: 'input_tokens', output: 'output_tokens',
+  cacheRead: 'cache_read_input_tokens', cacheWrite: 'cache_creation_input_tokens',
+};
+const CODEX_USAGE = { input: 'input_tokens', output: 'output_tokens', cacheRead: 'cached_input_tokens' };
+
+const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
 function claude(msg: Record<string, unknown>): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
   const type = msg.type;
 
   if (type === 'assistant') {
-    const message = msg.message as { content?: unknown } | undefined;
+    const message = msg.message as { content?: unknown; id?: unknown; model?: unknown; usage?: unknown } | undefined;
     const content = Array.isArray(message?.content) ? message!.content : [];
     let thinking = 0;
     for (const block of content as Array<Record<string, unknown>>) {
@@ -90,15 +111,24 @@ function claude(msg: Record<string, unknown>): NormalizedEvent[] {
     if (thinking) {
       out.push({ category: 'process', name: 'process.thinking', payload: { blocks: thinking } });
     }
+    // Unverified against a live stream: that stream-json repeats `message.usage` on assistant
+    // lines is what the API's message shape implies, not something a captured run has shown.
+    if (message?.usage) {
+      out.push(...usageEvent(message.usage, CLAUDE_USAGE, {
+        scope: 'turn', requestId: str(message.id), model: str(message.model),
+      }));
+    }
     return out;
   }
 
   if (type === 'result') {
     const costUsd = num(msg.total_cost_usd);
     const turns = num(msg.num_turns);
+    // `provider.cost`, not `cost.reported`: the attempt's one `cost.reported` is the capture's
+    // summary, so a reader summing that name over the log counts each attempt once.
     out.push({
       category: 'cost',
-      name: 'cost.reported',
+      name: 'provider.cost',
       payload: { costUsd, turns, known: costUsd !== null },
     });
     out.push({
@@ -111,10 +141,7 @@ function claude(msg: Record<string, unknown>): NormalizedEvent[] {
         turns,
       },
     });
-    out.push(...usageEvent(msg.usage, {
-      input: 'input_tokens', output: 'output_tokens',
-      cacheRead: 'cache_read_input_tokens', cacheWrite: 'cache_creation_input_tokens',
-    }));
+    out.push(...usageEvent(msg.usage, CLAUDE_USAGE, { scope: 'summary', requestId: 'result', model: null, costUsd }));
     return out;
   }
 
@@ -124,7 +151,7 @@ function claude(msg: Record<string, unknown>): NormalizedEvent[] {
 /**
  * codex `exec --json` emits one JSON object per line with a `type` (and sometimes an
  * `item`); only the shapes seen in captured runs are recognised. Cost never appears — codex
- * reports tokens and no price — so no `cost.reported` is ever produced here, and the
+ * reports tokens and no price — so no `provider.cost` is ever produced here, and the
  * caller's `null` stands.
  */
 function codex(msg: Record<string, unknown>): NormalizedEvent[] {
@@ -162,7 +189,10 @@ function codex(msg: Record<string, unknown>): NormalizedEvent[] {
         inputTokens: num(usage.input_tokens),
         outputTokens: num(usage.output_tokens),
       },
-    }, ...usageEvent(msg.usage, { input: 'input_tokens', output: 'output_tokens', cacheRead: 'cached_input_tokens' })];
+    }, ...usageEvent(msg.usage, CODEX_USAGE, type === 'turn.completed'
+      ? { scope: 'turn', requestId: null, model: null }
+      // Unverified that codex emits this with usage at all; it is a cross-check either way.
+      : { scope: 'summary', requestId: 'thread', model: null })];
   }
 
   if (type === 'error' || type === 'turn.failed') {
