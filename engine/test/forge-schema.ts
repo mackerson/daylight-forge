@@ -243,6 +243,16 @@ section('decisions name a human');
       scope: { operation: 'lock-gates' }, artifactIds: [],
     })));
   }
+  for (const kind of ['adhoc-mission', 'override'] as const) {
+    check(`an ${kind} decision with no operation, by an agent, is refused`, !!throws(() => store.recordDecision({
+      missionId: spec.id, projectId: PROJECT.id, revision: 'b', actor: 'agent:claude:opus', kind, rationale: 'r',
+      scope: {}, artifactIds: [],
+    })));
+  }
+  check('an adhoc-mission decision must say it is one', !!throws(() => store.recordDecision({
+    missionId: spec.id, projectId: PROJECT.id, revision: 'b', actor: HUMAN, kind: 'adhoc-mission', rationale: 'r',
+    scope: {}, artifactIds: [],
+  })));
   check('an unknown operation is refused', !!throws(() => store.recordDecision({
     missionId: spec.id, projectId: PROJECT.id, revision: 'b', actor: HUMAN, kind: 'approve', rationale: 'r',
     scope: { operation: 'deploy-everything' }, artifactIds: [],

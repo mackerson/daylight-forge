@@ -68,6 +68,13 @@ export function grantsWrite(d: Decision | null | undefined, missionId: string): 
  */
 export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'scope'>): string | null {
   const operation = d.scope.operation;
+  if (d.kind === 'adhoc-mission' && operation !== 'adhoc-mission') {
+    return `decision ${d.id} is an adhoc-mission decision without the adhoc-mission operation`;
+  }
+  // Overriding gates is a Forge act whatever its scope says, so it names a person too.
+  if (d.kind === 'override' && !isHumanActor(d.actor)) {
+    return `override decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
+  }
   if (operation === undefined) return null;
   if (!DECISION_OPERATIONS.includes(operation as DecisionOperation)) {
     return `decision ${d.id} names unknown operation ${String(operation)}`;
