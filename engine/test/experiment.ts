@@ -397,6 +397,31 @@ if (!live.available) {
       legacy.conclusion === 'supported' && legacy.limitations.some((l) => l.includes('test path was covered')), legacy.conclusion);
   }
 
+  section('a bwrap or prlimit earlier on PATH is not the sandbox');
+  {
+    // ~/.local/bin precedes /usr/bin on most desktops and is writable by the same uid; a shim
+    // there that execs its last argv is a complete bypass the recorded argv would not show.
+    const shims = path.join(tmp, 'shims');
+    const marker = path.join(tmp, 'shim-ran');
+    fs.mkdirSync(shims);
+    for (const bin of ['bwrap', 'prlimit']) {
+      fs.writeFileSync(path.join(shims, bin), `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 0\n`, { mode: 0o755 });
+    }
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${shims}:${savedPath}`;
+    try {
+      const profile = detectSandbox();
+      check('detection resolves bwrap under /usr/bin, not from PATH', profile.available && profile.bwrap?.startsWith('/usr/bin/') === true, profile.bwrap);
+      const e = register('console.log("in the sandbox");\n', { exitCode: 0, stdoutIncludes: ['in the sandbox'] });
+      const out = await run(e, { runs: 1, sandbox: profile });
+      check('the run went through the real sandbox', out.conclusion === 'supported', out.conclusion);
+      check('and no shim ran', !fs.existsSync(marker));
+      check('the result records the binaries that were used', records(out)[0]?.sandboxBinaries?.prlimit.startsWith('/usr/bin/') === true);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  }
+
   section('tamper between runs');
   {
     // A same-uid process rewriting the worktree copy after the first run: what runs second

@@ -10,8 +10,8 @@ import type {
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
-  checkAllowlist, DEFAULT_LIMITS, detectSandbox, SANDBOX_LIMITATIONS, sandboxArgv,
-  type SandboxLimits, type SandboxProfile,
+  checkAllowlist, DEFAULT_LIMITS, detectSandbox, SANDBOX_LIMITATIONS, sandboxArgv, sandboxBinaries,
+  SYSTEM_PATH, type SandboxLimits, type SandboxProfile,
 } from './sandbox.ts';
 import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
 
@@ -271,14 +271,16 @@ const TEST_FD = 3;
  * written to the child's fd 3 and closed — bwrap reads it into the sandbox at setup.
  */
 function execute(
-  argv: string[], timeoutMs: number, feed?: Buffer,
+  argv: string[], timeoutMs: number, feed: Buffer | undefined, bin: string,
 ): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean }> {
   return new Promise((resolve) => {
     // The outer process is prlimit, which execs bwrap; the sandbox has --die-with-parent, so
-    // killing this one pid takes the whole tree with it.
-    const child = spawn(argv[0], argv.slice(1), {
+    // killing this one pid takes the whole tree with it. `bin` is the absolute launcher and
+    // the PATH it resolves bwrap on is the system's, never the caller's.
+    const child = spawn(bin, argv.slice(1), {
+      argv0: argv[0],
       stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      env: { PATH: SYSTEM_PATH },
     });
     const pipe = child.stdio[TEST_FD] as Writable;
     // A launcher that dies before reading closes the pipe; that failure is reported by the
@@ -492,6 +494,7 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       limitations.push('registered before the test path was covered by the harness digest; the path on the row is trusted as is');
     }
 
+    const binaries = sandboxBinaries(profile);
     for (let i = 0; i < runs; i++) {
       const runStarted = now();
       // The test is bound into the sandbox from the verified buffer on every run. The worktree
@@ -506,7 +509,7 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       const shown = argv.map((a) => (a === worktree || a === root ? '<worktree>' : a));
       emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
 
-      const run = await execute(argv, timeoutMs, registered);
+      const run = await execute(argv, timeoutMs, registered, binaries.prlimit);
       const label = (s: string) => `run ${i} ${s}`;
       const stdoutRef = ctx.artifacts.put(run.stdout, { ...meta, kind: 'log', label: label('stdout') });
       const stderrRef = ctx.artifacts.put(run.stderr, { ...meta, kind: 'log', label: label('stderr') });
@@ -523,6 +526,7 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
           ? `the worktree copy of ${testRel} changed during the experiment; something else is writing to it`
           : run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined,
         command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
+        sandboxBinaries: binaries,
         exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
         durationMs: now() - runStarted, stdoutRef, stderrRef,
         prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,

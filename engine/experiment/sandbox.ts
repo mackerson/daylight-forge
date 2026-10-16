@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -23,7 +22,18 @@ export interface SandboxProfile {
   name: 'bwrap';
   available: boolean;
   why?: string;
+  /** Absolute paths resolved at detection; an injected profile without them gets the defaults. */
+  bwrap?: string;
+  prlimit?: string;
 }
+
+/**
+ * Where the sandbox's own tools are looked up, and the PATH the launcher runs with. Never
+ * the user's PATH: `~/.local/bin` and friends precede `/usr/bin` on most desktops, and a
+ * same-uid shim named `bwrap` there would be a sandbox that is not one.
+ */
+export const SYSTEM_PATH = '/usr/bin:/bin';
+const SYSTEM_BIN = '/usr/bin/';
 
 export interface SandboxLimits {
   cpuSeconds: number;
@@ -46,25 +56,39 @@ export const SANDBOX_LIMITATIONS = [
   'no network inside the sandbox',
 ];
 
-function onPath(bin: string): boolean {
-  try {
-    execFileSync('which', [bin], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+/** `name` as installed by the system — resolved under /usr/bin, root-owned, not group/world-writable. */
+function systemBinary(name: string): string | null {
+  for (const dir of SYSTEM_PATH.split(':')) {
+    let real: string;
+    try {
+      real = fs.realpathSync(path.join(dir, name));
+    } catch {
+      continue;
+    }
+    if (!real.startsWith(SYSTEM_BIN)) continue;
+    const st = fs.statSync(real);
+    if (st.isFile() && st.uid === 0 && (st.mode & 0o022) === 0) return real;
   }
+  return null;
 }
 
 export function detectSandbox(): SandboxProfile {
-  const missing = ['bwrap', 'prlimit'].filter((b) => !onPath(b));
-  if (missing.length) {
+  const bwrap = systemBinary('bwrap');
+  const prlimit = systemBinary('prlimit');
+  const missing = [bwrap ? null : 'bwrap', prlimit ? null : 'prlimit'].filter(Boolean);
+  if (!bwrap || !prlimit) {
     return {
       name: 'bwrap',
       available: false,
-      why: `${missing.join(' and ')} not on PATH; install bubblewrap and util-linux`,
+      why: `${missing.join(' and ')} not installed under ${SYSTEM_BIN} (root-owned); install bubblewrap and util-linux`,
     };
   }
-  return { name: 'bwrap', available: true };
+  return { name: 'bwrap', available: true, bwrap, prlimit };
+}
+
+/** The binaries a profile launches, absolute. */
+export function sandboxBinaries(profile: SandboxProfile): { prlimit: string; bwrap: string } {
+  return { prlimit: profile.prlimit ?? '/usr/bin/prlimit', bwrap: profile.bwrap ?? '/usr/bin/bwrap' };
 }
 
 /**
