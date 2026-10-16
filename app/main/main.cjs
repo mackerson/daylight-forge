@@ -1339,6 +1339,10 @@ async function readDaylightEvents(since, missionId, limit) {
     let db = null;
     try {
       db = new sqlite.DatabaseSync(file, { readOnly: true });
+      // Only schema 2 is read here. Anything else goes to the CLI, which refuses it with the
+      // one line that says to delete it and re-map.
+      const meta = db.prepare("SELECT value FROM daylight_meta WHERE key='schema_version'").get();
+      if (!meta || meta.value !== '2') throw new Error(`daylight.db is not at schema 2`);
       const rows = missionId
         ? db.prepare(
             'SELECT * FROM events WHERE sequence > ? AND mission_id = ? ORDER BY sequence LIMIT ?',
