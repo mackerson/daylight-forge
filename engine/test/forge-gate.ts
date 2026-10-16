@@ -118,7 +118,15 @@ section('the verdict ladder, from rows');
   check('a secret hit → policy-violation', verdict({ ...r0, candidate: { ...r0.candidate, secretHits: 1 } }) === 'policy-violation');
   check('an empty diff → no-diff, ahead of everything',
     verdict({ ...r0, candidate: { ...r0.candidate, files: [], secretHits: 2, baseCommit: 'c'.repeat(40) } }) === 'no-diff');
-  check('reasons name the gate that failed', candidateVerdict(rows({}, { x_g: 'supported', x_h: 'falsified' })).reasons.join().includes('holdout x_h'));
+  check('reasons name a failed gate by id', candidateVerdict(rows({}, { x_g: 'falsified', x_h: 'supported' })).reasons.join().includes('gate x_g'));
+  check('and a failed holdout by count, never by id', (() => {
+    const r = candidateVerdict(rows({}, { x_g: 'supported', x_h: 'falsified' })).reasons.join();
+    return r.includes('1 holdout(s): falsified') && !r.includes('x_h');
+  })());
+  check('an invalid holdout is counted, not named', (() => {
+    const r = candidateVerdict(rows({}, { x_g: 'supported' })).reasons.join();
+    return r.includes('1 holdout(s)') && !r.includes('x_h');
+  })());
 }
 
 section('the verdict does not read the attempt (ADR-19)');
@@ -441,9 +449,20 @@ if (!live.available) {
     check('a diff that edits .daylight-gates is a policy violation', viol.verdict === 'policy-violation' && viol.verdictReasons.some((r) => r.includes('gate-path')), viol.verdict);
     check('and neither was run through a gate', named('experiment.run.started').length === runsBefore && gateRows(noop).length + gateRows(viol).length === 0);
 
+    const eventsBefore = events.length;
     const halfway = await evaluate(ctx, candidate(writeAdd('module.exports = (a, b) => (a === 2 && b === 3 ? 5 : a - b);\n'), [FILE]).id);
     check('a diff that passes the gate and fails the holdout is rejected-by-gates', halfway.verdict === 'rejected-by-gates', halfway.verdict);
-    check('saying it was the holdout', halfway.verdictReasons.some((r) => r.includes(`holdout ${holdout.id}`)), halfway.verdictReasons.join());
+    check('saying a holdout failed, by count', halfway.verdictReasons.some((r) => /^1 holdout\(s\): falsified/.test(r)), halfway.verdictReasons.join());
+    const during = JSON.stringify(events.slice(eventsBefore));
+    const asRow = JSON.stringify(dctx.store.candidate(halfway.id));
+    check('no holdout id, path or harness reaches the candidate row',
+      ![holdout.id, holdout.testArtifact.path!, holdout.harnessDigest].some((s) => asRow.includes(s)));
+    check('nor any event the evaluation emitted', ![holdout.id, holdout.testArtifact.path!, holdout.harnessDigest].some((s) => during.includes(s)));
+    check('while the public gate is still named in its events', during.includes(gate.id));
+    check('the holdout\'s evaluation is in gate_evaluations for the human',
+      gateRows(halfway).some((g) => g.experimentId === holdout.id && g.conclusion === 'falsified'));
+    check('the holdout evaluation event carries its role and conclusion only',
+      events.slice(eventsBefore).some((e) => e.name === 'forge.gate.evaluated' && e.payload.role === 'holdout' && e.payload.conclusion === 'falsified' && !('experimentId' in e.payload)));
     const flaky = await evaluate(ctx, candidate(writeAdd("module.exports = (a, b) => (process.env.DAYLIGHT_RUN_INDEX === '0' ? a + b : a - b);\n"), [FILE]).id);
     check('a diff that passes on one run and not the other is gates-inconclusive', flaky.verdict === 'gates-inconclusive', flaky.verdict);
   }

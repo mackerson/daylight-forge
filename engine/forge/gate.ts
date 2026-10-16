@@ -134,6 +134,14 @@ function record(
     target: on.target, diffDigest: on.target === 'candidate' ? on.candidate.diffArtifact.digest : null,
     harnessDigest: x.harnessDigest, executions: r.executions, conclusion: r.conclusion,
   });
+  if (x.role === 'holdout' && on.target === 'candidate') {
+    // Candidate-time events are where an author-side reader would look: a holdout appears
+    // there by role and outcome only. Its id, harness and run records stay in the row.
+    emit(ctx, m, 'experiment', 'forge.gate.evaluated', {
+      gateEvaluationId: g.id, role: 'holdout', target: g.target, diffDigest: g.diffDigest, conclusion: g.conclusion,
+    });
+    return g;
+  }
   emit(ctx, m, 'experiment', 'forge.gate.evaluated', {
     gateEvaluationId: g.id, experimentId: x.id, target: g.target, diffDigest: g.diffDigest,
     harnessDigest: g.harnessDigest, conclusion: g.conclusion,
@@ -337,6 +345,8 @@ export async function evaluate(ctx: GateContext, candidateId: string): Promise<C
       if (!x || x.harnessDigest !== lockRow.scope.harnessDigests[id]) continue;
       const r = await runGate(x, {
         ...runContext(ctx),
+        // A holdout's per-run events would name it; its records are kept on its evaluation row.
+        ...(x.role === 'holdout' ? { events: undefined } : {}),
         target: { kind: 'candidate', diffDigest: digest },
         materialise: () => {
           if (unreadable || !diff) throw new Error(unreadable ?? 'no diff');

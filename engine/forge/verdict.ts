@@ -62,6 +62,13 @@ export function candidateVerdict(rows: VerdictRows): CandidateVerdictResult {
 
   const invalid: string[] = [];
   const results: Array<{ id: string; role: string; conclusion: string }> = [];
+  // A holdout is never named in a reason: reasons reach the candidate row and its events, and
+  // an author that can read either must not learn which hidden check failed. Counted instead.
+  const hidden = new Map<string, number>();
+  const note = (role: string, id: string, gateText: string, hiddenText: string) => {
+    if (role === 'gate') invalid.push(`gate ${id}: ${gateText}`);
+    else hidden.set(hiddenText, (hidden.get(hiddenText) ?? 0) + 1);
+  };
   if (rows.missionBase === null) invalid.push('the mission base does not resolve to a commit');
   const lock = rows.lock;
   if (!lock) {
@@ -76,37 +83,45 @@ export function candidateVerdict(rows: VerdictRows): CandidateVerdictResult {
       const x = rows.locked.find((r) => r.id === id);
       const want = scope.harnessDigests[id];
       if (!x) {
-        invalid.push(`${id}: locked, but no such experiment`);
+        hidden.set('locked, but no such experiment', (hidden.get('locked, but no such experiment') ?? 0) + 1);
         continue;
       }
-      const who = `${x.role} ${id}`;
-      if (x.role !== 'gate' && x.role !== 'holdout') invalid.push(`${who}: only gates and holdouts decide a verdict`);
-      if (x.lockedBy !== lock.decisionId) invalid.push(`${who}: not locked by ${lock.decisionId}`);
+      const role = x.role === 'gate' ? 'gate' : x.role === 'holdout' ? 'holdout' : 'other';
+      if (role === 'other') hidden.set('not a gate or holdout', (hidden.get('not a gate or holdout') ?? 0) + 1);
+      if (x.lockedBy !== lock.decisionId) note(role, id, `not locked by ${lock.decisionId}`, `not locked by ${lock.decisionId}`);
       if (!want || x.harnessDigest !== want) {
-        invalid.push(`${who}: harness ${x.harnessDigest} is not the locked ${want ?? 'none'}; it changed after the lock`);
+        note(role, id, `harness ${x.harnessDigest} is not the locked ${want ?? 'none'}; it changed after the lock`, 'changed after the lock');
         continue;
       }
       const base = latest(rows.baseline.filter((e) => e.target === 'base' && e.experimentId === id && e.harnessDigest === want));
-      if (!base) invalid.push(`${who}: no baseline at the locked harness`);
+      if (!base) note(role, id, 'no baseline at the locked harness', 'no baseline at the locked harness');
       else if (base.conclusion === 'supported') {
-        if (!scope.vacuousOverrides.includes(id)) invalid.push(`${who}: passes on the base and was not accepted as vacuous`);
-      } else if (base.conclusion !== 'falsified') invalid.push(`${who}: baseline ${base.conclusion}, never lockable`);
+        if (!scope.vacuousOverrides.includes(id)) note(role, id, 'passes on the base and was not accepted as vacuous', 'passes on the base and was not accepted as vacuous');
+      } else if (base.conclusion !== 'falsified') note(role, id, `baseline ${base.conclusion}, never lockable`, `baseline ${base.conclusion}, never lockable`);
 
       const e = latest(rows.evaluations.filter((r) => r.target === 'candidate' && r.experimentId === id
         && r.candidateId === c.id && r.diffDigest === c.diffDigest && r.harnessDigest === want));
-      if (!e) invalid.push(`${who}: no evaluation on ${c.diffDigest} at the locked harness`);
+      if (!e) note(role, id, `no evaluation on ${c.diffDigest} at the locked harness`, 'no evaluation on this diff at the locked harness');
       else if (e.conclusion !== 'supported' && e.conclusion !== 'falsified' && e.conclusion !== 'inconclusive') {
-        invalid.push(`${who}: ${e.conclusion} on this diff`);
-      } else results.push({ id, role: x.role, conclusion: e.conclusion });
+        note(role, id, `${e.conclusion} on this diff`, `${e.conclusion} on this diff`);
+      } else results.push({ id, role, conclusion: e.conclusion });
     }
   }
+  for (const [text, n] of hidden) invalid.push(`${n} holdout(s): ${text}`);
   if (invalid.length) return out('gates-invalid', invalid);
 
+  const describe = (rs: typeof results, text: string): string[] => {
+    const holdouts = rs.filter((r) => r.role !== 'gate').length;
+    return [
+      ...rs.filter((r) => r.role === 'gate').map((r) => `gate ${r.id}: ${text}`),
+      ...(holdouts ? [`${holdouts} holdout(s): ${text}`] : []),
+    ];
+  };
   const unsure = results.filter((r) => r.conclusion === 'inconclusive');
-  if (unsure.length) return out('gates-inconclusive', unsure.map((r) => `${r.role} ${r.id}: inconclusive (flaky or timed out)`));
+  if (unsure.length) return out('gates-inconclusive', describe(unsure, 'inconclusive (flaky or timed out)'));
   const failed = results.filter((r) => r.conclusion !== 'supported');
   if (!failed.length) {
     return out('accepted-by-gates', [`all ${results.length} locked gate(s) and holdout(s) supported on ${c.diffDigest}`]);
   }
-  return out('rejected-by-gates', failed.map((r) => `${r.role} ${r.id}: ${r.conclusion} on this diff`));
+  return out('rejected-by-gates', describe(failed, 'falsified on this diff'));
 }
