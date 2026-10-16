@@ -1236,9 +1236,9 @@ export class MissionStore {
     const d = this.decision(decisionId);
     const scope = d?.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown } | undefined;
     const operation = to === 'approved' ? 'approve-work-item' : 'reject-work-item';
-    if (!d || d.projectId !== w.projectId || scope?.operation !== operation || scope.workItemId !== w.id
+    if (!d || d.projectId !== w.projectId || d.missionId !== w.missionId || scope?.operation !== operation || scope.workItemId !== w.id
       || scope.contentDigest !== w.contentDigest) {
-      throw new Error(`decision ${decisionId} is not a ${operation} decision naming ${w.id} at ${w.contentDigest}`);
+      throw new Error(`decision ${decisionId} is not a ${operation} decision on mission ${w.missionId} naming ${w.id} at ${w.contentDigest}`);
     }
     const r = this.db
       .prepare('UPDATE work_items SET status=?, decision_id=?, updated_at=? WHERE id=? AND status=?')

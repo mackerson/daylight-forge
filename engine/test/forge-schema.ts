@@ -217,6 +217,13 @@ const w = store.createWorkItem({ ...wInput, id: newId('workItem') });
   });
   check('a decision naming another content digest does not approve it',
     !!throws(() => store.setWorkItemStatus(w.id, 'proposed', 'approved', stale.id)));
+  const elsewhere = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'unrelated', baseRevision: 'base1' });
+  const misfiled = store.recordDecision({
+    missionId: elsewhere.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'ok',
+    scope: { operation: 'approve-work-item', workItemId: w.id, contentDigest: w.contentDigest }, artifactIds: [],
+  });
+  check('a decision filed on another mission does not approve the item',
+    !!throws(() => store.setWorkItemStatus(w.id, 'proposed', 'approved', misfiled.id)) && store.workItem(w.id)!.status === 'proposed');
   const ok = store.recordDecision({
     missionId: spec.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'ok',
     scope: { operation: 'approve-work-item', workItemId: w.id, contentDigest: w.contentDigest }, artifactIds: [],
