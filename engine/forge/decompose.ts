@@ -225,7 +225,8 @@ export function ingestProposals(
     const a = isEntityId('attempt', id) ? ctx.store.attempt(id) : null;
     if (a && ctx.store.task(a.taskId)?.role === 'decompose') continue;
     if (!a || a.missionId === missionId || ctx.store.mission(a.missionId)?.projectId === mission.projectId) {
-      refuse({ attemptId: id, field: 'attempt', reason: a ? 'outbox belongs to an attempt that is not a decompose attempt' : 'outbox names no known attempt' });
+      // A filename is agent-chosen text under H5; only an id-shaped one is repeated as-is.
+      refuse({ attemptId: isEntityId('attempt', id) ? id : `unnamed:${sha256hex(id).slice(0, 16)}`, field: 'attempt', reason: a ? 'outbox belongs to an attempt that is not a decompose attempt' : 'outbox names no known attempt' });
     }
   }
 
