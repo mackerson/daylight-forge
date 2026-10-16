@@ -121,6 +121,9 @@ section('normalising provider output');
     normalize('codex', codexCall).some((e) => e.name === 'tool.call' && e.payload.tool === 'get_overview'));
   check('a codex started item is not double-counted',
     normalize('codex', JSON.stringify({ type: 'item.started', item: { type: 'mcp_tool_call', tool: 'x' } })).length === 0);
+  check('a codex updated item is not a second call',
+    !normalize('codex', JSON.stringify({ type: 'item.updated', item: { id: 'i1', type: 'mcp_tool_call', tool: 'x', status: 'in_progress' } }))
+      .some((e) => e.name === 'tool.call'));
   check('codex never reports a cost', !normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5 } })).some((e) => e.name === 'cost.reported'));
 
   check('the prompt is replaced in a described argv',

@@ -132,7 +132,10 @@ function codex(msg: Record<string, unknown>): NormalizedEvent[] {
   const item = (msg.item ?? msg) as Record<string, unknown>;
   const itemType = String(item.type ?? '');
 
-  if (/mcp_tool_call|function_call|tool_call|command_execution/.test(itemType) && type !== 'item.started') {
+  // A wrapped item is announced as started, updated while it runs, and completed once; only
+  // the completion is the call, or one call is counted two or three times.
+  const settled = msg.item === undefined || type === 'item.completed';
+  if (/mcp_tool_call|function_call|tool_call|command_execution/.test(itemType) && settled) {
     const tool =
       (typeof item.tool === 'string' && item.tool) ||
       (typeof item.name === 'string' && item.name) ||
