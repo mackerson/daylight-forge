@@ -38,7 +38,7 @@ export class EventLog {
     this.db = openDaylightDb(path.join(outDir, DAYLIGHT_DB));
     this.now = now;
     this.insert = this.db.prepare(
-      `INSERT INTO events
+      `INSERT OR IGNORE INTO events
          (id, schema_version, at, project_id, mission_id, task_id, attempt_id, actor_id,
           category, name, artifact_ids, payload)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -49,6 +49,10 @@ export class EventLog {
     this.db.close();
   }
 
+  /**
+   * Append one event. A supplied id that is already here is the same event read again (two
+   * ingesters racing on one source), so the row already here is returned and nothing is added.
+   */
   append(e: DaylightEventInput, id: string = eventId()): DaylightEvent {
     const at = e.at ?? this.now();
     const row = this.insert.run(
@@ -58,6 +62,7 @@ export class EventLog {
       e.artifactIds ? JSON.stringify(e.artifactIds) : null,
       JSON.stringify(e.payload ?? {}),
     );
+    if (!row.changes) return rowToEvent(this.db.prepare('SELECT * FROM events WHERE id = ?').get(id));
     return {
       schemaVersion: EVENT_SCHEMA_VERSION,
       id,

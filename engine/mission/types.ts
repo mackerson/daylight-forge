@@ -43,8 +43,14 @@ export const ID_PREFIX = {
 } as const;
 export type EntityKind = keyof typeof ID_PREFIX;
 
+/**
+ * Event ids also come content-derived, so that re-reading a source adds nothing twice:
+ * `ev_mcp_<32 hex>` from an MCP tool-call line, `ev_cc_<hex>` from a Claude Code transcript.
+ */
 export function isEntityId(kind: EntityKind, value: unknown): value is string {
-  return typeof value === 'string' && new RegExp(`^${ID_PREFIX[kind]}_[0-9a-f]{32}$`).test(value);
+  if (typeof value !== 'string') return false;
+  if (kind === 'event') return /^ev_(?:[a-z]+_)?[0-9a-f]{32,64}$/.test(value);
+  return new RegExp(`^${ID_PREFIX[kind]}_[0-9a-f]{32}$`).test(value);
 }
 
 /** `human:<name>`, the only actor a Forge decision accepts. Bare `human` names nobody. */
@@ -132,7 +138,7 @@ export function canTransition<S extends string>(
 
 export type ArtifactKind =
   | 'source' | 'claim' | 'spec' | 'diff' | 'test' | 'log' | 'trace' | 'report' | 'decision'
-  | 'result' | 'expected' | 'summary' | 'narrative';
+  | 'result' | 'expected' | 'summary' | 'narrative' | 'ingest-summary';
 
 /**
  * A pointer to immutable content.
@@ -320,6 +326,14 @@ export const READ_ONLY_SANDBOX: Readonly<AttemptSandbox> = Object.freeze({
   profile: 'none', network: 'shared', write: false, exec: false, authorizeDecisionId: null,
 });
 
+/**
+ * `daylight`: run by Daylight, under its permissions and sandbox. `ingested`: recovered from a
+ * transcript of work done elsewhere. An ingested attempt is recorded, never presented as
+ * verified, and outside Daylight's controls: it has no sandbox record, because Daylight
+ * granted it nothing and cannot say what it had (R12.1).
+ */
+export type AttemptOrigin = 'daylight' | 'ingested';
+
 export interface Attempt {
   id: string;
   missionId: string;
@@ -357,7 +371,9 @@ export interface Attempt {
   /** The runner process, for liveness. Recorded beside WS0's per-mission claim file (R5). */
   pid?: number;
   heartbeatAt?: number;
-  sandbox: AttemptSandbox;
+  origin: AttemptOrigin;
+  /** Null exactly when `origin` is `ingested`. */
+  sandbox: AttemptSandbox | null;
   credential?: AttemptCredential;
   /**
    * `sha256:` of the per-attempt MCP token the host server checks on the sandbox socket
@@ -562,12 +578,19 @@ export interface Application {
   at: number;
 }
 
-/** How far into one transcript an ingest has read, so a re-run reads only what is new. */
+/**
+ * How far into one transcript an ingest has read, so a re-run reads only what is new. Keyed
+ * on session and agent: a subagent's transcript shares its parent's session id (R12.2).
+ */
 export interface IngestSource {
   sessionId: string;
+  /** The subagent's id, or `''` for the session's main transcript. */
+  agentId: string;
   projectId: string;
   /** sha256 of the transcript path; the path itself is not stored. */
   pathDigest: string;
+  /** sha256 of the first `bytesSeen` bytes, so a rewritten file is noticed and re-read from zero. */
+  prefixDigest: string;
   bytesSeen: number;
   linesSeen: number;
   missionId: string;
@@ -693,6 +716,34 @@ export interface DaylightEvent {
   name: string;
   artifactIds?: string[];
   payload: Record<string, unknown>;
+}
+
+/** `ingest.session.finished`: counts and digests, never transcript text. */
+export interface IngestSessionFinishedPayload {
+  sessionId: string;
+  agentId: string;
+  pathDigest: string;
+  turns: number;
+  dedupedLines: number;
+  skippedLines: number;
+  subagents: number;
+}
+
+/**
+ * One row of the project ledger (PLAN F-9), as JSON. Dollar and token figures are known sums
+ * plus a count of the unknown, never a null summed as zero. WS5 computes it.
+ */
+export interface LedgerRow {
+  key: string;
+  attempts: number;
+  usdKnown: number;
+  usdUnknownCount: number;
+  /** Spend read from output by pattern: counted, never known. */
+  usdScanned: number;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; unknownCount: number };
+  candidates: { accepted: number; rejected: number; applied: number; overridden: number };
+  decisions: number;
+  gateSetDigests: string[];
 }
 
 /** `mission.authorized`: ids and grants, never prose. */

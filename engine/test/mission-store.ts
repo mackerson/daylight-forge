@@ -377,7 +377,7 @@ section('schema 2 attempt and experiment defaults');
   const m = store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'o', baseRevision: 'r' });
   const t = store.createTask({ missionId: m.id, role: 'review', objective: 'r' });
   const a = store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:x' });
-  check('a P0 attempt is recorded read-only, unsandboxed', !a.sandbox.write && !a.sandbox.exec && a.sandbox.profile === 'none');
+  check('a P0 attempt is recorded read-only, unsandboxed', !a.sandbox!.write && !a.sandbox!.exec && a.sandbox!.profile === 'none');
   check('with no usage and no cost source', a.usageSource === 'none' && a.costSource === 'none'
     && a.tokens.input === null && a.tokens.output === null);
   const done = store.finishAttempt(a.id, { state: 'completed', costUsd: 0.05 });

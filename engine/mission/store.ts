@@ -10,7 +10,7 @@ import {
   NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
-  ArtifactKind, ArtifactRef, Attempt, AttemptCredential, AttemptSandbox, AttemptState, CostSource, Decision,
+  ArtifactKind, ArtifactRef, Attempt, AttemptCredential, AttemptOrigin, AttemptSandbox, AttemptState, CostSource, Decision,
   DecisionOperation, EntityKind, Experiment, ExperimentConclusion, ExperimentRole, Mission,
   MissionBudget, MissionKind, MissionOutcome, MissionPermissions, MissionScope, MissionState,
   NetworkMode, NewExperiment, ProjectIdentity, Task, TaskRole, TaskState, TokenUsage,
@@ -44,6 +44,10 @@ export function newId(kind: EntityKind): string {
 
 const NO_TOKENS: TokenUsage = { input: null, output: null, cacheRead: null, cacheWrite: null };
 
+
+const sandboxColumns = (s: AttemptSandbox | null): Array<string | number | null> => (s === null
+  ? [null, null, null, null, null]
+  : [s.profile, s.network, s.write ? 1 : 0, s.exec ? 1 : 0, s.authorizeDecisionId ?? null]);
 
 const tokenColumns = (t: TokenUsage): [number | null, number | null, number | null, number | null] =>
   [t.input, t.output, t.cacheRead, t.cacheWrite];
@@ -141,10 +145,17 @@ export interface StartAttemptInput {
   sessionId?: string;
   worktree?: string;
   /**
+   * Defaults to `daylight`. An `ingested` attempt is recovered from a transcript, belongs to a
+   * `work` mission only, and takes no sandbox: nothing about it was granted here (R12.1).
+   */
+  origin?: AttemptOrigin;
+  /**
    * Defaults to `READ_ONLY_SANDBOX`. `write: true` needs `authorizeDecisionId`, an approving
    * `authorize-mission` decision of this attempt's mission that granted write.
    */
   sandbox?: Partial<AttemptSandbox>;
+  /** When it started, for an attempt recovered after the fact. Defaults to now. */
+  at?: number;
   parentAttemptId?: string;
   gateSetDigest?: string;
   pid?: number;
@@ -169,6 +180,8 @@ export interface FinishAttemptInput {
   usageSource?: UsageSource;
   failure?: string;
   artifacts?: ArtifactRef[];
+  /** When it finished, for an attempt recovered after the fact. Defaults to now. */
+  at?: number;
 }
 
 export type CreateExperimentInput = NewExperiment;
@@ -552,16 +565,27 @@ export class MissionStore {
     if (live) {
       throw new IllegalTransition('task', t.id, `running (attempt ${live.id} has not finished)`, 'a second attempt');
     }
-    const sandbox: AttemptSandbox = { ...READ_ONLY_SANDBOX, ...input.sandbox };
-    if (!NETWORK_MODES.includes(sandbox.network)) {
-      throw new Error(`attempt network must be one of ${NETWORK_MODES.join(', ')}, not ${String(sandbox.network)}`);
-    }
-    if (!SANDBOX_PROFILES.includes(sandbox.profile)) {
-      throw new Error(`attempt sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(sandbox.profile)}`);
-    }
-    if (sandbox.write) this.requireWriteGrant(t.missionId, sandbox.authorizeDecisionId ?? undefined);
-    if (sandbox.exec && !sandbox.write) {
-      throw new Error(`an attempt on mission ${t.missionId} asks for exec without write; exec runs over the attempt's own writable tree`);
+    const origin: AttemptOrigin = input.origin ?? 'daylight';
+    let sandbox: AttemptSandbox | null = null;
+    if (origin === 'ingested') {
+      if (input.sandbox !== undefined) throw new Error('an ingested attempt has no sandbox record; Daylight granted it nothing');
+      if (this.requireMission(t.missionId).kind !== 'work') {
+        throw new Error(`mission ${t.missionId} is not a work mission; only work missions hold ingested attempts`);
+      }
+    } else if (origin === 'daylight') {
+      sandbox = { ...READ_ONLY_SANDBOX, ...input.sandbox };
+      if (!NETWORK_MODES.includes(sandbox.network)) {
+        throw new Error(`attempt network must be one of ${NETWORK_MODES.join(', ')}, not ${String(sandbox.network)}`);
+      }
+      if (!SANDBOX_PROFILES.includes(sandbox.profile)) {
+        throw new Error(`attempt sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(sandbox.profile)}`);
+      }
+      if (sandbox.write) this.requireWriteGrant(t.missionId, sandbox.authorizeDecisionId ?? undefined);
+      if (sandbox.exec && !sandbox.write) {
+        throw new Error(`an attempt on mission ${t.missionId} asks for exec without write; exec runs over the attempt's own writable tree`);
+      }
+    } else {
+      throw new Error(`attempt origin must be daylight or ingested, not ${String(origin)}`);
     }
     if (input.mcpToken !== undefined && input.mcpToken.length < 32) {
       throw new Error('an MCP token must be at least 32 characters of randomness');
@@ -578,7 +602,7 @@ export class MissionStore {
     if (t.state !== 'running') {
       throw new IllegalTransition('task', t.id, t.state, 'running');
     }
-    const at = this.now();
+    const at = input.at ?? this.now();
     const a: Attempt = {
       id: newId('attempt'),
       missionId: t.missionId,
@@ -598,6 +622,7 @@ export class MissionStore {
       gateSetDigest: input.gateSetDigest,
       pid: input.pid,
       heartbeatAt: input.pid !== undefined ? at : undefined,
+      origin,
       sandbox,
       credential: input.credential,
       mcpTokenDigest: input.mcpToken !== undefined ? digestOf(input.mcpToken) : undefined,
@@ -607,16 +632,15 @@ export class MissionStore {
         `INSERT INTO attempts
          (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state,
           started_at, cost_usd, timed_out, artifacts, parent_attempt_id, gate_set_digest, pid,
-          heartbeat_at, sandbox_profile, sandbox_network, sandbox_write, sandbox_exec,
+          heartbeat_at, origin, sandbox_profile, sandbox_network, sandbox_write, sandbox_exec,
           authorize_decision_id, credential, mcp_token_digest)
-         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         a.id, a.missionId, a.taskId, a.projectId, a.runnerId, a.sessionId ?? null,
         a.worktree ?? null, a.state, a.startedAt, a.parentAttemptId ?? null,
-        a.gateSetDigest ?? null, a.pid ?? null, a.heartbeatAt ?? null,
-        sandbox.profile, sandbox.network, sandbox.write ? 1 : 0, sandbox.exec ? 1 : 0,
-        sandbox.authorizeDecisionId ?? null, a.credential ? JSON.stringify(a.credential) : null,
+        a.gateSetDigest ?? null, a.pid ?? null, a.heartbeatAt ?? null, origin,
+        ...sandboxColumns(sandbox), a.credential ? JSON.stringify(a.credential) : null,
         a.mcpTokenDigest ?? null,
       );
     return a;
@@ -666,7 +690,8 @@ export class MissionStore {
       .prepare(`SELECT * FROM attempts WHERE sandbox_write != 0 ${projectId ? 'AND project_id=?' : ''} ORDER BY started_at, id`)
       .all(...(projectId ? [projectId] : []));
     return rows.map((r) => this.rowToAttempt(r)).filter((a) => {
-      const d = a.sandbox.authorizeDecisionId !== null ? this.decision(a.sandbox.authorizeDecisionId) : null;
+      const grant = a.sandbox?.authorizeDecisionId ?? null;
+      const d = grant !== null ? this.decision(grant) : null;
       return !grantsWrite(d, a.missionId);
     });
   }
@@ -681,7 +706,7 @@ export class MissionStore {
     if (!canTransition(ATTEMPT_TRANSITIONS, a.state, result.state)) {
       throw new IllegalTransition('attempt', attemptId, a.state, result.state);
     }
-    const at = this.now();
+    const at = result.at ?? this.now();
     // One transaction: a crash between the attempt row and its task would leave the attempt
     // finished and the task running, which no later run can tell from a live attempt.
     this.db.exec('BEGIN');
@@ -1341,39 +1366,53 @@ export class MissionStore {
 
   // ---- ingest sources ----------------------------------------------------------------
 
-  /** Upsert how far one transcript has been read. The session stays with its first project. */
+  /**
+   * Upsert how far one transcript (a session's main thread or one subagent) has been read.
+   * A session stays with the first project it was ingested into.
+   */
   recordIngestSource(s: IngestSource): IngestSource {
     const a = this.requireAttempt(s.attemptId);
     if (a.missionId !== s.missionId || a.projectId !== s.projectId) {
       throw new Error(`ingest source for ${s.sessionId} names attempt ${a.id}, which is not of mission ${s.missionId} in ${s.projectId}`);
     }
-    const have = this.ingestSource(s.sessionId);
-    if (have && have.projectId !== s.projectId) {
-      throw new Error(`session ${s.sessionId} was ingested into project ${have.projectId}, not ${s.projectId}`);
+    if (a.origin !== 'ingested') throw new Error(`attempt ${a.id} was run by Daylight, not ingested`);
+    const elsewhere = this.db
+      .prepare('SELECT project_id FROM ingest_sources WHERE session_id=? AND project_id<>? LIMIT 1')
+      .get(s.sessionId, s.projectId) as { project_id: string } | undefined;
+    if (elsewhere) {
+      throw new Error(`session ${s.sessionId} was ingested into project ${elsewhere.project_id}, not ${s.projectId}`);
     }
     this.db
       .prepare(
         `INSERT INTO ingest_sources
-         (session_id, project_id, path_digest, bytes_seen, lines_seen, mission_id, attempt_id, ingested_at)
-         VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(session_id) DO UPDATE SET path_digest=excluded.path_digest,
-           bytes_seen=excluded.bytes_seen, lines_seen=excluded.lines_seen,
-           mission_id=excluded.mission_id, attempt_id=excluded.attempt_id,
-           ingested_at=excluded.ingested_at`,
+         (session_id, agent_id, project_id, path_digest, prefix_digest, bytes_seen, lines_seen,
+          mission_id, attempt_id, ingested_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(session_id, agent_id) DO UPDATE SET path_digest=excluded.path_digest,
+           prefix_digest=excluded.prefix_digest, bytes_seen=excluded.bytes_seen,
+           lines_seen=excluded.lines_seen, mission_id=excluded.mission_id,
+           attempt_id=excluded.attempt_id, ingested_at=excluded.ingested_at`,
       )
-      .run(s.sessionId, s.projectId, s.pathDigest, s.bytesSeen, s.linesSeen, s.missionId, s.attemptId, s.ingestedAt);
-    return this.ingestSource(s.sessionId)!;
+      .run(
+        s.sessionId, s.agentId, s.projectId, s.pathDigest, s.prefixDigest, s.bytesSeen, s.linesSeen,
+        s.missionId, s.attemptId, s.ingestedAt,
+      );
+    return this.ingestSource(s.sessionId, s.agentId)!;
   }
 
-  ingestSource(sessionId: string): IngestSource | null {
-    const r = this.db.prepare('SELECT * FROM ingest_sources WHERE session_id=?').get(sessionId) as
+  /** `agentId` is `''` for the session's main transcript. */
+  ingestSource(sessionId: string, agentId = ''): IngestSource | null {
+    const r = this.db.prepare('SELECT * FROM ingest_sources WHERE session_id=? AND agent_id=?').get(sessionId, agentId) as
       | Record<string, unknown> | undefined;
     return r ? rowToIngestSource(r) : null;
   }
 
-  ingestSources(missionId: string): IngestSource[] {
-    return (this.db.prepare('SELECT * FROM ingest_sources WHERE mission_id=? ORDER BY session_id').all(missionId) as
-      Array<Record<string, unknown>>).map(rowToIngestSource);
+  ingestSources(projectId: string, opts: { missionId?: string } = {}): IngestSource[] {
+    const rows = opts.missionId === undefined
+      ? this.db.prepare('SELECT * FROM ingest_sources WHERE project_id=? ORDER BY session_id, agent_id').all(projectId)
+      : this.db.prepare('SELECT * FROM ingest_sources WHERE project_id=? AND mission_id=? ORDER BY session_id, agent_id')
+        .all(projectId, opts.missionId);
+    return (rows as Array<Record<string, unknown>>).map(rowToIngestSource);
   }
 
   // ---- decisions -------------------------------------------------------------
@@ -1514,7 +1553,8 @@ export class MissionStore {
       gateSetDigest: (r.gate_set_digest as string | null) ?? undefined,
       pid: (r.pid as number | null) ?? undefined,
       heartbeatAt: (r.heartbeat_at as number | null) ?? undefined,
-      sandbox: {
+      origin: r.origin as AttemptOrigin,
+      sandbox: r.sandbox_profile === null ? null : {
         profile: r.sandbox_profile as AttemptSandbox['profile'],
         network: r.sandbox_network as NetworkMode,
         write: !!(r.sandbox_write as number),
@@ -1707,8 +1747,10 @@ function rowToApplication(row: unknown): Application {
 function rowToIngestSource(r: Record<string, unknown>): IngestSource {
   return {
     sessionId: r.session_id as string,
+    agentId: r.agent_id as string,
     projectId: r.project_id as string,
     pathDigest: r.path_digest as string,
+    prefixDigest: r.prefix_digest as string,
     bytesSeen: r.bytes_seen as number,
     linesSeen: r.lines_seen as number,
     missionId: r.mission_id as string,

@@ -107,10 +107,12 @@ CREATE TABLE attempts (
   gate_set_digest    TEXT,
   pid                INTEGER,
   heartbeat_at       INTEGER,
-  sandbox_profile    TEXT NOT NULL DEFAULT 'none' CHECK (sandbox_profile IN ('none','review','author','gate')),
-  sandbox_network    TEXT NOT NULL DEFAULT 'shared' CHECK (sandbox_network IN ('none','shared')),
-  sandbox_write      INTEGER NOT NULL DEFAULT 0 CHECK (sandbox_write IN (0,1)),
-  sandbox_exec       INTEGER NOT NULL DEFAULT 0 CHECK (sandbox_exec IN (0,1)),
+  origin             TEXT NOT NULL DEFAULT 'daylight' CHECK (origin IN ('daylight','ingested')),
+  -- NULL exactly for an ingested attempt: Daylight granted it nothing and cannot say what it had.
+  sandbox_profile    TEXT CHECK (sandbox_profile IN ('none','review','author','gate')),
+  sandbox_network    TEXT CHECK (sandbox_network IN ('none','shared')),
+  sandbox_write      INTEGER CHECK (sandbox_write IN (0,1)),
+  sandbox_exec       INTEGER CHECK (sandbox_exec IN (0,1)),
   authorize_decision_id TEXT REFERENCES decisions(id),
   -- {present, envName, label}: which credential, never its value.
   credential         TEXT,
@@ -118,9 +120,14 @@ CREATE TABLE attempts (
   mcp_token_digest   TEXT UNIQUE,
   -- A cost nobody reported is not a cost (R10.2).
   CHECK (cost_source <> 'none' OR cost_usd IS NULL),
+  CHECK ((origin = 'ingested') = (sandbox_profile IS NULL)),
+  CHECK ((sandbox_profile IS NULL) = (sandbox_network IS NULL)
+    AND (sandbox_profile IS NULL) = (sandbox_write IS NULL)
+    AND (sandbox_profile IS NULL) = (sandbox_exec IS NULL)),
+  CHECK (origin = 'daylight' OR authorize_decision_id IS NULL),
   -- R7, as a constraint as well as a store check: write never stands without its grant.
-  CHECK (sandbox_write = 0 OR authorize_decision_id IS NOT NULL),
-  CHECK (sandbox_exec = 0 OR sandbox_write = 1)
+  CHECK (sandbox_write = 0 OR sandbox_write IS NULL OR authorize_decision_id IS NOT NULL),
+  CHECK (sandbox_exec = 0 OR sandbox_exec IS NULL OR sandbox_write = 1)
 );
 CREATE INDEX attempts_task ON attempts(task_id, started_at);
 CREATE INDEX attempts_session ON attempts(session_id);
@@ -296,16 +303,22 @@ CREATE TABLE applications (
 );
 CREATE INDEX applications_mission ON applications(mission_id);
 
+-- A subagent's transcript shares its parent's session id, so the key is the pair; agent_id
+-- is '' for the session's main transcript.
 CREATE TABLE ingest_sources (
-  session_id  TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL,
-  path_digest TEXT NOT NULL,
+  session_id    TEXT NOT NULL,
+  agent_id      TEXT NOT NULL DEFAULT '',
+  project_id    TEXT NOT NULL,
+  path_digest   TEXT NOT NULL,
+  prefix_digest TEXT NOT NULL,
   bytes_seen  INTEGER NOT NULL,
   lines_seen  INTEGER NOT NULL,
   mission_id  TEXT NOT NULL REFERENCES missions(id),
   attempt_id  TEXT NOT NULL REFERENCES attempts(id),
-  ingested_at INTEGER NOT NULL
+  ingested_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, agent_id)
 );
+CREATE INDEX ingest_sources_project ON ingest_sources(project_id, mission_id);
 `;
 
 /** A database this build will not read. The message is one line and says what to do. */

@@ -122,7 +122,7 @@ export function exportMission(ctx: DaylightContext, missionId: string): MissionE
     gateEvaluations: ctx.store.gateEvaluations({ missionId }),
     applications: ctx.store.applications(missionId),
     usage: attempts.flatMap((a) => ctx.store.usageRows(a.id)),
-    ingestSources: ctx.store.ingestSources(missionId),
+    ingestSources: ctx.store.ingestSources(mission.projectId, { missionId }),
   };
   const claims: Claim[] = [];
   const seen = new Set<string>();
@@ -251,7 +251,9 @@ function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
   for (const u of file.usage) {
     differs('usage', `${u.attemptId}#${u.seq}`, ctx.store.usageRows(u.attemptId).find((h) => h.seq === u.seq), u);
   }
-  for (const s of file.ingestSources) differs('ingest source', s.sessionId, ctx.store.ingestSource(s.sessionId), s);
+  for (const s of file.ingestSources) {
+    differs('ingest source', `${s.sessionId}/${s.agentId}`, ctx.store.ingestSource(s.sessionId, s.agentId), s);
+  }
   // Artifacts are not compared: an artifact row is one per digest and keeps whichever label
   // first wrote those bytes (an empty stderr is the same artifact in every run), so the file's
   // ref legitimately differs from the row here. The bytes are verified against the digest.
@@ -400,9 +402,9 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
        (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state, started_at,
         finished_at, cost_usd, exit_code, signal, timed_out, failure, artifacts, input_tokens,
         output_tokens, cache_read_tokens, cache_write_tokens, usage_source, cost_source, model,
-        parent_attempt_id, gate_set_digest, pid, heartbeat_at, sandbox_profile, sandbox_network,
+        parent_attempt_id, gate_set_digest, pid, heartbeat_at, origin, sandbox_profile, sandbox_network,
         sandbox_write, sandbox_exec, authorize_decision_id, credential, mcp_token_digest)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const a of file.attempts) {
       const r = attempt.run(
@@ -411,8 +413,9 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
         a.timedOut ? 1 : 0, a.failure ?? null, JSON.stringify(a.artifacts),
         a.tokens.input, a.tokens.output, a.tokens.cacheRead, a.tokens.cacheWrite, a.usageSource,
         a.costSource, a.model ?? null, a.parentAttemptId ?? null, a.gateSetDigest ?? null,
-        a.pid ?? null, a.heartbeatAt ?? null, a.sandbox.profile, a.sandbox.network,
-        a.sandbox.write ? 1 : 0, a.sandbox.exec ? 1 : 0, a.sandbox.authorizeDecisionId,
+        a.pid ?? null, a.heartbeatAt ?? null, a.origin, a.sandbox?.profile ?? null, a.sandbox?.network ?? null,
+        a.sandbox ? (a.sandbox.write ? 1 : 0) : null, a.sandbox ? (a.sandbox.exec ? 1 : 0) : null,
+        a.sandbox?.authorizeDecisionId ?? null,
         json(a.credential), a.mcpTokenDigest ?? null,
       );
       added.attempts += Number(r.changes);
@@ -503,12 +506,14 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     }
     const ingest = db.prepare(
       `INSERT OR IGNORE INTO ingest_sources
-       (session_id, project_id, path_digest, bytes_seen, lines_seen, mission_id, attempt_id, ingested_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
+       (session_id, agent_id, project_id, path_digest, prefix_digest, bytes_seen, lines_seen, mission_id,
+        attempt_id, ingested_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const s of file.ingestSources) {
       const r = ingest.run(
-        s.sessionId, s.projectId, s.pathDigest, s.bytesSeen, s.linesSeen, s.missionId, s.attemptId, s.ingestedAt,
+        s.sessionId, s.agentId, s.projectId, s.pathDigest, s.prefixDigest, s.bytesSeen, s.linesSeen,
+        s.missionId, s.attemptId, s.ingestedAt,
       );
       added.ingestSources += Number(r.changes);
     }

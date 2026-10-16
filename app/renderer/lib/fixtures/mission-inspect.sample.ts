@@ -114,6 +114,7 @@ const ref = (id: string, kind: 'log' | 'result' | 'test' | 'expected' | 'trace',
 const reviewAttempt = (costSource: 'provider' | 'none') => ({
   tokens: { input: null, output: null, cacheRead: null, cacheWrite: null },
   usageSource: 'none' as const,
+  origin: 'daylight' as const,
   costSource,
   sandbox: { profile: 'none' as const, network: 'shared' as const, write: false, exec: false, authorizeDecisionId: null },
 });
