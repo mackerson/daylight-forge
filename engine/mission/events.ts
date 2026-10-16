@@ -4,7 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { RunEvent } from '../replay/types.ts';
 import { canonicalJson } from './artifacts.ts';
 import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
-import { DAYLIGHT_SCHEMA_VERSION } from './types.ts';
+import { EVENT_SCHEMA_VERSION } from './types.ts';
 import type { DaylightEvent, DaylightEventInput } from './types.ts';
 
 /**
@@ -52,14 +52,14 @@ export class EventLog {
   append(e: DaylightEventInput, id: string = eventId()): DaylightEvent {
     const at = e.at ?? this.now();
     const row = this.insert.run(
-      id, DAYLIGHT_SCHEMA_VERSION, at, e.projectId,
+      id, EVENT_SCHEMA_VERSION, at, e.projectId,
       e.missionId ?? null, e.taskId ?? null, e.attemptId ?? null, e.actorId ?? null,
       e.category, e.name,
       e.artifactIds ? JSON.stringify(e.artifactIds) : null,
       JSON.stringify(e.payload ?? {}),
     );
     return {
-      schemaVersion: DAYLIGHT_SCHEMA_VERSION,
+      schemaVersion: EVENT_SCHEMA_VERSION,
       id,
       sequence: Number(row.lastInsertRowid),
       at,

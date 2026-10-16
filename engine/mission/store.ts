@@ -2,14 +2,20 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { canonicalJson, digestOf } from './artifacts.ts';
 import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
 import {
-  ATTEMPT_TRANSITIONS, canTransition, MISSION_TRANSITIONS, TASK_TRANSITIONS,
+  ATTEMPT_TRANSITIONS, canTransition, DECISION_OPERATIONS, ID_PREFIX, isEntityId, isHumanActor,
+  MISSION_TRANSITIONS,
+  NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
-  ArtifactKind, ArtifactRef, Attempt, AttemptState, Decision, Experiment,
-  ExperimentConclusion, Mission, MissionBudget, MissionKind, MissionOutcome,
-  MissionPermissions, MissionScope, MissionState, ProjectIdentity, Task, TaskRole, TaskState,
+  ArtifactKind, ArtifactRef, Attempt, AttemptCredential, AttemptSandbox, AttemptState, CostSource, Decision,
+  DecisionOperation, EntityKind, Experiment, ExperimentConclusion, ExperimentRole, Mission,
+  MissionBudget, MissionKind, MissionOutcome, MissionPermissions, MissionScope, MissionState,
+  NetworkMode, NewExperiment, ProjectIdentity, Task, TaskRole, TaskState, TokenUsage,
+  UsageSource, Application, Candidate, CandidateFile, CandidateVerdict, GateEvaluation, GateTarget,
+  IngestSource, PolicyViolation, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
 } from './types.ts';
 
 /**
@@ -31,7 +37,37 @@ export class IllegalTransition extends Error {
   }
 }
 
-const id = (prefix: string) => `${prefix}_${randomUUID().replace(/-/g, '')}`;
+/** A fresh id of the given kind: `<prefix>_<32 hex>`. */
+export function newId(kind: EntityKind): string {
+  return `${ID_PREFIX[kind]}_${randomUUID().replace(/-/g, '')}`;
+}
+
+const NO_TOKENS: TokenUsage = { input: null, output: null, cacheRead: null, cacheWrite: null };
+
+
+const tokenColumns = (t: TokenUsage): [number | null, number | null, number | null, number | null] =>
+  [t.input, t.output, t.cacheRead, t.cacheWrite];
+
+const maxOf = (a: number | null, b: number | null): number | null =>
+  a === null ? b : b === null ? a : Math.max(a, b);
+
+/** An approving `authorize-mission` decision of this mission that granted write. */
+function grantsWrite(d: Decision | null, missionId: string): boolean {
+  const scope = d?.scope as { operation?: unknown; permissions?: { write?: unknown } } | undefined;
+  return !!d && d.missionId === missionId && d.kind === 'approve'
+    && scope?.operation === 'authorize-mission' && scope.permissions?.write === true;
+}
+
+/** A credential record names a variable and a label. Anything shaped like a value is refused. */
+function checkCredential(c: AttemptCredential): void {
+  if (typeof c.present !== 'boolean') throw new Error('credential.present must be a boolean');
+  if (c.envName !== null && !/^[A-Z_][A-Z0-9_]{0,63}$/.test(c.envName)) {
+    throw new Error('credential.envName must be an environment variable name');
+  }
+  if (c.label !== null && !/^[\w .:@/-]{1,64}$/.test(c.label)) {
+    throw new Error('credential.label must be a short plain label of at most 64 characters');
+  }
+}
 
 /**
  * Scope paths in the one spelling claims use: repo-relative, no `./`, no trailing or doubled
@@ -45,6 +81,8 @@ function normaliseScope(scope: MissionScope): MissionScope {
     .filter((p) => p && p !== '.');
   return { ...scope, paths };
 }
+
+const EXPERIMENT_ROLES: readonly ExperimentRole[] = ['probe', 'gate', 'holdout'];
 
 const DEFAULT_PERMISSIONS: MissionPermissions = {
   read: true, write: false, execute: false, deploy: false,
@@ -61,6 +99,28 @@ export interface CreateMissionInput {
   parentId?: string;
   requirementIds?: string[];
   acceptanceGateIds?: string[];
+  /** Must name an `approved` work item of the same project. */
+  workItemId?: string;
+  /**
+   * `--no-work-item`: an implement mission with no work item records who decided it needs
+   * none, as an `adhoc-mission` decision on the mission (R10.1). Exactly one of this and
+   * `workItemId` is required for an implement mission, and neither is accepted for another kind.
+   */
+  adhoc?: { actor: string; rationale: string };
+}
+
+/**
+ * `mission authorize`: a human grants what the mission may do. `read` is always granted and
+ * `deploy` never is in P1, so only `write` and `execute` are asked for.
+ */
+export interface AuthorizeMissionInput {
+  missionId: string;
+  actor: string;
+  rationale: string;
+  permissions: { write: boolean; execute: boolean };
+  /** Becomes the mission's `budget.maxUsd`; null leaves the budget as it is. */
+  maxUsd: number | null;
+  artifactIds?: string[];
 }
 
 export interface CreateTaskInput {
@@ -80,6 +140,17 @@ export interface StartAttemptInput {
   runnerId: string;
   sessionId?: string;
   worktree?: string;
+  /**
+   * Defaults to `READ_ONLY_SANDBOX`. `write: true` needs `authorizeDecisionId`, an approving
+   * `authorize-mission` decision of this attempt's mission that granted write.
+   */
+  sandbox?: Partial<AttemptSandbox>;
+  parentAttemptId?: string;
+  gateSetDigest?: string;
+  pid?: number;
+  credential?: AttemptCredential;
+  /** The per-attempt MCP token. Hashed on the way in; only the digest is stored. */
+  mcpToken?: string;
 }
 
 export interface FinishAttemptInput {
@@ -89,13 +160,56 @@ export interface FinishAttemptInput {
   timedOut?: boolean;
   /** `null` when the runner reported nothing. Not the same as zero. */
   costUsd: number | null;
+  /** Defaults to `none` for a null cost and `provider` otherwise; a scraped figure must say so. */
+  costSource?: CostSource;
+  /** The model the provider reported. */
+  model?: string;
+  /** Totals for the attempt; left as they are when absent. */
+  tokens?: TokenUsage;
+  usageSource?: UsageSource;
   failure?: string;
   artifacts?: ArtifactRef[];
 }
 
-export type CreateExperimentInput = Omit<
-  Experiment, 'id' | 'executions' | 'conclusion' | 'createdAt' | 'updatedAt'
->;
+export type CreateExperimentInput = NewExperiment;
+
+export interface LockGatesInput {
+  experimentIds: string[];
+  actor: string;
+  rationale: string;
+  /** Gates already passing at base that the human accepts anyway. */
+  vacuousOverrides?: string[];
+  artifactIds?: string[];
+}
+
+/** One turn's usage as a capture or an ingester reads it; the store assigns `seq`. */
+export interface RecordUsageInput {
+  requestId: string | null;
+  at?: number;
+  model: string | null;
+  tokens: TokenUsage;
+  costUsd: number | null;
+  costSource: CostSource;
+  source: UsageTurn['source'];
+}
+
+export type CreateWorkItemInput = Pick<
+  WorkItem, 'projectId' | 'missionId' | 'specArtifact' | 'specRevision' | 'anchor' | 'title'
+  | 'statement' | 'examples' | 'negativeExamples' | 'proposedBy'
+> & { id?: string; attemptId?: string; proposalArtifact?: ArtifactRef };
+
+export type CreateCandidateInput = Omit<Candidate, 'id' | 'verdict' | 'verdictReasons' | 'createdAt'>;
+
+export type CreateGateEvaluationInput = Omit<GateEvaluation, 'id' | 'createdAt'>;
+
+export interface CreateApplicationInput {
+  candidateId: string;
+  decisionId: string;
+  baseCommit: string;
+  commit: string;
+  ref: string;
+  appliedBy: string;
+}
 
 export type CreateDecisionInput = Omit<Decision, 'id' | 'at'>;
 
@@ -139,9 +253,43 @@ export class MissionStore {
     if (!this.project(input.projectId)) {
       throw new Error(`unknown project ${input.projectId}; call ensureProject first`);
     }
+    if (input.permissions?.write) {
+      throw new Error(
+        'a mission is created without write; only authorizeMission, a human authorize-mission ' +
+          'decision, grants it',
+      );
+    }
+    if (input.permissions?.deploy) throw new Error('deploy is never granted');
+    if (input.kind === 'spec' && input.permissions?.execute) {
+      throw new Error('a spec mission only decomposes; it never executes');
+    }
+    if (input.kind === 'implement') {
+      if ((input.workItemId === undefined) === (input.adhoc === undefined)) {
+        throw new Error(
+          'an implement mission builds an approved work item, or names the human who decided it ' +
+            'needs none (adhoc); exactly one of the two',
+        );
+      }
+      if (input.adhoc && !isHumanActor(input.adhoc.actor)) {
+        throw new Error(`an ad hoc implement mission needs a human:<name> actor, not ${input.adhoc.actor}`);
+      }
+    } else if (input.workItemId !== undefined || input.adhoc !== undefined) {
+      throw new Error(`a ${input.kind} mission builds no work item`);
+    }
+    if (input.workItemId !== undefined) {
+      const w = this.db.prepare('SELECT project_id, status FROM work_items WHERE id=?').get(input.workItemId) as
+        | { project_id: string; status: string } | undefined;
+      if (!w) throw new Error(`unknown work item ${input.workItemId}`);
+      if (w.project_id !== input.projectId) {
+        throw new Error(`work item ${input.workItemId} belongs to ${w.project_id}, not ${input.projectId}`);
+      }
+      if (w.status !== 'approved') {
+        throw new Error(`work item ${input.workItemId} is ${w.status}; a mission builds only an approved one`);
+      }
+    }
     const at = this.now();
     const m: Mission = {
-      id: id('m'),
+      id: newId('mission'),
       projectId: input.projectId,
       parentId: input.parentId,
       kind: input.kind,
@@ -152,25 +300,86 @@ export class MissionStore {
       budget: input.budget ?? {},
       requirementIds: input.requirementIds ?? [],
       acceptanceGateIds: input.acceptanceGateIds ?? [],
+      workItemId: input.workItemId,
       state: 'draft',
       taskIds: [],
       createdAt: at,
       updatedAt: at,
     };
-    this.db
-      .prepare(
-        `INSERT INTO missions
-         (id, project_id, parent_id, kind, objective, base_revision, scope, permissions, budget,
-          requirement_ids, acceptance_gate_ids, state, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        m.id, m.projectId, m.parentId ?? null, m.kind, m.objective, m.baseRevision,
-        JSON.stringify(m.scope), JSON.stringify(m.permissions), JSON.stringify(m.budget),
-        JSON.stringify(m.requirementIds), JSON.stringify(m.acceptanceGateIds),
-        m.state, m.createdAt, m.updatedAt,
-      );
-    return m;
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO missions
+           (id, project_id, parent_id, kind, objective, base_revision, scope, permissions, budget,
+            requirement_ids, acceptance_gate_ids, work_item_id, state, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          m.id, m.projectId, m.parentId ?? null, m.kind, m.objective, m.baseRevision,
+          JSON.stringify(m.scope), JSON.stringify(m.permissions), JSON.stringify(m.budget),
+          JSON.stringify(m.requirementIds), JSON.stringify(m.acceptanceGateIds),
+          m.workItemId ?? null, m.state, m.createdAt, m.updatedAt,
+        );
+      if (input.adhoc) {
+        this.recordDecision({
+          missionId: m.id, projectId: m.projectId, revision: m.baseRevision,
+          actor: input.adhoc.actor, kind: 'adhoc-mission', rationale: input.adhoc.rationale,
+          scope: { operation: 'adhoc-mission', objective: m.objective }, artifactIds: [],
+        });
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return this.requireMission(m.id);
+  }
+
+  /**
+   * Record a human's grant and apply it, in one transaction: the `authorize-mission`
+   * decision, the mission's permissions and budget, and `draft → ready`.
+   *
+   * The only path to `write` (R7). Write is granted only to an implement mission, because a
+   * review mission's read-only stance is the point of it; `deploy` is never granted in P1.
+   */
+  authorizeMission(input: AuthorizeMissionInput): { mission: Mission; decision: Decision } {
+    const m = this.requireMission(input.missionId);
+    if (m.state !== 'draft' && m.state !== 'ready') {
+      throw new Error(`mission ${m.id} is ${m.state}; permissions are granted before it runs`);
+    }
+    if (input.permissions.write && m.kind !== 'implement') {
+      throw new Error(`mission ${m.id} is ${m.kind}; write is granted only to an implement mission`);
+    }
+    if (input.maxUsd !== null && !(Number.isFinite(input.maxUsd) && input.maxUsd > 0)) {
+      throw new Error(`mission ${m.id}: maxUsd must be a positive number or null`);
+    }
+    const permissions: MissionPermissions = {
+      read: true, write: !!input.permissions.write, execute: !!input.permissions.execute, deploy: false,
+    };
+    const budget: MissionBudget = input.maxUsd === null ? m.budget : { ...m.budget, maxUsd: input.maxUsd };
+    this.db.exec('BEGIN');
+    try {
+      const decision = this.recordDecision({
+        missionId: m.id,
+        projectId: m.projectId,
+        revision: m.baseRevision,
+        actor: input.actor,
+        kind: 'approve',
+        rationale: input.rationale,
+        scope: { operation: 'authorize-mission', permissions, maxUsd: input.maxUsd },
+        artifactIds: input.artifactIds ?? [],
+      });
+      this.db
+        .prepare('UPDATE missions SET permissions=?, budget=?, updated_at=? WHERE id=?')
+        .run(JSON.stringify(permissions), JSON.stringify(budget), this.now(), m.id);
+      const mission = m.state === 'draft' ? this.transitionMission(m.id, 'ready') : this.requireMission(m.id);
+      this.db.exec('COMMIT');
+      return { mission, decision };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   mission(missionId: string): Mission | null {
@@ -218,6 +427,13 @@ export class MissionStore {
     if (!canTransition(MISSION_TRANSITIONS, m.state, 'closed')) {
       throw new IllegalTransition('mission', missionId, m.state, 'closed');
     }
+    // An implement mission succeeds when its code is in a ref, not when a process exits 0.
+    if (outcome === 'succeeded' && m.kind === 'implement') {
+      const applied = this.db.prepare('SELECT 1 FROM applications WHERE mission_id=? LIMIT 1').get(missionId);
+      if (!applied) {
+        throw new Error(`mission ${missionId}: an implement mission succeeds only once a candidate is applied`);
+      }
+    }
     const at = this.now();
     this.db
       .prepare(
@@ -241,6 +457,9 @@ export class MissionStore {
           `to ${m.projectId}`,
       );
     }
+    if (m.kind === 'spec' && input.role !== 'decompose') {
+      throw new Error(`mission ${m.id} is a spec mission; its only tasks are decompose tasks`);
+    }
     for (const dep of input.dependsOn ?? []) {
       const d = this.task(dep);
       if (!d || d.missionId !== m.id) {
@@ -249,7 +468,7 @@ export class MissionStore {
     }
     const at = this.now();
     const t: Task = {
-      id: id('t'),
+      id: newId('task'),
       missionId: m.id,
       projectId: m.projectId,
       role: input.role,
@@ -333,6 +552,27 @@ export class MissionStore {
     if (live) {
       throw new IllegalTransition('task', t.id, `running (attempt ${live.id} has not finished)`, 'a second attempt');
     }
+    const sandbox: AttemptSandbox = { ...READ_ONLY_SANDBOX, ...input.sandbox };
+    if (!NETWORK_MODES.includes(sandbox.network)) {
+      throw new Error(`attempt network must be one of ${NETWORK_MODES.join(', ')}, not ${String(sandbox.network)}`);
+    }
+    if (!SANDBOX_PROFILES.includes(sandbox.profile)) {
+      throw new Error(`attempt sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(sandbox.profile)}`);
+    }
+    if (sandbox.write) this.requireWriteGrant(t.missionId, sandbox.authorizeDecisionId ?? undefined);
+    if (sandbox.exec && !sandbox.write) {
+      throw new Error(`an attempt on mission ${t.missionId} asks for exec without write; exec runs over the attempt's own writable tree`);
+    }
+    if (input.mcpToken !== undefined && input.mcpToken.length < 32) {
+      throw new Error('an MCP token must be at least 32 characters of randomness');
+    }
+    if (input.credential) checkCredential(input.credential);
+    if (input.parentAttemptId !== undefined) {
+      const parent = this.attempt(input.parentAttemptId);
+      if (!parent || parent.missionId !== t.missionId) {
+        throw new Error(`parent attempt ${input.parentAttemptId} is not an attempt of mission ${t.missionId}`);
+      }
+    }
     if (t.state === 'queued') t = this.transitionTask(t.id, 'leased');
     if (t.state === 'leased') t = this.transitionTask(t.id, 'running');
     if (t.state !== 'running') {
@@ -340,7 +580,7 @@ export class MissionStore {
     }
     const at = this.now();
     const a: Attempt = {
-      id: id('a'),
+      id: newId('attempt'),
       missionId: t.missionId,
       taskId: t.id,
       projectId: t.projectId,
@@ -351,19 +591,84 @@ export class MissionStore {
       startedAt: at,
       costUsd: null,
       artifacts: [],
+      tokens: { ...NO_TOKENS },
+      usageSource: 'none',
+      costSource: 'none',
+      parentAttemptId: input.parentAttemptId,
+      gateSetDigest: input.gateSetDigest,
+      pid: input.pid,
+      heartbeatAt: input.pid !== undefined ? at : undefined,
+      sandbox,
+      credential: input.credential,
+      mcpTokenDigest: input.mcpToken !== undefined ? digestOf(input.mcpToken) : undefined,
     };
     this.db
       .prepare(
         `INSERT INTO attempts
          (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state,
-          started_at, cost_usd, timed_out, artifacts)
-         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]')`,
+          started_at, cost_usd, timed_out, artifacts, parent_attempt_id, gate_set_digest, pid,
+          heartbeat_at, sandbox_profile, sandbox_network, sandbox_write, sandbox_exec,
+          authorize_decision_id, credential, mcp_token_digest)
+         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         a.id, a.missionId, a.taskId, a.projectId, a.runnerId, a.sessionId ?? null,
-        a.worktree ?? null, a.state, a.startedAt,
+        a.worktree ?? null, a.state, a.startedAt, a.parentAttemptId ?? null,
+        a.gateSetDigest ?? null, a.pid ?? null, a.heartbeatAt ?? null,
+        sandbox.profile, sandbox.network, sandbox.write ? 1 : 0, sandbox.exec ? 1 : 0,
+        sandbox.authorizeDecisionId ?? null, a.credential ? JSON.stringify(a.credential) : null,
+        a.mcpTokenDigest ?? null,
       );
     return a;
+  }
+
+  /**
+   * The live attempt an MCP token belongs to, or null. A token dies with its attempt: once
+   * the attempt has finished, the same token finds nothing.
+   */
+  attemptByMcpToken(token: string): Attempt | null {
+    const r = this.db
+      .prepare(`SELECT * FROM attempts WHERE mcp_token_digest=? AND state IN ('starting','running')`)
+      .get(digestOf(token));
+    return r ? this.rowToAttempt(r) : null;
+  }
+
+  /**
+   * Refuse write unless `decisionId` is an approving `authorize-mission` decision of this
+   * mission that granted it, and the mission still holds it.
+   */
+  private requireWriteGrant(missionId: string, decisionId: string | undefined): void {
+    if (!decisionId) {
+      throw new Error(`an attempt on mission ${missionId} asks for write without naming the authorize decision that granted it`);
+    }
+    if (!grantsWrite(this.decision(decisionId), missionId)) {
+      throw new Error(`decision ${decisionId} is not an authorize-mission decision granting write on mission ${missionId}`);
+    }
+    if (!this.requireMission(missionId).permissions.write) {
+      throw new Error(`mission ${missionId} does not hold write`);
+    }
+  }
+
+  /** The runner is alive. A no-op on an attempt that has already finished. */
+  heartbeat(attemptId: string, at: number = this.now()): void {
+    this.db
+      .prepare(`UPDATE attempts SET heartbeat_at=? WHERE id=? AND state IN ('starting','running')`)
+      .run(at, attemptId);
+  }
+
+  /**
+   * The R7 invariant as a query: attempts recorded with write whose grant is missing, is not an
+   * approving `authorize-mission` decision of their own mission, or did not grant write. Empty
+   * is the only acceptable answer; the store refuses to create one, and this is what checks it.
+   */
+  unauthorizedWriteAttempts(projectId?: string): Attempt[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM attempts WHERE sandbox_write != 0 ${projectId ? 'AND project_id=?' : ''} ORDER BY started_at, id`)
+      .all(...(projectId ? [projectId] : []));
+    return rows.map((r) => this.rowToAttempt(r)).filter((a) => {
+      const d = a.sandbox.authorizeDecisionId !== null ? this.decision(a.sandbox.authorizeDecisionId) : null;
+      return !grantsWrite(d, a.missionId);
+    });
   }
 
   /**
@@ -383,14 +688,21 @@ export class MissionStore {
     try {
       this.db
         .prepare(
-          `UPDATE attempts SET state=?, finished_at=?, cost_usd=?, exit_code=?, signal=?,
-             timed_out=?, failure=?, artifacts=?
+          `UPDATE attempts SET state=?, finished_at=?, cost_usd=?, cost_source=?, exit_code=?,
+             signal=?, timed_out=?, failure=?, artifacts=?, model=COALESCE(?, model),
+             input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_write_tokens=?,
+             usage_source=?
            WHERE id=?`,
         )
         .run(
-          result.state, at, result.costUsd, result.exitCode ?? null, result.signal ?? null,
+          result.state, at, result.costUsd,
+          // An unlabelled figure keeps P0's meaning, the runner's own report. Scraped figures
+          // must say `stdout-scan`; the CHECK refuses a cost labelled `none`.
+          result.costSource ?? (result.costUsd === null ? 'none' : 'provider'),
+          result.exitCode ?? null, result.signal ?? null,
           result.timedOut ? 1 : 0, result.failure ?? null,
-          JSON.stringify(result.artifacts ?? []), attemptId,
+          JSON.stringify(result.artifacts ?? []), result.model ?? null,
+          ...tokenColumns(result.tokens ?? a.tokens), result.usageSource ?? a.usageSource, attemptId,
         );
       for (const ref of result.artifacts ?? []) this.recordArtifact(ref);
 
@@ -490,10 +802,18 @@ export class MissionStore {
           `belongs to ${m.projectId}`,
       );
     }
+    const role: ExperimentRole = input.role ?? 'probe';
+    if (!EXPERIMENT_ROLES.includes(role)) {
+      throw new Error(`experiment role must be one of ${EXPERIMENT_ROLES.join(', ')}, not ${String(role)}`);
+    }
+    if (input.id !== undefined && !isEntityId('experiment', input.id)) {
+      throw new Error(`${input.id} is not an experiment id; mint one with newId('experiment')`);
+    }
     const at = this.now();
     const x: Experiment = {
       ...input,
-      id: id('x'),
+      role,
+      id: input.id ?? newId('experiment'),
       executions: [],
       conclusion: 'pending',
       createdAt: at,
@@ -504,15 +824,15 @@ export class MissionStore {
         `INSERT INTO experiments
          (id, mission_id, project_id, claim_ids, subject, predicate, hypothesis, prediction,
           base_revision, test_artifact, expected_artifact, harness_digest, command,
-          sandbox_profile, executions, conclusion, limitations, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          sandbox_profile, executions, conclusion, limitations, role, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         x.id, x.missionId, x.projectId, JSON.stringify(x.claimIds), x.subject, x.predicate,
         x.hypothesis, JSON.stringify(x.prediction), x.baseRevision,
         JSON.stringify(x.testArtifact), JSON.stringify(x.expectedArtifact), x.harnessDigest,
         JSON.stringify(x.command), x.sandboxProfile, '[]', x.conclusion,
-        JSON.stringify(x.limitations), x.createdAt, x.updatedAt,
+        JSON.stringify(x.limitations), x.role, x.createdAt, x.updatedAt,
       );
     this.recordArtifact(x.testArtifact);
     this.recordArtifact(x.expectedArtifact);
@@ -554,6 +874,508 @@ export class MissionStore {
       .map((r) => this.rowToExperiment(r));
   }
 
+  experimentsFor(missionId: string, role?: ExperimentRole): Experiment[] {
+    return this.experiments(missionId).filter((x) => role === undefined || x.role === role);
+  }
+
+  /** A run is starting now. What the row-side reaper measures from. */
+  markExperimentStarted(experimentId: string, at: number = this.now()): void {
+    const r = this.db.prepare('UPDATE experiments SET started_at=? WHERE id=?').run(at, experimentId);
+    if (!r.changes) throw new Error(`unknown experiment ${experimentId}`);
+  }
+
+  /**
+   * Conclude, as invalid, this project's pending experiments whose last run started before
+   * `startedBefore` and that `isLive` (when given) does not vouch for.
+   *
+   * The scratch-dir sweep only sees the current `/tmp`; a runner killed before a reboot
+   * leaves a pending row nothing else will ever conclude. Rows that never started are left
+   * alone: pending-and-never-run is a registered experiment, not a dead one.
+   */
+  reapPendingExperiments(opts: {
+    projectId: string; startedBefore: number; isLive?: (experimentId: string) => boolean;
+  }): Experiment[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM experiments WHERE project_id=? AND conclusion='pending'
+         AND started_at IS NOT NULL AND started_at < ? ORDER BY started_at, id`,
+      )
+      .all(opts.projectId, opts.startedBefore) as Array<{ id: string }>;
+    const reaped: Experiment[] = [];
+    for (const { id } of rows) {
+      if (opts.isLive?.(id)) continue;
+      const x = this.experiment(id)!;
+      reaped.push(this.updateExperiment(id, {
+        conclusion: 'invalid', limitations: [...x.limitations, 'runner died: found pending by the row-side reaper'],
+      }));
+    }
+    return reaped;
+  }
+
+  /**
+   * `gate lock`, as one transaction: compute the gate-set digest from the experiments' own
+   * harness digests, record the human's `lock-gates` decision naming it, stamp `locked_by` on
+   * every gate and holdout, and make the mission's `acceptanceGateIds` exactly that set. A
+   * lock is never half-written, and nothing but these rows decides what the digest covers.
+   */
+  lockGates(missionId: string, input: LockGatesInput): { mission: Mission; decision: Decision; gateSetDigest: string } {
+    const m = this.requireMission(missionId);
+    const ids = [...new Set(input.experimentIds)].sort();
+    if (!ids.length) throw new Error(`mission ${m.id}: a gate lock names at least one gate`);
+    const experiments = ids.map((id) => {
+      const x = this.experiment(id);
+      if (!x || x.missionId !== m.id) throw new Error(`experiment ${id} is not an experiment of mission ${m.id}`);
+      if (x.role === 'probe') throw new Error(`experiment ${id} is a probe; only gates and holdouts are locked`);
+      return x;
+    });
+    const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
+    for (const id of vacuous) {
+      if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
+    }
+    const gateSetDigest = gateSetDigestOf(experiments);
+    const at = this.now();
+    this.db.exec('BEGIN');
+    try {
+      const decision = this.recordDecision({
+        missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: input.actor,
+        kind: 'approve', rationale: input.rationale,
+        scope: {
+          operation: 'lock-gates', experimentIds: ids,
+          harnessDigests: Object.fromEntries(experiments.map((x) => [x.id, x.harnessDigest])),
+          gateSetDigest, vacuousOverrides: vacuous,
+        },
+        artifactIds: input.artifactIds ?? [],
+      });
+      const lock = this.db.prepare('UPDATE experiments SET locked_by=?, updated_at=? WHERE id=?');
+      for (const id of ids) lock.run(decision.id, at, id);
+      this.db
+        .prepare('UPDATE missions SET acceptance_gate_ids=?, updated_at=? WHERE id=?')
+        .run(JSON.stringify(ids), at, m.id);
+      this.db.exec('COMMIT');
+      return { mission: this.requireMission(m.id), decision, gateSetDigest };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /** The most recent approving `lock-gates` decision of a mission, or null. */
+  lockDecision(missionId: string): Decision | null {
+    return this.latestOperation(missionId, 'lock-gates');
+  }
+
+  /** The most recent approving `authorize-mission` decision of a mission, or null. */
+  authorizeDecision(missionId: string): Decision | null {
+    return this.latestOperation(missionId, 'authorize-mission');
+  }
+
+  private latestOperation(missionId: string, operation: DecisionOperation): Decision | null {
+    const all = this.decisions(missionId).filter((d) => d.kind === 'approve' && d.scope.operation === operation);
+    return all.at(-1) ?? null;
+  }
+
+  // ---- usage -------------------------------------------------------------------
+
+  /**
+   * One provider turn. A turn whose request id is already recorded for the attempt is the
+   * same turn seen again (providers split one message's usage across lines): its counts are
+   * MAX-merged into the existing row, and a line that adds nothing is a duplicate. Attempt
+   * totals are not touched; the capture that owns the attempt writes them in `finishAttempt`.
+   */
+  recordUsage(attemptId: string, turn: RecordUsageInput): { result: UsageRecordResult; seq: number } {
+    const a = this.requireAttempt(attemptId);
+    if (turn.costSource === 'none' && turn.costUsd !== null) {
+      throw new Error(`usage on attempt ${attemptId}: a cost with source none is not a cost`);
+    }
+    const at = turn.at ?? this.now();
+    this.db.exec('BEGIN');
+    try {
+      const existing = turn.requestId === null ? undefined : this.db
+        .prepare('SELECT * FROM attempt_usage WHERE attempt_id=? AND request_id=?')
+        .get(attemptId, turn.requestId) as Record<string, unknown> | undefined;
+      let out: { result: UsageRecordResult; seq: number };
+      if (existing) {
+        const was = rowToUsage(existing);
+        const tokens: TokenUsage = {
+          input: maxOf(was.tokens.input, turn.tokens.input),
+          output: maxOf(was.tokens.output, turn.tokens.output),
+          cacheRead: maxOf(was.tokens.cacheRead, turn.tokens.cacheRead),
+          cacheWrite: maxOf(was.tokens.cacheWrite, turn.tokens.cacheWrite),
+        };
+        const costUsd = maxOf(was.costUsd, turn.costUsd);
+        const costSource = was.costSource === 'provider' || turn.costSource === 'provider' ? 'provider'
+          : costUsd === null ? 'none' : 'stdout-scan';
+        const model = was.model ?? turn.model;
+        const same = canonical(tokens) === canonical(was.tokens) && costUsd === was.costUsd
+          && costSource === was.costSource && model === was.model;
+        if (!same) {
+          this.db
+            .prepare(
+              `UPDATE attempt_usage SET input_tokens=?, output_tokens=?, cache_read_tokens=?,
+                 cache_write_tokens=?, cost_usd=?, cost_source=?, model=?
+               WHERE attempt_id=? AND seq=?`,
+            )
+            .run(...tokenColumns(tokens), costUsd, costSource, model, attemptId, was.seq);
+        }
+        out = { result: same ? 'duplicate' : 'merged', seq: was.seq };
+      } else {
+        const seq = ((this.db.prepare('SELECT MAX(seq) AS n FROM attempt_usage WHERE attempt_id=?').get(attemptId) as
+          { n: number | null }).n ?? 0) + 1;
+        this.db
+          .prepare(
+            `INSERT INTO attempt_usage
+             (attempt_id, project_id, seq, request_id, at, model, input_tokens, output_tokens,
+              cache_read_tokens, cache_write_tokens, cost_usd, cost_source, source)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            attemptId, a.projectId, seq, turn.requestId, at, turn.model, ...tokenColumns(turn.tokens),
+            turn.costUsd, turn.costSource, turn.source,
+          );
+        out = { result: 'inserted', seq };
+      }
+      this.db.exec('COMMIT');
+      return out;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  usageRows(attemptId: string): UsageTurn[] {
+    return (this.db.prepare('SELECT * FROM attempt_usage WHERE attempt_id=? ORDER BY seq').all(attemptId) as
+      Array<Record<string, unknown>>).map(rowToUsage);
+  }
+
+  /** Per-field sums over an attempt's turns. A field no turn reported stays null, never 0. */
+  usageTotals(attemptId: string): TokenUsage {
+    const sum = (f: keyof TokenUsage) => {
+      const vals = this.usageRows(attemptId).map((u) => u.tokens[f]).filter((v): v is number => v !== null);
+      return vals.length ? vals.reduce((x, y) => x + y, 0) : null;
+    };
+    return { input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite') };
+  }
+
+  /** Every attempt of a project, oldest first: the ledger's one join (Ledger L11). */
+  projectAttempts(projectId: string, opts: { since?: number } = {}): Attempt[] {
+    return this.db
+      .prepare('SELECT * FROM attempts WHERE project_id=? AND started_at >= ? ORDER BY started_at, id')
+      .all(projectId, opts.since ?? 0)
+      .map((r) => this.rowToAttempt(r));
+  }
+
+  // ---- work items ----------------------------------------------------------------
+
+  /**
+   * File a proposed work item. Idempotent on `id`: the same id with the same content returns
+   * the row already here, and with different content is refused.
+   */
+  createWorkItem(input: CreateWorkItemInput): WorkItem {
+    const m = this.requireMission(input.missionId);
+    if (m.projectId !== input.projectId) {
+      throw new Error(`work item for mission ${m.id} names project ${input.projectId}, but the mission belongs to ${m.projectId}`);
+    }
+    if (input.specArtifact.projectId !== input.projectId) {
+      throw new Error(`work item spec ${input.specArtifact.id} belongs to ${input.specArtifact.projectId}, not ${input.projectId}`);
+    }
+    if (input.attemptId !== undefined) {
+      const a = this.attempt(input.attemptId);
+      if (!a || a.missionId !== m.id) throw new Error(`attempt ${input.attemptId} is not an attempt of mission ${m.id}`);
+    }
+    if (input.id !== undefined && !isEntityId('workItem', input.id)) {
+      throw new Error(`${input.id} is not a work item id`);
+    }
+    const contentDigest = workItemContentDigest(input);
+    if (input.id !== undefined) {
+      const have = this.workItem(input.id);
+      if (have) {
+        if (have.contentDigest !== contentDigest || have.projectId !== input.projectId || have.missionId !== m.id) {
+          throw new Error(`work item ${input.id} is already recorded with different content`);
+        }
+        return have;
+      }
+    }
+    const at = this.now();
+    const w: WorkItem = {
+      id: input.id ?? newId('workItem'),
+      projectId: input.projectId,
+      missionId: m.id,
+      attemptId: input.attemptId,
+      proposalArtifact: input.proposalArtifact,
+      contentDigest,
+      specArtifact: input.specArtifact,
+      specRevision: input.specRevision,
+      anchor: input.anchor,
+      title: input.title,
+      statement: input.statement,
+      examples: input.examples,
+      negativeExamples: input.negativeExamples,
+      status: 'proposed',
+      proposedBy: input.proposedBy,
+      createdAt: at,
+      updatedAt: at,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO work_items
+         (id, project_id, mission_id, attempt_id, proposal_artifact, content_digest, spec_artifact,
+          spec_revision, anchor, title, statement, examples, negative_examples, status, proposed_by,
+          decision_id, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`,
+      )
+      .run(
+        w.id, w.projectId, w.missionId, w.attemptId ?? null,
+        w.proposalArtifact ? JSON.stringify(w.proposalArtifact) : null, w.contentDigest,
+        JSON.stringify(w.specArtifact), w.specRevision, w.anchor, w.title, w.statement,
+        JSON.stringify(w.examples), JSON.stringify(w.negativeExamples), w.status, w.proposedBy,
+        w.createdAt, w.updatedAt,
+      );
+    this.recordArtifact(w.specArtifact);
+    if (w.proposalArtifact) this.recordArtifact(w.proposalArtifact);
+    return w;
+  }
+
+  workItem(workItemId: string): WorkItem | null {
+    const r = this.db.prepare('SELECT * FROM work_items WHERE id=?').get(workItemId);
+    return r ? rowToWorkItem(r) : null;
+  }
+
+  workItems(projectId: string, opts: { missionId?: string; status?: WorkItemStatus } = {}): WorkItem[] {
+    return (this.db.prepare('SELECT * FROM work_items WHERE project_id=? ORDER BY created_at, id').all(projectId))
+      .map(rowToWorkItem)
+      .filter((w) => (opts.missionId === undefined || w.missionId === opts.missionId)
+        && (opts.status === undefined || w.status === opts.status));
+  }
+
+  /**
+   * Move a work item, compare-and-set: refused unless it is `from` now. Every move needs a
+   * human decision naming this item and the content digest it was approved or rejected as:
+   * `approve-work-item` to approve, `reject-work-item` to reject or supersede.
+   */
+  setWorkItemStatus(workItemId: string, from: WorkItemStatus, to: WorkItemStatus, decisionId: string): WorkItem {
+    const w = this.workItem(workItemId);
+    if (!w) throw new Error(`unknown work item ${workItemId}`);
+    if (w.status !== from) throw new IllegalTransition('work item', workItemId, `${w.status} (expected ${from})`, to);
+    if (!canTransition(WORK_ITEM_TRANSITIONS, from, to)) throw new IllegalTransition('work item', workItemId, from, to);
+    const d = this.decision(decisionId);
+    const scope = d?.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown } | undefined;
+    const operation = to === 'approved' ? 'approve-work-item' : 'reject-work-item';
+    if (!d || d.projectId !== w.projectId || scope?.operation !== operation || scope.workItemId !== w.id
+      || scope.contentDigest !== w.contentDigest) {
+      throw new Error(`decision ${decisionId} is not a ${operation} decision naming ${w.id} at ${w.contentDigest}`);
+    }
+    const r = this.db
+      .prepare('UPDATE work_items SET status=?, decision_id=?, updated_at=? WHERE id=? AND status=?')
+      .run(to, d.id, this.now(), w.id, from);
+    if (!r.changes) throw new IllegalTransition('work item', workItemId, 'changed underneath', to);
+    return this.workItem(w.id)!;
+  }
+
+  // ---- candidates ------------------------------------------------------------------
+
+  createCandidate(input: CreateCandidateInput): Candidate {
+    const a = this.requireAttempt(input.attemptId);
+    if (a.missionId !== input.missionId) {
+      throw new Error(`attempt ${a.id} is not an attempt of mission ${input.missionId}`);
+    }
+    if (a.projectId !== input.projectId) {
+      throw new Error(`candidate names project ${input.projectId}, but attempt ${a.id} belongs to ${a.projectId}`);
+    }
+    for (const ref of [input.diffArtifact, input.summaryArtifact, input.narrativeArtifact]) {
+      if (ref && ref.projectId !== input.projectId) {
+        throw new Error(`artifact ${ref.id} belongs to ${ref.projectId}, not ${input.projectId}`);
+      }
+    }
+    const c: Candidate = {
+      ...input,
+      id: newId('candidate'),
+      verdict: 'pending',
+      verdictReasons: [],
+      createdAt: this.now(),
+    };
+    this.db
+      .prepare(
+        `INSERT INTO candidates
+         (id, mission_id, attempt_id, project_id, base_commit, diff_artifact, summary_artifact,
+          narrative_artifact, files, policy_violations, secret_hits, gate_set_digest, profile,
+          attempt_state, attempt_failure, verdict, verdict_reasons, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        c.id, c.missionId, c.attemptId, c.projectId, c.baseCommit, JSON.stringify(c.diffArtifact),
+        JSON.stringify(c.summaryArtifact), c.narrativeArtifact ? JSON.stringify(c.narrativeArtifact) : null,
+        JSON.stringify(c.files), JSON.stringify(c.policyViolations), c.secretHits, c.gateSetDigest,
+        JSON.stringify(c.profile), c.attemptState, c.attemptFailure ?? null, c.verdict,
+        JSON.stringify(c.verdictReasons), c.createdAt,
+      );
+    for (const ref of [c.diffArtifact, c.summaryArtifact, c.narrativeArtifact]) if (ref) this.recordArtifact(ref);
+    return c;
+  }
+
+  candidate(candidateId: string): Candidate | null {
+    const r = this.db.prepare('SELECT * FROM candidates WHERE id=?').get(candidateId);
+    return r ? rowToCandidate(r) : null;
+  }
+
+  candidates(missionId: string): Candidate[] {
+    return this.db
+      .prepare('SELECT * FROM candidates WHERE mission_id=? ORDER BY created_at, id')
+      .all(missionId)
+      .map(rowToCandidate);
+  }
+
+  /** The verdict is computed elsewhere, from rows; this only records it. */
+  updateCandidateVerdict(candidateId: string, verdict: CandidateVerdict, reasons: string[]): Candidate {
+    const r = this.db
+      .prepare('UPDATE candidates SET verdict=?, verdict_reasons=? WHERE id=?')
+      .run(verdict, JSON.stringify(reasons), candidateId);
+    if (!r.changes) throw new Error(`unknown candidate ${candidateId}`);
+    return this.candidate(candidateId)!;
+  }
+
+  // ---- gate evaluations --------------------------------------------------------------
+
+  recordGateEvaluation(input: CreateGateEvaluationInput): GateEvaluation {
+    const m = this.requireMission(input.missionId);
+    const x = this.experiment(input.experimentId);
+    if (!x || x.missionId !== m.id) throw new Error(`experiment ${input.experimentId} is not an experiment of mission ${m.id}`);
+    if (input.projectId !== m.projectId) {
+      throw new Error(`gate evaluation names project ${input.projectId}, but mission ${m.id} belongs to ${m.projectId}`);
+    }
+    if (input.target === 'base' && (input.candidateId !== undefined || input.diffDigest !== null)) {
+      throw new Error('a base evaluation names no candidate and no diff');
+    }
+    if (input.target === 'candidate') {
+      const c = input.candidateId ? this.candidate(input.candidateId) : null;
+      if (!c || c.missionId !== m.id) throw new Error(`candidate ${String(input.candidateId)} is not a candidate of mission ${m.id}`);
+      if (input.diffDigest !== c.diffArtifact.digest) {
+        throw new Error(`gate evaluation diff ${String(input.diffDigest)} is not candidate ${c.id}'s diff ${c.diffArtifact.digest}`);
+      }
+    }
+    const g: GateEvaluation = { ...input, id: newId('gateEvaluation'), createdAt: this.now() };
+    this.db
+      .prepare(
+        `INSERT INTO gate_evaluations
+         (id, mission_id, project_id, revision, experiment_id, candidate_id, target, diff_digest,
+          harness_digest, executions, conclusion, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        g.id, g.missionId, g.projectId, g.revision, g.experimentId, g.candidateId ?? null, g.target,
+        g.diffDigest, g.harnessDigest, JSON.stringify(g.executions), g.conclusion, g.createdAt,
+      );
+    for (const ref of g.executions) this.recordArtifact(ref);
+    return g;
+  }
+
+  gateEvaluations(filter: { missionId?: string; candidateId?: string; target?: GateTarget }): GateEvaluation[] {
+    if (filter.missionId === undefined && filter.candidateId === undefined) {
+      throw new Error('gateEvaluations needs a missionId or a candidateId');
+    }
+    const where: string[] = [];
+    const args: string[] = [];
+    if (filter.missionId !== undefined) { where.push('mission_id=?'); args.push(filter.missionId); }
+    if (filter.candidateId !== undefined) { where.push('candidate_id=?'); args.push(filter.candidateId); }
+    if (filter.target !== undefined) { where.push('target=?'); args.push(filter.target); }
+    return this.db
+      .prepare(`SELECT * FROM gate_evaluations WHERE ${where.join(' AND ')} ORDER BY created_at, id`)
+      .all(...args)
+      .map(rowToGateEvaluation);
+  }
+
+  // ---- applications ------------------------------------------------------------------
+
+  /**
+   * Record that a candidate was committed. Refused unless a human approved or overrode this
+   * exact diff of this candidate, on its mission; one application per candidate.
+   */
+  recordApplication(input: CreateApplicationInput): Application {
+    const c = this.candidate(input.candidateId);
+    if (!c) throw new Error(`unknown candidate ${input.candidateId}`);
+    const d = this.decision(input.decisionId);
+    const scope = d?.scope as { operation?: unknown; candidateId?: unknown; diffDigest?: unknown } | undefined;
+    const approving = (d?.kind === 'approve' && scope?.operation === 'approve-candidate')
+      || (d?.kind === 'override' && scope?.operation === 'override-candidate');
+    if (!d || !approving || d.missionId !== c.missionId || scope?.candidateId !== c.id
+      || scope.diffDigest !== c.diffArtifact.digest) {
+      throw new Error(`decision ${input.decisionId} does not approve candidate ${c.id} at ${c.diffArtifact.digest}`);
+    }
+    if (input.baseCommit !== c.baseCommit) {
+      throw new Error(`application base ${input.baseCommit} is not candidate ${c.id}'s base ${c.baseCommit}`);
+    }
+    if (!isHumanActor(input.appliedBy)) throw new Error(`apply needs a human:<name> actor, not ${input.appliedBy}`);
+    if (this.application(c.id)) throw new Error(`candidate ${c.id} is already applied`);
+    const p: Application = {
+      id: newId('application'),
+      candidateId: c.id,
+      missionId: c.missionId,
+      decisionId: d.id,
+      projectId: c.projectId,
+      baseCommit: input.baseCommit,
+      commit: input.commit,
+      ref: input.ref,
+      appliedBy: input.appliedBy,
+      at: this.now(),
+    };
+    this.db
+      .prepare(
+        `INSERT INTO applications
+         (id, candidate_id, mission_id, decision_id, project_id, base_commit, commit_sha, ref, applied_by, at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.ref, p.appliedBy, p.at);
+    return p;
+  }
+
+  application(candidateId: string): Application | null {
+    const r = this.db.prepare('SELECT * FROM applications WHERE candidate_id=?').get(candidateId);
+    return r ? rowToApplication(r) : null;
+  }
+
+  applications(missionId: string): Application[] {
+    return this.db
+      .prepare('SELECT * FROM applications WHERE mission_id=? ORDER BY at, id')
+      .all(missionId)
+      .map(rowToApplication);
+  }
+
+  // ---- ingest sources ----------------------------------------------------------------
+
+  /** Upsert how far one transcript has been read. The session stays with its first project. */
+  recordIngestSource(s: IngestSource): IngestSource {
+    const a = this.requireAttempt(s.attemptId);
+    if (a.missionId !== s.missionId || a.projectId !== s.projectId) {
+      throw new Error(`ingest source for ${s.sessionId} names attempt ${a.id}, which is not of mission ${s.missionId} in ${s.projectId}`);
+    }
+    const have = this.ingestSource(s.sessionId);
+    if (have && have.projectId !== s.projectId) {
+      throw new Error(`session ${s.sessionId} was ingested into project ${have.projectId}, not ${s.projectId}`);
+    }
+    this.db
+      .prepare(
+        `INSERT INTO ingest_sources
+         (session_id, project_id, path_digest, bytes_seen, lines_seen, mission_id, attempt_id, ingested_at)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(session_id) DO UPDATE SET path_digest=excluded.path_digest,
+           bytes_seen=excluded.bytes_seen, lines_seen=excluded.lines_seen,
+           mission_id=excluded.mission_id, attempt_id=excluded.attempt_id,
+           ingested_at=excluded.ingested_at`,
+      )
+      .run(s.sessionId, s.projectId, s.pathDigest, s.bytesSeen, s.linesSeen, s.missionId, s.attemptId, s.ingestedAt);
+    return this.ingestSource(s.sessionId)!;
+  }
+
+  ingestSource(sessionId: string): IngestSource | null {
+    const r = this.db.prepare('SELECT * FROM ingest_sources WHERE session_id=?').get(sessionId) as
+      | Record<string, unknown> | undefined;
+    return r ? rowToIngestSource(r) : null;
+  }
+
+  ingestSources(missionId: string): IngestSource[] {
+    return (this.db.prepare('SELECT * FROM ingest_sources WHERE mission_id=? ORDER BY session_id').all(missionId) as
+      Array<Record<string, unknown>>).map(rowToIngestSource);
+  }
+
   // ---- decisions -------------------------------------------------------------
 
   recordDecision(input: CreateDecisionInput): Decision {
@@ -567,7 +1389,18 @@ export class MissionStore {
     if (!input.rationale || !input.rationale.trim()) {
       throw new Error(`decision on mission ${m.id} needs a rationale`);
     }
-    const d: Decision = { ...input, id: id('d'), at: this.now() };
+    const operation = input.scope.operation;
+    if (operation !== undefined) {
+      if (!DECISION_OPERATIONS.includes(operation as DecisionOperation)) {
+        throw new Error(`decision on mission ${m.id} names unknown operation ${String(operation)}`);
+      }
+      // A Forge act is a person's, and says which person. An agent, a runner or a bare
+      // `human` with no name cannot authorise, lock, approve or apply.
+      if (!isHumanActor(input.actor)) {
+        throw new Error(`${String(operation)} on mission ${m.id} needs a human:<name> actor, not ${input.actor}`);
+      }
+    }
+    const d: Decision = { ...input, id: newId('decision'), at: this.now() };
     this.db
       .prepare(
         `INSERT INTO decisions
@@ -582,6 +1415,11 @@ export class MissionStore {
       );
     this.db.prepare('UPDATE missions SET updated_at=? WHERE id=?').run(d.at, m.id);
     return d;
+  }
+
+  decision(decisionId: string): Decision | null {
+    const r = this.db.prepare('SELECT * FROM decisions WHERE id=?').get(decisionId);
+    return r ? this.rowToDecision(r) : null;
   }
 
   decisions(missionId: string): Decision[] {
@@ -610,6 +1448,7 @@ export class MissionStore {
       budget: parseJson<MissionBudget>(r.budget as string, {}),
       requirementIds: parseJson<string[]>(r.requirement_ids as string, []),
       acceptanceGateIds: parseJson<string[]>(r.acceptance_gate_ids as string, []),
+      workItemId: (r.work_item_id as string | null) ?? undefined,
       state: r.state as MissionState,
       outcome: (r.outcome as MissionOutcome | null) ?? undefined,
       outcomeReason: (r.outcome_reason as string | null) ?? undefined,
@@ -662,6 +1501,28 @@ export class MissionStore {
       timedOut: !!(r.timed_out as number),
       failure: (r.failure as string | null) ?? undefined,
       artifacts: parseJson<ArtifactRef[]>(r.artifacts as string, []),
+      tokens: {
+        input: (r.input_tokens as number | null) ?? null,
+        output: (r.output_tokens as number | null) ?? null,
+        cacheRead: (r.cache_read_tokens as number | null) ?? null,
+        cacheWrite: (r.cache_write_tokens as number | null) ?? null,
+      },
+      usageSource: r.usage_source as UsageSource,
+      costSource: r.cost_source as CostSource,
+      model: (r.model as string | null) ?? undefined,
+      parentAttemptId: (r.parent_attempt_id as string | null) ?? undefined,
+      gateSetDigest: (r.gate_set_digest as string | null) ?? undefined,
+      pid: (r.pid as number | null) ?? undefined,
+      heartbeatAt: (r.heartbeat_at as number | null) ?? undefined,
+      sandbox: {
+        profile: r.sandbox_profile as AttemptSandbox['profile'],
+        network: r.sandbox_network as NetworkMode,
+        write: !!(r.sandbox_write as number),
+        exec: !!(r.sandbox_exec as number),
+        authorizeDecisionId: (r.authorize_decision_id as string | null) ?? null,
+      },
+      credential: r.credential ? parseJson<AttemptCredential | undefined>(r.credential as string, undefined) : undefined,
+      mcpTokenDigest: (r.mcp_token_digest as string | null) ?? undefined,
     };
   }
 
@@ -685,6 +1546,9 @@ export class MissionStore {
       executions: parseJson<ArtifactRef[]>(r.executions as string, []),
       conclusion: r.conclusion as ExperimentConclusion,
       limitations: parseJson<string[]>(r.limitations as string, []),
+      role: r.role as ExperimentRole,
+      lockedBy: (r.locked_by as string | null) ?? undefined,
+      startedAt: (r.started_at as number | null) ?? undefined,
       createdAt: r.created_at as number,
       updatedAt: r.updated_at as number,
     };
@@ -708,4 +1572,147 @@ export class MissionStore {
       at: r.at as number,
     };
   }
+}
+
+// ---- forge rows --------------------------------------------------------------
+//
+// Module functions rather than methods: none of these rows embeds a list read from another
+// table, so they need no database handle.
+
+const canonical = (v: unknown): string => canonicalJson(v);
+
+/** `sha256` over the sorted `"<x_id>:<harnessDigest>"` lines of a gate set. */
+export function gateSetDigestOf(gates: Array<Pick<Experiment, 'id' | 'harnessDigest'>>): string {
+  return digestOf(gates.map((x) => `${x.id}:${x.harnessDigest}`).sort().join('\n'));
+}
+
+/**
+ * The digest of what a human approves when they approve a work item: its words, its examples
+ * and the spec bytes it came from. A decision names this, so an edit after approval is visible.
+ */
+export function workItemContentDigest(w: Pick<
+  WorkItem, 'specArtifact' | 'anchor' | 'title' | 'statement' | 'examples' | 'negativeExamples'
+>): string {
+  return digestOf(canonical({
+    spec: w.specArtifact.digest, anchor: w.anchor, title: w.title, statement: w.statement,
+    examples: w.examples, negativeExamples: w.negativeExamples,
+  }));
+}
+
+function rowToUsage(r: Record<string, unknown>): UsageTurn {
+  return {
+    attemptId: r.attempt_id as string,
+    projectId: r.project_id as string,
+    seq: r.seq as number,
+    requestId: (r.request_id as string | null) ?? null,
+    at: r.at as number,
+    model: (r.model as string | null) ?? null,
+    tokens: {
+      input: (r.input_tokens as number | null) ?? null,
+      output: (r.output_tokens as number | null) ?? null,
+      cacheRead: (r.cache_read_tokens as number | null) ?? null,
+      cacheWrite: (r.cache_write_tokens as number | null) ?? null,
+    },
+    costUsd: (r.cost_usd as number | null) ?? null,
+    costSource: r.cost_source as CostSource,
+    source: r.source as UsageTurn['source'],
+  };
+}
+
+const refOrUndefined = (v: unknown): ArtifactRef | undefined =>
+  v ? parseJson<ArtifactRef | undefined>(v as string, undefined) : undefined;
+
+function rowToWorkItem(row: unknown): WorkItem {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    missionId: r.mission_id as string,
+    attemptId: (r.attempt_id as string | null) ?? undefined,
+    proposalArtifact: refOrUndefined(r.proposal_artifact),
+    contentDigest: r.content_digest as string,
+    specArtifact: parseJson(r.spec_artifact as string, null as unknown as ArtifactRef),
+    specRevision: r.spec_revision as string,
+    anchor: r.anchor as string,
+    title: r.title as string,
+    statement: r.statement as string,
+    examples: parseJson<string[]>(r.examples as string, []),
+    negativeExamples: parseJson<string[]>(r.negative_examples as string, []),
+    status: r.status as WorkItemStatus,
+    proposedBy: r.proposed_by as string,
+    decisionId: (r.decision_id as string | null) ?? undefined,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
+  };
+}
+
+function rowToCandidate(row: unknown): Candidate {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    missionId: r.mission_id as string,
+    attemptId: r.attempt_id as string,
+    projectId: r.project_id as string,
+    baseCommit: r.base_commit as string,
+    diffArtifact: parseJson(r.diff_artifact as string, null as unknown as ArtifactRef),
+    summaryArtifact: parseJson(r.summary_artifact as string, null as unknown as ArtifactRef),
+    narrativeArtifact: refOrUndefined(r.narrative_artifact),
+    files: parseJson<CandidateFile[]>(r.files as string, []),
+    policyViolations: parseJson<PolicyViolation[]>(r.policy_violations as string, []),
+    secretHits: r.secret_hits as number,
+    gateSetDigest: r.gate_set_digest as string,
+    profile: parseJson<Candidate['profile']>(r.profile as string, null as unknown as Candidate['profile']),
+    attemptState: r.attempt_state as AttemptState,
+    attemptFailure: (r.attempt_failure as string | null) ?? undefined,
+    verdict: r.verdict as CandidateVerdict,
+    verdictReasons: parseJson<string[]>(r.verdict_reasons as string, []),
+    createdAt: r.created_at as number,
+  };
+}
+
+function rowToGateEvaluation(row: unknown): GateEvaluation {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    missionId: r.mission_id as string,
+    projectId: r.project_id as string,
+    revision: r.revision as string,
+    experimentId: r.experiment_id as string,
+    candidateId: (r.candidate_id as string | null) ?? undefined,
+    target: r.target as GateTarget,
+    diffDigest: (r.diff_digest as string | null) ?? null,
+    harnessDigest: r.harness_digest as string,
+    executions: parseJson<ArtifactRef[]>(r.executions as string, []),
+    conclusion: r.conclusion as ExperimentConclusion,
+    createdAt: r.created_at as number,
+  };
+}
+
+function rowToApplication(row: unknown): Application {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    candidateId: r.candidate_id as string,
+    missionId: r.mission_id as string,
+    decisionId: r.decision_id as string,
+    projectId: r.project_id as string,
+    baseCommit: r.base_commit as string,
+    commit: r.commit_sha as string,
+    ref: r.ref as string,
+    appliedBy: r.applied_by as string,
+    at: r.at as number,
+  };
+}
+
+function rowToIngestSource(r: Record<string, unknown>): IngestSource {
+  return {
+    sessionId: r.session_id as string,
+    projectId: r.project_id as string,
+    pathDigest: r.path_digest as string,
+    bytesSeen: r.bytes_seen as number,
+    linesSeen: r.lines_seen as number,
+    missionId: r.mission_id as string,
+    attemptId: r.attempt_id as string,
+    ingestedAt: r.ingested_at as number,
+  };
 }

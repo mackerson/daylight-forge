@@ -9,10 +9,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
-import { migrate, openDaylightDb, schemaVersion } from '../mission/db.ts';
+import { ensureSchema, openDaylightDb, schemaVersion } from '../mission/db.ts';
 import { currentRevision, identifyProject, shortRevision } from '../mission/project.ts';
 import {
-  ATTEMPT_TRANSITIONS, canTransition, DAYLIGHT_SCHEMA_VERSION, MISSION_TRANSITIONS,
+  ATTEMPT_TRANSITIONS, canTransition, DAYLIGHT_DB_VERSION, MISSION_TRANSITIONS,
   TASK_TRANSITIONS,
 } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -20,13 +20,14 @@ import { harness } from './harness.ts';
 const { check, section, done } = harness();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-daylight-core-'));
 
-section('schema and migrations');
+section('schema');
 {
   const file = path.join(tmp, 'daylight.db');
   const db = openDaylightDb(file);
   check('a fresh database lands on the current schema',
-    schemaVersion(db) === DAYLIGHT_SCHEMA_VERSION, String(schemaVersion(db)));
-  check('re-running migrations is a no-op', migrate(db).length === 0);
+    schemaVersion(db) === DAYLIGHT_DB_VERSION, String(schemaVersion(db)));
+  check('the current schema is 2', DAYLIGHT_DB_VERSION === 2);
+  check('ensuring the schema again is a no-op', ensureSchema(db) === false);
   const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
     .map((r) => r.name);
   for (const t of ['projects', 'missions', 'tasks', 'attempts', 'experiments', 'decisions', 'artifacts', 'events']) {
@@ -34,7 +35,7 @@ section('schema and migrations');
   }
   db.close();
   const again = openDaylightDb(file);
-  check('reopening an existing file does not rerun migrations', schemaVersion(again) === DAYLIGHT_SCHEMA_VERSION);
+  check('reopening an existing file does not recreate the schema', schemaVersion(again) === DAYLIGHT_DB_VERSION);
   check('and the claim store is untouched — no claims table here', !tables.includes('claims'));
   again.close();
 }

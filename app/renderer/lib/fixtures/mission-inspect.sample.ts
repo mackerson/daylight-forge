@@ -110,6 +110,14 @@ export const SAMPLE_ARTIFACTS: Record<string, string> = {
 const ref = (id: string, kind: 'log' | 'result' | 'test' | 'expected' | 'trace', label?: string, path?: string) =>
   ({ id, kind, digest: id, projectId: PROJECT, revision: REV, label, path, bytes: 1312 });
 
+/** The schema-2 attempt fields a P0 review attempt carries: no usage, no sandbox, read-only. */
+const reviewAttempt = (costSource: 'provider' | 'none') => ({
+  tokens: { input: null, output: null, cacheRead: null, cacheWrite: null },
+  usageSource: 'none' as const,
+  costSource,
+  sandbox: { profile: 'none' as const, network: 'shared' as const, write: false, exec: false, authorizeDecisionId: null },
+});
+
 export const SAMPLE_INSPECT: MissionInspect = {
   mission: {
     id: M,
@@ -140,18 +148,21 @@ export const SAMPLE_INSPECT: MissionInspect = {
       sessionId: `${M}:${A1}`, state: 'completed', startedAt: T0 + 5_000, finishedAt: T0 + 148_000,
       costUsd: 0.41, exitCode: 0, signal: null, timedOut: false,
       artifacts: [ref(SAMPLE_STDOUT_A, 'log', 'stdout (1 redacted)'), ref(SAMPLE_STDERR_A, 'log', 'stderr')],
+      ...reviewAttempt('provider'),
     },
     {
       id: A2, missionId: M, taskId: T_REVIEW_B, projectId: PROJECT, runnerId: 'agent:codex:default',
       sessionId: `${M}:${A2}`, state: 'failed', startedAt: T0 + 5_000, finishedAt: T0 + 185_000,
       costUsd: null, exitCode: null, signal: 'SIGTERM', timedOut: true, failure: 'timed out after 180s',
       artifacts: [],
+      ...reviewAttempt('none'),
     },
     {
       id: A3, missionId: M, taskId: T_REVIEW_B, projectId: PROJECT, runnerId: 'agent:codex:default',
       sessionId: `${M}:${A3}`, state: 'completed', startedAt: T0 + 190_000, finishedAt: T0 + 298_000,
       costUsd: null, exitCode: 0, signal: null, timedOut: false,
       artifacts: [ref(SAMPLE_STDOUT_B, 'log', 'stdout')],
+      ...reviewAttempt('none'),
     },
   ],
   experiments: [
@@ -168,6 +179,7 @@ export const SAMPLE_INSPECT: MissionInspect = {
       sandboxProfile: 'bwrap',
       executions: [ref(SAMPLE_RESULT_1, 'result', 'run 1'), ref(SAMPLE_RESULT_2, 'result', 'run 2')],
       conclusion: 'supported',
+      role: 'probe',
       limitations: [
         'Memory is bounded by the cpu ceiling and the timeout, not by address space.',
         'Output captured up to 2 MB per stream.',
