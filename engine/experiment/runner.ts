@@ -389,16 +389,31 @@ function processAlive(pid: number): boolean {
  * Clean up after runners that died without reaching their `finally` — SIGKILL, OOM, power.
  *
  * Each run leaves `owner.json` in its scratch directory. One whose process is gone is taken
- * apart: its worktree removed and pruned from the repository it named, the directory deleted,
- * and the experiment it was running, if it is in this store and still pending, concluded
- * `invalid`. Only directories this uid created with mode 0700 are considered; anything else
- * in a shared /tmp is not ours to delete.
+ * apart: its worktree removed and pruned, the directory deleted, and the experiment it was
+ * running, if it is in this store and still pending, concluded `invalid`.
+ *
+ * `owner.json` is input from a shared /tmp, not an instruction: a planted one could name any
+ * repository and point `work` at a real worktree full of uncommitted work. So only a
+ * directory this uid made with mode 0700, whose owner names *this* run's repository, whose
+ * `work` is a real directory (not a link) registered as a worktree *of that repository*, is
+ * swept; and only a row of this project is concluded. Anything else is reported and left
+ * exactly as it is.
  */
 export function sweepAbandoned(
-  ctx: { store: ExperimentStoreLike; events?: EventSink }, tmp: string = os.tmpdir(),
+  ctx: { repoRoot: string; projectId: string; store: ExperimentStoreLike; events?: EventSink },
+  tmp: string = os.tmpdir(),
 ): number {
   let swept = 0;
   const uid = process.getuid?.();
+  const repoRoot = path.resolve(ctx.repoRoot);
+  let worktreesDir: string | null = null;
+  try {
+    worktreesDir = fs.realpathSync(path.join(repoRoot, '.git', 'worktrees'));
+  } catch {
+    // No linked worktrees at all: nothing here can be one of ours.
+  }
+  const leave = (dir: string, why: string) =>
+    process.stderr.write(`daylight: left ${dir} alone: ${why}\n`);
   for (const name of fs.readdirSync(tmp).filter((n) => n.startsWith(SCRATCH_PREFIX))) {
     const dir = path.join(tmp, name);
     let owner: ScratchOwner;
@@ -410,21 +425,31 @@ export function sweepAbandoned(
       continue;
     }
     if (!Number.isInteger(owner.pid) || owner.pid <= 0 || processAlive(owner.pid)) continue;
+    if (typeof owner.repoRoot !== 'string' || path.resolve(owner.repoRoot) !== repoRoot) {
+      leave(dir, 'its owner names another repository');
+      continue;
+    }
+    const work = path.join(dir, 'work');
+    const whyNot = foreignWorktree(work, worktreesDir);
+    if (whyNot) {
+      leave(dir, whyNot);
+      continue;
+    }
     try {
-      git(owner.repoRoot, ['worktree', 'remove', '--force', path.join(dir, 'work')]);
+      git(repoRoot, ['worktree', 'remove', '--force', work]);
     } catch {
       // Already removed, or the repository is gone; the directory still goes.
     }
     try {
-      git(owner.repoRoot, ['worktree', 'prune']);
+      git(repoRoot, ['worktree', 'prune']);
     } catch {
       // As above.
     }
     fs.rmSync(dir, { recursive: true, force: true });
     swept++;
 
-    const x = ctx.store.experiment?.(owner.experimentId);
-    if (x && x.conclusion === 'pending') {
+    const x = typeof owner.experimentId === 'string' ? ctx.store.experiment?.(owner.experimentId) : null;
+    if (x && x.conclusion === 'pending' && x.projectId === ctx.projectId) {
       const why = `runner died: process ${owner.pid} exited before concluding the experiment`;
       ctx.store.updateExperiment(x.id, { conclusion: 'invalid', limitations: [...x.limitations, why] });
       ctx.events?.append({
@@ -436,8 +461,40 @@ export function sweepAbandoned(
   return swept;
 }
 
+/**
+ * Why `work` is not a linked worktree of the repository whose `.git/worktrees` is given, or
+ * null when it is: a real directory, holding a regular `.git` file whose `gitdir:` resolves
+ * inside that directory. A missing `work` is fine — the runner died before the checkout.
+ */
+function foreignWorktree(work: string, worktreesDir: string | null): string | null {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(work);
+  } catch {
+    return null;
+  }
+  if (!st.isDirectory()) return 'its work is not a plain directory';
+  let gitFile: string;
+  try {
+    const g = path.join(work, '.git');
+    if (!fs.lstatSync(g).isFile()) return 'its work/.git is not a regular file';
+    gitFile = fs.readFileSync(g, 'utf8');
+  } catch {
+    return 'its work has no .git file';
+  }
+  const m = /^gitdir: (.+)$/m.exec(gitFile);
+  if (!m || !worktreesDir) return 'its work is not a worktree of this repository';
+  let gitdir: string;
+  try {
+    gitdir = fs.realpathSync(path.resolve(work, m[1].trim()));
+  } catch {
+    return 'its worktree metadata does not exist';
+  }
+  return gitdir.startsWith(`${worktreesDir}${path.sep}`) ? null : 'its work is a worktree of another repository';
+}
+
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
-  sweepAbandoned(ctx);
+  sweepAbandoned({ ...ctx, projectId: experiment.projectId });
   const now = ctx.now ?? (() => Date.now());
   const runs = Math.max(1, ctx.runs ?? 2);
   const timeoutMs = ctx.timeoutMs ?? 60_000;

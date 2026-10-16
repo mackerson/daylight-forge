@@ -632,6 +632,42 @@ section('a runner that was killed is cleaned up after by the next one');
   await runExperiment(e, { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
   check('a directory owned by a live process is left alone', fs.existsSync(live));
   fs.rmSync(live, { recursive: true, force: true });
+
+  // owner.json sits in a shared /tmp and is input, not instruction. A planted one that names
+  // another repository, or whose `work` is a symlink to a real worktree, must change nothing.
+  const victim = path.join(tmp, 'victim');
+  fs.mkdirSync(victim);
+  const vgit = (args: string[]) =>
+    execFileSync('git', ['-C', victim, ...args], { encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  vgit(['init', '-q']);
+  fs.writeFileSync(path.join(victim, 'f'), '1\n');
+  vgit(['add', '.']);
+  vgit(['commit', '-q', '-m', 'victim']);
+  const precious = path.join(tmp, 'precious-wt');
+  vgit(['worktree', 'add', '-q', '--detach', precious, 'HEAD']);
+  fs.writeFileSync(path.join(precious, 'uncommitted.txt'), 'hours of work\n');
+  const target = inLookup('test/target.js');
+  const plant = (repoRoot: string, work: (dir: string) => void) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
+    work(d);
+    fs.writeFileSync(path.join(d, 'owner.json'), JSON.stringify({ pid: dead, experimentId: target.id, repoRoot, startedAt: 1 }));
+    return d;
+  };
+  const foreign = plant(victim, (d) => fs.symlinkSync(precious, path.join(d, 'work')));
+  const linked = plant(repo, (d) => fs.symlinkSync(precious, path.join(d, 'work')));
+  const misfiled = plant(repo, (d) => {
+    fs.mkdirSync(path.join(d, 'work'));
+    fs.writeFileSync(path.join(d, 'work', '.git'), `gitdir: ${path.join(victim, '.git', 'worktrees', 'precious-wt')}\n`);
+  });
+  await runExperiment(inLookup('test/next2.js'), { repoRoot: repo, store: lookup, artifacts, events: sink, sandbox: UNAVAILABLE });
+  check('a planted owner naming another repository is left alone', fs.existsSync(foreign));
+  check('as is one whose work is a symlink', fs.existsSync(linked));
+  check('and one whose worktree belongs to another repository', fs.existsSync(misfiled));
+  check('the real worktree and its uncommitted work survive', fs.existsSync(path.join(precious, 'uncommitted.txt')));
+  check('the other repository still lists it', vgit(['worktree', 'list', '--porcelain']).includes(precious));
+  check('and the experiment the planted files named is still pending', lookup.rows.get(target.id)?.conclusion === 'pending',
+    lookup.rows.get(target.id)?.conclusion);
+  for (const d of [foreign, linked, misfiled]) fs.rmSync(d, { recursive: true, force: true });
 }
 
 section('nothing is left behind');
