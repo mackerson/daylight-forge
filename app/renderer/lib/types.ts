@@ -192,6 +192,8 @@ export interface LoadPayload {
    * that is broken and a button that is correctly refusing.
    */
   missingRepo?: string | null;
+  /** Set when `dir` is a stand-in because the checkout it would be derived from has no knowable id. */
+  dirNote?: string | null;
   dir: string;
   stack: FocusStack | null;
   /** Aggregated file→file edges; the hierarchy view's leaves are files. */
@@ -254,7 +256,7 @@ declare global {
   interface Window {
     daylight: {
       state(): Promise<{
-        repo: string | null; dir: string; hasGraph: boolean; missingRepo?: string | null;
+        repo: string | null; dir: string; hasGraph: boolean; missingRepo?: string | null; dirNote?: string | null;
         watching?: boolean;
       }>;
       load(): Promise<LoadPayload>;
