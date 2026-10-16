@@ -150,5 +150,17 @@
       "maxFiles": 1,
       "minSites": 1
     }
+  },
+  {
+    "id": "ledger-reads-attempt-rows-not-events",
+    "prose": "The project ledger and its report take every dollar and token figure from attempt rows; neither reads the event log.",
+    "rationale": "Events narrate spend more than once: a merged usage line, provider.cost and the capture's cost.reported all describe the same dollars, so a sum over them double-counts. The attempt row is the ledger of record (PLAN F-9). The runtime half (null never summed as zero, scanned never known, no cost on a none row) is engine/test/ledger.ts and the attempt_usage CHECKs.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^engine/mission/(ledger|commands-report)\\.ts$"
+      },
+      "callee": "(^|\\.)events\\.|^EventLog$|\\.forAttempt$|\\.forMission$"
+    }
   }
 ]
