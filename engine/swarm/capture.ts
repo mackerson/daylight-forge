@@ -212,6 +212,11 @@ export async function captureRun(
   if (ctx.credential) {
     const said = JSON.stringify(ctx.credential);
     if (scrub(said) !== said) throw new Error('the credential record looks like it holds a secret; name the variable and give it a plain label');
+    // The store's own shape rule (checkCredential), so process.start never carries what the attempt row would refuse.
+    const { envName, label } = ctx.credential;
+    if ((envName !== null && !/^[A-Z_][A-Z0-9_]{0,63}$/.test(envName)) || (label !== null && !/^[\w .:@/-]{1,64}$/.test(label))) {
+      throw new Error('a credential is a variable name and a short plain label');
+    }
   }
   const provider = streamProviderOf(adapter);
   const usage = new UsageAccumulator(provider);

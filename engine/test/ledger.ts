@@ -268,6 +268,15 @@ await (async () => {
     refused = err;
   }
   check('a label shaped like a secret is refused before the agent runs', refused instanceof Error && /secret/.test(refused.message));
+  let offShape: unknown = null;
+  try {
+    await captured(ctx, m.id, printer(['ok']), 'agent:mock:shape', {
+      credential: { present: true, envName: 'ANTHROPIC_API_KEY', label: 'line one\nline two; rm -rf' },
+    });
+  } catch (err) {
+    offShape = err;
+  }
+  check('so is a label the store would refuse, held to the same shape (review F8)', offShape instanceof Error);
 
   const silent = await captured(ctx, m.id, printer(['hello']), 'agent:mock:silent');
   check('an attempt that reported nothing has unknown cost and tokens, not zero',
