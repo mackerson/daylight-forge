@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Quality } from '../panels/Quality.tsx';
 import { Scrubber } from '../panels/Scrubber.tsx';
-import type { Belief, RunRecord, VdsEvent } from '../types.ts';
+import type { Belief, RunRecord, AgentEvent } from '../types.ts';
 import { money, sourceKey, state } from '../vocab.ts';
 
 /**
@@ -68,7 +68,7 @@ export function Runs({ runs, beliefs, onOpen, events, replaying, onReplaying }: 
   beliefs: Belief[];
   onOpen: (b: Belief) => void;
   /** Recorded tool calls, so a finished run can be played back over the map. */
-  events: VdsEvent[];
+  events: AgentEvent[];
   replaying: boolean;
   onReplaying: (on: boolean) => void;
 }) {

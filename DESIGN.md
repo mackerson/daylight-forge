@@ -1,4 +1,4 @@
-# visual-desloppify — design
+# Daylight Software Forge — design
 
 **Working premise:** an Electron app that extracts everything a codebase contains, then drives a
 swarm of coding agents to **focus that down** to a small map that is actually true — and keeps
@@ -318,7 +318,7 @@ Three, all found by running it rather than by reading it:
 
 4. **Invariants were baked into the tool** (found by running it on itself). Shipping the fixture's
    invariants as code meant every other repo was measured against claims about *enclave* — five false
-   REDs and an L3 wrongly marked STALE. They now load from `<repo>/vds.invariants.json`, and a repo
+   REDs and an L3 wrongly marked STALE. They now load from `<repo>/daylight.invariants.json`, and a repo
    with none defined reports `UNPROVEN` rather than failing. Invariants describe a specific
    architecture, so they live with the code they constrain.
 5. **Vendored bundles were being analysed** (same run). A committed copy of three.js contributed
@@ -920,7 +920,7 @@ Different finding classes need different mechanisms, which is the whole reason t
 has more than one entry. Layering is checked by the target, duplication by D1–D3, drift by
 invariants, and none substitutes for another.
 
-| **P10 Guard** | invariants and the target run as a check that fails a build | `vds check` exits non-zero on a red invariant; wired to this repo's own CI | next |
+| **P10 Guard** | invariants and the target run as a check that fails a build | `daylight check` exits non-zero on a red invariant; wired to this repo's own CI | next |
 | **P11 Adjudicate the taxonomy** | structural findings reach agents instead of sitting in a file | a high-tier dead candidate gets tiered with evidence, and a false one refuted | after |
 | **P12 Team layer** | the confirmed map is committed, reviewable in a PR, survives a clone | two clones converge on one map; a cluster you confirmed is there for me | after |
 | **P13 Finish the swarm** | remaining adapters usable; budget ceilings enforced | two *different models* disagree live and arbitration resolves it | after |

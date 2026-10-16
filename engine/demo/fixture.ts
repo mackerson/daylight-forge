@@ -26,7 +26,7 @@ export const FIXTURE_DIR = path.resolve(HERE, '..', '..', 'fixtures', 'daylight-
  * Any change to any byte under `fixtures/daylight-demo/` legitimately changes this — update
  * it alongside the change, in the same commit, so the test pins the tree it was made for.
  */
-export const EXPECTED_FIXTURE_COMMIT = '38fa20074d8003c2860e3e0f605dd562d827eb5e';
+export const EXPECTED_FIXTURE_COMMIT = 'b57b1c8c436af52c5bdae26744dbcc4e5ddc6913';
 
 const IDENTITY = { name: 'Daylight Fixture', email: 'fixture@daylight.local' };
 const DATE = '2026-10-01T12:00:00Z';

@@ -22,7 +22,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-isolation-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-isolation-'));
 const CLI = path.join(import.meta.dirname, '..', 'cli.ts');
 
 /** Two unrelated projects that happen to contain a structurally identical class. */

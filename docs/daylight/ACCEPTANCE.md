@@ -1,3 +1,5 @@
+> **P0 record, kept verbatim.** It uses the pre-rename names (`vds`, `VDS_*`, `visual-desloppify`); the product is now Daylight Software Forge and the CLI is `daylight`.
+
 # Daylight P0 — acceptance
 
 Spec §13, item by item, with the test that proves each. `engine/test/acceptance.ts` prints

@@ -15,7 +15,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-share-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-share-'));
 const ev = [{ file: 'src/a.ts', line: 3 }];
 
 console.log('\nexport');

@@ -77,7 +77,7 @@ export function mappedProject(out: string): ProjectIdentity | null {
 export function requireMappedRepo(out: string, repo: string): { root: string; project: ProjectIdentity } {
   const root = mappedRoot(out);
   if (!root) {
-    throw new Error(`${out} holds no map — run \`vds map ${repo} --out ${out}\` first`);
+    throw new Error(`${out} holds no map — run \`daylight map ${repo} --out ${out}\` first`);
   }
   if (path.resolve(root) !== path.resolve(repo)) {
     throw new Error(

@@ -1,3 +1,5 @@
+> **P0 record, kept verbatim.** It uses the pre-rename names (`vds`, `VDS_*`, `visual-desloppify`); the product is now Daylight Software Forge and the CLI is `daylight`.
+
 # Performance baseline — before Daylight P0 changes
 
 Measured 2026-10-12 on the `daylight` branch at `02c7a5c` (renderer and engine unchanged

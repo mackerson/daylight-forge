@@ -83,7 +83,7 @@ export function Findings({ data, query, onArbitrate }: {
                 <ul className="rows mono">
                   {fam.members.map((m) => (
                     <li key={m}>
-                      <button className="link mono" onClick={() => window.vds.reveal({ file: m.split('#')[0] })}>{m}</button>
+                      <button className="link mono" onClick={() => window.daylight.reveal({ file: m.split('#')[0] })}>{m}</button>
                     </li>
                   ))}
                 </ul>
@@ -139,12 +139,12 @@ export function Findings({ data, query, onArbitrate }: {
                     <td>{p.score.toFixed(2)}</td>
                     <td className="dim">{p.tokens}</td>
                     <td className="mono">
-                      <button className="link mono" onClick={() => window.vds.reveal({ file: p.a.split('#')[0] })}>
+                      <button className="link mono" onClick={() => window.daylight.reveal({ file: p.a.split('#')[0] })}>
                         {short(p.a)}
                       </button>
                     </td>
                     <td className="mono">
-                      <button className="link mono" onClick={() => window.vds.reveal({ file: p.b.split('#')[0] })}>
+                      <button className="link mono" onClick={() => window.daylight.reveal({ file: p.b.split('#')[0] })}>
                         {short(p.b)}
                       </button>
                     </td>
@@ -177,10 +177,10 @@ export function Findings({ data, query, onArbitrate }: {
               </h3>
               <ul className="rows mono">
                 <li>
-                  <button className="link mono" onClick={() => window.vds.reveal({ file: p.a })}>{p.a}</button>
+                  <button className="link mono" onClick={() => window.daylight.reveal({ file: p.a })}>{p.a}</button>
                 </li>
                 <li>
-                  <button className="link mono" onClick={() => window.vds.reveal({ file: p.b })}>{p.b}</button>
+                  <button className="link mono" onClick={() => window.daylight.reveal({ file: p.b })}>{p.b}</button>
                 </li>
               </ul>
               <p className="dim">
@@ -219,7 +219,7 @@ export function Findings({ data, query, onArbitrate }: {
                 return (
                   <li key={d.id}>
                     <span className={`pill ${d.tier === 'high' ? 'bad' : 'running'}`}>{d.tier}</span>{' '}
-                    <button className="link mono" onClick={() => window.vds.reveal({ file: d.id.split('#')[0] })}>
+                    <button className="link mono" onClick={() => window.daylight.reveal({ file: d.id.split('#')[0] })}>
                       {d.id}
                     </button>
                     {v && (

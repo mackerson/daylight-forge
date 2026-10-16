@@ -1,3 +1,5 @@
+> **P0 record, kept verbatim.** It uses the pre-rename names (`vds`, `VDS_*`, `visual-desloppify`); the product is now Daylight Software Forge and the CLI is `daylight`.
+
 # Daylight P0 — coordination plan
 
 Working document for the two-week demo. The spec is `docs/DAYLIGHT_SPEC_v0.1.md`; this file

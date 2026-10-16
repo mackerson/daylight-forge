@@ -8,6 +8,7 @@ import type { Graph } from '../graph/types.ts';
 import { ClaimStore, EvidenceRequired, type Source } from '../store/claims.ts';
 import type { Claim } from '../store/types.ts';
 import { frontier } from '../swarm/frontier.ts';
+import { defaultOut } from '../paths.ts';
 
 /**
  * The MCP data plane. One server, stdio, spawned per agent session.
@@ -134,7 +135,7 @@ export function loadGraph(dir: string): Graph {
     // indistinguishable from the host refusing them — a full evening was spent on that
     // ambiguity with codex. Say what is wrong, on stderr, where the host will log it.
     throw new Error(
-      `no graph.json in ${dir}. Set VDS_DIR to a directory produced by \`vds map\`, ` +
+      `no graph.json in ${dir}. Set DAYLIGHT_DIR to a directory produced by \`daylight map\`, ` +
         'or run map first. The MCP server has nothing to serve without it.',
     );
   }
@@ -218,7 +219,7 @@ export function createServer(opts: ServerOptions) {
   const findings = readJson('findings.json', { families: [], d1: [], d2: [], d3: [], patterns: [] });
   const structure = readJson('structure.json', {});
 
-  const server = new McpServer({ name: 'visual-desloppify', version: '0.1.0' });
+  const server = new McpServer({ name: 'daylight', version: '0.1.0' });
 
   /**
    * Every tool call is appended to events.jsonl.
@@ -584,13 +585,13 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
   // stdio servers, and a server that cannot be told where to look is a server that cannot
   // be used from those hosts.
   const fromArg = process.argv.slice(2).find((a) => !a.startsWith('-'));
-  const dir = fromArg ?? process.env.VDS_DIR ?? process.cwd();
+  const dir = fromArg ?? process.env.DAYLIGHT_DIR ?? defaultOut(process.cwd());
   const { server } = createServer({
     dir,
-    session: process.env.VDS_SESSION ?? 'local',
-    agentTool: process.env.VDS_AGENT ?? 'unknown',
-    model: process.env.VDS_MODEL,
-    blindPrefix: process.env.VDS_BLIND_PREFIX,
+    session: process.env.DAYLIGHT_SESSION ?? 'local',
+    agentTool: process.env.DAYLIGHT_AGENT ?? 'unknown',
+    model: process.env.DAYLIGHT_MODEL,
+    blindPrefix: process.env.DAYLIGHT_BLIND_PREFIX,
   });
   await server.connect(new StdioServerTransport());
 }

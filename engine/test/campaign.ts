@@ -145,13 +145,13 @@ section('an unpriced adapter makes the budget an estimate, not a lie');
  */
 section('a campaign runs rounds, samples each one, and stops itself');
 {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-campaign-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-campaign-'));
   const repo = path.join(tmp, 'repo');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'r', main: 'src/index.ts' }));
   fs.writeFileSync(path.join(repo, 'src', 'index.ts'), "import './thing.ts';\n");
   fs.writeFileSync(path.join(repo, 'src', 'thing.ts'), 'export const thing = () => 1;\n');
-  fs.writeFileSync(path.join(repo, 'vds.target.json'), JSON.stringify({
+  fs.writeFileSync(path.join(repo, 'daylight.target.json'), JSON.stringify({
     layers: [{ name: 'src', include: ['src/**'], mayDependOn: [] }],
   }));
 
@@ -202,10 +202,10 @@ section('a campaign runs rounds, samples each one, and stops itself');
   /**
    * A repo that has not declared an architecture still finishes.
    *
-   * `vds plan` exits non-zero without a target, and inheriting that here would report a
+   * `daylight plan` exits non-zero without a target, and inheriting that here would report a
    * campaign that ran and cost money as a failure because of a file nobody wrote.
    */
-  fs.rmSync(path.join(repo, 'vds.target.json'));
+  fs.rmSync(path.join(repo, 'daylight.target.json'));
   const untargeted = run(['run', repo, '--out', path.join(tmp, 'out2'), '--rounds', '2',
     '--dry-run', 'true']);
   check('a repo with no target architecture still completes', untargeted.code === 0,

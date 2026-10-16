@@ -44,7 +44,7 @@ export function Beliefs({ query, onOpen, onCorroborate, onRefresh }: {
 
   const accept = async (b: Belief) => {
     setBusy(`${b.subject}:${b.predicate}`);
-    await window.vds.arbitrate({
+    await window.daylight.arbitrate({
       subject: b.subject,
       predicate: b.predicate,
       value: b.value,

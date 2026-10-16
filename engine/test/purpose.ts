@@ -125,25 +125,25 @@ console.log('\nthe embedding backend is shut by default');
   check('no endpoint configured means no requests and no error',
     embedConfig({}).url === undefined && /not set/.test(embedConfig({}).reason ?? ''));
 
-  const remote = embedConfig({ VDS_EMBED_URL: 'https://api.example.com/v1/embeddings' });
+  const remote = embedConfig({ DAYLIGHT_EMBED_URL: 'https://api.example.com/v1/embeddings' });
   check('a remote host is refused without a second, deliberate opt-in',
     remote.url === undefined, JSON.stringify(remote));
   check('and the refusal says what sending there would mean',
     /description of your architecture/.test(remote.reason ?? ''), remote.reason);
   check('the opt-in works when given',
     embedConfig({
-      VDS_EMBED_URL: 'https://api.example.com/v1/embeddings',
-      VDS_EMBED_ALLOW_REMOTE: '1',
+      DAYLIGHT_EMBED_URL: 'https://api.example.com/v1/embeddings',
+      DAYLIGHT_EMBED_ALLOW_REMOTE: '1',
     }).url !== undefined);
 
   check('loopback needs no extra opt-in',
-    embedConfig({ VDS_EMBED_URL: 'http://localhost:11434/v1/embeddings' }).url !== undefined);
+    embedConfig({ DAYLIGHT_EMBED_URL: 'http://localhost:11434/v1/embeddings' }).url !== undefined);
   check('so does 127.0.0.1',
-    embedConfig({ VDS_EMBED_URL: 'http://127.0.0.1:11434/api' }).url !== undefined);
+    embedConfig({ DAYLIGHT_EMBED_URL: 'http://127.0.0.1:11434/api' }).url !== undefined);
   check('a hostname that merely contains "localhost" is still remote',
-    embedConfig({ VDS_EMBED_URL: 'http://localhost.evil.example/api' }).url === undefined);
+    embedConfig({ DAYLIGHT_EMBED_URL: 'http://localhost.evil.example/api' }).url === undefined);
   check('a malformed URL is refused rather than attempted',
-    embedConfig({ VDS_EMBED_URL: 'not a url' }).url === undefined);
+    embedConfig({ DAYLIGHT_EMBED_URL: 'not a url' }).url === undefined);
 }
 
 console.log('\nembedding, against a local endpoint');
@@ -168,7 +168,7 @@ console.log('\nembedding, against a local endpoint');
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
-  const env = { VDS_EMBED_URL: `http://127.0.0.1:${port}/embed`, VDS_EMBED_MODEL: 'test-model' };
+  const env = { DAYLIGHT_EMBED_URL: `http://127.0.0.1:${port}/embed`, DAYLIGHT_EMBED_MODEL: 'test-model' };
 
   const result = await embed(['retry timing', 'button rendering'], env);
   check('a configured local endpoint is used', result.available && result.vectors.length === 2);

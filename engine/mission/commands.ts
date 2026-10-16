@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { prepareDemo, replayDemo } from '../demo/demo.ts';
+import { EXPECTED_FIXTURE_COMMIT } from '../demo/fixture.ts';
+import { dataHome, defaultOut, outFor } from '../paths.ts';
 import { redact } from './redact.ts';
 import { openDaylight, type DaylightContext } from './context.ts';
 import { importMission, readExport, writeExport } from './export.ts';
@@ -13,14 +15,14 @@ import { mappedProject } from './context.ts';
 import type { MissionKind, MissionOutcome } from './types.ts';
 
 /**
- * The `vds mission|experiment|artifact|events|report|demo` commands.
+ * The `daylight mission|experiment|artifact|events|report|demo` commands.
  *
  * Kept out of `cli.ts`, which dispatches here with the raw argv. These commands have a
  * subcommand before their positional, which the main parser reads as a target path, so the
  * parsing is done again here — small, and only for flags these commands own.
  *
  * Output discipline: with `--format json`, stdout is one JSON document and nothing else.
- * Progress goes to stderr as `##vds {...}` lines, which the Electron shell already scans on
+ * Progress goes to stderr as `##daylight {...}` lines, which the Electron shell already scans on
  * both streams. Exit 0 means the command ran — a blocked mission or a falsified experiment
  * is data, not a failure. Exit 2 is bad arguments. Exit 1 is the command itself failing.
  */
@@ -81,7 +83,7 @@ const parseValue = (raw: string): unknown => {
 
 const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 const say = (line: string) => process.stdout.write(`${line}\n`);
-const progress = (data: unknown) => process.stderr.write(`##vds ${JSON.stringify(data)}\n`);
+const progress = (data: unknown) => process.stderr.write(`##daylight ${JSON.stringify(data)}\n`);
 
 function withContext<T>(out: string, fn: (ctx: DaylightContext) => T): T {
   const ctx = openDaylight(out);
@@ -352,8 +354,17 @@ function report(p: Parsed, out: string): number {
   return 0;
 }
 
-function demo(sub: string | undefined, p: Parsed, out: string, asJson: boolean): number {
-  const dest = last(p, 'dest') ?? path.resolve(out, '..', 'daylight-demo-repo');
+/**
+ * With `--out`, the fixture repo goes beside it as before. Without, both live under the data
+ * home: the fixture's project id is pinned, so its out is known before the repo exists.
+ */
+function demo(sub: string | undefined, p: Parsed, explicitOut: string, asJson: boolean): number {
+  const dest = path.resolve(last(p, 'dest') ?? (explicitOut
+    ? path.join(explicitOut, '..', 'daylight-demo-repo')
+    : path.join(dataHome(), 'daylight', 'daylight-demo-repo')));
+  const out = explicitOut
+    ? path.resolve(explicitOut)
+    : outFor(`git:${EXPECTED_FIXTURE_COMMIT.slice(0, 12)}`, dest);
   switch (sub) {
     case 'prepare': {
       const prepared = prepareDemo(out, dest);
@@ -363,7 +374,7 @@ function demo(sub: string | undefined, p: Parsed, out: string, asJson: boolean):
       else {
         say(`fixture at ${prepared.root} @ ${prepared.commit.slice(0, 12)} (project ${prepared.projectId})`);
         say(`mission ${prepared.missionId}, experiment ${prepared.experimentId}, in ${out}`);
-        say('next: vds mission run <mission-id> <fixture-root> --tools <a>,<b>');
+        say('next: daylight mission run <mission-id> <fixture-root> --tools <a>,<b>');
       }
       return 0;
     }
@@ -386,16 +397,23 @@ export async function runDaylightCommand(argv: string[]): Promise<number> {
   const hasSub = command === 'mission' || command === 'experiment' || command === 'demo';
   const sub = hasSub && rest[0] && !rest[0].startsWith('--') ? rest[0] : undefined;
   const p = parse(hasSub ? rest.slice(sub ? 1 : 0) : rest);
-  const out = path.resolve(last(p, 'out') ?? 'out');
+  const explicitOut = last(p, 'out');
   const asJson = last(p, 'format') === 'json';
   try {
+    // The default out belongs to a repository: the one a subcommand names positionally, or
+    // the working directory for those that name none. The demo derives its own.
+    const repoArg = command === 'mission' && sub === 'create' ? p.positionals[0]
+      : (command === 'mission' || command === 'experiment') && sub === 'run' ? p.positionals[1]
+        : undefined;
+    const out = explicitOut ? path.resolve(explicitOut)
+      : command === 'demo' ? '' : defaultOut(repoArg ?? process.cwd());
     switch (command) {
       case 'mission': return await mission(sub, p, out, asJson);
       case 'experiment': return await experiment(sub, p, out, asJson);
       case 'artifact': return artifact(p, out, asJson);
       case 'events': return events(p, out, asJson);
       case 'report': return report(p, out);
-      case 'demo': return demo(sub, p, out, asJson);
+      case 'demo': return demo(sub, p, explicitOut ?? '', asJson);
       default: throw new Usage(`unknown command ${command}`);
     }
   } catch (err) {

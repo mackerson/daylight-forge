@@ -15,7 +15,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-smoke-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-smoke-'));
 const ev = [{ file: 'src/a.ts', line: 10 }];
 /** Ruling something out costs more evidence than asserting it — see ClaimStore.submit. */
 const dismissEv = [{ file: 'src/a.ts', line: 10 }, { file: 'src/b.ts', line: 4 }];

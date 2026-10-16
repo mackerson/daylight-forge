@@ -10,6 +10,10 @@
  * behaviour, and a framework would put ceremony between the reader and those names.
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 export interface Harness {
   /** Record one assertion. `detail` is printed only on failure, so make it the actual value. */
   check(name: string, cond: boolean, detail?: string): void;
@@ -20,6 +24,10 @@ export interface Harness {
 }
 
 export function harness(): Harness {
+  // The default <out> lives under the data home. A test that forgets --out must not write a
+  // map into the developer's real ~/.local/share, so every test, and every CLI it spawns,
+  // gets a throwaway one.
+  process.env.XDG_DATA_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-xdg-'));
   let passed = 0;
   let failed = 0;
 

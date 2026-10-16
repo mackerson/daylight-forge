@@ -16,7 +16,7 @@ import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-quality-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-quality-'));
 const evidence = [{ file: 'a.ts', line: 1 }];
 const ids = (r: { warnings: Array<{ id: string }> }) => new Set(r.warnings.map((w) => w.id));
 

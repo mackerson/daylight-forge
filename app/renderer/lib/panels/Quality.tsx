@@ -35,7 +35,7 @@ export function Quality({ active }: { active: boolean }) {
 
   const load = useCallback(async () => {
     setBusy(true);
-    const r = await window.vds.quality();
+    const r = await window.daylight.quality();
     if (r.error) setError(r.error);
     else {
       setReport(r);

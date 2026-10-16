@@ -62,7 +62,7 @@ export function Invariants({ data, beliefs, onRefresh, onPlan }: {
               constrain, not in the tool.
             </p>
             <p className="dim">
-              Create <code>vds.invariants.json</code> in the repo root. Each one needs an{' '}
+              Create <code>daylight.invariants.json</code> in the repo root. Each one needs an{' '}
               <code>id</code>, the <code>prose</code> a human reads, and a{' '}
               <code>predicate</code> compiled against L0. Until then L3 reports UNPROVEN
               rather than failing.

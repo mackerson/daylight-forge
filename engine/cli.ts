@@ -28,6 +28,7 @@ import { evaluate, evaluateAll } from './invariants/engine.ts';
 import { diffTarget, loadTarget, taskPackets } from './plan/target.ts';
 import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/share.ts';
 import { toArchitectureDoc } from './render/architecture.ts';
+import { defaultOut } from './paths.ts';
 import { runDaylightCommand } from './mission/commands.ts';
 
 interface Args {
@@ -92,11 +93,16 @@ function parseArgs(argv: string[]): Args {
   }
 
   const root = path.resolve(target ?? '.');
+  const explicitOut = flags.get('out');
+  let out: string | undefined;
   return {
     command: command ?? 'help',
     root,
-    // Default matches what `pnpm view` reads, so map→view needs no env fiddling.
-    out: path.resolve(flags.get('out') ?? 'out'),
+    // Resolved on first use: the default asks git for the project id, which `help` should
+    // not need and a shallow clone cannot answer.
+    get out() {
+      return (out ??= explicitOut ? path.resolve(explicitOut) : defaultOut(root));
+    },
     depth: Number(flags.get('depth') ?? 3),
     commit: flags.get('commit'),
     includeTests: flags.get('include-tests') === 'true',
@@ -231,7 +237,7 @@ function emitExtract(args: Args, graph: Graph): void {
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   const s = graph.stats;
 
-  console.log(`\nvisual-desloppify — ${args.root}`);
+  console.log(`\nDaylight Software Forge — ${args.root}`);
   if (graph.commit) console.log(`commit ${graph.commit}`);
   console.log('─'.repeat(64));
   console.log(
@@ -594,7 +600,7 @@ function reportInvariantSource(args: Args, loaded: ReturnType<typeof loadInvaria
       `\ninvariants — none defined for ${args.root}\n` +
         '─'.repeat(78) +
         '\nInvariants describe THIS codebase, so they live with it. Create ' +
-        'vds.invariants.json\nin the repo root (or pass --invariants-file), or let an agent ' +
+        'daylight.invariants.json\nin the repo root (or pass --invariants-file), or let an agent ' +
         'propose them:\n  pnpm agent <repo> --tools claude\n',
     );
   }
@@ -736,7 +742,7 @@ async function runAgent(args: Args): Promise<void> {
     // One machine-readable line per spend update, on our own stdout. The GUI's live meter
     // reads these; a terminal reader sees them as noise, so they are prefixed and terse
     // rather than dumped as the agents' raw streams would be.
-    onProgress: (p) => process.stdout.write(`##vds ${JSON.stringify({ spend: p })}\n`),
+    onProgress: (p) => process.stdout.write(`##daylight ${JSON.stringify({ spend: p })}\n`),
   });
 
   console.log(
@@ -927,7 +933,7 @@ async function runRun(args: Args): Promise<void> {
       runDerive(args);
       // One machine-readable line per round, on our own stdout. The GUI meters the burndown
       // from these; a terminal reader gets the drawn version below.
-      process.stdout.write(`##vds ${JSON.stringify({ campaign: sample })}\n`);
+      process.stdout.write(`##daylight ${JSON.stringify({ campaign: sample })}\n`);
       // The series on disk, which already includes the round-0 sample the callback is not
       // handed — and round 0 is what the convergence estimate measures the fall from.
       console.log(burndown(series(args.out), limits));
@@ -947,14 +953,14 @@ async function runRun(args: Args): Promise<void> {
   /**
    * The plan is the end of the loop, but only where there is a target to plan against.
    *
-   * `vds plan` exits non-zero without one, which is right when a plan is what you asked for
+   * `daylight plan` exits non-zero without one, which is right when a plan is what you asked for
    * and wrong here: the rounds happened, they cost money, and reporting the whole campaign as
    * failed because the repo has not declared an architecture would throw that away.
    */
   if (!loadTarget(args.root, args.targetFile)) {
     console.log(
       '\nno target architecture in this repo, so there is no plan to derive. The campaign ' +
-        'itself is done — run `vds plan` after writing vds.target.json.',
+        'itself is done — run `daylight plan` after writing daylight.target.json.',
     );
     return;
   }
@@ -1182,7 +1188,7 @@ function runPlan(args: Args): void {
     console.log(
       `\nno target architecture for ${graph.root}\n` + '─'.repeat(72) +
         '\nThe target is intent, so it lives with the repo and no extraction can derive it.' +
-        '\nCreate vds.target.json (or pass --target-file):\n\n' +
+        '\nCreate daylight.target.json (or pass --target-file):\n\n' +
         JSON.stringify(
           { layers: [
             { name: 'ui', include: ['src/renderer/**'], mayDependOn: ['shared'], purpose: 'what the user sees' },
@@ -1267,7 +1273,7 @@ function runAdopt(args: Args): void {
 
   const targetFile = args.invariantsFile
     ? path.resolve(args.invariantsFile)
-    : path.join(args.root, 'vds.invariants.json');
+    : path.join(args.root, 'daylight.invariants.json');
   const existing: Invariant[] = fs.existsSync(targetFile)
     ? JSON.parse(fs.readFileSync(targetFile, 'utf8'))
     : [];
@@ -1445,7 +1451,7 @@ function runCheck(args: Args): void {
     console.log('─'.repeat(72));
 
     if (!loaded.source) {
-      console.log('invariants: none defined (see `vds invariants` for how to add them)');
+      console.log('invariants: none defined (see `daylight invariants` for how to add them)');
     } else {
       for (const r of invariants) {
         console.log(`${r.status === 'green' ? 'GREEN' : 'RED  '}  ${r.id}`);
@@ -1481,7 +1487,7 @@ function runCheck(args: Args): void {
 const args = parseArgs(process.argv.slice(2));
 
 // Opted-in language providers, before anything reads a file. Loading one runs its code, so
-// this only ever happens because VDS_PARSERS named it; see extract/registry.ts.
+// this only ever happens because DAYLIGHT_PARSERS named it; see extract/registry.ts.
 const registry = await loadParsers();
 for (const f of registry.failures) console.log(`parser '${f.spec}' not loaded: ${f.reason}`);
 
@@ -1551,7 +1557,7 @@ switch (args.command) {
     process.exitCode = await runDaylightCommand(process.argv.slice(2));
     break;
   default:
-    console.log(`visual-desloppify — get all the data, then focus it down.
+    console.log(`Daylight Software Forge — get all the data, then focus it down.
 
 usage:
   node engine/cli.ts map        <path> [options]   # extract + invariants + focus, one pass
@@ -1580,8 +1586,9 @@ usage:
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>
 
 options:
-  --out <dir>            output directory (default: ./out)
-  --invariants-file <f>  invariant definitions (default: <repo>/vds.invariants.json)
+  --out <dir>            output directory (default:
+                         \${XDG_DATA_HOME:-~/.local/share}/daylight/<project>/<checkout>)
+  --invariants-file <f>  invariant definitions (default: <repo>/daylight.invariants.json)
   --depth <n>        L1 grouping depth (default: 3)
   --commit <sha>     record the commit this tree came from
   --force            overwrite an out dir that holds a different repo's map

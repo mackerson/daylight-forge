@@ -24,7 +24,7 @@ function Snippet({ ev }: { ev: Span }) {
   useEffect(() => {
     if (!open || got.lines || got.error || !ev.file) return;
     let live = true;
-    void window.vds.snippet({ file: ev.file, line: ev.line, context: 3 }).then((r) => {
+    void window.daylight.snippet({ file: ev.file, line: ev.line, context: 3 }).then((r) => {
       if (live) setGot(r);
     });
     return () => { live = false; };
@@ -236,7 +236,7 @@ function DisputeEvidence({ dispute, onShowOnMap }: {
                     {(counts.get(key(e)) ?? 0) > 1 ? 'BOTH' : 'ONLY'}
                   </span>
                   {e.file && (
-                    <button className="where" onClick={() => window.vds.reveal({ file: e.file, line: e.line })} title="open in your editor">
+                    <button className="where" onClick={() => window.daylight.reveal({ file: e.file, line: e.line })} title="open in your editor">
                       {e.file}{e.line ? `:${e.line}` : ''}
                     </button>
                   )}

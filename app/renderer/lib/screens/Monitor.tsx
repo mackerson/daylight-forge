@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Belief, CampaignEntry, Job, VdsEvent } from '../types.ts';
+import type { Belief, CampaignEntry, Job, AgentEvent } from '../types.ts';
 import { Burndown } from '../panels/Burndown.tsx';
 import { money, sourceColor, state } from '../vocab.ts';
 import { summarise } from '../shell/Inspector.tsx';
@@ -64,7 +64,7 @@ export type Spend = Record<string, {
 export function Monitor({
   events, jobs, logs, spend, selected, onSelect, leases, beliefs, ceiling, campaign,
 }: {
-  events: VdsEvent[];
+  events: AgentEvent[];
   jobs: Job[];
   logs: Record<string, string>;
   spend: Spend;
@@ -309,7 +309,7 @@ export function Monitor({
               {j.status === 'running' && (
                 <button
                   className="link"
-                  onClick={(e) => { e.stopPropagation(); window.vds.stopJob(j.id); }}
+                  onClick={(e) => { e.stopPropagation(); window.daylight.stopJob(j.id); }}
                 >
                   stop
                 </button>

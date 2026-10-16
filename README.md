@@ -1,4 +1,4 @@
-# visual-desloppify
+# Daylight Software Forge
 
 **A map of a codebase that a person and a swarm of agents can read at the same time.**
 
@@ -68,7 +68,7 @@ reading the store afterwards.
 
 **Invariants as a build gate.** Claims about *your* architecture — "the event bus is
 storage-only", "nothing under `scene/` calls a randomness source" — written as prose plus a
-query, living in the repo they constrain. `vds check` exits non-zero when one goes red.
+query, living in the repo they constrain. `daylight check` exits non-zero when one goes red.
 
 **An app shaped like the loop.** The map is the window, not a tab. Above it sits the loop —
 **map → detect → explore → beliefs → plan** — and each stage carries its own live state, so
@@ -251,9 +251,9 @@ mission can be exported and replayed on another machine.
 
 ```bash
 pnpm demo:prepare --out ./out                     # materialise the fixture, map it, open a mission
-pnpm exec vds mission run <id> <fixture-root> --tools claude:sonnet,codex --max-cost 2   # spends money
-pnpm exec vds experiment run <experiment-id> <fixture-root> --out ./out
-pnpm exec vds mission decide <id> --subject src/session-cache.ts --predicate bug_verdict --value true --rationale '…'
+pnpm daylight mission run <id> <fixture-root> --tools claude:sonnet,codex --max-cost 2   # spends money
+pnpm daylight experiment run <experiment-id> <fixture-root> --out ./out
+pnpm daylight mission decide <id> --subject src/session-cache.ts --predicate bug_verdict --value true --rationale '…'
 ```
 
 The demo fixture under `fixtures/daylight-demo/` carries a **planted** defect, and says so in
@@ -290,8 +290,8 @@ the measurements are under [docs/daylight/](docs/daylight/).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--out <dir>` | `./out` | output directory. One per repository — it refuses to mix two. |
-| `--invariants-file <f>` | `<repo>/vds.invariants.json` | where the repo's invariants live |
+| `--out <dir>` | `${XDG_DATA_HOME:-~/.local/share}/daylight/<project>/<checkout>` | output directory, outside the repository by default. One per checkout — it refuses to mix two repositories. |
+| `--invariants-file <f>` | `<repo>/daylight.invariants.json` | where the repo's invariants live |
 | `--include-tests` | off | put test files in the map. They are always read for reachability regardless. |
 | `--force` | off | overwrite an output directory belonging to a different repo |
 | `--max-cost <usd>` | — | hard ceiling on agent spend for the run |

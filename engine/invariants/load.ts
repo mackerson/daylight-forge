@@ -12,9 +12,9 @@ import type { Invariant } from './engine.ts';
  */
 
 export const INVARIANT_FILENAMES = [
-  'vds.invariants.json',
+  'daylight.invariants.json',
   '.codemap/invariants.def.json',
-  '.vds/invariants.json',
+  '.daylight/invariants.json',
 ];
 
 export interface LoadResult {

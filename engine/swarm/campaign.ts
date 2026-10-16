@@ -135,7 +135,7 @@ export function series(dir: string, id?: string): CampaignEntry[] {
 
 export async function campaign(options: CampaignOptions): Promise<CampaignReport> {
   const { dir, limits } = options;
-  const id = options.id ?? `vds-campaign-${Date.now()}`;
+  const id = options.id ?? `daylight-campaign-${Date.now()}`;
   const notes: string[] = [];
 
   // Read once and reuse: every snapshot needs it, and on a large repo this is the exhaustive

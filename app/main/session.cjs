@@ -1,5 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
+const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 
 /**
@@ -15,7 +17,7 @@ const { createHash } = require('node:crypto');
 /**
  * JSON out of an output directory, re-parsed only when the file changes.
  *
- * `vds:load` reads five of these, and it is called on mount, on every action, on every
+ * `daylight:load` reads five of these, and it is called on mount, on every action, on every
  * finished job and on every derive — and derive fires whenever `claims.db` moves, so a
  * running swarm had the process that draws the window re-parsing the whole output directory
  * every couple of seconds to hand back bytes it had already seen. Keyed by mtime, which is
@@ -124,19 +126,54 @@ function repoOfDir(dir) {
   return graph && typeof graph.root === 'string' ? graph.root : null;
 }
 
+/** `$XDG_DATA_HOME`, or `~/.local/share` when it is unset, empty or relative. */
+function dataHome(env = process.env) {
+  const xdg = env.XDG_DATA_HOME;
+  return xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), '.local', 'share');
+}
+
+const git = (root, args) => {
+  try {
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
 /**
- * A stable per-repo output directory.
+ * The project id, computed as engine/mission/project.ts `identifyProject` computes it.
  *
- * Basename first so it is recognisable in a file manager, plus a hash of the full path so two
- * checkouts of the same project — `~/work/api` and `~/scratch/api` — do not collide and
- * inherit each other's claims. Both halves read the resolved path: hashing one form while
- * slugging another gave one checkout two directories depending on how it was named.
+ * A twin rather than an import: the shell is CommonJS and shells out to the engine instead of
+ * loading its TypeScript. `session.test.cjs` maps a repo through the real CLI and checks the
+ * two land on the same directory, so a drift fails the suite.
+ */
+function projectIdOf(repo) {
+  const abs = path.resolve(repo);
+  if (git(abs, ['rev-parse', '--is-shallow-repository']) === 'true') {
+    throw new Error(`${abs} is a shallow clone, so its project id is not knowable here. ` +
+      'Run `git fetch --unshallow`, or choose an output directory by hand.');
+  }
+  const roots = git(abs, ['rev-list', '--max-parents=0', 'HEAD']);
+  const first = roots ? roots.split('\n').map((s) => s.trim()).filter(Boolean).sort()[0] : undefined;
+  return first
+    ? `git:${first.slice(0, 12)}`
+    : `path:${createHash('sha256').update(abs).digest('hex').slice(0, 12)}`;
+}
+
+/**
+ * A stable per-repo output directory: `<base>/<project id, sanitised>/<checkout hash>`, the
+ * same directory the CLI defaults to when `base` is `<data home>/daylight`.
+ *
+ * Keyed by checkout as well as project so two checkouts of the same project — `~/work/api`
+ * and `~/scratch/api` — do not collide and inherit each other's claims.
  */
 function derivedDirFor(repo, base) {
   const abs = path.resolve(repo);
-  const slug = path.basename(abs).replace(/[^\w.-]+/g, '-').slice(0, 40) || 'repo';
+  const project = projectIdOf(abs).replace(/[^A-Za-z0-9._-]/g, '-');
   const hash = createHash('sha256').update(abs).digest('hex').slice(0, 8);
-  return path.join(base, `${slug}-${hash}`);
+  return path.join(base, project, hash);
 }
 
 /**
@@ -166,6 +203,6 @@ function ownershipConflict(repo, dir) {
 }
 
 module.exports = {
-  sameRepo, repoOfDir, derivedDirFor, dirForRepo, ownershipConflict,
+  sameRepo, repoOfDir, dataHome, projectIdOf, derivedDirFor, dirForRepo, ownershipConflict,
   readJsonIn, readJsonRaw, readJsonlIn, forgetCachedJson,
 };

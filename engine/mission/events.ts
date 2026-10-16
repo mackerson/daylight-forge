@@ -117,7 +117,7 @@ export class EventLog {
    *
    * `resolve` turns a line's session into the attempt that owns it — exact match on the
    * session the attempt was started with, which is the session the adapter passed down as
-   * `VDS_SESSION`. A line nobody claims is skipped, not guessed at: attaching an agent's
+   * `DAYLIGHT_SESSION`. A line nobody claims is skipped, not guessed at: attaching an agent's
    * tool call to the wrong attempt would be fabricated provenance.
    *
    * Returns how many lines were newly recorded. Re-ingesting the same lines returns 0.

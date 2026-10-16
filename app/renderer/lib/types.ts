@@ -62,7 +62,7 @@ import type {
 import type { Evidence } from '../../../engine/store/types.ts';
 
 /**
- * One side of a dispute, as `vds mission inspect` reports it.
+ * One side of a dispute, as `daylight mission inspect` reports it.
  *
  * A dispute is a CONTRADICTED belief inside a mission's scope, split by distinct answer; the
  * belief itself is carried so the existing arbitration screen can open it unchanged.
@@ -82,7 +82,7 @@ export interface Dispute {
   sides: DisputeSide[];
 }
 
-/** `vds mission inspect <id> --format json`. */
+/** `daylight mission inspect <id> --format json`. */
 /** Something a person has to do before a mission can move; derived by the engine. */
 export interface MissionNeed {
   kind: 'blocked' | 'dispute';
@@ -112,7 +112,7 @@ export interface MissionUpdate {
   note?: string;
 }
 
-/** `vds mission list --format json`. */
+/** `daylight mission list --format json`. */
 export interface MissionList {
   project: ProjectIdentity | null;
   missions: Mission[];
@@ -163,7 +163,7 @@ export interface RunShape {
  * old private `Findings` made. The engine owns what a recorded event *is*, because the MCP
  * server is what writes them; these are the fields the panels happen to display.
  */
-export type VdsEvent = RunEvent & {
+export type AgentEvent = RunEvent & {
   ok?: boolean;
   predicate?: string;
   name?: string;
@@ -198,9 +198,9 @@ export interface LoadPayload {
   fileEdges: Array<{ from: string; to: string; weight: number }>;
   /** Lets a headless screenshot open straight into a given layout. */
   initialMode?: 'graph' | 'tree';
-  /** Panel to open on. Set from VDS_TAB so `pnpm shot` can capture a specific screen. */
+  /** Panel to open on. Set from DAYLIGHT_TAB so `pnpm shot` can capture a specific screen. */
   initialTab?: string | null;
-  /** Enables the frame-time probe; set from VDS_PERF. */
+  /** Enables the frame-time probe; set from DAYLIGHT_PERF. */
   perf?: boolean;
   /** Opens the first contradiction straight into arbitration; for headless capture. */
   autoArbitrate?: boolean;
@@ -221,7 +221,7 @@ export interface LoadPayload {
   campaign?: CampaignEntry[];
   /**
    * Render Mission Control from the bundled sample rather than the CLI. Set from
-   * VDS_MISSION_SAMPLE so the headless harness can exercise the screens on a machine with no
+   * DAYLIGHT_MISSION_SAMPLE so the headless harness can exercise the screens on a machine with no
    * missions, and so a reviewer can see the layout without spending anything. The sample is
    * labelled as such on screen.
    */
@@ -246,13 +246,13 @@ export interface QueryPayload {
   leases: Array<{ subject: string; session: string; until: number }>;
   /** What previous runs cost and bought; survives a restart, unlike a toast. */
   runs: RunRecord[];
-  events: VdsEvent[];
+  events: AgentEvent[];
   error?: string;
 }
 
 declare global {
   interface Window {
-    vds: {
+    daylight: {
       state(): Promise<{
         repo: string | null; dir: string; hasGraph: boolean; missingRepo?: string | null;
         watching?: boolean;
@@ -305,7 +305,7 @@ declare global {
       saveInvariant(p: { id: string; prose: string; predicate: string }): Promise<{
         ok?: boolean; file?: string; count?: number; replaced?: boolean; error?: string;
       }>;
-      onEvent(fn: (e: VdsEvent) => void): () => void;
+      onEvent(fn: (e: AgentEvent) => void): () => void;
       onJob(fn: (j: Job) => void): () => void;
       onDerived(fn: (p: { at: number }) => void): () => void;
       onJobStats(fn: (p: {
@@ -315,7 +315,7 @@ declare global {
       }) => void): () => void;
       onJobOutput(fn: (o: { id: string; stream: string; text: string }) => void): () => void;
 
-      // ---- Mission Control. Every call shells out to a `vds mission …` command in main. ----
+      // ---- Mission Control. Every call shells out to a `daylight mission …` command in main. ----
       missions(): Promise<MissionList & { error?: string }>;
       mission(p: { id: string }): Promise<MissionInspect & { error?: string }>;
       missionCreate(p: MissionCreateOptions): Promise<Mission & { error?: string }>;
@@ -335,7 +335,7 @@ declare global {
       /** Tell main which mission to poll events for; null stops polling. */
       missionWatch(missionId: string | null): Promise<{ watching: string | null }>;
       onDlEvent(fn: (p: { missionId: string; events: DaylightEvent[] }) => void): () => void;
-      /** A `mission run` job reported a state change on a `##vds {"mission":…}` line. */
+      /** A `mission run` job reported a state change on a `##daylight {"mission":…}` line. */
       onMissionUpdate(fn: (p: { id: string; mission: MissionUpdate }) => void): () => void;
       demoPrepare(): Promise<{ id?: string; error?: string }>;
       /** Main opens the file picker; the renderer never names a path. */

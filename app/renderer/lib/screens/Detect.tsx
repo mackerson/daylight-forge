@@ -86,7 +86,7 @@ export function Detect({
     setBusy(true);
     for (const c of picked) {
       for (const s of c.subjects) {
-        await window.vds.arbitrate({
+        await window.daylight.arbitrate({
           subject: s,
           predicate: c.predicate,
           value: false,

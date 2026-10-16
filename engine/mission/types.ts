@@ -179,7 +179,7 @@ export interface Task {
 
 /**
  * Who or what executed an attempt, as a string the UI can group by:
- * `agent:<tool>:<model>`, `human`, `static:vds`, `runner:experiment`.
+ * `agent:<tool>:<model>`, `human`, `static:daylight`, `runner:experiment`.
  */
 export type RunnerId = string;
 
@@ -190,7 +190,7 @@ export interface Attempt {
   projectId: string;
   runnerId: RunnerId;
   /**
-   * The session handed to the adapter and so to the MCP server as `VDS_SESSION`. Every
+   * The session handed to the adapter and so to the MCP server as `DAYLIGHT_SESSION`. Every
    * `events.jsonl` line the agent produces carries it, which is how tool calls are tied back
    * to the attempt without parsing any CLI's own output.
    */

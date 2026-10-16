@@ -21,7 +21,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-shapes-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-shapes-'));
 const write = (rel: string, body: string) => {
   const abs = path.join(tmp, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -114,7 +114,7 @@ console.log('\noffered kinds are kinds the graph has');
 
 console.log('\nsaving into the repo');
 {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-save-'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-save-'));
   const file = path.join(repo, INVARIANTS_FILENAME);
   const pred = SHAPES[0].build(FILL);
 
@@ -150,7 +150,7 @@ console.log('\nsaving into the repo');
     !!onBroken.error && fs.readFileSync(file, 'utf8') === '{ not json', JSON.stringify(onBroken));
   check('and the error says to fix it by hand', /by hand/.test(onBroken.error ?? ''));
 
-  // The object form is what an agent-proposed file looks like after `vds adopt`.
+  // The object form is what an agent-proposed file looks like after `daylight adopt`.
   fs.writeFileSync(file, JSON.stringify({ invariants: [{ id: 'kept', prose: 'p', predicate: pred }] }));
   const onObject = saveInvariant(repo, { id: 'added', prose: 'q', predicate: pred });
   check('the { invariants: [...] } form is understood too',

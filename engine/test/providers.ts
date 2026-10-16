@@ -17,7 +17,7 @@ import { harness } from './harness.ts';
 
 const { check, done } = harness();
 
-const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-prov-'));
+const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-prov-'));
 const binDir = path.join(repo, 'node_modules', '.bin');
 
 /** A stand-in for an installed provider: prints what we hand it, exits how we say. */

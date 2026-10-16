@@ -28,7 +28,7 @@ function run(argv: string[], cwd: string): { code: number; out: string } {
 }
 
 // A tiny repo we can deliberately break, so the gate is tested on a failure it caused.
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-check-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-check-'));
 fs.mkdirSync(path.join(tmp, 'src'));
 fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ name: 'fx', main: 'src/index.ts' }));
 fs.writeFileSync(path.join(tmp, 'src/index.ts'), "import { helper } from './helper.ts';\nexport const go = () => helper();\n");
@@ -45,7 +45,7 @@ console.log('\ncheck gate');
   check('says so rather than pretending to have checked',
     /none defined/.test(clean.out) && /none declared/.test(clean.out));
 
-  const invPath = path.join(tmp, 'vds.invariants.json');
+  const invPath = path.join(tmp, 'daylight.invariants.json');
   fs.writeFileSync(invPath, JSON.stringify([{
     id: 'helper-exists',
     prose: 'the helper module is reachable',
@@ -76,7 +76,7 @@ console.log('\ncheck gate');
 
   // A target violation must fail the gate on its own, with no invariants involved.
   fs.rmSync(invPath);
-  fs.writeFileSync(path.join(tmp, 'vds.target.json'), JSON.stringify({
+  fs.writeFileSync(path.join(tmp, 'daylight.target.json'), JSON.stringify({
     layers: [
       { name: 'entry', include: ['src/index.ts'], mayDependOn: [] },
       { name: 'lib', include: ['src/helper.ts'], mayDependOn: [] },

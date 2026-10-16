@@ -28,7 +28,7 @@ import type { ExecutionRecord } from '../experiment/types.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-experiment-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
 
 // ---- fixtures ------------------------------------------------------------------
 

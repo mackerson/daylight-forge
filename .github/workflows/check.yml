@@ -36,9 +36,9 @@ jobs:
       - run: pnpm test:all
 
       # Reuses the parse cache written by the run above, so this is seconds rather than a
-      # second full parse of the tree.
+      # second full parse of the tree. --out is explicit: the default lives outside the checkout.
       - name: architecture check
-        run: pnpm check . --warn-only
+        run: pnpm check . --out ./out --warn-only
 
       - name: upload the map
         if: always()

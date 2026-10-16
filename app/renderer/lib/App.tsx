@@ -24,7 +24,7 @@ import { SAMPLE_ARTIFACTS, SAMPLE_INSPECT, SAMPLE_LIST } from './fixtures/missio
 import { mergeMissionUpdate, needsPerson } from './screens/mission-words.ts';
 import type {
   Belief, DaylightEvent, Job, LoadPayload, Mission, MissionCreateOptions, MissionInspect,
-  MissionList, QueryPayload, VdsEvent,
+  MissionList, QueryPayload, AgentEvent,
 } from './types.ts';
 import { fileOf, shorten } from './vocab.ts';
 
@@ -42,7 +42,7 @@ import { fileOf, shorten } from './vocab.ts';
  * it happen on the map.
  */
 
-/** Panels the old tab rail had, so `VDS_TAB=review pnpm shot` keeps working. */
+/** Panels the old tab rail had, so `DAYLIGHT_TAB=review pnpm shot` keeps working. */
 const TAB_ALIASES: Record<string, View> = {
   overview: 'map',
   map: 'map',
@@ -78,14 +78,14 @@ export function App() {
    */
   const [saved, setSaved] = useState<Array<{ name: string; filters: Filter[] }>>(() => {
     try {
-      const raw = JSON.parse(localStorage.getItem('vds.savedFilters') ?? '[]');
+      const raw = JSON.parse(localStorage.getItem('daylight.savedFilters') ?? '[]');
       return Array.isArray(raw) ? raw : [];
     } catch {
       return [];
     }
   });
   useEffect(() => {
-    localStorage.setItem('vds.savedFilters', JSON.stringify(saved));
+    localStorage.setItem('daylight.savedFilters', JSON.stringify(saved));
   }, [saved]);
   const [node, setNode] = useState<SceneNode | null>(null);
   const [openBelief, setOpenBelief] = useState<Belief | null>(null);
@@ -104,7 +104,7 @@ export function App() {
 
   const [data, setData] = useState<LoadPayload | null>(null);
   const [query, setQuery] = useState<QueryPayload | null>(null);
-  const [events, setEvents] = useState<VdsEvent[]>([]);
+  const [events, setEvents] = useState<AgentEvent[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [spend, setSpend] = useState<
@@ -120,7 +120,7 @@ export function App() {
    * Mission Control state.
    *
    * The list and the open mission are re-read from the CLI rather than patched locally: the
-   * database is the truth, and every push from main (`vds:mission-update`, a finished job) is a
+   * database is the truth, and every push from main (`daylight:mission-update`, a finished job) is a
    * signal to read it again. Events are the one thing accumulated here, because they arrive as
    * a stream and the pane that shows them wants the whole sequence.
    */
@@ -135,7 +135,7 @@ export function App() {
   // The inspector is sized to taste and persisted, because re-dragging it every launch
   // would be its own annoyance.
   const [railWidth, setRailWidth] = useState(() => {
-    const saved = Number(localStorage.getItem('vds.railWidth'));
+    const saved = Number(localStorage.getItem('daylight.railWidth'));
     return Number.isFinite(saved) && saved >= 280 ? saved : 340;
   });
   const dragRef = useRef({ active: false });
@@ -151,7 +151,7 @@ export function App() {
 
   /**
    * Refresh fires from mount, from every action, from every finished job and from every
-   * derive — and `vds:query` shells out to the CLI, so two are routinely in flight at once.
+   * derive — and `daylight:query` shells out to the CLI, so two are routinely in flight at once.
    * Without a generation the slower earlier answer lands last and repaints stale state; across
    * a repo switch that is the previous repo's beliefs under the new repo's name.
    */
@@ -167,7 +167,7 @@ export function App() {
   > => {
     const gen = ++refreshSeq.current;
     try {
-      const [d, q] = await Promise.all([window.vds.load(), window.vds.query()]);
+      const [d, q] = await Promise.all([window.daylight.load(), window.daylight.query()]);
       const applied = gen === refreshSeq.current;
       if (applied) {
         setData(d);
@@ -197,7 +197,7 @@ export function App() {
       setMissionError(null);
       return;
     }
-    const r = await window.vds.missions();
+    const r = await window.daylight.missions();
     if (r.error) {
       setMissionError(r.error);
       setMissions((prev) => prev ?? { project: null, missions: [] });
@@ -213,7 +213,7 @@ export function App() {
       setMissionEvents(SAMPLE_INSPECT.events);
       return;
     }
-    const r = await window.vds.mission({ id });
+    const r = await window.daylight.mission({ id });
     if (r.error) {
       setMissionError(r.error);
       return;
@@ -238,19 +238,19 @@ export function App() {
     if (!openMission) {
       setInspect(null);
       setMissionEvents([]);
-      if (!sample) void window.vds.missionWatch(null);
+      if (!sample) void window.daylight.missionWatch(null);
       return;
     }
     setInspect(null);
     setMissionEvents([]);
     void loadMission(openMission);
-    if (!sample) void window.vds.missionWatch(openMission);
-    return () => { if (!sample) void window.vds.missionWatch(null); };
+    if (!sample) void window.daylight.missionWatch(openMission);
+    return () => { if (!sample) void window.daylight.missionWatch(null); };
   }, [openMission, loadMission, sample]);
 
   // Live: events for the open mission, and state changes a running mission job reports.
   useEffect(() => {
-    const offDl = window.vds.onDlEvent(({ missionId, events: incoming }) => {
+    const offDl = window.daylight.onDlEvent(({ missionId, events: incoming }) => {
       if (missionId !== openMission) return;
       setMissionEvents((prev) => {
         const seen = new Set(prev.map((e) => e.sequence));
@@ -259,12 +259,12 @@ export function App() {
         return merged.slice(-MAX_MISSION_EVENTS);
       });
     });
-    const offUpdate = window.vds.onMissionUpdate(({ mission }) => {
+    const offUpdate = window.daylight.onMissionUpdate(({ mission }) => {
       setMissions((prev) => (prev ? mergeMissionUpdate(prev, mission) : prev));
       if (mission.id === openMission) void loadMission(mission.id);
     });
     // A finished job of any kind may have moved a mission: a run, an experiment, a demo.
-    const offJob = window.vds.onJob((j) => {
+    const offJob = window.daylight.onJob((j) => {
       if (j.status === 'running') return;
       if (view === 'missions') void loadMissions();
       if (openMission && Object.values(missionJobs).includes(j.id)) void loadMission(openMission);
@@ -278,7 +278,7 @@ export function App() {
       const text = SAMPLE_ARTIFACTS[id];
       return text === undefined ? { error: 'not in the sample' } : { text };
     }
-    const r = await window.vds.artifact({ id, maxBytes });
+    const r = await window.daylight.artifact({ id, maxBytes });
     return r.error ? { error: r.error } : { text: r.text ?? '', truncated: r.truncated };
   }, [sample]);
 
@@ -325,11 +325,11 @@ export function App() {
     // both. While a replay is running the live feed is withheld from the map — it still
     // accumulates into `events`, so leaving replay catches up, but it does not draw over a
     // reconstruction of an earlier moment.
-    const offEvent = window.vds.onEvent((e) => {
+    const offEvent = window.daylight.onEvent((e) => {
       setEvents((prev) => [...prev.slice(-800), e]);
       if (!replayingRef.current) emitEvent(e);
     });
-    const offJob = window.vds.onJob((j) => {
+    const offJob = window.daylight.onJob((j) => {
       setJobs((prev) => [...prev.filter((p) => p.id !== j.id), j]);
       if (j.status === 'running') {
         statsRef.current = statsRef.current ?? null;
@@ -355,20 +355,20 @@ export function App() {
       })();
     });
     // The stack was re-derived because claims changed; pull the new one.
-    const offDerived = window.vds.onDerived(() => void refresh());
+    const offDerived = window.daylight.onDerived(() => void refresh());
     /**
      * A campaign round finished. The sample is already on disk by the time this arrives, so
      * the payload is a signal rather than the data — pulling it back with everything else
      * keeps one source of truth for what the burndown draws.
      */
-    const offCampaign = window.vds.onCampaign(({ sample }) => {
+    const offCampaign = window.daylight.onCampaign(({ sample }) => {
       setToast(`round ${sample.round} — ${sample.open} open, ${sample.settled} settled`);
       void refresh();
     });
-    const offStats = window.vds.onJobStats(({ id, cost, turns, sources }) =>
+    const offStats = window.daylight.onJobStats(({ id, cost, turns, sources }) =>
       setSpend((prev) => ({ ...prev, [id]: { cost, turns, sources } })),
     );
-    const offOut = window.vds.onJobOutput(({ id, text }) =>
+    const offOut = window.daylight.onJobOutput(({ id, text }) =>
       setLogs((prev) => ({ ...prev, [id]: (prev[id] ?? '') + text })),
     );
     return () => {
@@ -518,7 +518,7 @@ export function App() {
     if (!dragRef.current.active) return;
     dragRef.current.active = false;
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    localStorage.setItem('vds.railWidth', String(railWidth));
+    localStorage.setItem('daylight.railWidth', String(railWidth));
   };
 
   // The queue behind the belief detail: what else is waiting on a decision.
@@ -541,15 +541,15 @@ export function App() {
   return (
     <div className="app">
       <TitleBar
-        name={`visual-desloppify${view === 'map' ? '' : ` — ${view}`}`}
+        name={`Daylight Software Forge${view === 'map' ? '' : ` — ${view}`}`}
         where={data?.repo ? shorten(data.repo) : null}
         busy={running.length > 0}
-        onPick={() => act(async () => window.vds.pickRepo())}
+        onPick={() => act(async () => window.daylight.pickRepo())}
       >
         <button
           className="where"
           disabled={!data?.repo || busy}
-          onClick={() => act(() => window.vds.map())}
+          onClick={() => act(() => window.daylight.map())}
           title="re-extract and re-derive from source"
         >
           {mapped ? 'remap' : 'map it'}
@@ -560,7 +560,7 @@ export function App() {
         <button
           className="where"
           disabled={!mapped || busy}
-          onClick={() => act(() => window.vds.refocus())}
+          onClick={() => act(() => window.daylight.refocus())}
           title="rebuild the focus stack from the cached graph — no re-extraction, nothing spent"
         >
           rebuild
@@ -570,11 +570,11 @@ export function App() {
           disabled={!data?.repo}
           style={watchingFiles ? { color: 'var(--ok)' } : undefined}
           title="re-map automatically when the code changes; only changed files re-parse"
-          onClick={() => act(async () => window.vds.watch(!watchingFiles))}
+          onClick={() => act(async () => window.daylight.watch(!watchingFiles))}
         >
           {watchingFiles ? 'watching' : 'watch'}
         </button>
-        <button className="where" onClick={() => act(async () => window.vds.setDir())}>
+        <button className="where" onClick={() => act(async () => window.daylight.setDir())}>
           out {data?.dir ? shorten(data.dir) : '—'}
         </button>
       </TitleBar>
@@ -588,7 +588,7 @@ export function App() {
             longer there. The map still reads, but nothing that has to open the source can
             run — choose the repo if it moved.
           </span>
-          <button className="link" onClick={() => act(async () => window.vds.pickRepo())}>
+          <button className="link" onClick={() => act(async () => window.daylight.pickRepo())}>
             choose repo
           </button>
         </div>
@@ -617,7 +617,7 @@ export function App() {
         invariants={invariantResults.length ? { held: invariantResults.length - violated, violated } : null}
         spend={today}
         running={running.length}
-        onStop={() => running.forEach((j) => window.vds.stopJob(j.id))}
+        onStop={() => running.forEach((j) => window.daylight.stopJob(j.id))}
       />
 
       <div className="workspace">
@@ -682,11 +682,11 @@ export function App() {
                 onMonitor={() => setWatchingRun(true)}
                 onLaunch={(opts) => {
                   setCeiling(opts.maxCost);
-                  return act(() => window.vds.agent(opts));
+                  return act(() => window.daylight.agent(opts));
                 }}
                 onRun={(opts) => {
                   setCeiling(opts.maxCost);
-                  void act(() => window.vds.run(opts));
+                  void act(() => window.daylight.run(opts));
                 }}
               />
             )}
@@ -739,7 +739,7 @@ export function App() {
                 onRefresh={() => void loadMissions()}
                 onCreate={async (opts: MissionCreateOptions) => {
                   setBusy(true);
-                  const r = await window.vds.missionCreate(opts);
+                  const r = await window.daylight.missionCreate(opts);
                   setBusy(false);
                   if (r.error) setMissionError(r.error);
                   else {
@@ -747,8 +747,8 @@ export function App() {
                     setOpenMission(r.id);
                   }
                 }}
-                onDemoPrepare={() => void startMissionJob('demo', () => window.vds.demoPrepare())}
-                onDemoReplay={() => void startMissionJob('demo', () => window.vds.demoReplay())}
+                onDemoPrepare={() => void startMissionJob('demo', () => window.daylight.demoPrepare())}
+                onDemoReplay={() => void startMissionJob('demo', () => window.daylight.demoReplay())}
               />
             )}
 
@@ -767,13 +767,13 @@ export function App() {
                 onBack={() => { setReplaying(false); setOpenMission(null); }}
                 onRefresh={() => void loadMission(openMission)}
                 onRun={(tools, maxCost, dryRun) =>
-                  void startMissionJob(openMission, () => window.vds.missionRun({ id: openMission, tools, maxCost, dryRun }))}
-                onStop={() => { const j = missionJobs[openMission]; if (j) void window.vds.stopJob(j); }}
+                  void startMissionJob(openMission, () => window.daylight.missionRun({ id: openMission, tools, maxCost, dryRun }))}
+                onStop={() => { const j = missionJobs[openMission]; if (j) void window.daylight.stopJob(j); }}
                 onRunExperiment={(id) =>
-                  void startMissionJob(openMission, () => window.vds.experimentRun({ id, runs: 2 }))}
+                  void startMissionJob(openMission, () => window.daylight.experimentRun({ id, runs: 2 }))}
                 onDecide={async (p) => {
                   setBusy(true);
-                  const r = await window.vds.missionDecide({ id: openMission, ...p });
+                  const r = await window.daylight.missionDecide({ id: openMission, ...p });
                   setBusy(false);
                   if (r.error) return r.error;
                   await Promise.all([loadMission(openMission), refresh()]);
@@ -781,7 +781,7 @@ export function App() {
                 }}
                 onClose={async (outcome, reason) => {
                   setBusy(true);
-                  const r = await window.vds.missionClose({ id: openMission, outcome, reason });
+                  const r = await window.daylight.missionClose({ id: openMission, outcome, reason });
                   setBusy(false);
                   if (r.error) return r.error;
                   await Promise.all([loadMission(openMission), loadMissions()]);

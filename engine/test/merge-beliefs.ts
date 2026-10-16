@@ -14,7 +14,7 @@ if (!dirA || !dirB) {
   process.exit(2);
 }
 
-const merged = outDir ?? fs.mkdtempSync('/tmp/vds-merge-');
+const merged = outDir ?? fs.mkdtempSync('/tmp/daylight-merge-');
 fs.mkdirSync(merged, { recursive: true });
 const mergedDb = path.join(merged, 'claims.db');
 fs.rmSync(mergedDb, { force: true });

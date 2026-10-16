@@ -5,14 +5,14 @@ import type { MissionInspect, MissionList } from '../types.ts';
  *
  * Exists so Mission Control can be rendered, screenshotted and reviewed on a machine that has
  * never run a mission, and so the headless harness has something to assert against before the
- * orchestrator exists. Loaded only under `VDS_MISSION_SAMPLE=1`, and every screen that shows
+ * orchestrator exists. Loaded only under `DAYLIGHT_MISSION_SAMPLE=1`, and every screen that shows
  * it says "sample" in the corner. Nothing here was produced by a model; the sources, costs
  * and quotes are illustrative, modelled on the planted-defect fixture in
- * `fixtures/daylight-demo/` (commit 38fa2007…, defect in `src/session-cache.ts`).
+ * `fixtures/daylight-demo/` (commit b57b1c8c…, defect in `src/session-cache.ts`).
  */
 
-const PROJECT = 'git:38fa20074d80';
-const REV = '38fa20074d8003c2860e3e0f605dd562d827eb5e';
+const PROJECT = 'git:b57b1c8c436a';
+const REV = 'b57b1c8c436af52c5bdae26744dbcc4e5ddc6913';
 const M = 'm_0f3c2a9e5b7d4c1e8a6f2b9d0c4e7a1f';
 const T_REVIEW_A = 't_1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d';
 const T_REVIEW_B = 't_2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e';
@@ -66,21 +66,21 @@ const execution = (runIndex: number) => JSON.stringify({
   finishedAt: T0 + 400_412 + runIndex * 1009,
 }, null, 2);
 
-/** What `vds artifact <digest>` would print for the sample's digests. */
+/** What `daylight artifact <digest>` would print for the sample's digests. */
 export const SAMPLE_ARTIFACTS: Record<string, string> = {
   [SAMPLE_STDOUT_A]: [
     '{"type":"system","subtype":"init","session_id":"sample-a","model":"claude-sonnet"}',
-    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__vds__get_overview","input":{}}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__daylight__get_overview","input":{}}]}}',
     '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/session-cache.ts"}}]}}',
-    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__vds__submit_claim","input":{"subject":"src/session-cache.ts","predicate":"bug_verdict","value":true}}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__daylight__submit_claim","input":{"subject":"src/session-cache.ts","predicate":"bug_verdict","value":true}}]}}',
     '{"type":"result","total_cost_usd":0.41,"num_turns":9}',
     '',
     'SAMPLE — illustrative transcript, not a recorded run.',
   ].join('\n'),
   [SAMPLE_STDERR_A]: '',
   [SAMPLE_STDOUT_B]: [
-    '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"vds","tool":"get_slice","arguments":{"node":"src/session-cache.ts"}}}',
-    '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"vds","tool":"submit_claim","arguments":{"subject":"src/session-cache.ts","predicate":"bug_verdict","value":false}}}',
+    '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"daylight","tool":"get_slice","arguments":{"node":"src/session-cache.ts"}}}',
+    '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"daylight","tool":"submit_claim","arguments":{"subject":"src/session-cache.ts","predicate":"bug_verdict","value":false}}}',
     '{"type":"turn.completed","usage":{"input_tokens":18231,"output_tokens":912}}',
     '',
     'SAMPLE — illustrative transcript, not a recorded run.',
@@ -236,7 +236,7 @@ export const SAMPLE_INSPECT: MissionInspect = {
     { schemaVersion: 1, id: 'ev_12', sequence: 12, at: T0 + 230_000, projectId: PROJECT, missionId: M, taskId: T_REVIEW_B, attemptId: A3, actorId: 'agent:codex:default', category: 'tool', name: 'tool.call', payload: { tool: 'get_slice', node: 'src/session-cache.ts', hops: 1, session: `${M}:${A3}`, via: 'mcp' } },
     { schemaVersion: 1, id: 'ev_13', sequence: 13, at: T0 + 290_000, projectId: PROJECT, missionId: M, taskId: T_REVIEW_B, attemptId: A3, actorId: 'agent:codex:default', category: 'tool', name: 'tool.call', payload: { tool: 'submit_claim', ok: true, subject: 'src/session-cache.ts', predicate: 'bug_verdict', confidence: 0.7, evidence: 2, session: `${M}:${A3}`, via: 'mcp' } },
     { schemaVersion: 1, id: 'ev_14', sequence: 14, at: T0 + 298_000, projectId: PROJECT, missionId: M, taskId: T_REVIEW_B, attemptId: A3, actorId: 'agent:codex:default', category: 'process', name: 'process.exit', payload: { exitCode: 0, signal: null, timedOut: false, durationMs: 108_000 } },
-    { schemaVersion: 1, id: 'ev_15', sequence: 15, at: T0 + 301_000, projectId: PROJECT, missionId: M, taskId: T_COMPARE, actorId: 'static:vds', category: 'claim', name: 'claim.disputed', payload: { subject: 'src/session-cache.ts', predicate: 'bug_verdict', sides: 2 } },
+    { schemaVersion: 1, id: 'ev_15', sequence: 15, at: T0 + 301_000, projectId: PROJECT, missionId: M, taskId: T_COMPARE, actorId: 'static:daylight', category: 'claim', name: 'claim.disputed', payload: { subject: 'src/session-cache.ts', predicate: 'bug_verdict', sides: 2 } },
     { schemaVersion: 1, id: 'ev_16', sequence: 16, at: T0 + 302_000, projectId: PROJECT, missionId: M, actorId: 'human:sample', category: 'experiment', name: 'experiment.registered', payload: { experimentId: X, hypothesis: 'SessionCache.get serves an expired session' } },
     { schemaVersion: 1, id: 'ev_17', sequence: 17, at: T0 + 400_412, projectId: PROJECT, missionId: M, taskId: T_EXPERIMENT, actorId: 'runner:experiment', category: 'experiment', name: 'experiment.run.finished', artifactIds: [SAMPLE_RESULT_1], payload: { experimentId: X, runIndex: 0, status: 'ran', matchesPrediction: true } },
     { schemaVersion: 1, id: 'ev_18', sequence: 18, at: T0 + 401_421, projectId: PROJECT, missionId: M, taskId: T_EXPERIMENT, actorId: 'runner:experiment', category: 'experiment', name: 'experiment.run.finished', artifactIds: [SAMPLE_RESULT_2], payload: { experimentId: X, runIndex: 1, status: 'ran', matchesPrediction: true } },
