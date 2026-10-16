@@ -7,7 +7,7 @@ import type { EventLog } from '../mission/events.ts';
 import { redact } from '../mission/redact.ts';
 import type { ArtifactRef, AttemptState } from '../mission/types.ts';
 import { run, type Adapter, type AgentResult, type AgentRun } from './adapters.ts';
-import { normalize, providerOf } from './normalize.ts';
+import { normalize, streamProviderOf } from './normalize.ts';
 
 /**
  * Run an adapter as a mission attempt: every byte it prints is kept, every recognisable
@@ -188,7 +188,7 @@ export async function captureRun(
     actorId: ctx.runnerId,
   };
   const scrub = (text: string) => redact(text, ctx.secrets).text;
-  const provider = providerOf(adapter.name);
+  const provider = streamProviderOf(adapter);
   sweepSpills({ repoRoot: options.cwd, projectId: ctx.projectId });
   const spillDir = fs.mkdtempSync(path.join(os.tmpdir(), SPILL_PREFIX));
   const owner: SpillOwner = { pid: process.pid, repoRoot: path.resolve(options.cwd), projectId: ctx.projectId, startedAt: Date.now() };

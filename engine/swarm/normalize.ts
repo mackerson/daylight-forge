@@ -235,3 +235,12 @@ export function providerOf(adapterName: string): Provider {
       return 'unknown';
   }
 }
+
+/**
+ * The shape an adapter's stream is read as: what it declares, else what its name implies.
+ * A test double that wants its cost read as a provider's declares the claude shape (R10.3);
+ * its runner id still names it `mock`, so the figure is never mistaken for a model's.
+ */
+export function streamProviderOf(adapter: { name: string; streamShape?: Provider }): Provider {
+  return adapter.streamShape ?? providerOf(adapter.name);
+}
