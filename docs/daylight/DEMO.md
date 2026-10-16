@@ -28,7 +28,7 @@ nothing runs in the open.
 ```bash
 pnpm install
 pnpm ui:build
-pnpm typecheck && pnpm test:all        # ~1,200 assertions; includes the acceptance checklist
+pnpm typecheck && pnpm test:all        # ~1,440 assertions; includes the acceptance checklist
 ```
 
 ## The guided demo, in order

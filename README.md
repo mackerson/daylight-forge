@@ -194,7 +194,7 @@ the integrated chip and says nothing about it — 93fps against 143 on the same 
 frame meter (the `fps` chip) names whichever GPU actually rendered.
 
 Other useful bits: `pnpm package` builds a portable directory that runs without a checkout;
-`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 653 assertions across 27
+`pnpm bench` measures frame time headlessly; `pnpm test:all` runs 1,442 assertions across 40
 files.
 
 ---
@@ -285,7 +285,7 @@ the measurements are under [docs/daylight/](docs/daylight/).
 | `pnpm bench` | measure frame time headlessly and print one line |
 | `pnpm package` | build a portable directory that runs without a checkout |
 | `pnpm calibrate <spec>` | sweep similarity thresholds against labelled fixture points |
-| `pnpm test:all` | 653 assertions across 27 files |
+| `pnpm test:all` | 1,442 assertions across 40 files |
 | `pnpm typecheck` | `tsc --noEmit` over engine and renderer |
 
 | Flag | Default | Meaning |
