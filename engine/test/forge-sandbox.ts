@@ -18,7 +18,7 @@ import {
   execLaunch, execRefusal, MCP_CONFIG, MCP_HANDSHAKE, NET_FILES, MCP_SHIM, MCP_SOCKET, mcpRuntimeDir, newMcpToken, profileLaunch,
   registerRunTool, runExec, SandboxRefused, type Mount, type ProfileOptions,
 } from '../forge/sandbox.ts';
-import { createWorkspace } from '../forge/workspace.ts';
+import { createWorkspace, WORKSPACE_PREFIX } from '../forge/workspace.ts';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type { Attempt, AttemptSandbox } from '../mission/types.ts';
 import type { Graph } from '../graph/types.ts';
@@ -31,7 +31,7 @@ import { run as runAgent } from '../swarm/adapters.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
-const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-forge-sandbox-')));
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-test-forge-sb-')));
 process.on('exit', () => {
   try {
     execFileSync('chmod', ['-R', 'u+rwx', tmp], { stdio: 'ignore' });
@@ -658,6 +658,18 @@ section('the MCP runtime directory');
   check('the socket path fits sun_path', Buffer.byteLength(rt.socket) <= 107);
   rt.dispose();
   check('it is removed on dispose', !fs.existsSync(rt.dir));
+}
+
+section('nothing left behind');
+{
+  const mine = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(WORKSPACE_PREFIX)).filter((n) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(os.tmpdir(), n, 'owner.json'), 'utf8')).pid === process.pid;
+    } catch {
+      return false;
+    }
+  });
+  check('every workspace this run made was disposed', mine.length === 0, mine.join(','));
 }
 
 listener.close();

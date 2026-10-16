@@ -17,7 +17,7 @@ import {
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-forge-test-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-test-forge-ws-'));
 process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const GIT_ENV = {
@@ -148,7 +148,9 @@ const artifacts = new ArtifactStore(path.join(tmp, 'out'));
     'ok' in fromElsewhere && fs.readdirSync(elsewhere).length === 0 && fs.existsSync(path.join(third.tree, 'src', 'new.js')),
     fs.readdirSync(elsewhere).join(','));
   third.dispose();
-  const wrong = applyDiff(createWorkspace(repo, base), d.diff, `sha256:${'0'.repeat(64)}`);
+  const fourth = createWorkspace(repo, base);
+  const wrong = applyDiff(fourth, d.diff, `sha256:${'0'.repeat(64)}`);
+  fourth.dispose();
   check('a diff whose bytes are not the digest is invalid', 'invalid' in wrong);
   fresh.dispose();
   ws.dispose();
@@ -244,6 +246,18 @@ section('disposal and the sweep');
   check('a directory others can read survives', fs.existsSync(open));
   check('a directory without a valid owner survives', fs.existsSync(junk));
   check('a planted link and what it points at survive', fs.existsSync(target) && fs.lstatSync(path.join(sweepDir, `${WORKSPACE_PREFIX}link`)).isSymbolicLink());
+}
+
+section('nothing left behind');
+{
+  const mine = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(WORKSPACE_PREFIX)).filter((n) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(os.tmpdir(), n, 'owner.json'), 'utf8')).pid === process.pid;
+    } catch {
+      return false;
+    }
+  });
+  check('every workspace this run made was disposed', mine.length === 0, mine.join(','));
 }
 
 done();
