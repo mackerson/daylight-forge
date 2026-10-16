@@ -12,11 +12,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createDecomposeServer, createServer } from '../mcp/server.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { DAYLIGHT_DB } from '../mission/db.ts';
 import { runWorkItemCommand } from '../forge/commands-work-item.ts';
 import { confirmDigest } from '../forge/confirm.ts';
-import { ambiguities, buildDecomposePrompt, ingestProposals, workItemIdOf } from '../forge/decompose.ts';
+import {
+  ambiguities, buildDecomposePrompt, decompose, ingestProposals, workItemIdOf, type DecomposeRunner,
+} from '../forge/decompose.ts';
 import { confirmCodeOf, DecisionRefused } from '../forge/policy.ts';
 import {
   assertImplementable, createImplementMission, decideWorkItem, showWorkItem, specIntakeViolations, workItemGuard,
@@ -46,7 +52,16 @@ const throws = (fn: () => unknown): Error | null => {
   }
 };
 
-const GIT_ENV = { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+const throwsAsync = async (fn: () => Promise<unknown>): Promise<Error | null> => {
+  try {
+    await fn();
+    return null;
+  } catch (err) {
+    return err as Error;
+  }
+};
+
+const GIT_ENV ={ PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 const git = (root: string, ...args: string[]) => execFileSync('git', [
   '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null',
   '-C', root, ...args,
@@ -412,6 +427,107 @@ section('daylight work-item list | show | approve | reject (the module WS8 dispa
   const ok = run(['approve', target.id, '--actor', HUMAN, '--rationale', 'ok', '--confirm', code8]);
   check('approve from a person\'s shell with the code exits 0', ok.code === 0 && ctx.store.workItem(target.id)!.status === 'approved', ok.stderr);
   check('an unknown subcommand is a usage error', run(['merge']).code === 2);
+}
+
+// ---- the MCP boundary ------------------------------------------------------------
+
+type ToolResult = { isError?: boolean; content: Array<{ type: string; text?: string }> };
+
+async function connect(server: McpServer): Promise<Client> {
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverSide);
+  const client = new Client({ name: 'mock-decomposer', version: '0' });
+  await client.connect(clientSide);
+  return client;
+}
+const call = async (client: Client, args: unknown): Promise<ToolResult> =>
+  (await client.callTool({ name: 'propose_work_item', arguments: args as Record<string, unknown> })) as ToolResult;
+const textOf = (r: ToolResult) => r.content.map((c) => c.text ?? '').join('');
+
+section('propose_work_item: one tool, hostile input refused at the boundary');
+{
+  const D = makeRepo('d');
+  const c = openDaylight(D.out);
+  const spec = registerSpec(c, D.root, 'docs/spec.md');
+  const attempt = decomposeAttempt(c, spec.mission.id, 'mock:mcp');
+  const box = outboxFile(D.out, attempt.id);
+  const lines = () => (fs.existsSync(box) ? fs.readFileSync(box, 'utf8').split('\n').filter(Boolean).length : 0);
+  const client = await connect(createDecomposeServer({ dir: D.out, attemptId: attempt.id, check: { spec: SPEC } }).server);
+
+  const tools = (await client.listTools()).tools.map((t) => t.name);
+  check('the decompose server offers exactly propose_work_item and nothing that reads', tools.join(',') === 'propose_work_item', tools.join(','));
+  const ok = await call(client, good);
+  const okBody = JSON.parse(textOf(ok)) as Record<string, unknown>;
+  check('an accepted proposal returns only {accepted, proposalDigest}',
+    !ok.isError && Object.keys(okBody).sort().join(',') === 'accepted,proposalDigest' && okBody.accepted === true);
+  check('it is one line in this attempt\'s outbox', lines() === 1);
+
+  const outside = await call(client, { ...good, touches: [path.join(tmp, 'a', 'src', 'widgets.ts')] });
+  check('an absolute path outside the repo is refused', !!outside.isError && /touches/.test(textOf(outside)) && lines() === 1, textOf(outside));
+  const etc = await call(client, { ...good, touches: ['/etc/passwd'] });
+  check('the refusal does not echo the path', !!etc.isError && !textOf(etc).includes('/etc/passwd'));
+  const dotdot = await call(client, { ...good, touches: ['../a/src/widgets.ts'] });
+  check('a path that climbs out of the repo is refused', !!dotdot.isError && lines() === 1);
+  const big = await call(client, { ...good, statement: 's'.repeat(64 * 1024) });
+  check('an oversize payload is refused and nothing is written', !!big.isError && lines() === 1);
+  const fat = await call(client, { ...good, examples: Array(10).fill('e'.repeat(900)), negativeExamples: Array(10).fill('n'.repeat(900)) });
+  check('a payload over 16 KB in total is refused', !!fat.isError && /payload/.test(textOf(fat)) && lines() === 1, textOf(fat));
+  const anchor = await call(client, { ...good, anchor: '#not-in-the-spec' });
+  check('an anchor that does not resolve is refused at once when the server has the spec', !!anchor.isError && lines() === 1);
+  const bidi = await call(client, { ...good, title: 'ok‮evil' });
+  check('a title with a bidi control is refused', !!bidi.isError && lines() === 1);
+
+  for (let i = 1; i < MAX_PROPOSALS_PER_ATTEMPT; i++) await call(client, { ...good, title: `item ${i}` });
+  const over = await call(client, { ...good, title: 'one too many' });
+  check(`the ${MAX_PROPOSALS_PER_ATTEMPT + 1}st proposal in a session is refused`, !!over.isError && /count/.test(textOf(over)) && lines() === MAX_PROPOSALS_PER_ATTEMPT);
+  await client.close();
+  check('a server bound to no attempt is refused', throws(() => createDecomposeServer({ dir: D.out, attemptId: 'local' })) !== null);
+  const mcpLog = fs.readFileSync(path.join(D.out, 'events.jsonl'), 'utf8');
+  check('the server\'s event lines carry no proposal text', !mcpLog.includes('POST /widgets') && !mcpLog.includes('/etc/passwd'));
+
+  fs.writeFileSync(path.join(D.out, 'graph.json'), JSON.stringify({ root: D.root, nodes: [], edges: [] }));
+  const reviewer = await connect(createServer({ dir: D.out, session: 's', agentTool: 'mock' }).server);
+  const reviewTools = (await reviewer.listTools()).tools.map((t) => t.name);
+  check('a reviewer\'s server never offers propose_work_item', reviewTools.length > 0 && !reviewTools.includes('propose_work_item'));
+  await reviewer.close();
+  c.close();
+}
+
+section('two blind decomposers, one anchor: two rows, one need, neither sees the other');
+{
+  const E = makeRepo('e');
+  const c = openDaylight(E.out);
+  const spec = registerSpec(c, E.root, 'docs/spec.md');
+  const scripts: Record<string, Proposal[]> = {
+    'mock:left': [{ ...good, statement: 'POST /widgets returns 201 with the new id.' }],
+    'mock:right': [{ ...good, statement: 'POST /widgets returns 200 and echoes the widget.' }],
+  };
+  const seen: Record<string, { prompt: string; tools: string[]; replies: string[]; allowed: readonly string[] }> = {};
+  const runner: DecomposeRunner = async (cc, run) => {
+    const a = cc.store.startAttempt({ taskId: run.task.id, runnerId: `agent:${run.tool}` });
+    const client = await connect(createDecomposeServer({ dir: cc.out, attemptId: a.id }).server);
+    const tools = (await client.listTools()).tools.map((t) => t.name);
+    const replies: string[] = [];
+    for (const p of scripts[run.tool]) replies.push(textOf(await call(client, p)));
+    await client.close();
+    cc.store.finishAttempt(a.id, { state: 'completed', costUsd: null });
+    seen[run.tool] = { prompt: run.prompt, tools, replies, allowed: run.allowedMcpTools };
+  };
+  const r = await decompose(c, spec.mission.id, E.root, ['mock:left', 'mock:right'], { runner });
+  check('two rows on one anchor', r.proposed.length === 2 && new Set(r.proposed.map((w) => w.anchor)).size === 1, String(r.proposed.length));
+  const needs = ambiguities(c, spec.mission.id);
+  check('one spec-ambiguity need, naming both', needs.length === 1 && needs[0].kind === 'spec-ambiguity'
+    && r.proposed.every((w) => needs[0].why.includes(w.id)));
+  check('neither item was approved or superseded by anything', r.proposed.every((w) => w.status === 'proposed'));
+  check('both decomposers got the same prompt, built from the spec alone', seen['mock:left'].prompt === seen['mock:right'].prompt);
+  check('each was allowed only propose_work_item', Object.values(seen).every((s) => s.allowed.join(',') === 'propose_work_item' && s.tools.join(',') === 'propose_work_item'));
+  check('nothing the second was told contains the first\'s statement',
+    !seen['mock:right'].replies.join('').includes('201') && !seen['mock:right'].prompt.includes('201 with the new id'));
+  check('decompose ran under no implement mission and created no experiment',
+    c.store.experiments(spec.mission.id).length === 0 && c.store.missions(spec.mission.projectId).every((m) => m.kind !== 'implement'));
+  check('decompose on a non-spec mission is refused',
+    (await throwsAsync(() => decompose(c, c.store.createMission({ projectId: spec.mission.projectId, kind: 'explore', objective: 'x', baseRevision: E.commit }).id, E.root, ['mock:left'], { runner }))) !== null);
+  c.close();
 }
 
 done();
