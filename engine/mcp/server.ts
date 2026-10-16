@@ -13,7 +13,7 @@ import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import { isEntityId } from '../mission/types.ts';
 import {
   isRefusal, MAX_ANCHOR_CHARS, MAX_EXAMPLE_BYTES, MAX_EXAMPLES, MAX_PROPOSAL_BYTES, MAX_PROPOSALS_PER_ATTEMPT,
-  MAX_STATEMENT_BYTES, MAX_TITLE_CHARS, MAX_TOUCH_CHARS, MAX_TOUCHES, outboxFile, validateProposal,
+  MAX_STATEMENT_BYTES, MAX_TITLE_CHARS, MAX_TOUCH_CHARS, MAX_TOUCHES, outboxFile, redactProposal, validateProposal,
   type OutboxLine, type ProposalContext,
 } from '../forge/proposal.ts';
 
@@ -665,8 +665,10 @@ export function createDecomposeServer(opts: DecomposeServerOptions) {
       },
     },
     async (a) => {
-      const checked = validateProposal(a, opts.check);
-      if (isRefusal(checked)) return refuse(checked.field, checked.refused);
+      const valid = validateProposal(a, opts.check);
+      if (isRefusal(valid)) return refuse(valid.field, valid.refused);
+      // Masked before the outbox: the line sits on disk until someone deletes it.
+      const checked = redactProposal(valid);
       if (filed() >= MAX_PROPOSALS_PER_ATTEMPT) return refuse('count', `at most ${MAX_PROPOSALS_PER_ATTEMPT} proposals per session`);
       const line: OutboxLine = { v: 1, at: Date.now(), proposal: checked };
       const json = JSON.stringify(line);

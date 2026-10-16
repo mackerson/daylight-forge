@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { redact } from '../mission/redact.ts';
 
 /**
  * A work-item proposal as it crosses the MCP boundary, and the rules it must meet.
@@ -233,6 +234,24 @@ export function validateProposal(raw: unknown, ctx: ProposalContext = {}): Propo
 }
 
 export const isRefusal = (v: Proposal | ProposalRefusal): v is ProposalRefusal => 'refused' in v;
+
+const redactText = (s: string) => redact(s).text;
+
+/**
+ * The proposal with secret-shaped text masked, as the same `redact` that guards artifacts
+ * does it. Run before anything is written: by the server before the outbox line, and by the
+ * host again before the row and artifact, since the outbox is a file the agent's uid can
+ * write and the host cannot assume the server ran.
+ */
+export function redactProposal(p: Proposal): Proposal {
+  return {
+    ...p,
+    title: redactText(p.title),
+    statement: redactText(p.statement),
+    examples: p.examples.map(redactText),
+    negativeExamples: p.negativeExamples.map(redactText),
+  };
+}
 
 // ---- the outbox ------------------------------------------------------------------
 

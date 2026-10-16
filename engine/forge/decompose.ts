@@ -3,12 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalJson } from '../mission/artifacts.ts';
 import { requireMappedRepo, type DaylightContext } from '../mission/context.ts';
-import { redact } from '../mission/redact.ts';
 import type { Attempt, Mission, Need, Task, WorkItem } from '../mission/types.ts';
 import { isEntityId } from '../mission/types.ts';
 import { workItemContentDigest } from '../mission/store.ts';
 import {
-  anchorsOf, isRefusal, MAX_PROPOSAL_BYTES, MAX_PROPOSALS_PER_ATTEMPT, outboxFile, PROPOSALS_DIR,
+  anchorsOf, isRefusal, MAX_PROPOSAL_BYTES, MAX_PROPOSALS_PER_ATTEMPT, outboxFile, PROPOSALS_DIR, redactProposal,
   validateProposal, type Proposal, type ProposalField,
 } from './proposal.ts';
 import { specOf, specTree } from './spec.ts';
@@ -171,18 +170,6 @@ function readOutbox(file: string): { text: string; truncated: boolean } | { refu
   } finally {
     fs.closeSync(fd);
   }
-}
-
-const redactText = (s: string) => redact(s).text;
-
-function redactProposal(p: Proposal): Proposal {
-  return {
-    ...p,
-    title: redactText(p.title),
-    statement: redactText(p.statement),
-    examples: p.examples.map(redactText),
-    negativeExamples: p.negativeExamples.map(redactText),
-  };
 }
 
 /**

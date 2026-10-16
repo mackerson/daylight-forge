@@ -493,6 +493,39 @@ section('propose_work_item: one tool, hostile input refused at the boundary');
   c.close();
 }
 
+section('a secret a decomposer proposes is never stored raw, anywhere under <out>');
+{
+  const S = makeRepo('s');
+  const c = openDaylight(S.out);
+  const spec = registerSpec(c, S.root, 'docs/spec.md');
+  const attempt = decomposeAttempt(c, spec.mission.id, 'mock:leaky');
+  const SK = 'sk-ws7SENTINELabcdef0123456789';
+  const AKIA = 'AKIAWS7SENTINEL12345';
+  const client = await connect(createDecomposeServer({ dir: S.out, attemptId: attempt.id }).server);
+  const r = await call(client, {
+    ...good, statement: `call it with ${SK}`, examples: [`key ${AKIA}`], negativeExamples: [`not ${SK}`], title: `Create ${AKIA}`,
+  });
+  await client.close();
+  check('the proposal is accepted (a secret is not a refusal)', !r.isError, textOf(r));
+  const ing = ingestProposals(c, spec.mission.id);
+  check('and ingested as one row', ing.created.length === 1, JSON.stringify(ing.refused));
+  c.close();
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile()) files.push(p);
+    }
+  };
+  walk(S.out);
+  const leaks = files.filter((f) => {
+    const b = fs.readFileSync(f);
+    return b.includes(SK) || b.includes(AKIA);
+  }).map((f) => path.relative(S.out, f));
+  check('neither sentinel is in any file under <out>: outbox, artifacts, db, events', files.length > 3 && leaks.length === 0, leaks.join(', '));
+}
+
 section('two blind decomposers, one anchor: two rows, one need, neither sees the other');
 {
   const E = makeRepo('e');
