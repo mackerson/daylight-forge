@@ -62,8 +62,14 @@ export const isSessionId = (s: unknown): s is string => typeof s === 'string' &&
 /** A value that would trip `redact` is not stored at all; masking it would still keep its neighbours. */
 const clean = (s: string): boolean => redact(s, [], {}).redactions === 0;
 
+/**
+ * Bare 40-hex is a commit's shape and a classic GitHub token's; outside a verified commit it is
+ * never stored as an id or a model. Paths named by a hash are legitimate and are left alone.
+ */
+const BARE_HEX40 = /^[0-9a-fA-F]{40}$/;
+
 export function vetModel(v: unknown): string | null {
-  return typeof v === 'string' && MODEL.test(v) && clean(v) ? v : null;
+  return typeof v === 'string' && MODEL.test(v) && !BARE_HEX40.test(v) && clean(v) ? v : null;
 }
 
 export function vetTool(v: unknown): string {
@@ -73,7 +79,7 @@ export function vetTool(v: unknown): string {
 /** A provider's message or tool-use id, kept for dedupe. Anything else odd becomes its hash. */
 export function vetProviderId(v: unknown): string | null {
   if (typeof v !== 'string' || !v) return null;
-  return PROVIDER_ID.test(v) && clean(v) ? v : `h_${sha256(v).slice(0, 32)}`;
+  return PROVIDER_ID.test(v) && !BARE_HEX40.test(v) && clean(v) ? v : `h_${sha256(v).slice(0, 32)}`;
 }
 
 export type VettedPath = { rel: string } | { outside: true } | { dropped: true };

@@ -13,7 +13,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import {
-  assertVetted, eventId, ingestClaudeCode, OUTSIDE_CONTROLS, parseLine, projectSlug, vetModel,
+  assertVetted, eventId, ingestClaudeCode, OUTSIDE_CONTROLS, parseLine, projectSlug, vetModel, vetProviderId,
   vetPath, vetTool,
 } from '../ingest/claude-code.ts';
 import { readNewLines } from '../ingest/cursor.ts';
@@ -135,6 +135,8 @@ section('parseLine and vetting are pure and keep no text');
   check('a torn line is corrupt', parseLine('{"type":"assistant","mess', repo.root).kind === 'corrupt');
   check('an unknown type is counted as unknown, not guessed at', parseLine('{"type":"x-new"}', repo.root).kind === 'unknown');
   check('a model with an odd shape is dropped', vetModel('<synthetic>') === null && vetModel(PLANTED_KEY) === null && vetModel('claude-opus-4-1[1m]') === 'claude-opus-4-1[1m]');
+  check('bare 40-hex, a token\'s shape, is never a model', vetModel(RANDOM_HEX) === null);
+  check('bare 40-hex as a provider id is stored as its hash', vetProviderId(RANDOM_HEX)?.startsWith('h_') === true && !vetProviderId(RANDOM_HEX)!.includes(RANDOM_HEX));
   check('a tool with an odd name is `other`', vetTool('Weird Tool!') === 'other' && vetTool('mcp__srv__get_slice') === 'mcp__srv__get_slice');
   const inside = vetPath(path.join(repo.root, 'src/a.ts'), null, repo.root);
   check('an inside path becomes project-relative', 'rel' in inside && inside.rel === 'src/a.ts');
