@@ -551,6 +551,27 @@ await (async () => {
   }
 })();
 
+section('no price table in the money code, used or not');
+{
+  // Grep-level, so a table nobody calls yet is caught too (review F3). The invariant
+  // `money-code-has-no-price-table` catches a table by its name in `check`; this catches the
+  // shape of one — a per-token rate, a tiny exponent, a divide-by-a-thousand — whatever it is called.
+  const PRICE_SHAPE = /pric(e|ing)|tariff|per[_ -]?(1k|1m|mtok|million|thousand|token)s?\b|usd_?per|cost_?per|\d(\.\d+)?e-\d|\/\s*1_?000(_?000)?\b|\*\s*0\.0000/i;
+  const money = ['mission/ledger.ts', 'mission/commands-report.ts', 'swarm/usage.ts', 'swarm/capture.ts', 'swarm/normalize.ts']
+    .map((f) => path.resolve(import.meta.dirname, '..', f));
+  const code = (src: string) => src.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+  const hits = money.flatMap((f) => code(fs.readFileSync(f, 'utf8')).split('\n')
+    .filter((l) => PRICE_SHAPE.test(l)).map((l) => `${path.basename(f)}: ${l.trim()}`));
+  check('the money modules hold no price, rate or per-token figure', hits.length === 0, hits.join('\n'));
+  const planted = [
+    "const RATES = { 'claude-sonnet': 3e-6 };",
+    'const usdPerMtok = 15;',
+    'const cost = tokens / 1_000_000 * 3;',
+    "const PRICING = { opus: { input: 15, output: 75 } };",
+  ];
+  check('and the scan would see a planted table of any of these shapes', planted.every((l) => PRICE_SHAPE.test(code(l))));
+}
+
 section('a key nobody put in the environment, glued to a word, still persists nowhere');
 await (async () => {
   // The reviewer's sentinels (ws5-review F1): not in process.env, so only shape and field
