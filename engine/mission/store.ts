@@ -962,14 +962,16 @@ export class MissionStore {
    *
    * The scratch-dir sweep only sees the current `/tmp`; a runner killed before a reboot
    * leaves a pending row nothing else will ever conclude. Rows that never started are left
-   * alone: pending-and-never-run is a registered experiment, not a dead one.
+   * alone: pending-and-never-run is a registered experiment, not a dead one. Gates and
+   * holdouts are never reaped: their runs land in `gate_evaluations`, and their own row's
+   * conclusion is not something a candidate run writes (interfaces-reconciled R-8).
    */
   reapPendingExperiments(opts: {
     projectId: string; startedBefore: number; isLive?: (experimentId: string) => boolean;
   }): Experiment[] {
     const rows = this.db
       .prepare(
-        `SELECT id FROM experiments WHERE project_id=? AND conclusion='pending'
+        `SELECT id FROM experiments WHERE project_id=? AND conclusion='pending' AND role='probe'
          AND started_at IS NOT NULL AND started_at < ? ORDER BY started_at, id`,
       )
       .all(opts.projectId, opts.startedBefore) as Array<{ id: string }>;

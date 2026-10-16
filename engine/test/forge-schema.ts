@@ -517,13 +517,16 @@ section('experiment reaper');
   const dead = store.createExperiment(base);
   const live = store.createExperiment(base);
   const never = store.createExperiment(base);
+  const gateRow = store.createExperiment({ ...base, role: 'gate' });
   store.markExperimentStarted(dead.id, 100);
   store.markExperimentStarted(live.id, 100);
+  store.markExperimentStarted(gateRow.id, 100);
   const reaped = store.reapPendingExperiments({ projectId: PROJECT.id, startedBefore: 1_000, isLive: (id) => id === live.id });
   check('a pending row whose run started long ago is concluded invalid', reaped.map((x) => x.id).join() === dead.id
     && store.experiment(dead.id)!.conclusion === 'invalid' && /runner died/.test(store.experiment(dead.id)!.limitations.join()));
   check('a live one is left alone', store.experiment(live.id)!.conclusion === 'pending');
   check('one that never started is left alone', store.experiment(never.id)!.conclusion === 'pending');
+  check('a gate is never reaped: its conclusion is not what candidate runs record', store.experiment(gateRow.id)!.conclusion === 'pending');
   check('another project is never reaped', store.reapPendingExperiments({ projectId: OTHER.id, startedBefore: 1e15 }).length === 0);
 }
 
