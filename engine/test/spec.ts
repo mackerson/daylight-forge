@@ -474,7 +474,7 @@ section('propose_work_item: one tool, hostile input refused at the boundary');
   check('a payload over 16 KB in total is refused', !!fat.isError && /payload/.test(textOf(fat)) && lines() === 1, textOf(fat));
   const anchor = await call(client, { ...good, anchor: '#not-in-the-spec' });
   check('an anchor that does not resolve is refused at once when the server has the spec', !!anchor.isError && lines() === 1);
-  const bidi = await call(client, { ...good, title: 'ok‮evil' });
+  const bidi = await call(client, { ...good, title: 'ok\u202eevil' });
   check('a title with a bidi control is refused', !!bidi.isError && lines() === 1);
 
   for (let i = 1; i < MAX_PROPOSALS_PER_ATTEMPT; i++) await call(client, { ...good, title: `item ${i}` });
