@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Writable } from 'node:stream';
 import { ArtifactStore } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
@@ -21,7 +22,9 @@ import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
  * asked for. The test and its prediction are artifacts, registered before anything runs and
  * covered by one digest, so the thing being tested cannot be rewritten to match whatever came
  * out; at run time the test is copied *from the artifact store into the worktree*, and a
- * worktree that already holds a different file at that path is refused. And the revision is
+ * worktree that already holds a different file at that path is refused. Each run then sees
+ * the registered bytes bound in from the runner's memory, not the worktree copy, which the
+ * same uid could rewrite between runs. And the revision is
  * a commit — a `+dirty` tree is uncommitted code nobody else can check out, so an experiment
  * on it is recorded as invalid rather than run.
  *
@@ -204,17 +207,28 @@ function observe(
   return { observed, matches };
 }
 
-/** Spawn and wait, with a wall-clock ceiling that is actually enforced. */
+/** The child's fd that carries the registered test into the sandbox. */
+const TEST_FD = 3;
+
+/**
+ * Spawn and wait, with a wall-clock ceiling that is actually enforced. `feed`, when given, is
+ * written to the child's fd 3 and closed — bwrap reads it into the sandbox at setup.
+ */
 function execute(
-  argv: string[], timeoutMs: number,
+  argv: string[], timeoutMs: number, feed?: Buffer,
 ): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; truncated: boolean }> {
   return new Promise((resolve) => {
     // The outer process is prlimit, which execs bwrap; the sandbox has --die-with-parent, so
     // killing this one pid takes the whole tree with it.
     const child = spawn(argv[0], argv.slice(1), {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
     });
+    const pipe = child.stdio[TEST_FD] as Writable;
+    // A launcher that dies before reading closes the pipe; that failure is reported by the
+    // exit status, not by an unhandled EPIPE here.
+    pipe.on('error', () => {});
+    pipe.end(feed ?? Buffer.alloc(0));
     let stdout = '';
     let stderr = '';
     let truncated = false;
@@ -231,8 +245,8 @@ function execute(
       if (onto === 'stdout') stdout = bounded;
       else stderr = bounded;
     };
-    child.stdout.on('data', take('stdout'));
-    child.stderr.on('data', take('stderr'));
+    child.stdout!.on('data', take('stdout'));
+    child.stderr!.on('data', take('stderr'));
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -268,6 +282,15 @@ function symlinkOnPath(root: string, rel: string): string | null {
     if (st.isSymbolicLink()) return path.relative(root, at);
   }
   return null;
+}
+
+/** Is `file` still a regular file holding exactly `bytes`? A symlink in its place is not. */
+function sameFile(file: string, bytes: Buffer): boolean {
+  try {
+    return fs.lstatSync(file).isFile() && fs.readFileSync(file).equals(bytes);
+  } catch {
+    return false;
+  }
 }
 
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
@@ -407,29 +430,38 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
 
     for (let i = 0; i < runs; i++) {
       const runStarted = now();
+      // The test is bound into the sandbox from the verified buffer on every run. The worktree
+      // copy is only the mount point, and a same-uid process can rewrite it between runs.
       const argv = sandboxArgv(profile, {
         worktree,
         command: experiment.command,
         limits: ctx.limits ?? DEFAULT_LIMITS,
         env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id },
+        files: [{ fd: TEST_FD, path: testRel }],
       });
       const shown = argv.map((a) => (a === worktree || a === root ? '<worktree>' : a));
       emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
 
-      const run = await execute(argv, timeoutMs);
+      const run = await execute(argv, timeoutMs, registered);
       const label = (s: string) => `run ${i} ${s}`;
       const stdoutRef = ctx.artifacts.put(run.stdout, { ...meta, kind: 'log', label: label('stdout') });
       const stderrRef = ctx.artifacts.put(run.stderr, { ...meta, kind: 'log', label: label('stderr') });
       if (run.truncated) limitations.push(`run ${i}: output exceeded ${STREAM_CAP} bytes and was cut`);
       const { observed, matches } = observe(experiment.prediction, run);
+      // Something rewrote the copy while we held the worktree. The bytes that ran were still
+      // the registered ones, but a harness under attack is not one to draw a conclusion from.
+      const drifted = !sameFile(target, registered);
+      const status: ExecutionStatus = drifted ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
       record({
         experimentId: experiment.id, runIndex: i,
-        status: run.timedOut ? 'timeout' : 'ran',
-        why: run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined,
+        status,
+        why: drifted
+          ? `the worktree copy of ${testRel} changed during the experiment; something else is writing to it`
+          : run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined,
         command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
         exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
         durationMs: now() - runStarted, stdoutRef, stderrRef,
-        prediction: experiment.prediction, observed, matchesPrediction: matches,
+        prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,
         harnessDigest: experiment.harnessDigest, startedAt: runStarted, finishedAt: now(),
       });
     }

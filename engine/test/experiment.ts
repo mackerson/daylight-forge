@@ -354,6 +354,34 @@ if (!live.available) {
     check('an identical file already there is fine', (await run(same)).conclusion === 'supported');
   }
 
+  section('tamper between runs');
+  {
+    // A same-uid process rewriting the worktree copy after the first run: what runs second
+    // must still be the registered bytes, and the rewrite must poison the experiment.
+    const e = register('console.log("registered bytes");\n', { exitCode: 0, stdoutIncludes: ['TAMPERED'] });
+    const rel = e.testArtifact.path!;
+    const tamperer = {
+      append: (ev: DaylightEventInput) => {
+        sink.append(ev);
+        if (ev.name !== 'experiment.run.finished' || ev.payload.runIndex !== 0) return ev;
+        for (const d of fs.readdirSync(os.tmpdir()).filter((x) => x.startsWith('daylight-experiment-'))) {
+          const f = path.join(os.tmpdir(), d, 'work', rel);
+          if (fs.existsSync(f)) {
+            fs.chmodSync(f, 0o644);
+            fs.writeFileSync(f, 'console.log("TAMPERED — unregistered code ran");\n');
+          }
+        }
+        return ev;
+      },
+    };
+    const out = await run(e, { events: tamperer });
+    const rs = records(out);
+    check('a rewrite between runs concludes invalid, not inconclusive or supported', out.conclusion === 'invalid', out.conclusion);
+    check('the second run still executed the registered bytes',
+      !!rs[1]?.stdoutRef && !artifacts.text(rs[1].stdoutRef).includes('TAMPERED'), rs[1]?.stdoutRef ? artifacts.text(rs[1].stdoutRef) : 'no stdout');
+    check('and its record says the worktree copy changed', /changed/.test(rs[1]?.why ?? ''), rs[1]?.why);
+  }
+
   section('the sandbox confines');
   {
     const net = register(

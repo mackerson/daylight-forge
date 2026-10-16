@@ -153,6 +153,12 @@ export function sandboxArgv(
     command: string[];
     limits?: SandboxLimits;
     env?: Record<string, string>;
+    /**
+     * Files laid over the worktree from file descriptors the runner feeds, so their bytes
+     * come from the runner's memory rather than from a directory the same uid can rewrite.
+     * `path` is worktree-relative and must already exist there as a mount point.
+     */
+    files?: Array<{ fd: number; path: string }>;
   },
 ): string[] {
   if (!profile.available) {
@@ -192,6 +198,9 @@ export function sandboxArgv(
     '--dev', '/dev',
     '--tmpfs', '/tmp',
     '--ro-bind', path.resolve(opts.worktree), WORK,
+  );
+  for (const f of opts.files ?? []) argv.push('--ro-bind-data', String(f.fd), path.posix.join(WORK, f.path));
+  argv.push(
     '--chdir', WORK,
     '--',
     ...sandboxCommand(opts.command, opts.worktree),
