@@ -3,7 +3,7 @@ import path from 'node:path';
 import { mappedProject, mappedRoot, openDaylight, type DaylightContext } from './context.ts';
 import {
   LEDGER_GROUPS, OUTSIDE_CONTROLS, dollarsOf, ledgerWithGaps, renderLedger, tokenCells, totalGaps, totalOf,
-  type LedgerGroup, type TokenGaps,
+  type LedgerGroup, type RowFacts, type TokenGaps,
 } from './ledger.ts';
 import { shortRevision } from './project.ts';
 import type { AttemptOrigin, Ledger } from './types.ts';
@@ -71,13 +71,15 @@ export function resolveProject(ctx: DaylightContext, asked: string | undefined):
 
 const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
-function totalLine({ ledger: l, gaps }: { ledger: Ledger; gaps: TokenGaps }): string {
+function totalLine({ ledger: l, gaps, facts }: { ledger: Ledger; gaps: TokenGaps; facts: RowFacts }): string {
   const t = totalOf(l.rows);
   if (!t.attempts) return 'no attempts';
-  const [input, output, cacheRead, cacheWrite] = tokenCells(t, totalGaps(gaps, l.rows.map((r) => r.key)));
+  const keys = l.rows.map((r) => r.key);
+  const [input, output, cacheRead, cacheWrite] = tokenCells(t, totalGaps(gaps, keys));
   const tokens = `tokens in ${input}, out ${output}, cache read ${cacheRead}, cache write ${cacheWrite}`
     + (t.tokens.unknownCount ? ` (${t.tokens.unknownCount} attempt(s) reported none)` : '');
-  return `${t.attempts} attempt(s), dollars ${dollarsOf(t)}, ${tokens}`;
+  const providerCost = keys.reduce((n, k) => n + (facts[k]?.providerCost ?? 0), 0);
+  return `${t.attempts} attempt(s), dollars ${dollarsOf(t, providerCost)}, ${tokens}`;
 }
 
 /** The whole project ledger as markdown. Every figure is from attempt rows. */
@@ -85,7 +87,7 @@ export function projectReportText(ctx: DaylightContext, projectId: string, since
   const detail = (group: LedgerGroup, origin?: AttemptOrigin) => ledgerWithGaps(ctx, { projectId, group, since, origin });
   const table = (group: LedgerGroup, origin: AttemptOrigin | undefined, heading: string, keyLabel: string) => {
     const d = detail(group, origin);
-    return renderLedger(d.ledger, { heading, keyLabel, gaps: d.gaps });
+    return renderLedger(d.ledger, { heading, keyLabel, gaps: d.gaps, facts: d.facts });
   };
   const project = ctx.store.project(projectId);
   const allDetail = detail('runner');
@@ -137,23 +139,33 @@ export function projectReportText(ctx: DaylightContext, projectId: string, since
 }
 
 /**
- * The `--format json` document: a `Ledger`, whose rows also say per token field what is
- * unknown. `LedgerRow.tokens` holds known sums only, so on its own a field nobody reported
- * reads as 0. Each row gains `tokensReported` (null where no attempt reported the field, a floor
- * otherwise), `tokensUnknownByField` (attempts missing it) and `tokensKnown` (no gap at all).
+ * The `--format json` document: the `Ledger`, with each row's figures null where unknown, so a
+ * consumer reading `tokens.*` or `usdKnown` never gets a zero nobody reported. A token field is
+ * null when no attempt in the row reported it, else the known sum (a floor when
+ * `tokensUnknownByField` says some did not). `usdKnown` is null when no attempt carries a
+ * provider figure; a human row (no attempts) is null
+ * throughout. `tokensKnown` / `costKnown` are true only when nothing in the row is missing.
+ * Ingested rows carry `outside`. The text report renders from the same counts.
  */
 export function ledgerJson(ctx: DaylightContext, o: Parameters<typeof ledgerWithGaps>[1]) {
-  const { ledger: l, gaps } = ledgerWithGaps(ctx, o);
+  const { ledger: l, gaps, facts } = ledgerWithGaps(ctx, o);
   return {
     ...l,
     rows: l.rows.map((r) => {
-      const gap = gaps[r.key] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      const reported = (f: keyof typeof gap) => (r.attempts > 0 && gap[f] >= r.attempts ? null : r.tokens[f]);
+      const gap = gaps[r.key] ?? { input: r.attempts, output: r.attempts, cacheRead: r.attempts, cacheWrite: r.attempts };
+      const fact = facts[r.key] ?? { providerCost: 0, ingested: 0 };
+      const field = (f: keyof typeof gap) => (r.attempts === 0 || gap[f] >= r.attempts ? null : r.tokens[f]);
       return {
         ...r,
-        tokensReported: { input: reported('input'), output: reported('output'), cacheRead: reported('cacheRead'), cacheWrite: reported('cacheWrite') },
+        usdKnown: fact.providerCost === 0 ? null : r.usdKnown,
+        tokens: {
+          input: field('input'), output: field('output'), cacheRead: field('cacheRead'), cacheWrite: field('cacheWrite'),
+          unknownCount: r.tokens.unknownCount,
+        },
         tokensUnknownByField: gap,
         tokensKnown: r.attempts > 0 && Object.values(gap).every((n) => n === 0),
+        costKnown: r.attempts > 0 && fact.providerCost === r.attempts,
+        ...(fact.ingested > 0 ? { outside: OUTSIDE_CONTROLS } : {}),
       };
     }),
   };

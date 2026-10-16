@@ -65,11 +65,17 @@ const TOKEN_FIELDS: readonly TokenField[] = ['input', 'output', 'cacheRead', 'ca
  */
 export type TokenGaps = Record<string, Record<TokenField, number>>;
 
+/**
+ * Per row, what `LedgerRow` cannot say either: how many attempts carry a provider dollar
+ * figure (so `usdKnown: 0` can be told from "none known"), and how many are ingested.
+ */
+export type RowFacts = Record<string, { providerCost: number; ingested: number }>;
+
 export function ledger(ctx: Ctx, o: LedgerOptions): Ledger {
   return ledgerWithGaps(ctx, o).ledger;
 }
 
-export function ledgerWithGaps(ctx: Ctx, o: LedgerOptions): { ledger: Ledger; gaps: TokenGaps } {
+export function ledgerWithGaps(ctx: Ctx, o: LedgerOptions): { ledger: Ledger; gaps: TokenGaps; facts: RowFacts } {
   const since = o.since ?? 0;
   const missions = new Map(ctx.store.missions(o.projectId).map((m) => [m.id, m]));
   const attempts = ctx.store.projectAttempts(o.projectId, { since })
@@ -115,12 +121,17 @@ export function ledgerWithGaps(ctx: Ctx, o: LedgerOptions): { ledger: Ledger; ga
 
   const keys = [...new Set([...byKey.keys(), ...decisionCount.keys()])].sort();
   const gaps: TokenGaps = {};
+  const facts: RowFacts = {};
   const rows: LedgerRow[] = keys.map((key) => {
     const as = byKey.get(key) ?? [];
     const cs = as.flatMap((a) => candidatesOf.get(a.id) ?? []);
     // Known counts only; the nulls are counted in `gaps`, never added in as zeros.
     const sum = (f: TokenField) => as.reduce((n, a) => n + (a.tokens[f] ?? 0), 0);
     gaps[key] = Object.fromEntries(TOKEN_FIELDS.map((f) => [f, as.filter((a) => a.tokens[f] === null).length])) as Record<TokenField, number>;
+    facts[key] = {
+      providerCost: as.filter((a) => a.costSource === 'provider' && a.costUsd !== null).length,
+      ingested: as.filter((a) => a.origin === 'ingested').length,
+    };
     return {
       key,
       attempts: as.length,
@@ -176,7 +187,7 @@ export function ledgerWithGaps(ctx: Ctx, o: LedgerOptions): { ledger: Ledger; ga
     applications: applications.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1)),
     revisions: [...revisions.values()].sort((a, b) => (a.revision < b.revision ? -1 : 1)),
   };
-  return { ledger: built, gaps };
+  return { ledger: built, gaps, facts };
 }
 
 /** Gaps summed over rows, for a total line. */
@@ -265,11 +276,14 @@ const count = (n: number): string => n.toLocaleString('en-US');
  * (never `$0.00`); a floor, `≥`, when some did not; scanned spend shown beside, never inside,
  * the known figure.
  */
-export function dollarsOf(r: LedgerRow): string {
+export function dollarsOf(r: LedgerRow, providerCost?: number): string {
   if (r.attempts === 0) return '—';
   if (r.usdUnknownCount === r.attempts) return 'unknown';
   const unknown = r.usdUnknownCount ? `${r.usdUnknownCount} unknown` : '';
-  if (r.usdKnown === 0 && r.usdScanned > 0) {
+  // With the provider-figure count (`RowFacts`) this is exact; without it, a zero beside
+  // scanned spend is read as "none known" rather than printed as a known $0.00.
+  const noneKnown = providerCost !== undefined ? providerCost === 0 : r.usdKnown === 0 && r.usdScanned > 0;
+  if (noneKnown) {
     return `${money(r.usdScanned)} scanned, not known${unknown ? ` (${unknown})` : ''}`;
   }
   const notes = [unknown, r.usdScanned > 0 ? `${money(r.usdScanned)} scanned, not known` : ''].filter(Boolean);
@@ -312,7 +326,9 @@ export function totalOf(rows: readonly LedgerRow[]): LedgerRow {
 const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 /** The rows of one ledger as a markdown table, with a total line beneath. */
-export function renderLedger(l: Ledger, opts: { heading?: string; keyLabel?: string; gaps?: TokenGaps } = {}): string {
+export function renderLedger(
+  l: Ledger, opts: { heading?: string; keyLabel?: string; gaps?: TokenGaps; facts?: RowFacts } = {},
+): string {
   const out: string[] = [];
   if (opts.heading) out.push(`## ${opts.heading}`, '');
   const rows = l.rows.filter((r) => r.attempts > 0);
@@ -322,13 +338,17 @@ export function renderLedger(l: Ledger, opts: { heading?: string; keyLabel?: str
   }
   out.push(`| ${opts.keyLabel ?? 'key'} | attempts | dollars | tokens in | out | cache read | cache write | tokens unknown | candidates (accepted/rejected/applied/overridden) |`);
   out.push('|---|---:|---|---:|---:|---:|---:|---:|---|');
-  const line = (r: LedgerRow, label: string, gap: Record<TokenField, number> | undefined) => {
+  const line = (r: LedgerRow, label: string, gap: Record<TokenField, number> | undefined, providerCost: number | undefined) => {
     const c = r.candidates;
-    out.push(`| ${label} | ${r.attempts} | ${dollarsOf(r)} | ${tokenCells(r, gap).join(' | ')} | ${r.tokens.unknownCount} | ${c.accepted}/${c.rejected}/${c.applied}/${c.overridden} |`);
+    out.push(`| ${label} | ${r.attempts} | ${dollarsOf(r, providerCost)} | ${tokenCells(r, gap).join(' | ')} | ${r.tokens.unknownCount} | ${c.accepted}/${c.rejected}/${c.applied}/${c.overridden} |`);
   };
-  for (const r of rows) line(r, r.key === 'ingested' ? `ingested — ${OUTSIDE_CONTROLS}` : `\`${cell(r.key)}\``, opts.gaps?.[r.key]);
+  for (const r of rows) {
+    line(r, r.key === 'ingested' ? `ingested — ${OUTSIDE_CONTROLS}` : `\`${cell(r.key)}\``, opts.gaps?.[r.key], opts.facts?.[r.key]?.providerCost);
+  }
   if (rows.length > 1) {
-    line(totalOf(rows), '**total**', opts.gaps ? totalGaps(opts.gaps, rows.map((r) => r.key)) : undefined);
+    const keys = rows.map((r) => r.key);
+    line(totalOf(rows), '**total**', opts.gaps ? totalGaps(opts.gaps, keys) : undefined,
+      opts.facts ? keys.reduce((n, k) => n + (opts.facts![k]?.providerCost ?? 0), 0) : undefined);
   }
   out.push('');
   return out.join('\n');

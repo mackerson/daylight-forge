@@ -467,17 +467,33 @@ section('report --project: refusals and formats');
 {
   const out = path.join(tmp, 'fixture');
   const json = cli(['report', '--project', PROJECT.id, '--out', out, '--format', 'json', '--group', 'runner']);
-  type JsonRow = { key: string; tokensKnown: boolean; tokensReported: Record<string, number | null>; tokensUnknownByField: Record<string, number> };
+  type JsonRow = {
+    key: string; tokensKnown: boolean; tokensUnknownByField: Record<string, number>; costKnown: boolean;
+    tokens: Record<string, number | null>; usdKnown: number | null; usdScanned: number | null; outside?: string;
+  };
   const parsed = json.code === 0 ? JSON.parse(json.stdout) as { kind: string; rows: JsonRow[] } : null;
   check('json is one Ledger document', parsed?.kind === 'daylight-ledger' && parsed.rows.length > 0, json.err);
   const jrow = (k: string) => parsed?.rows.find((r) => r.key === k);
-  check('json says a token field nobody reported is unknown (null), not 0',
-    jrow('agent:codex:default')?.tokensReported.cacheWrite === null && jrow('agent:codex:default')?.tokensReported.input === 70
-      && jrow('agent:codex:default')?.tokensUnknownByField.cacheWrite === 1 && jrow('agent:codex:default')?.tokensKnown === false,
-    JSON.stringify(jrow('agent:codex:default')));
-  check('and an attempt with no usage at all is null in every field',
-    Object.values(jrow('agent:mock:plan')?.tokensReported ?? { x: 0 }).every((v) => v === null) && jrow('agent:mock:plan')?.tokensKnown === false);
-  check('a fully reported row is known', jrow('agent:claude:sonnet')?.tokensKnown === true);
+  const codexRow = jrow('agent:codex:default');
+  check('json prints a token field nobody reported as null, never 0',
+    codexRow?.tokens.cacheWrite === null && codexRow.tokens.input === 70
+      && codexRow.tokensUnknownByField.cacheWrite === 1 && codexRow.tokensKnown === false, JSON.stringify(codexRow));
+  check('and unknown dollars as null, never 0', codexRow?.usdKnown === null && codexRow.costKnown === false);
+  const plan = jrow('agent:mock:plan');
+  check('an attempt with no usage at all is null in every token field and in dollars',
+    ['input', 'output', 'cacheRead', 'cacheWrite'].every((f) => plan?.tokens[f] === null) && plan?.usdKnown === null && plan.tokensKnown === false,
+    JSON.stringify(plan));
+  const scanRow = jrow('agent:mock:scan');
+  check('a scanned-only row has no known dollars, only scanned ones', scanRow?.usdKnown === null && scanRow.usdScanned === 0.2);
+  const sonnetRow = jrow('agent:claude:sonnet');
+  check('a fully reported row is known', sonnetRow?.tokensKnown === true && sonnetRow.costKnown && sonnetRow.usdKnown === 0.46);
+  // The fixture has no provider-reported $0, so any 0 here would be a null printed as zero.
+  const zeros = (parsed?.rows ?? []).filter((r) => r.usdKnown === 0);
+  check('no row prints a known zero dollar it does not have', zeros.length === 0, JSON.stringify(zeros));
+  const byOriginJson = cli(['report', '--project', PROJECT.id, '--out', out, '--format', 'json', '--group', 'origin']);
+  const ing = (JSON.parse(byOriginJson.stdout) as { rows: JsonRow[] }).rows.find((r) => r.key === 'ingested');
+  check('json labels ingested work outside Daylight\'s controls too', ing?.outside === "outside Daylight's controls", JSON.stringify(ing));
+  check('text and json agree on the codex row', /`agent:codex:default` \| 1 \| unknown \| 70 \| 7 \| 20 \| unknown \|/.test(cli(['report', '--project', PROJECT.id, '--out', out]).stdout));
   const text = cli(['report', '--project', PROJECT.id, '--out', out]);
   check('text is the whole ledger', text.code === 0 && text.stdout.includes('# Ledger') && text.stdout.includes('unknown'), text.err);
   const bare = cli(['report', '--project', '--out', out]);
