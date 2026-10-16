@@ -285,12 +285,15 @@ section('appended lines: only the tail is read');
   const c = openDaylight(out);
   const rows3 = c.store.usageRows(root.id);
   const src = c.store.ingestSource(MAIN, '')!;
+  const totals3 = c.store.attempt(root.id)!.tokens;
+  const summed3 = c.store.usageTotals(root.id);
   c.close();
   check('the completed tail line and the new line are two new turns', r3.turns === 2 && rows3.some((u) => u.requestId === 'msg_fixtureD0000000000000004') && rows3.some((u) => u.requestId === 'msg_fixtureE0000000000000005'));
   check('nothing already read is read again', r3.deduped === 0 && r3.skipped.corruptLines === 0 && r3.skipped.mismatchedLines === 0, JSON.stringify(r3.skipped));
   check('no new mission or attempt', after.missions === before.missions && after.attempts === before.attempts && r3.attempts === 0);
   check('the cursor moved to the new end', src.linesSeen === 17, String(src.linesSeen));
-  check('the finished attempt\'s stale totals are reported, not hidden', r3.staleTotals.includes(root.id));
+  check('the finished attempt\'s totals are refreshed to the sum of its rows', JSON.stringify(totals3) === JSON.stringify(summed3) && totals3.input === 21 + 2 + 30, `${JSON.stringify(totals3)} vs ${JSON.stringify(summed3)}`);
+  check('so no attempt is reported stale', r3.staleTotals.length === 0, r3.staleTotals.join(','));
 }
 
 section('a rewritten transcript is re-read from zero as a no-op');

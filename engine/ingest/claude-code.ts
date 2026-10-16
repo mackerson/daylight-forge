@@ -426,8 +426,8 @@ export interface IngestResult {
   sessions: { seen: number; ingested: number; unchanged: number };
   skipped: SkippedCounts;
   /**
-   * Finished attempts that gained usage rows this run. Their stored totals predate those rows,
-   * because the store offers no way to update a finished attempt's totals (ws6 report, ask 1).
+   * Attempts whose stored totals still differ from the sum of their usage rows after the run.
+   * Always empty: an append refreshes them. Kept so the JSON checks itself.
    */
   staleTotals: string[];
 }
@@ -791,8 +791,10 @@ function writeTranscript(
       artifacts: [ref], at: f.lastAt ?? undefined,
     });
   } else if (usageAdded > 0) {
-    result.staleTotals.push(attemptId);
+    store.refreshUsageTotals(attemptId);
   }
+  const stored = store.attempt(attemptId)!.tokens;
+  if (canonicalJson(stored) !== canonicalJson(store.usageTotals(attemptId))) result.staleTotals.push(attemptId);
 
   const finished: IngestSessionFinishedPayload = {
     sessionId, agentId: t.agentId, pathDigest: t.read.pathDigest, turns: f.turns.size,
