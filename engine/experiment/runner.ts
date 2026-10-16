@@ -221,6 +221,36 @@ const git = (root: string, args: string[]): string =>
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, env: hardenedGitEnv(),
   }).trim();
 
+/**
+ * `-c` overrides that switch off every clean/smudge driver the repository's config names.
+ *
+ * A driver in `.git/config` (or a file it includes) plus a committed `.gitattributes` runs on
+ * checkout, on the host. There is no wildcard for `filter.*`, so the names are listed first —
+ * with `--includes`, which `--local` leaves off — and each is blanked. `required=false`
+ * because a required driver with no command fails the checkout instead of skipping it.
+ */
+export function filterOverrides(root: string): string[] {
+  let names: string;
+  try {
+    names = execFileSync(
+      'git',
+      [...HARDENED_GIT_CONFIG, '-C', root, 'config', '--includes', '--local', '--name-only', '--get-regexp', '^filter\\.'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000, env: hardenedGitEnv() },
+    );
+  } catch {
+    // Exit 1 is "no filter configured"; anything else surfaces at the checkout.
+    return [];
+  }
+  const drivers = new Set<string>();
+  for (const key of names.split('\n').map((k) => k.trim()).filter(Boolean)) {
+    const driver = key.slice('filter.'.length, key.lastIndexOf('.'));
+    if (driver && !/[=\s]/.test(driver)) drivers.add(driver);
+  }
+  return [...drivers].flatMap((d) => [
+    '-c', `filter.${d}.smudge=`, '-c', `filter.${d}.process=`, '-c', `filter.${d}.required=false`,
+  ]);
+}
+
 /** The commit a revision label names, or why it cannot be used. */
 export function commitOf(baseRevision: string): { commit: string } | { why: string } {
   if (baseRevision === 'unversioned') {
@@ -573,7 +603,7 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
   fs.writeFileSync(path.join(base, OWNER_FILE), JSON.stringify(owner));
   try {
     try {
-      git(ctx.repoRoot, ['worktree', 'add', '--detach', worktree, rev.commit]);
+      git(ctx.repoRoot, [...filterOverrides(ctx.repoRoot), 'worktree', 'add', '--detach', worktree, rev.commit]);
     } catch (err) {
       refuse('invalid', `could not check out ${rev.commit.slice(0, 12)}: ${String((err as Error).message).split('\n').pop()}`, startedAt);
       return finish();

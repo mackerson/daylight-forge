@@ -335,6 +335,30 @@ section('the repository\'s own git hooks and config do not run on the host');
   check('nor did a configured fsmonitor', !fs.existsSync(fsmon));
   fs.rmSync(hook);
   git(['config', '--unset', 'core.fsmonitor']);
+
+  // A clean/smudge driver named in .git/config (shared by every linked worktree) and switched
+  // on by a committed .gitattributes runs on checkout — also as us, also on the host. One
+  // reached through an include counts too.
+  const smudged = path.join(tmp, 'smudge-ran');
+  const processed = path.join(tmp, 'process-ran');
+  const included = path.join(tmp, 'included-ran');
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt filter=evil\n*.dat filter=proc\n*.inc filter=inc\n');
+  for (const f of ['0.inc', 'a.txt', 'b.dat']) fs.writeFileSync(path.join(repo, f), 'data\n');
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'filters']);
+  git(['config', 'filter.evil.smudge', `sh -c 'touch ${smudged}; cat'`]);
+  git(['config', 'filter.evil.required', 'true']);
+  git(['config', 'filter.proc.process', `sh -c 'touch ${processed}; exit 1'`]);
+  const inc = path.join(tmp, 'included.gitconfig');
+  fs.writeFileSync(inc, `[filter "inc"]\n\tsmudge = "sh -c 'touch ${included}; cat'"\n`);
+  git(['config', 'include.path', inc]);
+  const filtered = register('process.exit(0);\n', { exitCode: 0 }, { baseRevision: git(['rev-parse', 'HEAD']) });
+  const fout = await run({ ...filtered, command: ['python3', 'x.py'] }, { sandbox: { name: 'bwrap', available: true } });
+  check('a repo with filter drivers still checks out', /python3/.test(records(fout)[0]?.why ?? ''), records(fout)[0]?.why);
+  check('a smudge filter from repo config did not run on the host', !fs.existsSync(smudged));
+  check('nor a long-running process filter', !fs.existsSync(processed));
+  check('nor one reached through an include', !fs.existsSync(included));
+  for (const k of ['filter.evil.smudge', 'filter.evil.required', 'filter.proc.process', 'include.path']) git(['config', '--unset', k]);
 }
 
 // ---- the real sandbox -------------------------------------------------------------
