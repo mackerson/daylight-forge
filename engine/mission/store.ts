@@ -55,11 +55,59 @@ const tokenColumns = (t: TokenUsage): [number | null, number | null, number | nu
 const maxOf = (a: number | null, b: number | null): number | null =>
   a === null ? b : b === null ? a : Math.max(a, b);
 
-/** An approving `authorize-mission` decision of this mission that granted write. */
-function grantsWrite(d: Decision | null, missionId: string): boolean {
+/** An approving `authorize-mission` decision of this mission, by a human, that granted write. */
+export function grantsWrite(d: Decision | null | undefined, missionId: string): boolean {
   const scope = d?.scope as { operation?: unknown; permissions?: { write?: unknown } } | undefined;
-  return !!d && d.missionId === missionId && d.kind === 'approve'
+  return !!d && d.missionId === missionId && d.kind === 'approve' && isHumanActor(d.actor)
     && scope?.operation === 'authorize-mission' && scope.permissions?.write === true;
+}
+
+/**
+ * Why a decision row is not one the store would have recorded, or null. `recordDecision` and
+ * `importMission` both ask this, so a file cannot carry a decision the store would refuse.
+ */
+export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'scope'>): string | null {
+  const operation = d.scope.operation;
+  if (operation === undefined) return null;
+  if (!DECISION_OPERATIONS.includes(operation as DecisionOperation)) {
+    return `decision ${d.id} names unknown operation ${String(operation)}`;
+  }
+  // A Forge act is a person's, and says which person. An agent, a runner or a bare `human`
+  // with no name cannot authorise, lock, approve or apply.
+  if (!isHumanActor(d.actor)) return `${String(operation)} decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
+  return null;
+}
+
+/**
+ * Why an attempt row breaks R7 or R12, or null: an ingested attempt outside a work mission or
+ * with a sandbox record; a Daylight attempt without one, with an unknown profile or network,
+ * with exec but no write, or with write that `grant` (its named decision) does not give.
+ * `startAttempt` and `importMission` both ask this.
+ */
+export function attemptRefusal(
+  a: Pick<Attempt, 'id' | 'missionId' | 'origin' | 'sandbox'>,
+  mission: Pick<Mission, 'id' | 'kind' | 'permissions'>,
+  grant: Decision | null | undefined,
+): string | null {
+  if (a.origin === 'ingested') {
+    if (mission.kind !== 'work') return `attempt ${a.id} is ingested, and mission ${mission.id} is not a work mission; only work missions hold ingested attempts`;
+    if (a.sandbox !== null) return `attempt ${a.id} is ingested, so it has no sandbox record; Daylight granted it nothing`;
+    return null;
+  }
+  if (a.origin !== 'daylight') return `attempt ${a.id} has origin ${String(a.origin)}; it must be daylight or ingested`;
+  const s = a.sandbox;
+  if (!s) return `attempt ${a.id} was run by Daylight but has no sandbox record`;
+  if (!NETWORK_MODES.includes(s.network)) return `attempt ${a.id} network must be one of ${NETWORK_MODES.join(', ')}, not ${String(s.network)}`;
+  if (!SANDBOX_PROFILES.includes(s.profile)) return `attempt ${a.id} sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(s.profile)}`;
+  if (s.exec && !s.write) return `attempt ${a.id} asks for exec without write; exec runs over the attempt's own writable tree`;
+  if (s.write) {
+    if (!s.authorizeDecisionId) return `attempt ${a.id} asks for write without naming the authorize decision that granted it`;
+    if (!grantsWrite(grant, mission.id)) {
+      return `decision ${s.authorizeDecisionId} is not a human authorize-mission decision granting write on mission ${mission.id}`;
+    }
+    if (!mission.permissions.write) return `mission ${mission.id} does not hold write`;
+  }
+  return null;
 }
 
 /** A credential record names a variable and a label. Anything shaped like a value is refused. */
@@ -572,21 +620,14 @@ export class MissionStore {
       if (this.requireMission(t.missionId).kind !== 'work') {
         throw new Error(`mission ${t.missionId} is not a work mission; only work missions hold ingested attempts`);
       }
-    } else if (origin === 'daylight') {
-      sandbox = { ...READ_ONLY_SANDBOX, ...input.sandbox };
-      if (!NETWORK_MODES.includes(sandbox.network)) {
-        throw new Error(`attempt network must be one of ${NETWORK_MODES.join(', ')}, not ${String(sandbox.network)}`);
-      }
-      if (!SANDBOX_PROFILES.includes(sandbox.profile)) {
-        throw new Error(`attempt sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(sandbox.profile)}`);
-      }
-      if (sandbox.write) this.requireWriteGrant(t.missionId, sandbox.authorizeDecisionId ?? undefined);
-      if (sandbox.exec && !sandbox.write) {
-        throw new Error(`an attempt on mission ${t.missionId} asks for exec without write; exec runs over the attempt's own writable tree`);
-      }
     } else {
-      throw new Error(`attempt origin must be daylight or ingested, not ${String(origin)}`);
+      sandbox = { ...READ_ONLY_SANDBOX, ...input.sandbox };
     }
+    const why = attemptRefusal(
+      { id: `on task ${t.id}`, missionId: t.missionId, origin, sandbox }, this.requireMission(t.missionId),
+      sandbox?.authorizeDecisionId ? this.decision(sandbox.authorizeDecisionId) : null,
+    );
+    if (why) throw new Error(why);
     if (input.mcpToken !== undefined && input.mcpToken.length < 32) {
       throw new Error('an MCP token must be at least 32 characters of randomness');
     }
@@ -655,22 +696,6 @@ export class MissionStore {
       .prepare(`SELECT * FROM attempts WHERE mcp_token_digest=? AND state IN ('starting','running')`)
       .get(digestOf(token));
     return r ? this.rowToAttempt(r) : null;
-  }
-
-  /**
-   * Refuse write unless `decisionId` is an approving `authorize-mission` decision of this
-   * mission that granted it, and the mission still holds it.
-   */
-  private requireWriteGrant(missionId: string, decisionId: string | undefined): void {
-    if (!decisionId) {
-      throw new Error(`an attempt on mission ${missionId} asks for write without naming the authorize decision that granted it`);
-    }
-    if (!grantsWrite(this.decision(decisionId), missionId)) {
-      throw new Error(`decision ${decisionId} is not an authorize-mission decision granting write on mission ${missionId}`);
-    }
-    if (!this.requireMission(missionId).permissions.write) {
-      throw new Error(`mission ${missionId} does not hold write`);
-    }
   }
 
   /** The runner is alive. A no-op on an attempt that has already finished. */
@@ -1428,17 +1453,8 @@ export class MissionStore {
     if (!input.rationale || !input.rationale.trim()) {
       throw new Error(`decision on mission ${m.id} needs a rationale`);
     }
-    const operation = input.scope.operation;
-    if (operation !== undefined) {
-      if (!DECISION_OPERATIONS.includes(operation as DecisionOperation)) {
-        throw new Error(`decision on mission ${m.id} names unknown operation ${String(operation)}`);
-      }
-      // A Forge act is a person's, and says which person. An agent, a runner or a bare
-      // `human` with no name cannot authorise, lock, approve or apply.
-      if (!isHumanActor(input.actor)) {
-        throw new Error(`${String(operation)} on mission ${m.id} needs a human:<name> actor, not ${input.actor}`);
-      }
-    }
+    const refusal = decisionRefusal({ ...input, id: `on mission ${m.id}` });
+    if (refusal) throw new Error(refusal);
     const d: Decision = { ...input, id: newId('decision'), at: this.now() };
     this.db
       .prepare(

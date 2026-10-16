@@ -7,6 +7,7 @@ import { inScope, missionClaims } from './disputes.ts';
 import type { DaylightContext } from './context.ts';
 import { mappedProject } from './context.ts';
 import { DAYLIGHT_DB, openDaylightDb } from './db.ts';
+import { attemptRefusal, decisionRefusal, grantsWrite } from './store.ts';
 import type {
   Application, ArtifactRef, Attempt, Candidate, DaylightEvent, Decision, Experiment, GateEvaluation,
   IngestSource, Mission, ProjectIdentity, Task, UsageTurn, WorkItem,
@@ -260,6 +261,36 @@ function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
   return out;
 }
 
+/**
+ * The first row in the file that the store would never have written, or null.
+ *
+ * Import writes rows directly, so the rules `startAttempt` and `recordDecision` enforce (R7: no
+ * write without a human authorize decision of the mission; R12: ingested attempts only on work
+ * missions, with no sandbox record) are asked again here, of the whole file, before anything
+ * is written. A grant may be in the file or already in this directory.
+ */
+function forgedRowRefusal(ctx: DaylightContext, file: MissionExport): string | null {
+  const m = file.mission;
+  const inFile = new Map(file.decisions.map((d) => [d.id, d]));
+  for (const d of file.decisions) {
+    if (d.missionId !== m.id) return `decision ${d.id} belongs to ${d.missionId}, not mission ${m.id}`;
+    const why = decisionRefusal(d);
+    if (why) return why;
+  }
+  if (m.permissions.write) {
+    const granted = m.kind === 'implement' && [...inFile.values(), ...ctx.store.decisions(m.id)].some((d) => grantsWrite(d, m.id));
+    if (!granted) return `mission ${m.id} holds write without a human authorize-mission decision granting it`;
+  }
+  for (const a of file.attempts) {
+    if (a.missionId !== m.id) return `attempt ${a.id} belongs to ${a.missionId}, not mission ${m.id}`;
+    const grantId = a.sandbox?.authorizeDecisionId;
+    const grant = grantId ? inFile.get(grantId) ?? ctx.store.decision(grantId) : null;
+    const why = attemptRefusal(a, m, grant);
+    if (why) return why;
+  }
+  return null;
+}
+
 /** The same assertion, by the same source, at the same time: already here. */
 function sameClaim(a: Claim, b: Claim): boolean {
   return a.subject === b.subject && a.predicate === b.predicate && a.at === b.at
@@ -291,6 +322,8 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
       throw new Error(`artifact ${id} in the export carries a ref that does not name it; refusing to file it under the wrong record`);
     }
   }
+  const forged = forgedRowRefusal(ctx, file);
+  if (forged) throw new Error(`refusing the import: ${forged}`);
   // Claims already here, by the id the file gives them; the rest are numbered as they land.
   const claimIds = new Map<number, number>();
   for (const c of file.claims ?? []) {

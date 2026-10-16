@@ -606,4 +606,44 @@ section('export format 2 round-trips the Forge rows');
   dst.close();
 }
 
+section('import enforces R7 and R12 the way the store does');
+{
+  const file = readExport(path.join(tmp, 'v2-export.json'));
+  const refusedWhole = (label: string, forged: typeof file, pattern: RegExp) => {
+    const dir = path.join(tmp, `forged-${label}`);
+    const dst = openDaylight(dir);
+    const err = throws(() => importMission(dst, forged));
+    check(`${label}: refused`, !!err && pattern.test(err.message), err?.message);
+    check(`${label}: in one line`, !!err && !err.message.includes('\n'));
+    check(`${label}: nothing was written`, dst.store.mission(forged.mission.id) === null
+      && dst.store.projectAttempts(forged.project.id).length === 0 && dst.events.head() === 0
+      && dst.claims.allSubjects().length === 0 && !fs.existsSync(path.join(dir, 'artifacts')));
+    dst.close();
+  };
+  // The reviewer's forgery (rv-1/p2-bypass.ts): the grant flipped to a rejection.
+  refusedWhole('grant flipped to reject', {
+    ...file, decisions: file.decisions.map((d) => (d.scope.operation === 'authorize-mission' ? { ...d, kind: 'reject' as const } : d)),
+  }, /write/);
+  refusedWhole('grant removed', {
+    ...file, decisions: file.decisions.filter((d) => d.scope.operation !== 'authorize-mission'),
+  }, /write/);
+  refusedWhole('grant from an agent', {
+    ...file, decisions: file.decisions.map((d) => (d.scope.operation === 'authorize-mission' ? { ...d, actor: 'agent:claude:opus' } : d)),
+  }, /human/);
+  // The reviewer's second forgery: ingested attempts on an implement mission.
+  refusedWhole('ingested attempts on an implement mission', {
+    ...file, attempts: file.attempts.map((a) => ({ ...a, origin: 'ingested' as const, sandbox: null })),
+  }, /work mission/);
+  refusedWhole('a daylight attempt with no sandbox record', {
+    ...file, attempts: file.attempts.map((a) => ({ ...a, sandbox: null })),
+  }, /sandbox/);
+  refusedWhole('an attempt of another mission', {
+    ...file, attempts: file.attempts.map((a, i) => (i === 0 ? { ...a, missionId: `m_${'7'.repeat(32)}` } : a)),
+  }, /mission/);
+  refusedWhole('a mission imported holding write it was never granted', {
+    ...file, decisions: [], attempts: file.attempts.filter((a) => !a.sandbox?.write),
+    candidates: [], gateEvaluations: [], applications: [], usage: [], experiments: [],
+  }, /write/);
+}
+
 done();
