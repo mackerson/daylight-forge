@@ -290,4 +290,40 @@ await (async () => {
   events.close();
 })();
 
+section('one cost.reported per attempt, and usage under one name for every provider');
+await (async () => {
+  const dir = path.join(tmp, 'usage');
+  fs.mkdirSync(dir);
+  const events = new EventLog(dir);
+  const artifacts = new ArtifactStore(dir);
+  const store = new Finisher();
+  const claudeLike: Adapter = {
+    name: 'claude', bin: process.execPath, perInvocationMcp: true,
+    argv: () => ['-e', `console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.3, num_turns: 4,
+      usage: { input_tokens: 120, output_tokens: 40, cache_read_input_tokens: 900, cache_creation_input_tokens: 60 } }));`],
+  };
+  await captureRun(
+    claudeLike,
+    { prompt: 'x', cwd: tmp, mcpConfigPath: '/dev/null', session: 'm_1:a_4', timeoutMs: 10_000 },
+    ctxFor(dir, events, artifacts, store, 'a_4', { runnerId: 'agent:claude:test' }),
+  );
+  const ev = events.forAttempt('a_4');
+  const reported = ev.filter((e) => e.name === 'cost.reported');
+  check('the log holds exactly one cost.reported for the attempt', reported.length === 1, String(reported.length));
+  const summed = reported.reduce((n, e) => n + (Number(e.payload.costUsd) || 0), 0);
+  check('so summing it gives the attempt\'s cost, not twice that', summed === store.calls[0].result.costUsd, `${summed}`);
+  check('the provider\'s own figure is kept, under its own name', ev.some((e) => e.name === 'provider.cost' && e.payload.costUsd === 0.3));
+  const usage = ev.find((e) => e.name === 'cost.usage');
+  check('claude usage becomes cost.usage with cache reads and writes',
+    usage?.payload.inputTokens === 120 && usage.payload.outputTokens === 40 && usage.payload.cacheReadTokens === 900 && usage.payload.cacheWriteTokens === 60,
+    JSON.stringify(usage?.payload));
+  events.close();
+
+  const codexUsage = normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 3, output_tokens: 2 } }))
+    .find((e) => e.name === 'cost.usage');
+  check('codex usage is the same event, cached input included',
+    codexUsage?.payload.inputTokens === 5 && codexUsage.payload.cacheReadTokens === 3 && codexUsage.payload.outputTokens === 2 && codexUsage.payload.cacheWriteTokens === null,
+    JSON.stringify(codexUsage?.payload));
+})();
+
 done();

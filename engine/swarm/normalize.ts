@@ -42,6 +42,27 @@ function parse(line: string): Record<string, unknown> | null {
 const num = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null;
 
+/**
+ * Token usage, one event shape whatever the provider called its fields. A field the
+ * provider did not report is null, never 0 — the same rule as cost.
+ */
+function usageEvent(
+  usage: unknown, fields: { input: string; output: string; cacheRead: string; cacheWrite?: string },
+): NormalizedEvent[] {
+  if (!usage || typeof usage !== 'object') return [];
+  const u = usage as Record<string, unknown>;
+  return [{
+    category: 'cost',
+    name: 'cost.usage',
+    payload: {
+      inputTokens: num(u[fields.input]),
+      outputTokens: num(u[fields.output]),
+      cacheReadTokens: num(u[fields.cacheRead]),
+      cacheWriteTokens: fields.cacheWrite ? num(u[fields.cacheWrite]) : null,
+    },
+  }];
+}
+
 function claude(msg: Record<string, unknown>): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
   const type = msg.type;
@@ -90,6 +111,10 @@ function claude(msg: Record<string, unknown>): NormalizedEvent[] {
         turns,
       },
     });
+    out.push(...usageEvent(msg.usage, {
+      input: 'input_tokens', output: 'output_tokens',
+      cacheRead: 'cache_read_input_tokens', cacheWrite: 'cache_creation_input_tokens',
+    }));
     return out;
   }
 
@@ -134,7 +159,7 @@ function codex(msg: Record<string, unknown>): NormalizedEvent[] {
         inputTokens: num(usage.input_tokens),
         outputTokens: num(usage.output_tokens),
       },
-    }];
+    }, ...usageEvent(msg.usage, { input: 'input_tokens', output: 'output_tokens', cacheRead: 'cached_input_tokens' })];
   }
 
   if (type === 'error' || type === 'turn.failed') {
