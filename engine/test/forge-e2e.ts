@@ -20,6 +20,7 @@ import { detectSandbox } from '../experiment/sandbox.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { Attempt, Candidate, Decision, Mission, Need, WorkItem } from '../mission/types.ts';
 import { ImplementRefused, runImplement } from '../forge/orchestrate.ts';
+import { runMission } from '../mission/orchestrate.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -511,6 +512,46 @@ section('a possible secret (R16) is curable, but approve needs it acknowledged')
   check('approve without --acknowledge-possible-secret is refused', no.code === 1 && /acknowledge-possible-secret/.test(no.err), no.err.slice(-300));
   const yes = run(['forge', 'approve', res.candidate.id, '--out', out, '--rationale', 'read it: a comment', '--confirm', c.digest8, '--acknowledge-possible-secret', '--format', 'json']);
   check('with it, the approve is recorded and says what was acknowledged', yes.code === 0 && Number(json<Decision>(yes).scope.acknowledgedPossibleSecrets) > 0, yes.err.slice(-300));
+}
+
+section('no sandbox: reviews are refused, not run open, unless a person opts out by name');
+{
+  const noSandbox = { name: 'bwrap' as const, available: false, why: 'forced off by the test' };
+  const bin = path.join(tmp, 'fake-bin-h2');
+  const marker = path.join(tmp, 'fake-provider-h2-ran');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\nexit 99\n`, { mode: 0o755 });
+  const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'verify', '--objective', 'no sandbox here', '--scope', 'src/add.js', '--out', out, '--format', 'json']));
+  const savedPath = process.env.PATH;
+  const savedMock = process.env.DAYLIGHT_MOCK_ADAPTER;
+  process.env.PATH = `${bin}:${savedPath ?? ''}`;
+  process.env.DAYLIGHT_MOCK_ADAPTER = fixer;
+  const d = openDaylight(out);
+  const attempts = () => d.store.tasks(m.id).flatMap((t) => d.store.attempts(t.id));
+  const attemptRun = async (o: Partial<Parameters<typeof runMission>[1]>) => {
+    try {
+      await runMission(d, { missionId: m.id, repo, tools: ['claude'], sandbox: noSandbox, timeoutMs: 20_000, ...o });
+      return null;
+    } catch (e) {
+      return e as Error;
+    }
+  };
+  try {
+    const real = await attemptRun({});
+    check('a real provider is refused when the sandbox cannot be built, naming --unsandboxed-review',
+      !!real && /--unsandboxed-review/.test(real.message) && !fs.existsSync(marker) && attempts().length === 0, String(real));
+    const mock = await attemptRun({ tools: ['mock:z'] });
+    check('so is a mock roster, naming --no-review-sandbox', !!mock && /--no-review-sandbox/.test(mock.message) && attempts().length === 0, String(mock));
+    const open = await attemptRun({ unsandboxedReview: true });
+    const a = attempts().find((x) => x.runnerId.startsWith('agent:claude'));
+    check('with --unsandboxed-review it runs as P0 did (here, the stand-in), stamped profile none, reason unsandboxed-review',
+      open === null && fs.existsSync(marker) && a?.sandbox?.profile === 'none' && a.sandbox.reason === 'unsandboxed-review', `${String(open)} ${JSON.stringify(a?.sandbox)}`);
+  } finally {
+    d.close();
+    process.env.PATH = savedPath;
+    if (savedMock === undefined) delete process.env.DAYLIGHT_MOCK_ADAPTER;
+    else process.env.DAYLIGHT_MOCK_ADAPTER = savedMock;
+  }
 }
 
 section('negative: no sandbox means no author attempt');

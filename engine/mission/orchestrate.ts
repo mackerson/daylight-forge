@@ -398,6 +398,14 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   const detected = opts.sandbox ?? detectSandbox();
   // Fail closed: sandboxed whenever bwrap is present, unless a person opted out by name.
   const declined: SandboxReason | undefined = opts.unsandboxedReview ? 'unsandboxed-review' : opts.noReviewSandbox ? 'no-review-sandbox' : undefined;
+  if (role === 'review' && !declined && !detected.available) {
+    // No profile can be built: refused, never run open by default (fail closed).
+    throw new Error(
+      `refused: reviews run under the bwrap review profile, which cannot be built here (${detected.why ?? 'unavailable'}); ` +
+        'install bubblewrap and prlimit, or pass --unsandboxed-review to run them as P0 did (Sec H5: the reviewer can read <out>), ' +
+        'or --no-review-sandbox for an all-mock roster',
+    );
+  }
   const sandboxed = role === 'decompose' || (!declined && detected.available);
   const profile = sandboxed ? detected : null;
   if (profile && !profile.available) {
