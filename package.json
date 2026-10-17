@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Get all the data, then focus it down.",
+  "license": "MIT OR Apache-2.0",
   "bin": {
     "daylight": "engine/cli.ts"
   },

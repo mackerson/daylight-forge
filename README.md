@@ -9,7 +9,7 @@
 <p align="center">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-Node%20%E2%89%A522.18-3178c6?style=flat-square&logo=typescript">
   <img alt="Linux" src="https://img.shields.io/badge/Linux-bubblewrap%20sandboxes-2f7bf5?style=flat-square&logo=linux">
-  <img alt="License: not yet chosen" src="https://img.shields.io/badge/license-not%20yet%20chosen-3a3a3a?style=flat-square">
+  <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
   <img alt="Status: P1, mocks only" src="https://img.shields.io/badge/status-P1%2C%20mocks%20only-d69e2e?style=flat-square">
 </p>
 
@@ -198,8 +198,14 @@ ADR-35). The map's own design history is in [DESIGN.md](DESIGN.md).
 
 ## License
 
-License: not yet chosen. There is no LICENSE file in this repository yet, so no rights are
-granted beyond what the law allows by default.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this work, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.
 
 <br>
 
