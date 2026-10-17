@@ -1211,6 +1211,8 @@ ipcMain.handle('daylight:mission-run', (_e, opts = {}) => {
   const maxCost = num(opts.maxCost, 0, 10_000);
   if (maxCost) argv.push('--max-cost', String(maxCost));
   if (opts.dryRun) argv.push('--dry-run');
+  // A person's explicit choice in the window, default off: real reviewers run unsandboxed and can read <out> (Sec H5).
+  if (opts.unsandboxedReview === true) argv.push('--unsandboxed-review');
   return { id: runJob(`mission:${mid.slice(0, 10)}${opts.dryRun ? ':dry' : ''}`, argv) };
 });
 
@@ -1304,6 +1306,19 @@ ipcMain.handle('daylight:demo-replay', async () => {
   return {
     id: runJob('demo replay', ['demo', 'replay', '--recording', file, '--out', state.dir, '--format', 'json']),
   };
+});
+
+// ---- forge ------------------------------------------------------------------------
+
+/** Handler logic lives in forge.cjs so it can be tested without Electron; this wires it to main's state. */
+require('./forge.cjs').register(ipcMain, {
+  cliJson,
+  runJob,
+  state: () => ({ dir: state.dir, repo: state.repo }),
+  username: safeUsername,
+  showMessageBox: (opts) => (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts)),
+  showOpenDialog: (opts) => (win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts)),
+  sample: !!process.env.DAYLIGHT_MISSION_SAMPLE,
 });
 
 // ---- live events: a projection of daylight.db, polled -----------------------------

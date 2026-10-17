@@ -5,10 +5,14 @@ import { Scrubber } from '../panels/Scrubber.tsx';
 import type {
   Attempt, DaylightEvent, Dispute, Experiment, Job, MissionInspect, Task,
 } from '../types.ts';
+import { isWithheld } from '../types.ts';
 import { sourceColor } from '../vocab.ts';
 import {
   attemptWord, conclusionWord, costWord, duration, eventLine, missionWord, shortId, shortRev,
   toRunEvents, objectiveTitle } from './mission-words.ts';
+import { OUTSIDE, type ImplementTab } from './forge-words.ts';
+import type { ForgeApi } from './ForgeParts.tsx';
+import { ImplementDetail } from './ImplementDetail.tsx';
 
 /**
  * One mission, end to end.
@@ -26,6 +30,7 @@ import {
 export function MissionDetail({
   inspect, events, job, jobLog, username, sample, busy, read, replaying,
   onBack, onRefresh, onRun, onStop, onDecide, onClose, onRunExperiment, onShowOnMap, onReplaying,
+  forgeApi, forgeTab, forgeCandidate,
 }: {
   inspect: MissionInspect | null;
   /** The live event stream for this mission, in sequence order. */
@@ -40,23 +45,30 @@ export function MissionDetail({
   replaying: boolean;
   onBack: () => void;
   onRefresh: () => void;
-  onRun: (tools: string, maxCost: number | undefined, dryRun: boolean) => void;
+  onRun: (tools: string, maxCost: number | undefined, dryRun: boolean, unsandboxedReview: boolean) => void;
   onStop: () => void;
   onDecide: (p: { subject: string; predicate: string; value: unknown; rationale: string; actor: string; experiment?: string }) => Promise<string | null>;
   onClose: (outcome: string, reason: string) => Promise<string | null>;
   onRunExperiment: (id: string) => void;
   onShowOnMap: (subject: string) => void;
   onReplaying: (on: boolean) => void;
+  /** Implement missions open the Forge view; these say how to reach main and where to land. */
+  forgeApi?: ForgeApi;
+  forgeTab?: ImplementTab | null;
+  forgeCandidate?: string | null;
 }) {
   const [selection, setSelection] = useState<EvidenceSelection | null>(null);
   const [openAttempt, setOpenAttempt] = useState<string | null>(null);
   const [attemptFilter, setAttemptFilter] = useState<string | null>(null);
   const [tools, setTools] = useState(() => localStorage.getItem('daylight.missionRoster') ?? 'claude:sonnet,codex');
   const [maxCost, setMaxCost] = useState(2);
+  // Off on every open: running real reviewers without the review sandbox is a choice made each time (Sec H5).
+  const [unsandboxed, setUnsandboxed] = useState(false);
   const [rationale, setRationale] = useState('');
   const [verdict, setVerdict] = useState<'true' | 'false' | 'custom'>('true');
   const [custom, setCustom] = useState('');
-  const [actor, setActor] = useState(`human:${username}`);
+  // Main records every decision as the OS user and ignores any actor sent from here (S-8).
+  const actor = `human:${username}`;
   const [closeOutcome, setCloseOutcome] = useState('inconclusive');
   const [closeReason, setCloseReason] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -67,7 +79,8 @@ export function MissionDetail({
   // else the first dispute. A blank pane on open would be a pane nobody finds.
   useEffect(() => {
     if (selection || !inspect) return;
-    const x = inspect.experiments.find((e) => e.conclusion !== 'pending') ?? inspect.experiments[0];
+    const shown = inspect.experiments.filter((e): e is Experiment => !isWithheld(e));
+    const x = shown.find((e) => e.conclusion !== 'pending') ?? shown[0];
     if (x) setSelection({ kind: 'experiment', experiment: x });
     else if (inspect.disputes[0]) setSelection({ kind: 'dispute', dispute: inspect.disputes[0] });
   }, [inspect, selection]);
@@ -100,7 +113,20 @@ export function MissionDetail({
     );
   }
 
-  const { mission, tasks, experiments, decisions, disputes } = inspect;
+  if (inspect.mission.kind === 'implement' && forgeApi) {
+    return (
+      <ImplementDetail
+        key={`${inspect.mission.id}:${forgeTab ?? ''}:${forgeCandidate ?? ''}`}
+        inspect={inspect} api={forgeApi} sample={sample} busy={busy}
+        initialTab={forgeTab} initialCandidate={forgeCandidate} onBack={onBack} onRefresh={onRefresh}
+      />
+    );
+  }
+
+  const { mission, tasks, decisions, disputes } = inspect;
+  // Holdouts arrive withheld (ids and outcome only); they are counted, never drawn.
+  const experiments = inspect.experiments.filter((e): e is Experiment => !isWithheld(e));
+  const withheld = inspect.experiments.length - experiments.length;
   const w = missionWord(mission);
   const running = job?.status === 'running';
   const closed = mission.state === 'closed';
@@ -118,7 +144,7 @@ export function MissionDetail({
     setFormError(null);
     const err = await onDecide({
       subject: dispute.subject, predicate: dispute.predicate, value,
-      rationale: rationale.trim(), actor: actor.trim() || `human:${username}`,
+      rationale: rationale.trim(), actor,
       experiment: experimentFor(dispute)?.id,
     });
     if (err) setFormError(err);
@@ -192,13 +218,26 @@ export function MissionDetail({
                   ceiling ${' '}
                   <input type="number" min={0} step={0.5} value={maxCost} onChange={(e) => setMaxCost(Number(e.target.value))} style={{ width: 64 }} disabled={sample || running} />
                 </label>
-                <button className="btn accent" disabled={sample || running || busy} onClick={() => onRun(tools, maxCost > 0 ? maxCost : undefined, false)}>
+                <button className="btn accent" disabled={sample || running || busy} onClick={() => onRun(tools, maxCost > 0 ? maxCost : undefined, false, unsandboxed)}>
                   run reviews
                 </button>
-                <button className="btn" disabled={sample || running || busy} onClick={() => onRun(tools, undefined, true)} title="show what would be asked; spawn nothing">
+                <button className="btn" disabled={sample || running || busy} onClick={() => onRun(tools, undefined, true, unsandboxed)} title="show what would be asked; spawn nothing">
                   dry run
                 </button>
                 {running && <span className="live">running · {job?.label}</span>}
+              </div>
+              <div className="toolbar wrap" style={{ marginTop: 8 }} data-forge="unsandboxed-review">
+                <span className="num">review sandbox</span>
+                <button className={!unsandboxed ? 'chip active' : 'chip'} aria-pressed={!unsandboxed} onClick={() => setUnsandboxed(false)} disabled={sample || running}>
+                  sandboxed (default)
+                </button>
+                <button className={unsandboxed ? 'chip active bad' : 'chip'} aria-pressed={unsandboxed} onClick={() => setUnsandboxed(true)} disabled={sample || running}>
+                  --unsandboxed-review
+                </button>
+                <span className={unsandboxed ? 'bad' : 'hint'} style={{ fontSize: 11 }}>
+                  Sec H5 open: real reviewers have no review sandbox yet. Unsandboxed, they run as P0 did and can
+                  read this mission's output directory. Without it, real-provider reviews are refused while bwrap is present.
+                </span>
               </div>
               <p className="dim" style={{ fontSize: 11, margin: '8px 0 0' }}>
                 Each roster entry is one independent reviewer, read-only, and blind to the others'
@@ -265,7 +304,7 @@ export function MissionDetail({
 
           {/* ---- experiments ---- */}
           <div className="card">
-            <h3>experiments · {experiments.length}</h3>
+            <h3>experiments · {experiments.length}{withheld ? ` · ${withheld} holdout${withheld === 1 ? '' : 's'} withheld` : ''}</h3>
             {!experiments.length && (
               <p className="dim">
                 None registered. An experiment is a hypothesis, a protected test and a prediction
@@ -333,10 +372,7 @@ export function MissionDetail({
                   disabled={sample}
                 />
                 <div className="toolbar wrap">
-                  <label className="num">
-                    as{' '}
-                    <input value={actor} onChange={(e) => setActor(e.target.value)} style={{ width: 180 }} disabled={sample} />
-                  </label>
+                  <span className="num">as {actor} — your OS user</span>
                   {experimentFor(dispute) && (
                     <span className="num">links experiment {shortId(experimentFor(dispute)!.id)} · {conclusionWord(experimentFor(dispute)!.conclusion).name}</span>
                   )}
@@ -446,6 +482,9 @@ function TaskRow({ task, attempts, openAttempt, onToggle, onFilter, filtered, jo
               <span className="num">#{i + 1}</span>
               <span className={`pill ${aw.tone === 'dim' ? '' : aw.tone}`}>{aw.name}</span>
               <span className="num">{a.runnerId}</span>
+              {a.origin === 'ingested' && <span className="pill warn">{OUTSIDE}</span>}
+              {a.sandbox?.reason === 'unsandboxed-review' && <span className="pill bad">unsandboxed review, chosen — H5 open</span>}
+              {a.sandbox?.reason === 'no-review-sandbox' && <span className="pill warn">no review sandbox — mock only</span>}
               <span className="num">{costWord(a.costUsd)}</span>
               <span className="num">{duration(a)}</span>
               {a.failure && !/^timed out/.test(a.failure) && <span className="hint" style={{ fontSize: 11 }}>{a.failure}</span>}

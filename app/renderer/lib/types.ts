@@ -54,10 +54,23 @@ export type {
   DaylightEvent, EventCategory, ProjectIdentity,
 } from '../../../engine/mission/types.ts';
 export type { ExecutionRecord, ExecutionStatus, Observation } from '../../../engine/experiment/types.ts';
+/**
+ * The Forge's records, by the engine's names. Type-only, so nothing of the engine reaches the
+ * bundle; `engine/mission/types.ts` has no runtime imports by design. The Forge `Candidate` is
+ * renamed here because the detector's `Candidate` above had the name first.
+ */
+export type {
+  WorkItem, WorkItemStatus, CandidateVerdict, CandidateFile, FileMode, PolicyRule, PolicyViolation,
+  GateEvaluation, GateTarget, Application, IngestSource, Need, NeedKind, Ledger, LedgerRow,
+  LedgerDecisionCount, LedgerWorkItem, LedgerRevision, AttemptSandbox, SandboxProfileName, NetworkMode,
+  AttemptOrigin, CostSource, UsageSource, TokenUsage, ExperimentRole, DecisionOperation, SandboxReason,
+  Candidate as ForgeCandidate,
+} from '../../../engine/mission/types.ts';
 
 import type {
   Mission, Task, Attempt, Experiment, Decision, DaylightEvent, ArtifactRef, ProjectIdentity,
-  MissionKind,
+  MissionKind, Need, WorkItem, Candidate as ForgeCandidate, GateEvaluation, Application, IngestSource,
+  Ledger, LedgerRow, DecisionOperation,
 } from '../../../engine/mission/types.ts';
 import type { Evidence } from '../../../engine/store/types.ts';
 
@@ -82,23 +95,103 @@ export interface Dispute {
   sides: DisputeSide[];
 }
 
+/** Something a person has to do before a mission can move; derived by the engine, never stored. */
+export type MissionNeed = Need;
+
+/**
+ * A holdout as `mission inspect` reports it: ids, outcome and digests, never its test,
+ * prediction or runs. The shape is engine/mission/orchestrate.ts's `WithheldExperiment`, built
+ * from `Experiment` here because that module is not type-only.
+ */
+export type WithheldExperiment = Pick<Experiment, 'id' | 'missionId' | 'role' | 'conclusion' | 'harnessDigest' | 'lockedBy'> & { withheld: true };
+
+export const isWithheld = (x: Experiment | WithheldExperiment): x is WithheldExperiment =>
+  (x as { withheld?: unknown }).withheld === true;
+
 /** `daylight mission inspect <id> --format json`. */
-/** Something a person has to do before a mission can move; derived by the engine. */
-export interface MissionNeed {
-  kind: 'blocked' | 'dispute';
-  ref: string;
-  why: string;
-}
 
 export interface MissionInspect {
   mission: Mission;
   tasks: Task[];
   attempts: Attempt[];
-  experiments: Experiment[];
+  experiments: Array<Experiment | WithheldExperiment>;
   decisions: Decision[];
   disputes: Dispute[];
   events: DaylightEvent[];
   needs?: MissionNeed[];
+  /** Implement missions (WS8's `inspect` additions). Absent from older builds. */
+  candidates?: ForgeCandidate[];
+  gateEvaluations?: GateEvaluation[];
+  applications?: Application[];
+}
+
+/** `daylight work-item list --format json`: the queue, and every need the engine derived. */
+export interface WorkItemsPayload {
+  workItems: WorkItem[];
+  needs: Need[];
+}
+
+/** `daylight forge candidate <c> --format json`. The diff is redacted and bounded by the CLI. */
+export interface ForgeCandidatePayload {
+  candidate: ForgeCandidate;
+  /** Paths whose diff matched a low-confidence secret shape (R16). Approve and override need them acknowledged. */
+  possibleSecrets: string[];
+  diff: { text: string; truncated: boolean };
+  gateEvaluations: GateEvaluation[];
+}
+
+/** `daylight ingest list --format json`. `skipped` is null when no run has recorded counts. */
+export interface IngestSourcesPayload {
+  sources: IngestSource[];
+  skipped: Record<string, number> | null;
+}
+
+/**
+ * What `daylight confirm` prints: the digest a guarded act will check, the lines the native
+ * dialog shows, and the engine's `guardCheck` answer (null when the act would pass).
+ */
+export interface ConfirmPreview {
+  operation: DecisionOperation | 'apply';
+  subjectId: string;
+  digest: string;
+  digest8: string;
+  lines: string[];
+  refusal: string | null;
+  actor: string;
+  possibleSecrets: string[];
+}
+
+/** One `report --project --format json` row: `LedgerRow` with null where nothing was reported. */
+export type LedgerJsonRow = Omit<LedgerRow, 'usdKnown' | 'tokens'> & {
+  /** Null when no attempt in the row carries a provider figure. */
+  usdKnown: number | null;
+  tokens: { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; unknownCount: number };
+  tokensUnknownByField: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  tokensKnown: boolean;
+  costKnown: boolean;
+  /** Present when any attempt in the row is ingested (R12.1), whatever the grouping. */
+  outside?: string;
+};
+
+export type LedgerJson = Omit<Ledger, 'rows'> & { rows: LedgerJsonRow[] };
+export type LedgerGroup = 'runner' | 'model' | 'origin' | 'mission' | 'work-item' | 'actor';
+
+/**
+ * How a guarded act ended: refused by the guard (no dialog), cancelled at the dialog, failed
+ * in the act, or done. Main sets the actor and the code; the renderer only reads this.
+ */
+export interface GuardedResult {
+  ok?: boolean;
+  refused?: string;
+  canceled?: boolean;
+  error?: string;
+  operation?: DecisionOperation | 'apply';
+  digest8?: string;
+  lines?: string[];
+  possibleSecrets?: string[];
+  /** Why a dialog OK still recorded nothing (an unticked acknowledgement). */
+  note?: string;
+  result?: unknown;
 }
 
 /**
@@ -322,7 +415,8 @@ declare global {
       mission(p: { id: string }): Promise<MissionInspect & { error?: string }>;
       missionCreate(p: MissionCreateOptions): Promise<Mission & { error?: string }>;
       /** Starts a job; its output streams through the ordinary job channels. */
-      missionRun(p: { id: string; tools: string; maxCost?: number; dryRun?: boolean }): Promise<{ id?: string; error?: string }>;
+      /** `unsandboxedReview` runs real-provider reviews with no sandbox, as P0 did (Sec H5); default off. */
+      missionRun(p: { id: string; tools: string; maxCost?: number; dryRun?: boolean; unsandboxedReview?: boolean }): Promise<{ id?: string; error?: string }>;
       missionDecide(p: {
         id: string; subject: string; predicate: string; value: unknown; rationale: string;
         actor?: string; experiment?: string;
@@ -342,6 +436,24 @@ declare global {
       demoPrepare(): Promise<{ id?: string; error?: string }>;
       /** Main opens the file picker; the renderer never names a path. */
       demoReplay(): Promise<{ id?: string; error?: string; canceled?: boolean }>;
+
+      // ---- Forge. No call takes an actor, a confirm code or a path; main supplies them. ----
+      workItems(): Promise<WorkItemsPayload & { error?: string }>;
+      forgeCandidate(p: { id: string }): Promise<ForgeCandidatePayload & { error?: string }>;
+      /** `since` is an ISO 8601 date. */
+      ledger(p?: { group?: LedgerGroup; since?: string }): Promise<LedgerJson & { error?: string }>;
+      ingestSources(): Promise<IngestSourcesPayload & { error?: string }>;
+      missionAuthorize(p: { id: string; write: boolean; exec?: boolean; maxUsd: number | null; rationale: string }): Promise<GuardedResult>;
+      gateLock(p: { id: string; rationale: string; acceptVacuous?: string[] }): Promise<GuardedResult>;
+      forgeDecide(p: { id: string; kind: 'approve' | 'reject' | 'override'; rationale: string }): Promise<GuardedResult>;
+      forgeApply(p: { id: string }): Promise<GuardedResult>;
+      workItemDecide(p: { id: string; kind: 'approve' | 'reject'; rationale: string }): Promise<GuardedResult>;
+      /** A job; one author, never a roster. */
+      forgeRun(p: { id: string; tool: string; maxCost?: number }): Promise<{ id?: string; error?: string }>;
+      /** Main opens the file picker inside the repository. */
+      specRegister(): Promise<{ error?: string; canceled?: boolean } & Record<string, unknown>>;
+      /** A job. No session means `--all`. */
+      ingest(p?: { session?: string }): Promise<{ id?: string; error?: string }>;
     };
   }
 }

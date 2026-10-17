@@ -22,6 +22,10 @@ import { Missions } from './screens/Missions.tsx';
 import { MissionDetail } from './screens/MissionDetail.tsx';
 import { SAMPLE_ARTIFACTS, SAMPLE_INSPECT, SAMPLE_LIST } from './fixtures/mission-inspect.sample.ts';
 import { mergeMissionUpdate, needsPerson } from './screens/mission-words.ts';
+import { Forge } from './screens/Forge.tsx';
+import { forgeApi } from './screens/ForgeParts.tsx';
+import type { ForgeScreen, ImplementTab, NeedTarget } from './screens/forge-words.ts';
+import { FORGE_IMPLEMENT } from './fixtures/forge-implement.sample.ts';
 import type {
   Belief, DaylightEvent, Job, LoadPayload, Mission, MissionCreateOptions, MissionInspect,
   MissionList, QueryPayload, AgentEvent,
@@ -61,6 +65,22 @@ const TAB_ALIASES: Record<string, View> = {
   runs: 'runs',
   invariants: 'invariants',
   missions: 'missions',
+  'work-items': 'missions',
+  implement: 'missions',
+  gates: 'missions',
+  candidate: 'missions',
+  ledger: 'missions',
+  ingest: 'missions',
+};
+
+/** Where each Forge `DAYLIGHT_TAB` lands inside Mission Control. The implement ones open the sample mission. */
+const FORGE_TABS: Record<string, { screen: ForgeScreen; tab?: ImplementTab }> = {
+  'work-items': { screen: 'work-items' },
+  ledger: { screen: 'ledger' },
+  ingest: { screen: 'ingest' },
+  implement: { screen: 'missions', tab: 'attempts' },
+  gates: { screen: 'missions', tab: 'gates' },
+  candidate: { screen: 'missions', tab: 'candidate' },
 };
 
 /** Events held per open mission. Enough to read a run back; bounded so a long one cannot grow the window. */
@@ -128,6 +148,9 @@ export function App() {
   const [missionError, setMissionError] = useState<string | null>(null);
   const [openMission, setOpenMission] = useState<string | null>(null);
   const [inspect, setInspect] = useState<MissionInspect | null>(null);
+  /** Which Forge screen Mission Control is on, and where an implement mission should open. */
+  const [forgeScreen, setForgeScreen] = useState<ForgeScreen>('missions');
+  const [forgeLanding, setForgeLanding] = useState<{ tab: ImplementTab | null; candidate: string | null }>({ tab: null, candidate: null });
   const [missionEvents, setMissionEvents] = useState<DaylightEvent[]>([]);
   /** Which job is running which mission, so the detail can show its output and stop it. */
   const [missionJobs, setMissionJobs] = useState<Record<string, string>>({});
@@ -190,10 +213,15 @@ export function App() {
 
   // Sample mode: the bundled document stands in for the CLI, and every screen says so.
   const sample = !!data?.missionSample;
+  const forge = useMemo(() => forgeApi(sample), [sample]);
 
   const loadMissions = useCallback(async () => {
     if (sample) {
-      setMissions(SAMPLE_LIST);
+      setMissions({
+        ...SAMPLE_LIST,
+        missions: [FORGE_IMPLEMENT.mission, ...SAMPLE_LIST.missions],
+        needs: { ...SAMPLE_LIST.needs, [FORGE_IMPLEMENT.mission.id]: FORGE_IMPLEMENT.needs ?? [] },
+      });
       setMissionError(null);
       return;
     }
@@ -209,8 +237,9 @@ export function App() {
 
   const loadMission = useCallback(async (id: string) => {
     if (sample) {
-      setInspect(SAMPLE_INSPECT);
-      setMissionEvents(SAMPLE_INSPECT.events);
+      const doc = id === FORGE_IMPLEMENT.mission.id ? FORGE_IMPLEMENT : SAMPLE_INSPECT;
+      setInspect(doc);
+      setMissionEvents(doc.events);
       return;
     }
     const r = await window.daylight.mission({ id });
@@ -279,6 +308,8 @@ export function App() {
       return text === undefined ? { error: 'not in the sample' } : { text };
     }
     const r = await window.daylight.artifact({ id, maxBytes });
+    // A holdout's content never leaves the engine; that refusal is the design, not a failure.
+    if (r.error && /holdout/.test(r.error)) return { error: "withheld — a holdout's content is never shown" };
     return r.error ? { error: r.error } : { text: r.text ?? '', truncated: r.truncated };
   }, [sample]);
 
@@ -306,8 +337,23 @@ export function App() {
       seededTab.current = true;
       setView(v);
       if (data.initialTab === 'monitor') setWatchingRun(true);
+      const f = FORGE_TABS[data.initialTab];
+      if (f) {
+        setForgeScreen(f.screen);
+        if (f.tab && data.missionSample) {
+          setForgeLanding({ tab: f.tab, candidate: null });
+          setOpenMission(FORGE_IMPLEMENT.mission.id);
+        }
+      }
     }
-  }, [data?.initialTab]);
+  }, [data?.initialTab, data?.missionSample]);
+
+  /** A need was clicked: go to the screen that answers it. */
+  const openForgeTarget = (t: NeedTarget) => {
+    setForgeScreen(t.screen);
+    setForgeLanding({ tab: t.tab ?? null, candidate: t.candidateId ?? null });
+    setOpenMission(t.missionId ?? null);
+  };
 
   const seededArb = useRef(false);
   useEffect(() => {
@@ -739,27 +785,38 @@ export function App() {
             )}
 
             {view === 'missions' && !openMission && (
-              <Missions
-                list={missions}
-                error={missionError}
+              <Forge
+                api={forge}
                 sample={sample}
-                scopeDefault={node ? fileOf(node.id) : null}
-                busy={busy}
-                onOpen={(m: Mission) => setOpenMission(m.id)}
-                onRefresh={() => void loadMissions()}
-                onCreate={async (opts: MissionCreateOptions) => {
-                  setBusy(true);
-                  const r = await window.daylight.missionCreate(opts);
-                  setBusy(false);
-                  if (r.error) setMissionError(r.error);
-                  else {
-                    await loadMissions();
-                    setOpenMission(r.id);
-                  }
-                }}
-                onDemoPrepare={() => void startMissionJob('demo', () => window.daylight.demoPrepare())}
-                onDemoReplay={() => void startMissionJob('demo', () => window.daylight.demoReplay())}
-              />
+                screen={forgeScreen}
+                onScreen={setForgeScreen}
+                running={missionsRunning}
+                missionNeeds={missions?.needs}
+                missionOfCandidate={(id) => (sample && FORGE_IMPLEMENT.candidates?.some((c) => c.id === id) ? FORGE_IMPLEMENT.mission.id : undefined)}
+                onOpen={openForgeTarget}
+              >
+                <Missions
+                  list={missions}
+                  error={missionError}
+                  sample={sample}
+                  scopeDefault={node ? fileOf(node.id) : null}
+                  busy={busy}
+                  onOpen={(m: Mission) => setOpenMission(m.id)}
+                  onRefresh={() => void loadMissions()}
+                  onCreate={async (opts: MissionCreateOptions) => {
+                    setBusy(true);
+                    const r = await window.daylight.missionCreate(opts);
+                    setBusy(false);
+                    if (r.error) setMissionError(r.error);
+                    else {
+                      await loadMissions();
+                      setOpenMission(r.id);
+                    }
+                  }}
+                  onDemoPrepare={() => void startMissionJob('demo', () => window.daylight.demoPrepare())}
+                  onDemoReplay={() => void startMissionJob('demo', () => window.daylight.demoReplay())}
+                />
+              </Forge>
             )}
 
             {view === 'missions' && openMission && (
@@ -774,10 +831,10 @@ export function App() {
                 read={readArtifact}
                 replaying={replaying}
                 onReplaying={setReplaying}
-                onBack={() => { setReplaying(false); setOpenMission(null); }}
+                onBack={() => { setReplaying(false); setOpenMission(null); setForgeLanding({ tab: null, candidate: null }); }}
                 onRefresh={() => void loadMission(openMission)}
-                onRun={(tools, maxCost, dryRun) =>
-                  void startMissionJob(openMission, () => window.daylight.missionRun({ id: openMission, tools, maxCost, dryRun }))}
+                onRun={(tools, maxCost, dryRun, unsandboxedReview) =>
+                  void startMissionJob(openMission, () => window.daylight.missionRun({ id: openMission, tools, maxCost, dryRun, unsandboxedReview }))}
                 onStop={() => { const j = missionJobs[openMission]; if (j) void window.daylight.stopJob(j); }}
                 onRunExperiment={(id) =>
                   void startMissionJob(openMission, () => window.daylight.experimentRun({ id, runs: 2 }))}
@@ -798,6 +855,9 @@ export function App() {
                   return null;
                 }}
                 onShowOnMap={selectSubject}
+                forgeApi={forge}
+                forgeTab={forgeLanding.tab}
+                forgeCandidate={forgeLanding.candidate}
               />
             )}
 

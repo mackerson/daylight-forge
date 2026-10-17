@@ -84,6 +84,20 @@ contextBridge.exposeInMainWorld('daylight', {
   missionWatch: (id) => invoke('daylight:mission-watch', id),
   demoPrepare: () => invoke('daylight:demo-prepare'),
   demoReplay: () => invoke('daylight:demo-replay'),
+  // Forge. Read-only first; every mutating call is validated, and the guarded ones confirmed,
+  // in main. None of these takes an actor, a confirm code or a path from here.
+  workItems: () => invoke('daylight:work-items'),
+  forgeCandidate: (p) => invoke('daylight:forge-candidate', p),
+  ledger: (p) => invoke('daylight:ledger', p),
+  ingestSources: () => invoke('daylight:ingest-sources'),
+  missionAuthorize: (p) => invoke('daylight:mission-authorize', p),
+  gateLock: (p) => invoke('daylight:gate-lock', p),
+  forgeDecide: (p) => invoke('daylight:forge-decide', p),
+  forgeApply: (p) => invoke('daylight:forge-apply', p),
+  workItemDecide: (p) => invoke('daylight:work-item-decide', p),
+  forgeRun: (p) => invoke('daylight:forge-run', p),
+  specRegister: () => invoke('daylight:spec-register'),
+  ingest: (p) => invoke('daylight:ingest', p),
   onDlEvent: (fn) => {
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on('daylight:dl-event', h);
