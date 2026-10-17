@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { type ArtifactStore, digestOf } from '../mission/artifacts.ts';
-import { newId, type MissionStore } from '../mission/store.ts';
+import { GateSetMoved, newId, type MissionStore } from '../mission/store.ts';
 import type {
   Candidate, Decision, ExpectedObservation, Experiment, ExperimentRole, GateEvaluation, LockGatesScope, Mission,
 } from '../mission/types.ts';
@@ -248,14 +248,17 @@ export function lock(ctx: GateContext, input: LockInput): Decision {
   }
   if (refusals.length) throw new GateRefused(`gate lock refused:\n  ${refusals.join('\n  ')}`);
 
-  const { decision, gateSetDigest } = ctx.store.lockGates(m.id, {
-    experimentIds: ids, actor: input.actor, rationale: input.rationale, vacuousOverrides: vacuous,
-  });
-  // The store recomputes the set inside its transaction. Until it can refuse a mismatch there
-  // (TRACKED, WS8), a set that moved since the confirm is at least surfaced, never passed off.
-  if (gateSetDigest !== preview.digest) {
-    throw new GateRefused(`gate lock ${decision.id} recorded gate set ${gateSetDigest}, not the one confirmed (${preview.digest}); a gate changed during the lock — review and lock again`);
+  let locked: ReturnType<MissionStore['lockGates']>;
+  try {
+    locked = ctx.store.lockGates(m.id, {
+      experimentIds: ids, expectedGateSetDigest: preview.digest, actor: input.actor, rationale: input.rationale,
+      vacuousOverrides: vacuous,
+    });
+  } catch (err) {
+    if (err instanceof GateSetMoved) throw new GateRefused(`gate lock refused: ${err.message}`);
+    throw err;
   }
+  const { decision, gateSetDigest } = locked;
   const scope = lockScopeOf(decision);
   emit(ctx, m, 'approval', 'forge.gates.locked', {
     decisionId: decision.id, gateSetDigest, experimentIds: scope.experimentIds,

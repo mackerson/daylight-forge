@@ -30,6 +30,14 @@ import type {
  * an observation, an outcome is a judgement, and only `closeMission` records one.
  */
 
+/** `lockGates` found a different gate set inside its transaction than the one the human confirmed. */
+export class GateSetMoved extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GateSetMoved';
+  }
+}
+
 export class IllegalTransition extends Error {
   constructor(what: string, id: string, from: string, to: string) {
     super(`${what} ${id} cannot go from ${from} to ${to}`);
@@ -248,6 +256,11 @@ export type CreateExperimentInput = NewExperiment;
 
 export interface LockGatesInput {
   experimentIds: string[];
+  /**
+   * The gate-set digest the human confirmed (`confirmDigest`'s). Recomputed inside the lock's
+   * transaction; any other set is refused there, so nothing is recorded for a set that moved.
+   */
+  expectedGateSetDigest: string;
   actor: string;
   rationale: string;
   /** Gates already passing at base that the human accepts anyway. */
@@ -1017,15 +1030,25 @@ export class MissionStore {
 
   lockGates(missionId: string, input: LockGatesInput): { mission: Mission; decision: Decision; gateSetDigest: string } {
     const m = this.requireMission(missionId);
-    const { experiments, gateSetDigest } = this.gateSet(m.id, input.experimentIds);
-    const ids = experiments.map((x) => x.id);
-    const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
-    for (const id of vacuous) {
-      if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
+    if (typeof input.expectedGateSetDigest !== 'string' || !input.expectedGateSetDigest) {
+      throw new Error(`mission ${m.id}: a gate lock names the gate-set digest the human confirmed`);
     }
     const at = this.now();
-    this.db.exec('BEGIN');
+    // IMMEDIATE: the write lock is held before the set is read, so the set read is the set locked.
+    this.db.exec('BEGIN IMMEDIATE');
     try {
+      const { experiments, gateSetDigest } = this.gateSet(m.id, input.experimentIds);
+      if (gateSetDigest !== input.expectedGateSetDigest) {
+        throw new GateSetMoved(
+          `mission ${m.id}: the gate set is ${gateSetDigest}, not the one confirmed (${input.expectedGateSetDigest}); ` +
+            'a gate changed after it was shown — review it and lock again',
+        );
+      }
+      const ids = experiments.map((x) => x.id);
+      const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
+      for (const id of vacuous) {
+        if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
+      }
       const decision = this.recordDecision({
         missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: input.actor,
         kind: 'approve', rationale: input.rationale,

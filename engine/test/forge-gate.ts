@@ -408,8 +408,11 @@ if (!live.available) {
     };
     const raced = await throws(() => lock({ ...ctx, store: racing }, { missionId: m2.id, actor: HUMAN, rationale: 'r', confirm: code([g2.id]), experimentIds: [g2.id] }));
     raw.close();
-    check('a gate set that moved between confirm and lock is reported, not passed off as confirmed',
+    check('a gate set that moved between confirm and lock is refused, not passed off as confirmed',
       raced instanceof GateRefused && /not the one confirmed/.test(raced.message), raced?.message);
+    check('and the refusal is inside the lock\'s transaction: no decision, no locked_by, no acceptance gates',
+      dctx.store.lockDecision(m2.id) === null && !dctx.store.experiment(g2.id)!.lockedBy
+      && dctx.store.mission(m2.id)!.acceptanceGateIds.length === 0);
     const d = lock(ctx, { missionId: m2.id, actor: HUMAN, rationale: 'accepted: smoke check', confirm: code([g2.id, v2.id]), experimentIds: [g2.id, v2.id], acceptVacuous: [v2.id] });
     check('named in --accept-vacuous, a vacuous gate locks and the override is recorded',
       (d.scope as unknown as LockGatesScope).vacuousOverrides.join() === v2.id);

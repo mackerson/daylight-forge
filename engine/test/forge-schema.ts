@@ -19,7 +19,7 @@ import { EventLog } from '../mission/events.ts';
 import { exportMission, importMission, readExport } from '../mission/export.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { guardCheck } from '../forge/policy.ts';
-import { gateSetDigestOf, MissionStore, newId, workItemContentDigest } from '../mission/store.ts';
+import { gateSetDigestOf, GateSetMoved, MissionStore, newId, workItemContentDigest } from '../mission/store.ts';
 import type { ArtifactRef, CandidateFile, Ledger, Mission, ProjectIdentity } from '../mission/types.ts';
 import {
   costKnown, DAYLIGHT_DB_VERSION, EVENT_SCHEMA_VERSION, EXPORT_SCHEMA_VERSION, isEntityId,
@@ -501,11 +501,21 @@ let candidateId: string;
   check('roles are stored', store.experimentsFor(mission.id, 'gate').length === 1 && store.experimentsFor(mission.id, 'holdout').length === 1);
   check('a P0 experiment defaults to probe', store.createExperiment({ ...probe, id: undefined, role: undefined }).role === 'probe');
 
-  check('locking a probe is refused', !!throws(() => store.lockGates(mission.id, { experimentIds: [probe.id], actor: HUMAN, rationale: 'r' })));
+  const setOf = (ids: string[]) => store.gateSet(mission.id, ids).gateSetDigest;
+  check('locking a probe is refused', !!throws(() => store.lockGates(mission.id, { experimentIds: [probe.id], expectedGateSetDigest: digestOf('probe'), actor: HUMAN, rationale: 'r' })));
   check('locking by an agent is refused and writes nothing', !!throws(() =>
-    store.lockGates(mission.id, { experimentIds: [gate.id], actor: 'agent:a:b', rationale: 'r' }))
+    store.lockGates(mission.id, { experimentIds: [gate.id], expectedGateSetDigest: setOf([gate.id]), actor: 'agent:a:b', rationale: 'r' }))
     && store.experiment(gate.id)!.lockedBy === undefined && store.lockDecision(mission.id) === null);
-  const lock = store.lockGates(mission.id, { experimentIds: [holdout.id, gate.id], actor: HUMAN, rationale: 'these', vacuousOverrides: [] });
+  const moved = throws(() => store.lockGates(mission.id, {
+    experimentIds: [holdout.id, gate.id], expectedGateSetDigest: setOf([gate.id]), actor: HUMAN, rationale: 'these',
+  }));
+  check('a lock whose set is not the confirmed one is refused inside the transaction and writes nothing',
+    moved instanceof GateSetMoved && /not the one confirmed/.test(moved.message)
+    && store.lockDecision(mission.id) === null && store.experiment(gate.id)!.lockedBy === undefined
+    && store.mission(mission.id)!.acceptanceGateIds.length === 0, moved?.message);
+  check('a lock that names no confirmed digest is refused', !!throws(() =>
+    store.lockGates(mission.id, { experimentIds: [gate.id], actor: HUMAN, rationale: 'r' } as never)));
+  const lock = store.lockGates(mission.id, { experimentIds: [holdout.id, gate.id], expectedGateSetDigest: setOf([holdout.id, gate.id]), actor: HUMAN, rationale: 'these', vacuousOverrides: [] });
   check('the gate-set digest is over the sorted id:harness lines', lock.gateSetDigest === gateSetDigestOf([gate, holdout]));
   check('the lock decision records it', lock.decision.scope.gateSetDigest === lock.gateSetDigest && store.lockDecision(mission.id)?.id === lock.decision.id);
   check('every locked experiment names the decision', [gate.id, holdout.id].every((id) => store.experiment(id)!.lockedBy === lock.decision.id));
@@ -725,7 +735,7 @@ section('confirm digests');
   const h1 = gate('holdout', 3);
   const chosen = [g1.id, h1.id];
   const preview = confirmDigest(ctx, 'lock-gates', pm.id, { experimentIds: chosen });
-  const locked = store.lockGates(pm.id, { experimentIds: chosen, actor: HUMAN, rationale: 'g2 is vacuous' });
+  const locked = store.lockGates(pm.id, { experimentIds: chosen, expectedGateSetDigest: preview.digest, actor: HUMAN, rationale: 'g2 is vacuous' });
   check('a partial lock is confirmable: the preview is the recorded digest', preview.digest === locked.gateSetDigest);
   check('and the guard accepts its code against the lock', guardCheck({}, HUMAN, preview.digest8, locked.gateSetDigest) === null);
   gate('gate', 4);
