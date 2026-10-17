@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
 import { openDaylight } from '../mission/context.ts';
 import { IncompatibleDatabase, openDaylightDb, schemaVersion } from '../mission/db.ts';
@@ -115,6 +115,50 @@ for (const [label, version] of [['schema 1', 1], ['no version at all', null], ['
   check(`${label}: the file's bytes are unchanged`, sha(file) === before.sha);
   check(`${label}: no -wal or -shm was left beside it`, listing(out) === before.files, listing(out));
   check(`${label}: its mtime is unchanged`, fs.statSync(file).mtimeMs === before.mtime);
+}
+section('a schema-2 database made from different DDL is refused, untouched');
+{
+  // A scratch copy of db.ts whose DDL differs by one column: what a build from earlier (or
+  // later) in this sprint would have written under the same version number.
+  const scratch = path.join(tmp, 'ddl-copy', 'mission');
+  fs.mkdirSync(scratch, { recursive: true });
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  fs.copyFileSync(path.join(here, '..', 'mission', 'types.ts'), path.join(scratch, 'types.ts'));
+  const src = fs.readFileSync(path.join(here, '..', 'mission', 'db.ts'), 'utf8');
+  const mutated = src.replace('CREATE TABLE projects (\n', 'CREATE TABLE projects (\n  other_build TEXT,\n');
+  check('the scratch copy really differs in its DDL', mutated !== src);
+  fs.writeFileSync(path.join(scratch, 'db.ts'), mutated);
+  const other = await import(pathToFileURL(path.join(scratch, 'db.ts')).href) as typeof import('../mission/db.ts');
+
+  const refusedUntouched = (label: string, file: string, open: (f: string) => unknown, Refusal: unknown) => {
+    const dir = path.dirname(file);
+    const before = { sha: sha(file), files: listing(dir) };
+    const err = throws(() => open(file));
+    check(`${label}: refused with the one-line delete-and-re-map message`,
+      err instanceof (Refusal as typeof Error) && /Delete it and re-map/.test(err.message) && !err.message.includes('\n'), String(err));
+    check(`${label}: bytes and directory unchanged`, sha(file) === before.sha && listing(dir) === before.files, listing(dir));
+  };
+
+  const a = path.join(tmp, 'ddl-a');
+  fs.mkdirSync(a);
+  other.openDaylightDb(path.join(a, 'daylight.db')).close();
+  refusedUntouched('made by another DDL, opened by this build', path.join(a, 'daylight.db'), openDaylightDb, IncompatibleDatabase);
+  check('the MissionStore refuses it too', throws(() => new MissionStore(a)) instanceof IncompatibleDatabase);
+
+  const b = path.join(tmp, 'ddl-b');
+  fs.mkdirSync(b);
+  openDaylightDb(path.join(b, 'daylight.db')).close();
+  refusedUntouched('made by this build, opened by another DDL', path.join(b, 'daylight.db'), other.openDaylightDb, other.IncompatibleDatabase);
+  const reopened = throws(() => openDaylightDb(path.join(b, 'daylight.db'))?.close());
+  check('this build still opens its own database', reopened === null, String(reopened));
+
+  // A schema-2 file from before the DDL was digested: version 2, no digest recorded.
+  const c = path.join(tmp, 'ddl-c');
+  fs.mkdirSync(c);
+  const made = openDaylightDb(path.join(c, 'daylight.db'));
+  made.exec("DELETE FROM daylight_meta WHERE key <> 'schema_version'");
+  made.close();
+  refusedUntouched('a schema-2 file with no DDL digest', path.join(c, 'daylight.db'), openDaylightDb, IncompatibleDatabase);
 }
 {
   const out = path.join(tmp, 'not-sqlite');

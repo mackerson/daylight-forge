@@ -9,6 +9,13 @@ import { ClaimStore, EvidenceRequired, type Source } from '../store/claims.ts';
 import type { Claim } from '../store/types.ts';
 import { frontier } from '../swarm/frontier.ts';
 import { defaultOut } from '../paths.ts';
+import { canonicalJson, digestOf } from '../mission/artifacts.ts';
+import { isEntityId } from '../mission/types.ts';
+import {
+  isRefusal, MAX_ANCHOR_CHARS, MAX_EXAMPLE_BYTES, MAX_EXAMPLES, MAX_PROPOSAL_BYTES, MAX_PROPOSALS_PER_ATTEMPT,
+  MAX_STATEMENT_BYTES, MAX_TITLE_CHARS, MAX_TOUCH_CHARS, MAX_TOUCHES, outboxFile, redactProposal, validateProposal,
+  type OutboxLine, type ProposalContext,
+} from '../forge/proposal.ts';
 
 /**
  * The MCP data plane. One server, stdio, spawned per agent session.
@@ -578,6 +585,112 @@ export function createServer(opts: ServerOptions) {
   );
 
   return { server, store };
+}
+
+// ---- decompose -----------------------------------------------------------------
+
+export interface DecomposeServerOptions {
+  /** `<out>`: the outbox goes under it. */
+  dir: string;
+  /**
+   * The calling attempt, as the host resolved it from the attempt's own MCP token (R11.2,
+   * R-9) and found to be a decompose attempt. Never taken from the environment or from
+   * anything the agent sends.
+   */
+  attemptId: string;
+  agentTool?: string;
+  model?: string;
+  /** The registered spec and tree, when the host has them, so a bad anchor is refused at once. */
+  check?: ProposalContext;
+}
+
+/**
+ * The MCP server a decompose attempt gets: one tool, `propose_work_item`, and nothing that
+ * reads anything back, so a decomposer cannot see the spec's other readings (blind by
+ * construction). Each accepted proposal is one line in this attempt's outbox; the host
+ * re-checks every line before any row exists, so this is the first gate, not the only one.
+ *
+ * Input is hostile: every field is size-capped here and again in `validateProposal`, paths
+ * must be repo-relative (an absolute path, `..` or `~` is refused, never resolved), and a
+ * refusal names the field and a fixed reason, never the text.
+ */
+export function createDecomposeServer(opts: DecomposeServerOptions) {
+  if (!isEntityId('attempt', opts.attemptId)) throw new Error('a decompose server is bound to one attempt id');
+  const server = new McpServer({ name: 'daylight', version: '0.1.0' });
+  const file = outboxFile(opts.dir, opts.attemptId);
+  const eventLog = path.join(opts.dir, 'events.jsonl');
+  const emit = (detail: Record<string, unknown>) => {
+    try {
+      fs.appendFileSync(eventLog, JSON.stringify({
+        at: Date.now(), session: opts.attemptId, agent: opts.agentTool ?? 'unknown', model: opts.model ?? null,
+        tool: 'propose_work_item', ...detail,
+      }) + '\n');
+    } catch {
+      // A failed event write must never break the agent's actual work.
+    }
+  };
+  const refuse = (field: string, reason: string) => {
+    emit({ ok: false, field, reason });
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ accepted: false, field, reason }) }],
+      isError: true,
+    };
+  };
+  const filed = (): number => {
+    try {
+      return fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).length;
+    } catch {
+      return 0;
+    }
+  };
+  const text = (max: number) => z.string().max(max);
+
+  server.registerTool(
+    'propose_work_item',
+    {
+      description:
+        'Propose ONE work item drawn from the spec you were given. It is recorded for a person to ' +
+        'approve or reject; nothing is built or tested until they do. `anchor` is a heading anchor ' +
+        'from the list in your prompt (`#section` or `#section/subsection`) or a line range `L<a>-<b>`. ' +
+        '`title` is one line. `statement` says what must be true when the item is done. `touches` ' +
+        `lists repo-relative files you expect to change. At most ${MAX_PROPOSALS_PER_ATTEMPT} per session.`,
+      annotations: APPEND_ONLY,
+      inputSchema: {
+        anchor: text(MAX_ANCHOR_CHARS),
+        title: text(MAX_TITLE_CHARS),
+        statement: text(MAX_STATEMENT_BYTES),
+        examples: z.array(text(MAX_EXAMPLE_BYTES)).max(MAX_EXAMPLES).optional(),
+        negativeExamples: z.array(text(MAX_EXAMPLE_BYTES)).max(MAX_EXAMPLES).optional(),
+        touches: z.array(text(MAX_TOUCH_CHARS)).max(MAX_TOUCHES).optional(),
+      },
+    },
+    async (a) => {
+      const valid = validateProposal(a, opts.check);
+      if (isRefusal(valid)) return refuse(valid.field, valid.refused);
+      // Masked before the outbox: the line sits on disk until someone deletes it.
+      const checked = redactProposal(valid);
+      if (filed() >= MAX_PROPOSALS_PER_ATTEMPT) return refuse('count', `at most ${MAX_PROPOSALS_PER_ATTEMPT} proposals per session`);
+      const line: OutboxLine = { v: 1, at: Date.now(), proposal: checked };
+      const json = JSON.stringify(line);
+      if (Buffer.byteLength(json, 'utf8') > MAX_PROPOSAL_BYTES + 512) return refuse('payload', 'over the size cap');
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        // Never through a link: the outbox is ours to create, in a directory only we write.
+        const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+        try {
+          fs.writeSync(fd, `${json}\n`);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        return refuse('payload', 'the proposal could not be recorded');
+      }
+      const proposalDigest = digestOf(canonicalJson(checked));
+      emit({ ok: true, anchor: checked.anchor, proposalDigest });
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ accepted: true, proposalDigest }) }] };
+    },
+  );
+  return { server };
 }
 
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
