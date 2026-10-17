@@ -65,7 +65,7 @@ export function Forge({
         />
         <div className="spacer" />
         <span className={`pill ${needs.length ? 'warn' : ''}`} data-forge="needs-pill">{needsStrip(running, needs.length)}</span>
-        {needError && <span className="num" title={needError}>needs from work items unavailable</span>}
+        {needError && <span className="hint" style={{ fontSize: 11 }}>work-item needs: {needError}</span>}
       </div>
       {!!needs.length && (
         <div className="toolbar wrap" style={{ padding: '8px 28px', borderBottom: '1px solid var(--line)' }} data-forge="needs">

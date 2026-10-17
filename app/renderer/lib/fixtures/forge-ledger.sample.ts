@@ -1,4 +1,4 @@
-import type { IngestSourcesPayload, Ledger, LedgerRow } from '../types.ts';
+import type { IngestSourcesPayload, LedgerJson, LedgerJsonRow, LedgerRow } from '../types.ts';
 import { IMPL_M, SAMPLE_MARK } from './forge-implement.sample.ts';
 
 /**
@@ -14,32 +14,50 @@ const T0 = 1791100000000;
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
 const WORK_M = `m_${'6e'.repeat(16)}`;
 
-const row = (key: string, over: Partial<LedgerRow>): LedgerRow => ({
-  key, attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0,
-  tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 0 },
-  candidates: { accepted: 0, rejected: 0, applied: 0, overridden: 0 }, decisions: 0, gateSetDigests: [],
-  ...over,
-});
+/**
+ * A row as `report --format json` prints it (`ledgerJson`): figures nobody reported are null.
+ * `providerCost` and `ingested` are the engine's per-row facts the plain `LedgerRow` lacks.
+ */
+const row = (key: string, over: Partial<LedgerRow>, facts: { providerCost?: number; ingested?: number } = {}): LedgerJsonRow => {
+  const r: LedgerRow = {
+    key, attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 0 },
+    candidates: { accepted: 0, rejected: 0, applied: 0, overridden: 0 }, decisions: 0, gateSetDigests: [],
+    ...over,
+  };
+  const missing = r.tokens.unknownCount;
+  const field = (n: number) => (r.attempts === 0 || missing >= r.attempts ? null : n);
+  const providerCost = facts.providerCost ?? 0;
+  return {
+    ...r,
+    usdKnown: providerCost === 0 ? null : r.usdKnown,
+    tokens: { input: field(r.tokens.input), output: field(r.tokens.output), cacheRead: field(r.tokens.cacheRead), cacheWrite: field(r.tokens.cacheWrite), unknownCount: missing },
+    tokensUnknownByField: { input: missing, output: missing, cacheRead: missing, cacheWrite: missing },
+    tokensKnown: r.attempts > 0 && missing === 0,
+    costKnown: r.attempts > 0 && providerCost === r.attempts,
+    ...(facts.ingested ? { outside: "outside Daylight's controls" } : {}),
+  };
+};
 
-const BY_ACTOR: LedgerRow[] = [
+const BY_ACTOR: LedgerJsonRow[] = [
   row('agent:mock:author', {
-    attempts: 3, usdKnown: 0.05, usdUnknownCount: 2, usdScanned: 0.31,
+    attempts: 3, usdKnown: 0.05, usdUnknownCount: 1, usdScanned: 0.31,
     tokens: { input: 12_400, output: 1_830, cacheRead: 0, cacheWrite: 0, unknownCount: 2 },
     candidates: { accepted: 1, rejected: 2, applied: 0, overridden: 0 }, gateSetDigests: [sha('9a')],
-  }),
+  }, { providerCost: 1 }),
   row('agent:claude:sonnet', {
     attempts: 2, usdKnown: 0.82,
     tokens: { input: 40_210, output: 3_120, cacheRead: 18_000, cacheWrite: 2_400, unknownCount: 0 },
-  }),
+  }, { providerCost: 2 }),
   row('agent:mock:review', { attempts: 1, usdUnknownCount: 1, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 1 } }),
   row('ingest:claude-code', {
     attempts: 4, usdUnknownCount: 4,
     tokens: { input: 88_000, output: 9_400, cacheRead: 120_000, cacheWrite: 6_000, unknownCount: 0 },
-  }),
+  }, { ingested: 4 }),
   row('human:miz', { decisions: 4 }),
 ];
 
-export const FORGE_LEDGER: Ledger & { _sample: typeof SAMPLE_MARK } = {
+export const FORGE_LEDGER: LedgerJson & { _sample: typeof SAMPLE_MARK } = {
   _sample: SAMPLE_MARK,
   kind: 'daylight-ledger',
   schemaVersion: 2,
@@ -59,9 +77,9 @@ export const FORGE_LEDGER: Ledger & { _sample: typeof SAMPLE_MARK } = {
 };
 
 /** By model, for the group chips. The ingested rows have a model; their cost is still unknown. */
-export const FORGE_LEDGER_BY_MODEL: LedgerRow[] = [
-  row('mock-author-1', { attempts: 3, usdKnown: 0.05, usdUnknownCount: 2, usdScanned: 0.31, tokens: { input: 12_400, output: 1_830, cacheRead: 0, cacheWrite: 0, unknownCount: 2 } }),
-  row('claude-sonnet-4-5', { attempts: 6, usdKnown: 0.82, usdUnknownCount: 4, tokens: { input: 128_210, output: 12_520, cacheRead: 138_000, cacheWrite: 8_400, unknownCount: 0 } }),
+export const FORGE_LEDGER_BY_MODEL: LedgerJsonRow[] = [
+  row('mock-author-1', { attempts: 3, usdKnown: 0.05, usdUnknownCount: 1, usdScanned: 0.31, tokens: { input: 12_400, output: 1_830, cacheRead: 0, cacheWrite: 0, unknownCount: 2 } }, { providerCost: 1 }),
+  row('claude-sonnet-4-5', { attempts: 6, usdKnown: 0.82, usdUnknownCount: 4, tokens: { input: 128_210, output: 12_520, cacheRead: 138_000, cacheWrite: 8_400, unknownCount: 0 } }, { providerCost: 2, ingested: 4 }),
   row('unknown', { attempts: 1, usdUnknownCount: 1, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 1 } }),
 ];
 

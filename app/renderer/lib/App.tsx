@@ -308,6 +308,8 @@ export function App() {
       return text === undefined ? { error: 'not in the sample' } : { text };
     }
     const r = await window.daylight.artifact({ id, maxBytes });
+    // A holdout's content never leaves the engine; that refusal is the design, not a failure.
+    if (r.error && /holdout/.test(r.error)) return { error: "withheld — a holdout's content is never shown" };
     return r.error ? { error: r.error } : { text: r.text ?? '', truncated: r.truncated };
   }, [sample]);
 
@@ -831,8 +833,8 @@ export function App() {
                 onReplaying={setReplaying}
                 onBack={() => { setReplaying(false); setOpenMission(null); setForgeLanding({ tab: null, candidate: null }); }}
                 onRefresh={() => void loadMission(openMission)}
-                onRun={(tools, maxCost, dryRun) =>
-                  void startMissionJob(openMission, () => window.daylight.missionRun({ id: openMission, tools, maxCost, dryRun }))}
+                onRun={(tools, maxCost, dryRun, unsandboxedReview) =>
+                  void startMissionJob(openMission, () => window.daylight.missionRun({ id: openMission, tools, maxCost, dryRun, unsandboxedReview }))}
                 onStop={() => { const j = missionJobs[openMission]; if (j) void window.daylight.stopJob(j); }}
                 onRunExperiment={(id) =>
                   void startMissionJob(openMission, () => window.daylight.experimentRun({ id, runs: 2 }))}

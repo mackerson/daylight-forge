@@ -44,8 +44,6 @@ export const C_POLICY = id('c', '72');
 export const C_REJECTED = id('c', '73');
 const GATE_SET = sha('9a');
 
-/** Text that would be a leak if it reached the DOM. The shot assertion looks for it. */
-export const HOLDOUT_SECRET = 'HOLDOUT-CONTENT-MUST-NOT-RENDER';
 
 const noTokens = { input: null, output: null, cacheRead: null, cacheWrite: null };
 
@@ -90,7 +88,7 @@ const gateEvaluations: GateEvaluation[] = [
 const candidate = (cid: string, aid: string, over: Partial<ForgeCandidate>): ForgeCandidate => ({
   id: cid, missionId: IMPL_M, attemptId: aid, projectId: PROJECT, baseCommit: REV,
   diffArtifact: ref(cid.slice(2, 4), 'diff'), summaryArtifact: ref(`${cid.slice(2, 4)}s`, 'summary'),
-  files: [], policyViolations: [], secretHits: 0, gateSetDigest: GATE_SET,
+  files: [], policyViolations: [], secretHits: 0, possibleSecretHits: 0, gateSetDigest: GATE_SET,
   profile: { name: 'author', network: 'none', write: true, exec: false },
   attemptState: 'completed', verdict: 'pending', verdictReasons: [], createdAt: T0 + 130_000,
   ...over,
@@ -103,6 +101,8 @@ const accepted = candidate(C_ACCEPTED, A_AUTHOR_1, {
   ],
   verdict: 'accepted-by-gates',
   verdictReasons: ['2 of 2 gates supported', 'holdouts: all supported'],
+  // A low-confidence secret shape in the test file: approve needs it acknowledged (R16).
+  possibleSecretHits: 1,
 });
 
 const policy = candidate(C_POLICY, A_AUTHOR_2, {
@@ -183,7 +183,8 @@ export const FORGE_IMPLEMENT: MissionInspect & { _sample: typeof SAMPLE_MARK } =
   experiments: [
     gate(X_GATE_1, 'gate', 'An expired session is not served from the cache', 'f1', '81'),
     gate(X_GATE_2, 'gate', 'A live session is still served from the cache', 'f2', '82'),
-    { ...gate(X_HOLDOUT, 'holdout', HOLDOUT_SECRET, 'f3', '83'), subject: HOLDOUT_SECRET, command: ['node', HOLDOUT_SECRET] },
+    // As `mission inspect` prints a holdout: ids, outcome and digests only.
+    { id: X_HOLDOUT, missionId: IMPL_M, role: 'holdout', conclusion: 'falsified', harnessDigest: sha('f3'), lockedBy: D_LOCK, withheld: true },
   ],
   decisions,
   disputes: [],
@@ -254,6 +255,7 @@ const DIFF_REJECTED = [
 const payload = (c: ForgeCandidate, text: string): ForgeCandidatePayload & { _sample: typeof SAMPLE_MARK } => ({
   _sample: SAMPLE_MARK,
   candidate: c,
+  possibleSecrets: c.possibleSecretHits ? ['test/session-cache.test.js'] : [],
   diff: { text, truncated: false },
   gateEvaluations: gateEvaluations.filter((g) => g.candidateId === c.id),
 });
@@ -277,6 +279,8 @@ export const CONFIRM_OK: ConfirmPreview & { _sample: typeof SAMPLE_MARK } = {
     `base ${REV}`, `2 file(s), gates ${GATE_SET}`,
   ],
   refusal: null,
+  actor: 'human:miz',
+  possibleSecrets: ['test/session-cache.test.js'],
 };
 
 /** `confirm` with the guard refusing, as it does when an agent launched the window. */
@@ -288,4 +292,6 @@ export const CONFIRM_REFUSED: ConfirmPreview & { _sample: typeof SAMPLE_MARK } =
   digest8: '7a7a7a7a',
   lines: [`apply candidate ${C_ACCEPTED} on mission ${IMPL_M}`, 'verdict accepted-by-gates', `base ${REV}`],
   refusal: 'refused: CLAUDECODE is set, so an agent is running this; a human decides this from their own shell',
+  actor: 'human:miz',
+  possibleSecrets: [],
 };

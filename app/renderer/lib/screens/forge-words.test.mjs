@@ -9,14 +9,14 @@
 import {
   usd, tokens, ledgerUsd, ledgerTokens, costSourceOf, attemptCost, sandboxBadges, gateSetView,
   approveAllowed, applyAllowed, flaggedFiles, diffLines, workItemQueue, needTarget, mergeNeeds,
-  needsStrip, guardWord, isIngestedKey, OUTSIDE, OPEN_ITEMS, IMPLEMENT_RUNNERS, verdictWord,
+  needsStrip, guardWord, isIngestedRow, NEED_WORDS, OUTSIDE, OPEN_ITEMS, IMPLEMENT_RUNNERS, verdictWord,
 } from './forge-words.ts';
 import {
-  FORGE_IMPLEMENT, FORGE_CANDIDATES, C_ACCEPTED, C_POLICY, C_REJECTED, X_HOLDOUT, HOLDOUT_SECRET, IMPL_M,
+  FORGE_IMPLEMENT, FORGE_CANDIDATES, C_ACCEPTED, C_POLICY, C_REJECTED, X_HOLDOUT, IMPL_M,
   CONFIRM_OK, CONFIRM_REFUSED,
 } from '../fixtures/forge-implement.sample.ts';
 import { FORGE_WORK_ITEMS } from '../fixtures/forge-work-items.sample.ts';
-import { FORGE_LEDGER, FORGE_INGEST } from '../fixtures/forge-ledger.sample.ts';
+import { FORGE_LEDGER, FORGE_LEDGER_BY_MODEL, FORGE_INGEST } from '../fixtures/forge-ledger.sample.ts';
 import { harness } from '../../../../engine/test/harness.ts';
 
 const { check, section, done } = harness();
@@ -27,17 +27,21 @@ section('unknown is a word, never zero');
   check('an undefined cost is unknown', usd(undefined) === 'unknown');
   check('a zero cost the provider reported is $0.00', usd(0) === '$0.00');
   check('null tokens are unknown', tokens(null) === 'unknown');
-  const none = { attempts: 2, usdKnown: 0, usdUnknownCount: 2, usdScanned: 0 };
+  // Rows as `report --format json` prints them: usdKnown null when no provider figure exists.
+  const none = { attempts: 2, usdKnown: null, usdUnknownCount: 2, usdScanned: 0, costKnown: false };
   check('a row where no attempt has a known cost reads unknown, not $0.00', ledgerUsd(none) === 'unknown', ledgerUsd(none));
-  const some = { attempts: 3, usdKnown: 0.05, usdUnknownCount: 2, usdScanned: 0.31 };
+  const some = { attempts: 3, usdKnown: 0.05, usdUnknownCount: 1, usdScanned: 0.31, costKnown: false };
   check('a partly known row is a floor with the unknown counted and the scan beside it',
-    ledgerUsd(some) === '≥ $0.05 (2 unknown, $0.31 scanned)', ledgerUsd(some));
-  check('a fully known row is the figure', ledgerUsd({ attempts: 2, usdKnown: 0.82, usdUnknownCount: 0, usdScanned: 0 }) === '$0.82');
+    ledgerUsd(some) === '≥ $0.05 (1 unknown, $0.31 scanned)', ledgerUsd(some));
+  check('a fully known row is the figure', ledgerUsd({ attempts: 2, usdKnown: 0.82, usdUnknownCount: 0, usdScanned: 0, costKnown: true }) === '$0.82');
   check('scanned spend never becomes known spend',
-    ledgerUsd({ attempts: 1, usdKnown: 0, usdUnknownCount: 1, usdScanned: 0.4 }).startsWith('unknown'));
-  check('tokens all unknown read unknown', ledgerTokens(0, 2, 2) === 'unknown');
-  check('tokens partly unknown read as a floor', ledgerTokens(1830, 1, 3) === '≥ 1830');
-  check('the cost source names the mix', costSourceOf(some) === 'provider ×1 · stdout-scan · none ×2', costSourceOf(some));
+    ledgerUsd({ attempts: 1, usdKnown: null, usdUnknownCount: 0, usdScanned: 0.4, costKnown: false }) === 'unknown ($0.40 scanned)');
+  check('a provider-reported zero is $0.00, not unknown', ledgerUsd({ attempts: 1, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0, costKnown: true }) === '$0.00');
+  check('a token field nobody reported reads unknown', ledgerTokens(null, 2) === 'unknown');
+  check('a token field some did not report reads as a floor', ledgerTokens(1830, 1) === '≥ 1830');
+  check('the cost source says only what the row can show, with no invented counts',
+    costSourceOf(some) === 'provider · stdout-scan · none ×1', costSourceOf(some));
+  check('an all-provider row is just provider', costSourceOf({ attempts: 2, usdKnown: 0.82, usdUnknownCount: 0, usdScanned: 0, costKnown: true }) === 'provider');
   check('an attempt with no cost says cost unknown', attemptCost({ costUsd: null, costSource: 'none' }) === 'cost unknown');
   check('a scanned attempt cost is labelled a guess', /stdout-scan, not known/.test(attemptCost({ costUsd: 0.31, costSource: 'stdout-scan' })));
   const rendered = FORGE_LEDGER.rows.map((r) => ledgerUsd(r));
@@ -55,6 +59,10 @@ section('sandbox badges: write is a mode, shown with its grant (R7)');
   const r = sandboxBadges(review, FORGE_IMPLEMENT.decisions).map((x) => x.name);
   check('a P0 reviewer reads unsandboxed — H5 open', r.includes('unsandboxed — H5 open') && r.includes('write off'));
   const ing = sandboxBadges({ origin: 'ingested', sandbox: null });
+  const chosen = sandboxBadges({ origin: 'daylight', sandbox: { ...review.sandbox, reason: 'unsandboxed-review' } }).map((x) => x.name);
+  check('a review a person chose to run unsandboxed says so', chosen.includes('unsandboxed review, chosen — H5 open'));
+  const mockOnly = sandboxBadges({ origin: 'daylight', sandbox: { ...review.sandbox, reason: 'no-review-sandbox' } }).map((x) => x.name);
+  check('a mock run with no review sandbox says mock only', mockOnly.includes('no review sandbox — mock only'));
   check(`ingested work is labelled "${OUTSIDE}" and nothing else`, ing.length === 1 && ing[0].name === "outside Daylight's controls");
   const lost = sandboxBadges({ ...a1, sandbox: { ...a1.sandbox, authorizeDecisionId: 'd_ffffffffffffffffffffffffffffffff' } }, FORGE_IMPLEMENT.decisions);
   check('a grant whose decision is not in view says so rather than inventing an actor', lost.some((x) => /decision not in view/.test(x.name)));
@@ -68,7 +76,8 @@ section('the gate set: lock state, vacuous gates, and holdouts as a count only')
 {
   const v = gateSetView(FORGE_IMPLEMENT.experiments, FORGE_IMPLEMENT.decisions, FORGE_IMPLEMENT.gateEvaluations);
   check('two gates, one holdout counted', v.gates.length === 2 && v.holdoutCount === 1);
-  check('no holdout field survives into the view', !JSON.stringify(v).includes(HOLDOUT_SECRET) && !JSON.stringify(v).includes(X_HOLDOUT));
+  check('the holdout arrives withheld from the engine', FORGE_IMPLEMENT.experiments.some((x) => x.id === X_HOLDOUT && x.withheld === true && !('hypothesis' in x)));
+  check('and not even its id survives into the view', !JSON.stringify(v).includes(X_HOLDOUT));
   check('the lock names its decision, actor and digest', v.lock.state === 'locked' && v.lock.actor === 'human:miz' && v.lock.digest.startsWith('sha256:'));
   check('a gate that passes at base is vacuous', v.gates.filter((g) => g.vacuous).length === 1);
   check('and the lock that named it says it was accepted', v.gates.filter((g) => g.acceptedAtLock).every((g) => g.vacuous) && v.gates.some((g) => g.acceptedAtLock));
@@ -144,10 +153,15 @@ section('needs: rendered, merged, and each one opens its screen');
   const merged = mergeNeeds(FORGE_WORK_ITEMS.needs, FORGE_IMPLEMENT.needs);
   check('a need reported twice counts once', merged.length === FORGE_WORK_ITEMS.needs.length, String(merged.length));
   check('the strip says running and need you', needsStrip(1, 4) === '1 running · 4 need you');
+  check('an undecided work item opens work items', needTarget({ kind: 'work-item-undecided', ref: 'w_' + 'a'.repeat(32), why: '' }).screen === 'work-items');
+  const auth = needTarget({ kind: 'mission-awaiting-authorize', ref: IMPL_M, why: '' });
+  check('a mission awaiting authorize opens its attempts, where authorize is', auth.missionId === IMPL_M && auth.tab === 'attempts');
+  check('every need kind has words', ['blocked', 'dispute', 'spec-ambiguity', 'gate-lock', 'gate-vacuous', 'candidate-decision', 'apply', 'work-item-undecided', 'mission-awaiting-authorize'].every((k) => typeof NEED_WORDS[k] === 'string'));
 }
 
 section('guarded acts: the outcome as words');
 {
+  check('an unticked acknowledgement says why nothing was recorded', guardWord({ canceled: true, note: 'the possible secret was not acknowledged' }).detail === 'the possible secret was not acknowledged');
   check('a refusal carries the engine\'s text verbatim',
     guardWord({ refused: CONFIRM_REFUSED.refusal }).detail === CONFIRM_REFUSED.refusal && guardWord({ refused: 'x' }).tone === 'bad');
   check('cancel says nothing was recorded', /nothing recorded/.test(guardWord({ canceled: true, digest8: CONFIRM_OK.digest8 }).name));
@@ -158,7 +172,10 @@ section('guarded acts: the outcome as words');
 
 section('ingested work');
 {
-  check('ingest: keys are ingested', isIngestedKey('ingest:claude-code') && !isIngestedKey('agent:claude:sonnet'));
+  check('an ingest: runner row is ingested', isIngestedRow({ key: 'ingest:claude-code' }) && !isIngestedRow({ key: 'agent:claude:sonnet' }));
+  const byModel = FORGE_LEDGER_BY_MODEL.find((r) => r.key === 'claude-sonnet-4-5');
+  check('a model row holding ingested attempts is labelled from the engine\'s outside mark (review M2)', !!byModel && isIngestedRow(byModel));
+  check('a model row with none is not', !isIngestedRow(FORGE_LEDGER_BY_MODEL.find((r) => r.key === 'mock-author-1')));
   check('the ingest fixture keys sources on session and agent',
     new Set(FORGE_INGEST.sources.map((s) => `${s.sessionId}/${s.agentId}`)).size === FORGE_INGEST.sources.length);
 }

@@ -76,7 +76,7 @@ export function ImplementDetail({ inspect, api, sample, busy, initialTab, initia
           </span>
           <span className="pill">{gates.holdoutCount} holdout{gates.holdoutCount === 1 ? '' : 's'}</span>
         </div>
-        <div className="toolbar wrap" style={{ marginTop: 10 }} role="tablist">
+        <div className="toolbar wrap" style={{ marginTop: 10 }}>
           <Choice
             options={[
               { value: 'attempts', label: `attempts · ${inspect.attempts.length}` },

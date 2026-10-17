@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Ledger as LedgerDoc, LedgerRow } from '../types.ts';
+import type { LedgerJson, LedgerJsonRow } from '../types.ts';
 import {
-  costSourceOf, isIngestedKey, ledgerTokens, ledgerUsd, OUTSIDE, shortRef,
+  costSourceOf, isIngestedRow, ledgerTokens, ledgerUsd, OUTSIDE, shortRef,
 } from './forge-words.ts';
 import { Choice, type ForgeApi, type LedgerGroup } from './ForgeParts.tsx';
 
@@ -14,27 +14,30 @@ import { Choice, type ForgeApi, type LedgerGroup } from './ForgeParts.tsx';
  * labelled as outside Daylight's controls (R12.1).
  */
 export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
-  const [group, setGroup] = useState<LedgerGroup>('actor');
+  const [group, setGroup] = useState<LedgerGroup>('runner');
   const [since, setSince] = useState<'all' | '7d' | '24h'>('all');
-  const [doc, setDoc] = useState<LedgerDoc | null>(null);
+  const [doc, setDoc] = useState<LedgerJson | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const ms = since === '7d' ? 7 * 86_400_000 : since === '24h' ? 86_400_000 : 0;
-    const r = await api.ledger({ group, since: ms ? Date.now() - ms : undefined });
+    const r = await api.ledger({ group, since: ms ? new Date(Date.now() - ms).toISOString() : undefined });
     if (r.error) setError(r.error);
     else { setError(null); setDoc(r); }
   }, [api, group, since]);
   useEffect(() => { void load(); }, [load]);
 
   const rows = doc?.rows ?? [];
-  const total = rows.reduce<Pick<LedgerRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'>>(
+  // A known sum stays null until some row has a provider figure: no row's null becomes a zero.
+  const total = rows.reduce<Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'>>(
     (t, r) => ({
-      attempts: t.attempts + r.attempts, usdKnown: t.usdKnown + r.usdKnown,
+      attempts: t.attempts + r.attempts,
+      usdKnown: r.usdKnown === null ? t.usdKnown : (t.usdKnown ?? 0) + r.usdKnown,
       usdUnknownCount: t.usdUnknownCount + r.usdUnknownCount, usdScanned: t.usdScanned + r.usdScanned,
     }),
-    { attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0 },
+    { attempts: 0, usdKnown: null, usdUnknownCount: 0, usdScanned: 0 },
   );
+  const ingestedRows = rows.filter(isIngestedRow).length;
 
   return (
     <div className="screen mission" data-forge="ledger">
@@ -54,8 +57,9 @@ export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
           <span className="num">group by</span>
           <Choice
             options={[
-              { value: 'actor', label: 'actor' }, { value: 'model', label: 'model' },
-              { value: 'mission', label: 'mission' }, { value: 'work-item', label: 'work item' },
+              { value: 'runner', label: 'runner' }, { value: 'model', label: 'model' },
+              { value: 'origin', label: 'origin' }, { value: 'mission', label: 'mission' },
+              { value: 'work-item', label: 'work item' }, { value: 'actor', label: 'actor' },
             ]}
             value={group}
             onChange={setGroup}
@@ -71,6 +75,7 @@ export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
             <span className="num">total</span>
             <strong className="money" data-forge="ledger-total">{ledgerUsd(total)}</strong>
             <span className="num">{total.attempts} attempts</span>
+            {ingestedRows > 0 && <span className="pill warn">{ingestedRows} row{ingestedRows === 1 ? '' : 's'} include work {OUTSIDE}</span>}
           </div>
         </div>
         <div className="card">
@@ -79,20 +84,20 @@ export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
           {!!rows.length && (
             <table className="grid" data-forge="ledger-rows">
               <thead>
-                <tr><th>{group}</th><th>attempts</th><th>cost</th><th>cost source</th><th>tokens in</th><th>tokens out</th><th>candidates</th><th>decisions</th><th>gate sets</th></tr>
+                <tr><th>{group}</th><th>attempts</th><th>cost</th><th>cost source (inferred)</th><th>tokens in</th><th>tokens out</th><th>candidates</th><th>decisions</th><th>gate sets</th></tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.key}>
                     <td style={{ color: 'var(--text)', overflowWrap: 'anywhere' }}>
                       {r.key}
-                      {isIngestedKey(r.key) && <span className="pill warn" style={{ marginLeft: 6 }}>{OUTSIDE}</span>}
+                      {isIngestedRow(r) && <span className="pill warn" style={{ marginLeft: 6 }}>{OUTSIDE}</span>}
                     </td>
                     <td className="mono">{r.attempts}</td>
                     <td className="mono">{r.attempts ? ledgerUsd(r) : r.decisions ? 'decisions only' : '—'}</td>
                     <td className="mono">{r.attempts ? costSourceOf(r) : '—'}</td>
-                    <td className="mono">{r.attempts ? ledgerTokens(r.tokens.input, r.tokens.unknownCount, r.attempts) : '—'}</td>
-                    <td className="mono">{r.attempts ? ledgerTokens(r.tokens.output, r.tokens.unknownCount, r.attempts) : '—'}</td>
+                    <td className="mono">{r.attempts ? ledgerTokens(r.tokens.input, r.tokensUnknownByField.input) : '—'}</td>
+                    <td className="mono">{r.attempts ? ledgerTokens(r.tokens.output, r.tokensUnknownByField.output) : '—'}</td>
                     <td className="mono">
                       {r.candidates.accepted} acc · {r.candidates.rejected} rej · {r.candidates.applied} applied
                       {r.candidates.overridden ? ` · ${r.candidates.overridden} overridden` : ''}
@@ -105,9 +110,10 @@ export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
             </table>
           )}
           <p className="dim" style={{ fontSize: 11, margin: '8px 0 0' }}>
-            Cost source per row: provider (reported by the provider, known), stdout-scan (read out of
-            output by pattern, not known), none (nothing reported). Rows marked {OUTSIDE} were
-            recovered from transcripts; Daylight granted them nothing and verified none of it.
+            Cost source per row, inferred from the row's totals (it carries no per-source counts):
+            provider (reported by the provider, known), stdout-scan (read out of output by pattern,
+            not known), none (nothing reported). A row marked {OUTSIDE} holds attempts recovered
+            from transcripts, under any grouping; Daylight granted them nothing and verified none of it.
           </p>
         </div>
 

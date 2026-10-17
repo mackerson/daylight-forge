@@ -86,12 +86,19 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
           <span className={`pill ${c.profile.exec ? 'warn' : ''}`}>{c.profile.exec ? 'exec on' : 'exec off'}</span>
           <span className="pill">network {c.profile.network}</span>
           {c.secretHits > 0 && <span className="pill bad">{c.secretHits} secret{c.secretHits === 1 ? '' : 's'} redacted</span>}
+          {c.possibleSecretHits > 0 && <span className="pill warn">{c.possibleSecretHits} possible secret{c.possibleSecretHits === 1 ? '' : 's'}</span>}
         </div>
         {!!c.verdictReasons.length && <ul className="rows" style={{ fontSize: 12 }}>{c.verdictReasons.map((r) => <li key={r}>{r}</li>)}</ul>}
       </div>
 
       <div className="card">
         <h3>files · {flags.files.length}</h3>
+        {!!data.possibleSecrets?.length && (
+          <p className="hint" style={{ fontSize: 11, margin: '0 0 6px' }} data-forge="possible-secrets">
+            Possible secret in {data.possibleSecrets.join(', ')}: a low-confidence match, not a violation (R16).
+            Approve and override show a checkbox in the system dialog; until you tick it, nothing is recorded.
+          </p>
+        )}
         {!!flags.whole.length && (
           <div className="toolbar wrap" style={{ marginBottom: 6 }}>
             <span className="num">whole diff</span>

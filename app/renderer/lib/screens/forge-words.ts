@@ -1,6 +1,6 @@
 import type {
   Attempt, CandidateVerdict, Decision, Experiment, ForgeCandidate, GateEvaluation, GuardedResult,
-  LedgerRow, Mission, Need, PolicyRule, WorkItem, WorkItemStatus, Application,
+  LedgerJsonRow, Mission, Need, PolicyRule, WorkItem, WorkItemStatus, Application, WithheldExperiment,
 } from '../types.ts';
 import type { Word } from './mission-words.ts';
 
@@ -32,34 +32,41 @@ export function tokens(n: number | null | undefined): string {
   return n >= 10_000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+type MoneyRow = Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'>;
+
 /**
- * A ledger total, as a floor. Unknown spend is counted, not summed as zero; scanned spend is a
- * pattern read out of output and is shown beside the floor, never inside it.
+ * A ledger total, as a floor. `usdKnown` is null when no attempt carries a provider figure.
+ * Unknown spend is counted, not summed as zero; scanned spend is a pattern read out of output
+ * and is shown beside the floor, never inside it.
  */
-export function ledgerUsd(r: Pick<LedgerRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'>): string {
-  if (r.attempts > 0 && r.usdUnknownCount >= r.attempts) {
-    return r.usdScanned > 0 ? `${UNKNOWN} (${r.usdUnknownCount} unknown, ${usd(r.usdScanned)} scanned)` : UNKNOWN;
-  }
-  if (r.usdUnknownCount === 0 && r.usdScanned === 0) return usd(r.usdKnown);
-  const extra = [`${r.usdUnknownCount} unknown`];
+export function ledgerUsd(r: MoneyRow): string {
+  const extra: string[] = [];
+  if (r.usdUnknownCount > 0) extra.push(`${r.usdUnknownCount} unknown`);
   if (r.usdScanned > 0) extra.push(`${usd(r.usdScanned)} scanned`);
+  // Nothing known and nothing scanned: the bare word, not "unknown (3 unknown)".
+  if (r.usdKnown === null) return r.usdScanned > 0 ? `${UNKNOWN} (${extra.join(', ')})` : UNKNOWN;
+  if (!extra.length) return usd(r.usdKnown);
   return `≥ ${usd(r.usdKnown)} (${extra.join(', ')})`;
 }
 
-/** A token column of a ledger row: the known sum, a floor when some are unknown, or unknown. */
-export function ledgerTokens(known: number, unknownCount: number, attempts: number): string {
-  if (attempts > 0 && unknownCount >= attempts) return UNKNOWN;
-  return unknownCount > 0 ? `≥ ${tokens(known)}` : tokens(known);
+/**
+ * One token column of a `report --format json` row: null when no attempt reported the field,
+ * a floor when some did not, the sum when all did.
+ */
+export function ledgerTokens(known: number | null, missing: number): string {
+  if (known === null) return UNKNOWN;
+  return missing > 0 ? `≥ ${tokens(known)}` : tokens(known);
 }
 
 /**
- * Where a row's dollars came from (R10.2): the provider, a stdout scan, or nobody. A row mixes
- * attempts, so this names the mix rather than one source.
+ * Where a row's dollars came from (R10.2). The row has no per-source counts, so only what it
+ * can show is said: whether any provider figure exists, whether any spend was scanned, and how
+ * many attempts reported nothing. Labelled inferred on screen.
  */
-export function costSourceOf(r: Pick<LedgerRow, 'attempts' | 'usdUnknownCount' | 'usdScanned'>): string {
-  const provider = Math.max(0, r.attempts - r.usdUnknownCount);
+export function costSourceOf(r: Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned' | 'costKnown'>): string {
+  if (r.costKnown) return 'provider';
   const parts: string[] = [];
-  if (provider) parts.push(`provider ×${provider}`);
+  if (r.usdKnown !== null) parts.push('provider');
   if (r.usdScanned > 0) parts.push('stdout-scan');
   if (r.usdUnknownCount) parts.push(`none ×${r.usdUnknownCount}`);
   return parts.join(' · ') || 'none';
@@ -72,8 +79,12 @@ export function attemptCost(a: Pick<Attempt, 'costUsd' | 'costSource'>): string 
   return `${usd(a.costUsd)} · ${a.costSource}`;
 }
 
-/** Ledger keys that are ingested work: recorded, not run by Daylight (R12.1). */
-export const isIngestedKey = (key: string): boolean => /^ingest:/.test(key);
+/**
+ * Whether a ledger row holds ingested work (R12.1). The engine marks such a row `outside` under
+ * every grouping; the `ingest:` runner prefix is the same fact under `runner` and `actor`.
+ */
+export const isIngestedRow = (r: Pick<LedgerJsonRow, 'key'> & { outside?: string }): boolean =>
+  !!r.outside || /^ingest:/.test(r.key);
 
 export const OUTSIDE = "outside Daylight's controls";
 
@@ -91,9 +102,14 @@ export function sandboxBadges(a: Pick<Attempt, 'sandbox' | 'origin'>, decisions:
   }
   const s = a.sandbox;
   const out: Badge[] = [];
-  out.push(s.profile === 'none'
-    ? { name: 'unsandboxed — H5 open', tone: 'bad', title: 'a P0 reviewer runs with no sandbox; Sec H5 is open (R9.1)' }
-    : { name: `profile ${s.profile}`, tone: 'accent' });
+  if (s.profile !== 'none') out.push({ name: `profile ${s.profile}`, tone: 'accent' });
+  else if (s.reason === 'unsandboxed-review') {
+    out.push({ name: 'unsandboxed review, chosen — H5 open', tone: 'bad', title: 'a person passed --unsandboxed-review: the reviewer could read <out> (Sec H5)' });
+  } else if (s.reason === 'no-review-sandbox') {
+    out.push({ name: 'no review sandbox — mock only', tone: 'warn', title: '--no-review-sandbox, accepted only for an all-mock roster' });
+  } else {
+    out.push({ name: 'unsandboxed — H5 open', tone: 'bad', title: 'a P0 reviewer runs with no sandbox; Sec H5 is open (R9.1)' });
+  }
   if (s.write) {
     const d = decisions.find((x) => x.id === s.authorizeDecisionId);
     out.push({
@@ -178,7 +194,7 @@ export interface GateSetView {
  * component sees them, so no render can leak a hypothesis, command or digest of one.
  */
 export function gateSetView(
-  experiments: readonly Experiment[], decisions: readonly Decision[], evaluations: readonly GateEvaluation[] = [],
+  experiments: ReadonlyArray<Experiment | WithheldExperiment>, decisions: readonly Decision[], evaluations: readonly GateEvaluation[] = [],
 ): GateSetView {
   const baseOf = (id: string) => {
     const rows = evaluations.filter((e) => e.experimentId === id && e.target === 'base');
@@ -188,7 +204,7 @@ export function gateSetView(
   const d = latestDecision(decisions, 'lock-gates');
   const overrides = new Set(((d?.scope as { vacuousOverrides?: string[] } | undefined)?.vacuousOverrides) ?? []);
   const gates: GateRow[] = experiments
-    .filter((x) => x.role === 'gate')
+    .filter((x): x is Experiment => x.role === 'gate' && !('withheld' in x))
     .map((x) => {
       const base = baseOf(x.id);
       return {
@@ -346,7 +362,11 @@ export interface NeedTarget { screen: ForgeScreen; missionId?: string; tab?: Imp
 export function needTarget(n: Need, missionOfCandidate: (id: string) => string | undefined = () => undefined): NeedTarget {
   const mission = /^m_[0-9a-f]{32}$/.test(n.ref) ? n.ref : undefined;
   switch (n.kind) {
-    case 'spec-ambiguity': return { screen: 'work-items' };
+    case 'spec-ambiguity':
+    case 'work-item-undecided':
+      return { screen: 'work-items' };
+    case 'mission-awaiting-authorize':
+      return mission ? { screen: 'missions', missionId: mission, tab: 'attempts' } : { screen: 'missions' };
     case 'gate-lock':
     case 'gate-vacuous':
       return mission ? { screen: 'missions', missionId: mission, tab: 'gates' } : { screen: 'missions' };
@@ -388,6 +408,8 @@ export const NEED_WORDS: Record<Need['kind'], string> = {
   'gate-vacuous': 'vacuous gate',
   'candidate-decision': 'decide candidate',
   apply: 'apply',
+  'work-item-undecided': 'decide work item',
+  'mission-awaiting-authorize': 'authorize mission',
 };
 
 // ---- guarded acts -------------------------------------------------------------------------
@@ -396,7 +418,7 @@ export const NEED_WORDS: Record<Need['kind'], string> = {
 export function guardWord(r: GuardedResult | null): Word & { detail?: string } {
   if (!r) return { name: '', tone: 'dim' };
   if (r.refused) return { name: 'refused — nothing recorded', tone: 'bad', detail: r.refused };
-  if (r.canceled) return { name: `cancelled at the dialog${r.digest8 ? ` (${r.digest8})` : ''} — nothing recorded`, tone: 'dim' };
+  if (r.canceled) return { name: `cancelled at the dialog${r.digest8 ? ` (${r.digest8})` : ''} — nothing recorded`, tone: 'dim', detail: r.note };
   if (r.error) return { name: 'the act failed', tone: 'bad', detail: r.error };
   if (r.ok) return { name: `done · confirmed ${r.digest8 ?? ''}`.trim(), tone: 'ok' };
   return { name: 'no answer', tone: 'warn' };

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type {
-  ForgeCandidatePayload, GuardedResult, IngestSourcesPayload, Ledger, WorkItemsPayload,
+  ForgeCandidatePayload, GuardedResult, IngestSourcesPayload, LedgerGroup, LedgerJson, WorkItemsPayload,
 } from '../types.ts';
 import { CONFIRM_REFUSED, FORGE_CANDIDATES } from '../fixtures/forge-implement.sample.ts';
 import { FORGE_WORK_ITEMS } from '../fixtures/forge-work-items.sample.ts';
@@ -12,12 +12,13 @@ import { guardWord, type Badge } from './forge-words.ts';
  * guarded act ended, and one way to write a rationale without typing a paragraph.
  */
 
-export type LedgerGroup = 'actor' | 'model' | 'mission' | 'work-item';
+export type { LedgerGroup };
 
 export interface ForgeApi {
   workItems(): Promise<WorkItemsPayload & { error?: string }>;
   candidate(id: string): Promise<ForgeCandidatePayload & { error?: string }>;
-  ledger(p: { group?: LedgerGroup; since?: number }): Promise<Ledger & { error?: string }>;
+  /** `since` is ISO 8601, as `report --since` parses it. */
+  ledger(p: { group?: LedgerGroup; since?: string }): Promise<LedgerJson & { error?: string }>;
   ingestSources(): Promise<IngestSourcesPayload & { error?: string }>;
   authorize(p: { id: string; write: boolean; exec?: boolean; maxUsd: number | null; rationale: string }): Promise<GuardedResult>;
   lockGates(p: { id: string; rationale: string; acceptVacuous?: string[] }): Promise<GuardedResult>;
@@ -48,7 +49,7 @@ export function forgeApi(sample: boolean): ForgeApi {
       candidate: async (id) => FORGE_CANDIDATES[id] ?? { error: 'not in the sample' } as ForgeCandidatePayload & { error: string },
       ledger: async ({ group }) => ({
         ...FORGE_LEDGER,
-        rows: group === 'model' ? FORGE_LEDGER_BY_MODEL : group === 'mission' || group === 'work-item' ? [] : FORGE_LEDGER.rows,
+        rows: group === 'model' ? FORGE_LEDGER_BY_MODEL : group === 'runner' || group === 'actor' || group === undefined ? FORGE_LEDGER.rows : [],
       }),
       ingestSources: async () => FORGE_INGEST,
       authorize: async (p) => sampleRefusal('authorize-mission', p.id),
