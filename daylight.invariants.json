@@ -200,5 +200,18 @@
       "callee": "^assertHumanDecision$",
       "min": 1
     }
+  },
+  {
+    "id": "diff-secret-scan-uses-the-redaction-shapes",
+    "prose": "The candidate diff's secret-in-diff scan goes through redact, so the shapes that mask a log are the shapes that make a diff uncurable.",
+    "rationale": "ws2-review F2: a second, shorter shape list in the scanner would let a secret redact knows about be stored in a diff unflagged. engine/test/redact.ts plants every shape through captureCandidate and holds the table to the shapes TRACKED.md names.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/diff\\.ts$"
+      },
+      "callee": "^redact$",
+      "min": 1
+    }
   }
 ]
