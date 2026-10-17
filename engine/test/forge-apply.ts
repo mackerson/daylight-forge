@@ -20,7 +20,7 @@ import { digestOf } from '../mission/artifacts.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { Candidate, CandidateFile, DaylightEventInput, Experiment, Mission, PolicyViolation } from '../mission/types.ts';
 import { confirmDigest } from '../forge/confirm.ts';
-import { checkPolicy, DecisionRefused } from '../forge/policy.ts';
+import { DecisionRefused } from '../forge/policy.ts';
 import { verdictRows } from '../forge/gate.ts';
 import { candidateVerdict } from '../forge/verdict.ts';
 import {
@@ -28,7 +28,8 @@ import {
 } from '../forge/decide.ts';
 import { ApplyFailed, applicationRefusals, applyCandidate, applyConfirm, refFor } from '../forge/apply.ts';
 import { coAuthorOf, commitMessage, subjectOf } from '../forge/trailers.ts';
-import { createWorkspace, diffOf } from '../forge/_stubs/workspace.ts';
+import { createWorkspace } from '../forge/workspace.ts';
+import { captureCandidate } from '../forge/diff.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -155,29 +156,32 @@ function candidate(
     violations?: PolicyViolation[]; secretHits?: number;
   } = {},
 ): Candidate {
+  // Captured exactly as an author attempt's would be: WS2's workspace and capture.
   const ws = createWorkspace(repo, base);
-  let diff: Buffer;
+  let draft: Exclude<ReturnType<typeof captureCandidate>, { refused: string }>;
   try {
     (o.edit ?? ((t) => fs.writeFileSync(path.join(t, 'src', 'add.js'), FIXED)))(ws.tree);
-    diff = diffOf(ws);
+    const r = captureCandidate(ws);
+    if ('refused' in r) throw new Error(r.refused);
+    draft = r;
   } finally {
     ws.dispose();
   }
-  if (o.diff) diff = o.diff(diff);
+  const diff = o.diff ? o.diff(draft.diff) : draft.diff;
   const task = d.store.createTask({ missionId: f.mission.id, role: 'author', objective: 'make add add' });
   const a = d.store.startAttempt({
     taskId: task.id, runnerId: 'agent:mock:author',
     sandbox: { profile: 'author', network: 'none', write: true, exec: false, authorizeDecisionId: f.grant },
   });
   d.store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: null });
-  const files = o.files ?? [ADD];
+  const files = o.files ?? draft.files;
   const meta = { projectId: PROJECT.id, revision: base };
   return d.store.createCandidate({
     missionId: f.mission.id, attemptId: a.id, projectId: PROJECT.id, baseCommit: base,
     diffArtifact: d.artifacts.put(diff, { ...meta, kind: 'diff' }),
     summaryArtifact: d.artifacts.put(JSON.stringify({ files: files.length }), { ...meta, kind: 'summary' }),
     narrativeArtifact: d.artifacts.put('all tests pass', { ...meta, kind: 'narrative', label: 'author-claimed, unverified' }),
-    files, policyViolations: o.violations ?? checkPolicy(files, { diffBytes: diff.length }), secretHits: o.secretHits ?? 0,
+    files, policyViolations: o.violations ?? draft.policyViolations, secretHits: o.secretHits ?? draft.secretHits,
     gateSetDigest: o.gateSetDigest ?? f.gateSetDigest ?? digestOf('no lock'),
     profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed',
   });
@@ -235,6 +239,14 @@ const main = newMission('make add add');
   const err = throws(() => decide(c, 'approve-candidate'));
   check('approve with secret-in-diff is refused', err instanceof CandidateRefused && /uncurable: secret-in-diff/.test(err.message), err?.message);
   check('and so is overriding it', throws(() => decide(c, 'override-candidate')) instanceof CandidateRefused && decisionsOn(c).length === 0);
+  // The same through WS2's capture: a token-shaped string in the edit is found, and the
+  // stored diff is the redacted copy, which no decision may turn into a commit.
+  const leaked = evaluated(main, candidate(main, {
+    edit: (t) => fs.writeFileSync(path.join(t, 'src', 'add.js'), `// ghp_${'A1'.repeat(10)}\n${FIXED}`),
+  }));
+  check('capture flags a planted token as secret-in-diff', leaked.secretHits > 0 && leaked.verdict === 'policy-violation');
+  check('approve and override of it are both refused', [throws(() => decide(leaked, 'approve-candidate')), throws(() => decide(leaked, 'override-candidate'))]
+    .every((e) => e instanceof CandidateRefused && /uncurable: secret-in-diff/.test(e.message)));
 }
 {
   const PKG: CandidateFile = { path: 'package.json', change: 'added', insertions: 1, deletions: 0, mode: 'file' };

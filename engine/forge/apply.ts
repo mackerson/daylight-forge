@@ -8,6 +8,7 @@ import { HARDENED_GIT_CONFIG, hardenedGitEnv } from '../experiment/runner.ts';
 import {
   CandidateRefused, candidateConfirm, candidateDecisionOf, candidateStanding, requireImplement, type DecideContext,
 } from './decide.ts';
+import { DIFF_FLAGS } from './diff.ts';
 import { verdictRows } from './gate.ts';
 import { assertHumanDecision } from './policy.ts';
 import { commitMessage } from './trailers.ts';
@@ -34,12 +35,6 @@ export class ApplyFailed extends Error {
     this.name = 'ApplyFailed';
   }
 }
-
-/** The capture flags (WS2 `forge/diff.ts`); run in the empty-config scratch they give git's default output. */
-export const DIFF_FLAGS = [
-  '--binary', '--full-index', '--text', '--no-textconv', '--no-ext-diff', '--no-renames', '--no-color',
-  '--src-prefix=a/', '--dst-prefix=b/',
-];
 
 /** Config a repository could set to make one of these commands run something or write otherwise. */
 const REAL_REPO_CONFIG = [
@@ -104,7 +99,7 @@ function scratchFor(repo: string): Scratch {
   }
 }
 
-/** `base` → `commit` as the candidate's diff was captured, from the scratch's empty config. */
+/** `base` → `commit` with capture's flags (`diff.ts`), from the scratch's empty config. */
 function rediff(s: Scratch, base: string, commit: string): Buffer {
   return gitIn({ gitDir: s.gitDir }, ['diff', ...DIFF_FLAGS, base, commit, '--']);
 }
