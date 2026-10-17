@@ -4,8 +4,8 @@ Status: written 2026-10-16 at `daylight` @ 15efdfc (the WS9 merge), before the P
 finished. Sections 4 and 8 were then filled from `ACCEPTANCE-P1.md`, the engine and CLI phase of
 acceptance (logs in `acc/`). The UI halves of acceptance wait for an unlocked desktop. The owner's
 decisions of the same day (R17: author exec allowed as option (a), trailer attribution kept) are
-recorded here. The code change for exec, a small flip commit, is landing; it is not part of
-15efdfc. The GitHub repository is being renamed from its pre-rename name to
+recorded here. The exec flip and the acceptance fixes merged as **28b6835**, the final P1 commit
+on `daylight`, on 2026-10-17. The GitHub repository is being renamed from its pre-rename name to
 `mackerson/daylight-forge` on 2026-10-16. The local directory name is unchanged.
 
 This is the completion record for the P1 case study. Every number in it comes from a named
@@ -39,7 +39,8 @@ approved merge (FORGE_PLAN §1).
   write attempt that lacks a matching authorize decision.
 - **Sandboxed authors.** `forge run` gives the author a detached workspace, with no git worktree
   and no host hook (ADR-8). The author runs in the bubblewrap `author` profile: write on the tree,
-  network `none`, exec off, environment cleared, and `<out>` and `$HOME` never mounted. It reaches
+  network `none`, exec only on an explicit grant (from 28b6835), environment cleared, and `<out>`
+  and `$HOME` never mounted. It reaches
   MCP through one token-checked socket per attempt (R11.2). The result is a candidate with a
   redacted diff. The author's narrative is labelled unverified and never feeds the verdict
   (ADR-19).
@@ -81,14 +82,12 @@ Two cross-cutting changes underpin all of this:
   `unavailable` for implement (ADR-31, R15.1). A real-provider review runs only when the operator
   passes `--unsandboxed-review`, and then exactly as P0 did, with a warning (§9, H5). The live
   author run and its spend-capped credential are not authorised (R9.4).
-- **Author exec was undecided through the WS9 merge, and is now decided (R17.1).** R9.2 offered
-  (a) exec inside the author sandbox or (b) write only, and R11.1 refined (a) into a `run` MCP
-  tool backed by a nested `--unshare-net` sandbox. At 15efdfc, `exec:true` is refused both at
-  authorize and at attempt start (R15.5). The owner then chose (a): exec is permitted only when
-  the mission's `authorize` decision grants it, and it is stamped on the attempt. The nested
-  sandbox is always `--unshare-net`, and gate tests are never mounted. The flip commit that lifts
-  R15.5's refusal is landing. Nothing in §3 or §4 measures it; acceptance confirmed the
-  pre-flip refusal.
+- **Author exec: decided (R17.1), in effect since 28b6835.** Through 15efdfc, `exec:true` was
+  refused (R15.5). The owner chose (a). Exec is now the nested, no-network `run` MCP tool, allowed
+  only when the mission's `authorize` decision grants it. Gate tests are never mounted. Every
+  `run` call is recorded as `attempt.exec` events plus artifacts, and exec is counted from those
+  events. No column was added, so v2 databases stay readable. The acceptance run (§4) predates
+  the flip.
 - **No gate dependencies.** Gates must be zero-dependency or vendored. Install snapshots are P2
   (R4 Q1a, ADR-28).
 - The rest of the deferred list is in §10.
@@ -118,9 +117,10 @@ the merge. The exception is 4bfdbe5, the plan, whose branch started from an olde
 | 12 | 8b625a1 | Redaction shapes, two tiers | 5 | 762 | 36 | `mission/redact.ts`, `forge/diff.ts`, new `test/redact.ts`, one invariant |
 | 13 | 594f163 | WS8 orchestration + CLI + e2e | 25 | 2,390 | 310 | new `forge/{orchestrate,commands}.ts`, `mission/needs.ts`, `test/forge-e2e.ts`; `_stubs/` deleted; `cli.ts`, `mission/*`, `app/main/{main,daylight-db}.cjs`, DEMO.md |
 | 14 | 15efdfc | WS9 Mission Control screens | 21 | 3,362 | 49 | new `app/main/forge.cjs` (+test), 8 new screens, `forge-words.{ts,test.mjs}`, 3 synthetic `forge-*.sample.ts`; `App.tsx`, `MissionDetail.tsx`, `types.ts`, `main.cjs`, `preload.cjs` |
+| 15 | 28b6835 | Exec decision (R17), `--help` handling, acceptance fixes | 24 | 636 | 155 | exec as the nested `run` tool on an explicit grant, recorded as `attempt.exec`; `--help` honoured on every subcommand; holdout paths withheld from replay and gate list; work-item preview; DEMO.md made to run as written |
 
-Net, `git diff --stat 13a5775..15efdfc`: **176 files changed, 24,751 insertions, 1,186
-deletions.** The rows above add up to 25,006 insertions. That is more than the net figure because
+Net, `git diff --stat 13a5775..28b6835`: **178 files changed, 25,288 insertions, 1,242
+deletions.** The rows above add up to 25,642 insertions. That is more than the net figure because
 later merges rewrite lines added by earlier ones.
 
 ---
@@ -149,9 +149,10 @@ runs ended with 0 failed.
 | WS4, f51e08e | 2,669 | 50 | +124 | ws4-review fix verification at b5e5c8a |
 | Redaction, 8b625a1 | 2,794 | 51 | +125 | redact-review fix verification at 59d74f6 |
 | WS8, 594f163 | 2,898 | 52 | +104 | ws8-review fix verification at e4c571f |
-| WS9, 15efdfc | **3,032** | **54** | +134 | ws9-review delta verification at ce04b81 |
+| WS9, 15efdfc | 3,032 | 54 | +134 | ws9-review delta verification at ce04b81 |
+| Exec flip + acceptance fixes, 28b6835 | **3,104** | **55** | +72 | coordinator's post-merge report (typecheck, build, check clean); not re-run here |
 
-From P0 to the WS9 merge: **+1,835 assertions, +19 files**. The count was at or above the WS-R
+From P0 to 28b6835: **+1,907 assertions, +20 files**. The count was at or above the WS-R
 baseline (1,407) at every step after WS-R, which is the FORGE_PLAN §9 requirement.
 
 At the WS9 merge, the ws9-review delta section reports:
@@ -271,8 +272,9 @@ Findings from acceptance F1–F3 are in §9. The doc deviations are in §5.
 
 ## 5. Demo launch instructions
 
-**Acceptance found six deviations between DEMO.md and the code** (ACCEPTANCE-P1 §2). They are not
-yet fixed in DEMO.md:
+**Acceptance found six deviations between DEMO.md and the code** (ACCEPTANCE-P1 §2). All six are
+**fixed in 28b6835** (8d24fb5, 08d29fa), where DEMO.md was rewritten to run as written and its
+replay claim corrected. They are recorded here as found:
 
 - **D1.** `daylight` is not on PATH: `bin` is declared but not linked. Use `pnpm daylight` or
   `node engine/cli.ts`.
@@ -448,28 +450,23 @@ Nobody in the build read the private 10k map directory (R8.4).
 
 ## 9. Unresolved risks
 
-- **Found by acceptance, High (F1): P0 subcommands ignore `--help`. Fix landing in the final
-  commit.** `agent --help` and `run --help` ran the real command and spawned the `claude` stub 3
-  times with the full review prompt; real binaries would have spent money. `export --help` ran the
-  real export and overwrote the tracked `.codemap/knowledge.json` (2,240 lines down to 89 B) and
-  `.codemap/ARCHITECTURE.md`. `extract`, `invariants`, `focus`, `map`, `import`, `adopt`, `check`,
-  `plan`, `derive`, `query` and `quality` likewise do their real work on `--help`. Only `adapters`
-  (lows sweep) and the mission and Forge subcommands print usage. Until the fix lands, nobody with
-  real provider binaries on PATH should run a P0 subcommand with `--help`. The acceptance run left
-  the checkout dirty in `.codemap/`, to be restored with `git checkout -- .codemap/`.
-- **Found by acceptance, Medium (F2).** DEMO.md's out path fails on non-desktop sessions, and
-  `spec decompose` exits 0 on a blocked mission (§5, D2).
-- **Found by acceptance, Low (F3): holdout test path leaks in two operator views.** `mission
-  replay --format json` shows it 8 times and `gate list` once, while inspect, events and candidate
-  withhold it. These are CLI-only views that the shell does not call. Export files carry holdout
-  bodies by design, for byte-equal replay, so a recording discloses its holdouts. This should be
-  documented.
-- **Found by acceptance, Low (F4, F5).** `work-item approve` and `reject` refuse instead of
-  previewing without `--confirm`. Each `test:all` leaves about 10 non-empty temp dirs (about
-  20 MB) behind; TRACKED describes them as empty, and they are not.
-- **Found by acceptance, Info (F9): two post-review commits.** The WS2 (65a472e) and WS5
-  (f7ed74d) merges each include one commit after the head their reviewer verified. Both merges
-  are clean, so this is a gap in review coverage, not in merge integrity.
+- **Found by acceptance, High (F1): P0 subcommands ignored `--help`. Fixed in 28b6835**
+  (13cb4a0, verified: 120 help forms, 0 spawns). Before the fix:
+  - `agent --help` and `run --help` ran the real command and spawned the `claude` stub 3 times;
+    real binaries would have spent money.
+  - `export --help` overwrote the tracked `.codemap/knowledge.json` and `ARCHITECTURE.md`.
+  - Eleven more subcommands did their real work on `--help`.
+- **Found by acceptance, Medium (F2): DEMO.md's out path failed on non-desktop sessions. Fixed in
+  28b6835**, with the doc rewrite (§5, D2).
+- **Found by acceptance, Low (F3): holdout test path in `mission replay` and `gate list`. Fixed in
+  28b6835** (f35c7b0). Export files still carry holdout bodies by design, for byte-equal replay,
+  so a recording discloses its holdouts.
+- **Found by acceptance, Low (F4, F5).**
+  - F4: `work-item approve` and `reject` now preview without `--confirm`. Fixed in 28b6835
+    (08d29fa).
+  - F5: each `test:all` leaves about 10 non-empty temp dirs (about 20 MB). Still open.
+- **Found by acceptance, Info (F9).** The WS2 (65a472e) and WS5 (f7ed74d) merges each carry one
+  commit their reviewer did not verify; the merges themselves are clean.
 
 - **Sec H5, reviewer reach. Open.** The P0 path runs reviewers unsandboxed with `cwd` at the
   repository root, where they can read `<out>` (the ledger and claims db). P1's state:
@@ -519,10 +516,9 @@ Nobody in the build read the private 10k map directory (R8.4).
 - **Self-approval guard is a heuristic.** The guard refuses under `CLAUDECODE` and
   `DAYLIGHT_SESSION` and requires a confirm code. An agent that can compute the digest can
   compute the code. ADR-20 says this is a heuristic, not authentication, and signing is deferred.
-- **Author exec is new and unproven.** R17.1 allows exec through the nested `run` tool. Its
-  enforcement (grant-only, `--unshare-net`, gate tests never mounted) rests on WS2's nested runner,
-  which was built behind a flag and reviewed while exec was refused. The flip commit is landing.
-  Its own review and the acceptance run are the evidence still to come.
+- **Author exec is new.** R17.1's `run` tool is in effect from 28b6835 and was reviewed by a
+  Fable exec-flip reviewer (§11). It has not been through an acceptance run of its own, and
+  nothing real has executed under it: every author is still a mock.
 
 ---
 
@@ -533,8 +529,8 @@ Nobody in the build read the private 10k map directory (R8.4).
 - **R9.2 → (a), ADR-35.** Author exec is allowed as the nested, no-network MCP `run` tool
   (R11.1). It is permitted only when the mission's `authorize` decision grants it, and it is
   stamped on the attempt. The nested sandbox is always `--unshare-net`, and gate tests are never
-  mounted. R15.5's refuse-until-decided is lifted. The flip commit is landing; at 15efdfc,
-  `exec:true` is still refused.
+  mounted. R15.5's refuse-until-decided is lifted. **In effect since 28b6835**, where every
+  `run` call is recorded as `attempt.exec` events plus artifacts.
 - **R9.3 → keep.** Opus-written commits keep their `Claude Opus 5.5` trailer, and merges carry
   Fable 5.1. No history is rewritten.
 - **R17.3.** The owner asked to spin down in-flight development, get current work pushed and
@@ -584,8 +580,8 @@ decisions:
 notifications. They are cumulative per agent and include resumed runs. **No price is applied
 anywhere and no dollar figure is given**, by ruling (R4 Q3a) and by the WS5 invariant
 `money-code-has-no-price-table`. The director (Fable 5.1, the coordinating session) wrote no code
-and made the rulings. Its own tokens are not in the table, and neither are the acceptance pass
-and this report.
+and made the rulings. Its own tokens are not in the table. This report's writer could not see
+its own harness total, so that row reads "not recorded" and is left out of the sums.
 
 | Role | Model | Agent | Tokens | Outcome |
 |---|---|---|---|---|
@@ -623,12 +619,17 @@ and this report.
 | planner | Opus 5.5 | WS8 interface proposal | 182,114 | design doc |
 | writer | Opus 5.5 | WS8 orchestration + CLI + e2e | 582,949 | merged 594f163 |
 | reviewer | Fable 5.1 | WS8 review + verification | 334,368 | 2H/2M/6L → fixed |
+| reviewer | Fable 5.1 | P1 acceptance, engine and CLI phase | 302,583 | ACCEPTANCE-P1.md: 29 PASS, 2 PARTIAL, 0 FAIL; F1 High |
+| writer | Opus 5.5 | exec flip (R17) + acceptance fixes | 297,617 | merged 28b6835 |
+| reviewer | Fable 5.1 | exec flip review | 296,784 | merged 28b6835 |
+| writer | Opus 5.5 | this completion report | not recorded | docs/daylight/FORGE_REPORT.md |
 
-Subtotals through the WS9 merge, re-summed from the table by this writer and matching the ledger:
+Subtotals through 28b6835, re-summed from the table by this writer, excluding the unrecorded
+report row:
 
-- Opus 5.5 writers, planners and scout: **19 agents, 6,107,259 tokens**
-- Fable 5.1 reviewers and reconciler: **15 agents, 3,787,775 tokens**
-- **Total: 9,895,034 tokens**
+- Opus 5.5 writers, planners and scout: **20 agents, 6,404,876 tokens**
+- Fable 5.1 reviewers, reconciler and acceptance: **17 agents, 4,387,142 tokens**
+- **Total: 10,792,018 tokens**
 
 The table's Outcome column is the ledger's own shorthand. The ledger's corrected statement, quoted
 exactly:
@@ -645,8 +646,8 @@ commit after the head their reviewer verified (§9, F9).
 
 **Writer and reviewer separation.** Every merged branch was written by an Opus agent in its own
 worktree. A different agent, on Fable, reviewed it with the code, PLAN and RULINGS, and treated
-the writer's report as hypotheses (R6). Reviewers worked read-only and mutated only scratch copies. The roles split by model: 19 Opus agents produced code, plans and inventories,
-and 15 Fable agents reviewed and reconciled. R6 provides a third Fable as tie-breaker for
+the writer's report as hypotheses (R6). Reviewers worked read-only and mutated only scratch copies. The roles split by model: 20 Opus agents (plus this report) produced code, plans
+and inventories, and 17 Fable agents reviewed, reconciled and ran acceptance. R6 provides a third Fable as tie-breaker for
 writer/reviewer disagreements. No tie-break agent appears in the ledger.
 
 **Interfaces before code.** Before wave 1, three Opus planners wrote six interface proposals, and
@@ -689,4 +690,4 @@ refines.
 | R14 | Rulings on the reconciliation: socket listener in WS2, orchestrate edits deferred to WS8, D-7 git hardening in WS1, guard on every DecisionOperation, actor from main | refines ADR-20, ADR-8, ADR-33 |
 | R15 | WS8: mocks only; two new need kinds; e2e fails without bwrap; every policy violation uncurable; `exec:true` refused | refines ADR-31, ADR-13, ADR-21, ADR-35 |
 | R16 | Secret shapes in two tiers: high = masked and uncurable `secret-in-diff`; low = masked in logs, curable acknowledged `possible-secret` in diffs | refines ADR-10, ADR-21 |
-| R17 | Owner decisions: R9.2 → (a), exec only as the nested no-network `run` tool when the authorize decision grants it (flip commit landing); R9.3 → keep Opus trailers on Opus commits, Fable on merges; spin down, push, rename the repo | settles ADR-35; R9.3 (FORGE_PLAN §10.3) |
+| R17 | Owner decisions: R9.2 → (a), exec only as the nested no-network `run` tool when the authorize decision grants it (in effect, 28b6835); R9.3 → keep Opus trailers on Opus commits, Fable on merges; spin down, push, rename the repo | settles ADR-35; R9.3 (FORGE_PLAN §10.3) |
