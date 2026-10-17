@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Attempt, MissionInspect } from '../types.ts';
 import {
-  attemptCost, budgetWord, gateSetView, IMPLEMENT_RUNNERS, latestDecision, OPEN_ITEMS, RATIONALE_PRESETS,
+  attemptCost, budgetWord, EXEC_RULE, gateSetView, IMPLEMENT_RUNNERS, latestDecision, OPEN_ITEMS, RATIONALE_PRESETS,
   sandboxBadges, shortDigest, shortRef, tokens, verdictWord, type ImplementTab,
 } from './forge-words.ts';
 import { Badges, Choice, GuardOutcome, KEEP_CASE, RationalePicker, toneClass, useAct, type ForgeApi } from './ForgeParts.tsx';
@@ -14,8 +14,8 @@ import { CandidateReview } from './CandidateReview.tsx';
  *
  * Write is a mode here, not a fault (R7). It is granted by one human authorize decision, and
  * every attempt says what it was given: profile, write with the decision and the person who
- * granted it, exec, network. The questions the owner has not answered yet are on screen as
- * open, not hidden until they are (R9).
+ * granted it, exec (only when that decision granted it, R17.1), network. The questions the
+ * owner has not answered yet are on screen as open, not hidden until they are (R9).
  */
 export function ImplementDetail({ inspect, api, sample, busy, initialTab, initialCandidate, onBack, onRefresh }: {
   inspect: MissionInspect;
@@ -66,7 +66,7 @@ export function ImplementDetail({ inspect, api, sample, busy, initialTab, initia
               <span style={KEEP_CASE} className={`pill ${grant?.permissions?.write ? 'warn' : ''}`}>
                 {grant?.permissions?.write ? `write on — ${shortRef(auth.id)} ${auth.actor}` : 'write off'}
               </span>
-              <span className="pill">{grant?.permissions?.execute ? 'exec on' : 'exec off'}</span>
+              <span className="pill" title={grant?.permissions?.execute ? EXEC_RULE : undefined}>{grant?.permissions?.execute ? 'exec on' : 'exec off'}</span>
               <span style={KEEP_CASE} className="pill">maxUsd {grant?.maxUsd === null || grant?.maxUsd === undefined ? 'unchanged' : `$${grant.maxUsd.toFixed(2)}`}</span>
             </>
           ) : <span className="pill warn">not authorized — read-only until a person authorizes it</span>}
@@ -194,7 +194,7 @@ function Authorize({ inspect, api, sample, onDone, authorized }: {
           value={exec}
           onChange={setExec}
         />
-        <span className="hint" style={{ fontSize: 11 }}>exec policy undecided (R9.2)</span>
+        <span className="hint" style={{ fontSize: 11 }} title={EXEC_RULE}>exec: granted here only; nested sandbox, no network (R17.1)</span>
         <span className="num">maxUsd</span>
         <Choice
           options={[{ value: '1', label: '$1' }, { value: '2', label: '$2' }, { value: '5', label: '$5' }, { value: 'keep', label: 'keep current' }]}

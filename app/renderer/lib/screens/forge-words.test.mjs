@@ -9,7 +9,7 @@
 import {
   usd, tokens, ledgerUsd, ledgerTokens, costSourceOf, attemptCost, sandboxBadges, gateSetView,
   approveAllowed, applyAllowed, flaggedFiles, diffLines, workItemQueue, needTarget, mergeNeeds,
-  needsStrip, guardWord, isIngestedRow, NEED_WORDS, OUTSIDE, OPEN_ITEMS, IMPLEMENT_RUNNERS, verdictWord,
+  needsStrip, guardWord, isIngestedRow, NEED_WORDS, OUTSIDE, OPEN_ITEMS, IMPLEMENT_RUNNERS, verdictWord, EXEC_RULE, EXEC_OFF,
 } from './forge-words.ts';
 import {
   FORGE_IMPLEMENT, FORGE_CANDIDATES, C_ACCEPTED, C_POLICY, C_REJECTED, X_HOLDOUT, IMPL_M,
@@ -66,7 +66,12 @@ section('sandbox badges: write is a mode, shown with its grant (R7)');
   check(`ingested work is labelled "${OUTSIDE}" and nothing else`, ing.length === 1 && ing[0].name === "outside Daylight's controls");
   const lost = sandboxBadges({ ...a1, sandbox: { ...a1.sandbox, authorizeDecisionId: 'd_ffffffffffffffffffffffffffffffff' } }, FORGE_IMPLEMENT.decisions);
   check('a grant whose decision is not in view says so rather than inventing an actor', lost.some((x) => /decision not in view/.test(x.name)));
-  check('the open items are all present (R9 never hidden)', ['R9.2', 'H5', 'Q5'].every((id) => OPEN_ITEMS.some((o) => o.id === id)));
+  check('the open items are all present (R9 never hidden)', ['H5', 'Q5'].every((id) => OPEN_ITEMS.some((o) => o.id === id)));
+  check('exec is no longer an open item: R9.2 was decided (a) (R17.1)', !OPEN_ITEMS.some((o) => o.id === 'R9.2' || /exec/.test(o.text)));
+  check('the exec rule says when exec is allowed and where it runs', /authorize decision/.test(EXEC_RULE) && /no network/.test(EXEC_RULE) && /R17\.1/.test(EXEC_RULE));
+  const granted = sandboxBadges({ ...a1, sandbox: { ...a1.sandbox, exec: true } }, FORGE_IMPLEMENT.decisions).find((x) => x.name === 'exec on');
+  check('exec on is a grant, explained as the nested no-network run tool', !!granted && granted.title === EXEC_RULE, JSON.stringify(granted));
+  check('exec off is explained too', sandboxBadges(a1, FORGE_IMPLEMENT.decisions).find((x) => x.name === 'exec off')?.title === EXEC_OFF);
   check('claude is listed for implement, as unavailable — Q5 pending',
     IMPLEMENT_RUNNERS.some((r) => r.tool === 'claude' && !r.available && /Q5 pending/.test(r.why)));
   void a2; void a3;

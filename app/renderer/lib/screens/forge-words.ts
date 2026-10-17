@@ -120,14 +120,18 @@ export function sandboxBadges(a: Pick<Attempt, 'sandbox' | 'origin'>, decisions:
   } else {
     out.push({ name: 'write off', tone: 'dim' });
   }
-  out.push(s.exec ? { name: 'exec on', tone: 'warn' } : { name: 'exec off', tone: 'dim' });
+  out.push(s.exec ? { name: 'exec on', tone: 'warn', title: EXEC_RULE } : { name: 'exec off', tone: 'dim', title: EXEC_OFF });
   out.push({ name: `network ${s.network}`, tone: s.network === 'none' ? 'dim' : 'warn' });
   return out;
 }
 
+/** Author exec as decided (R9.2 → (a), R17.1): shown wherever exec is granted or offered. */
+export const EXEC_RULE =
+  'exec (R17.1): allowed only when the authorize decision grants it; the author runs commands through its run tool, in a nested sandbox with no network and no gate tests';
+export const EXEC_OFF = 'no exec: the authorize decision did not grant it, so the author has no run tool and only the gates execute';
+
 /** The questions still open that change what these screens mean. Always shown (R9). */
 export const OPEN_ITEMS: readonly { id: string; text: string }[] = [
-  { id: 'R9.2', text: 'exec policy undecided (R9.2): whether an author may run commands is the owner\'s open question' },
   { id: 'H5', text: 'reviewer unsandboxed — H5 open (R9.1): review attempts run with profile none' },
   { id: 'Q5', text: 'claude unavailable for implement — Q5 pending: no live author run is authorised' },
 ];
@@ -432,5 +436,5 @@ export const RATIONALE_PRESETS: Record<string, readonly string[]> = {
   'approve-work-item': ['clear, testable, matches the spec', 'the better of the sibling proposals'],
   'reject-work-item': ['ambiguous; the sibling proposal is clearer', 'out of scope for the spec', 'duplicate'],
   lock: ['these gates define done for this item', 'reviewed the gate tests; they fail at base for the right reason'],
-  authorize: ['implement this work item in its detached workspace', 'write only; gates execute'],
+  authorize: ['implement this work item in its detached workspace', 'write only; gates execute', 'write and exec: the author may run its tests with no network'],
 };
