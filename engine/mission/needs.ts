@@ -66,15 +66,24 @@ function gateNeeds(ctx: DaylightContext, mission: Mission): Need[] {
     }
   }
   const out: Need[] = [];
+  const fail = (n: number) => (n === 1 ? 'fails' : 'fail');
+  const unbaselined = gates.filter((x) => !baselineOf(evals, x));
+  if (unbaselined.length) {
+    out.push({
+      kind: 'gate-lock', ref: mission.id,
+      why: `${plural(unbaselined.length, 'gate')} ${unbaselined.length === 1 ? 'has' : 'have'} no baseline at ${unbaselined.length === 1 ? 'its' : 'their'} harness; `
+        + 'run `daylight gate baseline` before locking, or the author never sees them',
+    });
+  }
   const falsified = gates.filter((x) => baselineOf(evals, x)?.conclusion === 'falsified');
   const unlocked = falsified.filter((x) => !lockedIds.includes(x.id));
   if (falsified.length && (!lock || stale || unlocked.length)) {
     const holdouts = unlocked.filter((x) => x.role === 'holdout').length;
     const why = !lock
-      ? `${plural(falsified.length, 'gate')} fail on the base and nothing is locked; a person locks the gate set before an author runs`
+      ? `${plural(falsified.length, 'gate')} ${fail(falsified.length)} on the base and nothing is locked; a person locks the gate set before an author runs`
       : stale
         ? 'the gate lock is stale: a locked gate changed after it was locked; a person locks again'
-        : `${plural(unlocked.length, 'gate')} that fail on the base ${unlocked.length === 1 ? 'is' : 'are'} not in the lock`
+        : `${plural(unlocked.length, 'gate')} that ${fail(unlocked.length)} on the base ${unlocked.length === 1 ? 'is' : 'are'} not in the lock`
           + `${holdouts ? ` (${plural(holdouts, 'holdout')})` : ''}; a person locks again`;
     out.push({ kind: 'gate-lock', ref: mission.id, why });
   }
@@ -96,6 +105,8 @@ function gateNeeds(ctx: DaylightContext, mission: Mission): Need[] {
 }
 
 function candidateNeeds(ctx: DaylightContext, mission: Mission): Need[] {
+  // One branch per mission (WS4): once a candidate is applied, no other can be, so nothing waits on them.
+  if (ctx.store.applications(mission.id).length) return [];
   const decisions = ctx.store.decisions(mission.id);
   const out: Need[] = [];
   for (const c of ctx.store.candidates(mission.id)) {

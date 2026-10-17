@@ -13,7 +13,7 @@ import {
 import { AGENT_SESSION_VARS } from '../forge/policy.ts';
 import { renderReport } from './report.ts';
 import { runProjectReport } from './commands-report.ts';
-import { missionAuthorizeCommand, missionCreateImplementCommand, osActor } from '../forge/commands.ts';
+import { missionAuthorizeCommand, missionCreateImplementCommand, osActor, Usage as ForgeUsage } from '../forge/commands.ts';
 import { mappedProject } from './context.ts';
 import type { MissionKind, MissionOutcome } from './types.ts';
 
@@ -453,7 +453,7 @@ export async function runDaylightCommand(argv: string[]): Promise<number> {
       default: throw new Usage(`unknown command ${command}`);
     }
   } catch (err) {
-    if (err instanceof Usage) {
+    if (err instanceof Usage || err instanceof ForgeUsage) {
       console.error(`usage: ${err.message}`);
       return 2;
     }

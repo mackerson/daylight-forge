@@ -427,6 +427,11 @@ section('negative: an author that touches a protected path');
   const ap = run(['forge', 'apply', res.candidate.id, repo, '--out', out, '--confirm', ca.digest8]);
   check('apply is refused', ap.code === 1, ap.err.slice(-200));
   check('and no ref exists for this mission', !git(['for-each-ref', '--format=%(refname)', 'refs/heads/daylight/']).includes(m.id));
+  run(['gate', 'add', m.id, '--role', 'gate', '--test', path.join(tmp, 'add.test.js'), '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'late.test.js', '--out', out]);
+  check('a gate added after the baseline raises a gate-lock need until it is baselined',
+    inspect(m.id).needs.some((n) => n.kind === 'gate-lock' && /no baseline/.test(n.why)), JSON.stringify(inspect(m.id).needs));
+  const neither = run(['mission', 'create', repo, '--kind', 'implement', '--out', out]);
+  check('an implement mission with neither --work-item nor --no-work-item is a usage error (exit 2)', neither.code === 2, `${neither.code} ${neither.err.slice(-200)}`);
 }
 
 section('reviews run under the review profile by default whenever bwrap is present');

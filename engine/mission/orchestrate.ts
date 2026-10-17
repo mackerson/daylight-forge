@@ -627,7 +627,8 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     } else {
       // The store's own row is the only source of what this attempt was granted (ws2 ask).
       const row = ctx.store.attempt(attempt.id)!;
-      const mock = authorFor('mock');
+      // Only mocks reach here until the Q5 live spike; resolved by tool so a real provider then gets its own adapter.
+      const mock = authorFor(spec.tool);
       try {
         if (mock.status !== 'available') throw new Error(mock.why);
         const serve = (): McpServer => (ctx.store.task(row.taskId)?.role === 'decompose'
