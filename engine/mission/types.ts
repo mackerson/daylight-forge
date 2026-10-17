@@ -316,7 +316,16 @@ export interface AttemptSandbox {
   write: boolean;
   exec: boolean;
   authorizeDecisionId: string | null;
+  /**
+   * Why a review that could have been sandboxed was not, when a person said so (profile `none`
+   * only): `unsandboxed-review` for real providers run as P0 did (Sec H5), `no-review-sandbox`
+   * for mock test doubles. Absent when no profile was available or none was declined.
+   */
+  reason?: SandboxReason;
 }
+
+export type SandboxReason = 'unsandboxed-review' | 'no-review-sandbox';
+export const SANDBOX_REASONS: readonly SandboxReason[] = ['unsandboxed-review', 'no-review-sandbox'];
 
 /**
  * The default for every attempt. `shared` network because that is what an unsandboxed P0

@@ -7,7 +7,7 @@ import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
 import {
   ATTEMPT_TRANSITIONS, canTransition, DECISION_OPERATIONS, ID_PREFIX, isEntityId, isHumanActor,
   MISSION_TRANSITIONS,
-  NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
+  NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, SANDBOX_REASONS, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
   ArtifactKind, ArtifactRef, Attempt, AttemptCredential, AttemptOrigin, AttemptSandbox, AttemptState, CostSource, Decision,
@@ -15,7 +15,7 @@ import type {
   MissionBudget, MissionKind, MissionOutcome, MissionPermissions, MissionScope, MissionState,
   NetworkMode, NewExperiment, ProjectIdentity, Task, TaskRole, TaskState, TokenUsage,
   UsageSource, Application, Candidate, CandidateFile, CandidateVerdict, GateEvaluation, GateTarget,
-  IngestSource, PolicyViolation, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
+  IngestSource, PolicyViolation, SandboxReason, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
 } from './types.ts';
 
 /**
@@ -54,8 +54,8 @@ const NO_TOKENS: TokenUsage = { input: null, output: null, cacheRead: null, cach
 
 
 const sandboxColumns = (s: AttemptSandbox | null): Array<string | number | null> => (s === null
-  ? [null, null, null, null, null]
-  : [s.profile, s.network, s.write ? 1 : 0, s.exec ? 1 : 0, s.authorizeDecisionId ?? null]);
+  ? [null, null, null, null, null, null]
+  : [s.profile, s.network, s.write ? 1 : 0, s.exec ? 1 : 0, s.authorizeDecisionId ?? null, s.reason ?? null]);
 
 const tokenColumns = (t: TokenUsage): [number | null, number | null, number | null, number | null] =>
   [t.input, t.output, t.cacheRead, t.cacheWrite];
@@ -115,6 +115,9 @@ export function attemptRefusal(
   if (!NETWORK_MODES.includes(s.network)) return `attempt ${a.id} network must be one of ${NETWORK_MODES.join(', ')}, not ${String(s.network)}`;
   if (!SANDBOX_PROFILES.includes(s.profile)) return `attempt ${a.id} sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(s.profile)}`;
   if (s.exec && !s.write) return `attempt ${a.id} asks for exec without write; exec runs over the attempt's own writable tree`;
+  if (s.reason !== undefined && (s.profile !== 'none' || !SANDBOX_REASONS.includes(s.reason))) {
+    return `attempt ${a.id} records a declined-sandbox reason, which only a profile-none attempt can carry`;
+  }
   if (s.write) {
     // Write is to the author's detached workspace (R7); no other profile has a writable tree.
     if (s.profile !== 'author') return `attempt ${a.id} asks for write under the ${s.profile} profile; only the author profile writes`;
@@ -709,8 +712,8 @@ export class MissionStore {
          (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state,
           started_at, cost_usd, timed_out, artifacts, parent_attempt_id, gate_set_digest, pid,
           heartbeat_at, origin, sandbox_profile, sandbox_network, sandbox_write, sandbox_exec,
-          authorize_decision_id, credential, mcp_token_digest)
-         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?)`,
+          authorize_decision_id, sandbox_reason, credential, mcp_token_digest)
+         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         a.id, a.missionId, a.taskId, a.projectId, a.runnerId, a.sessionId ?? null,
@@ -1741,6 +1744,7 @@ export class MissionStore {
         write: !!(r.sandbox_write as number),
         exec: !!(r.sandbox_exec as number),
         authorizeDecisionId: (r.authorize_decision_id as string | null) ?? null,
+        ...(r.sandbox_reason ? { reason: r.sandbox_reason as SandboxReason } : {}),
       },
       credential: r.credential ? parseJson<AttemptCredential | undefined>(r.credential as string, undefined) : undefined,
       mcpTokenDigest: (r.mcp_token_digest as string | null) ?? undefined,

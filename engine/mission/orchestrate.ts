@@ -19,7 +19,7 @@ import { MCP_CONFIG, MCP_SERVER_KEY, mcpRuntimeDir, newMcpToken, type McpEndpoin
 import { specOf } from '../forge/spec.ts';
 import { createDecomposeServer, createServer, listenAttemptSocket } from '../mcp/server.ts';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AttemptCredential, AttemptSandbox, TaskRole } from './types.ts';
+import type { AttemptCredential, AttemptSandbox, SandboxReason, TaskRole } from './types.ts';
 import type { Belief, ClaimStatus } from '../store/types.ts';
 import type { DaylightContext } from './context.ts';
 import { requireMappedRepo } from './context.ts';
@@ -261,6 +261,12 @@ export interface RunMissionOptions {
    * attempt as profile `none`. Real providers get no profile until the live spike (R15.1).
    */
   noReviewSandbox?: boolean;
+  /**
+   * Run reviews exactly as P0 did, with no profile, so real providers can review before the
+   * live spike (R7: an explicit mode, recorded). Each attempt is stamped profile `none`, reason
+   * `unsandboxed-review`; the reviewer can read `<out>` (Sec H5). The CLI warns.
+   */
+  unsandboxedReview?: boolean;
   /** Injected in tests; defaults to `detectSandbox()`. */
   sandbox?: SandboxProfile;
   model?: string;
@@ -377,6 +383,12 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   if (role === 'decompose' && mission.kind !== 'spec') throw new Error(`mission ${mission.id} is ${mission.kind}; only a spec mission decomposes`);
   if (role === 'review' && mission.kind === 'spec') throw new Error(`mission ${mission.id} is a spec mission; it is decomposed, not reviewed`);
   // Decomposers reach their one tool only over the attempt socket, so they are always sandboxed.
+  if (opts.noReviewSandbox && opts.unsandboxedReview) {
+    throw new Error('--no-review-sandbox and --unsandboxed-review are two names for one opt-out; pass one');
+  }
+  if (role === 'decompose' && opts.unsandboxedReview) {
+    throw new Error('--unsandboxed-review does not apply to decompose: a decomposer reaches its tool only over the socket');
+  }
   if (opts.noReviewSandbox) {
     if (role === 'decompose') throw new Error('--no-review-sandbox does not apply to decompose: a decomposer reaches its tool only over the socket');
     // Checked on the roster as typed, before any binary is looked up or run.
@@ -384,11 +396,24 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     if (real.length) throw new Error(`--no-review-sandbox is for mock reviewers only; refused for ${[...new Set(real)].join(', ')}`);
   }
   const detected = opts.sandbox ?? detectSandbox();
-  // Fail closed: sandboxed whenever bwrap is present, unless a mock-only roster opted out.
-  const sandboxed = role === 'decompose' || (!opts.noReviewSandbox && detected.available);
+  // Fail closed: sandboxed whenever bwrap is present, unless a person opted out by name.
+  const declined: SandboxReason | undefined = opts.unsandboxedReview ? 'unsandboxed-review' : opts.noReviewSandbox ? 'no-review-sandbox' : undefined;
+  const sandboxed = role === 'decompose' || (!declined && detected.available);
   const profile = sandboxed ? detected : null;
   if (profile && !profile.available) {
     throw new Error(`${role} attempts run under the bwrap review profile, which cannot be built here: ${profile.why ?? 'unavailable'}`);
+  }
+  if (sandboxed && role === 'review') {
+    // Refused before any binary is looked up or run.
+    // A tool with no adapter is reported unavailable below, as it always was; only real providers are refused here.
+    const real = [...new Set(opts.tools.map((t) => parseSpec(t, opts.model).tool).filter((t) => t !== 'mock' && Object.hasOwn(ADAPTERS, t)))];
+    if (real.length) {
+      throw new Error(
+        `refused: ${real.join(', ')} would review under the bwrap review profile, which real providers do not get until ` +
+          'the owner authorises the live spike (R15.1); after that spike they run sandboxed, or pass --unsandboxed-review ' +
+          'to run them now exactly as P0 did, unsandboxed (Sec H5: the reviewer can read <out>)',
+      );
+    }
   }
   const planned = planMissionRoster(opts.tools, opts.model);
   const unavailable = [...planned.unavailable];
@@ -547,7 +572,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     const token = sandboxed ? newMcpToken() : undefined;
     const attempt = ctx.store.startAttempt({
       taskId: task.id, runnerId, sessionId: session, credential,
-      ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : {}),
+      ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : declined ? { sandbox: { reason: declined } } : {}),
     });
     open.add(attempt.id);
     lifecycle(ctx, mission, 'attempt.started', {

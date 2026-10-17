@@ -423,9 +423,20 @@ section('reviews run under the review profile by default whenever bwrap is prese
   check('--no-review-sandbox with claude in the roster is refused before anything spawns',
     refused.code !== 0 && /--no-review-sandbox/.test(refused.err) && !fs.existsSync(marker) && after.attempts.length === 0 && after.mission.state === 'ready',
     `${refused.code} ${refused.err.slice(-300)} attempts=${after.attempts.length} state=${after.mission.state}`);
-  const real = run(['mission', 'run', m3.id, repo, '--tools', 'codex', '--out', out, '--format', 'json'], stubbed);
-  check('by default a real provider is refused under the profile until the live spike (R15.1), and never spawned',
-    json<{ unavailable: string[] }>(real).unavailable.some((u) => /R15\.1/.test(u)) && !fs.existsSync(marker), real.out.slice(0, 300));
+  const real = run(['mission', 'run', m3.id, repo, '--tools', 'mock:c,codex', '--out', out, '--format', 'json'], stubbed);
+  const untouched = inspect(m3.id);
+  check('by default a real provider is refused, naming both ways forward, and nothing is spawned',
+    real.code === 1 && /live spike/.test(real.err) && /--unsandboxed-review/.test(real.err) && !fs.existsSync(marker)
+    && untouched.attempts.length === 0 && untouched.mission.state === 'ready', `${real.code} ${real.err.slice(-300)}`);
+  const both = run(['mission', 'run', m3.id, repo, '--tools', 'mock:c', '--no-review-sandbox', '--unsandboxed-review', '--out', out], stubbed);
+  check('the two opt-outs together are refused', both.code !== 0 && inspect(m3.id).attempts.length === 0, both.err.slice(-200));
+
+  const open = run(['mission', 'run', m3.id, repo, '--tools', 'claude', '--unsandboxed-review', '--out', out, '--format', 'json'], stubbed);
+  const ran = inspect(m3.id).attempts.find((x) => x.runnerId.startsWith('agent:claude'));
+  check('--unsandboxed-review runs a real-provider review as P0 did (here, the stand-in)', fs.existsSync(marker) && !!ran, `${open.err.slice(-300)}`);
+  check('and warns that the reviewer can read <out> (Sec H5)', /Sec H5/.test(open.err) && /<out>|can read/.test(open.err), open.err.slice(-300));
+  check('and the attempt is stamped profile none, reason unsandboxed-review', ran?.sandbox?.profile === 'none' && ran.sandbox.reason === 'unsandboxed-review', JSON.stringify(ran?.sandbox));
+  check('--no-review-sandbox on mocks is stamped reason no-review-sandbox', b?.sandbox?.reason === 'no-review-sandbox', JSON.stringify(b?.sandbox));
 }
 
 section('a possible secret (R16) is curable, but approve needs it acknowledged');

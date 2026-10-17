@@ -169,6 +169,9 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
     case 'run': {
       const [id, repo] = p.positionals;
       if (!id || !repo) throw new Usage('mission run needs <mission-id> <repo>');
+      if (last(p, 'unsandboxed-review') === 'true') {
+        console.error('warning: --unsandboxed-review: reviewers run with no sandbox and can read <out>, other missions\' claims included (Sec H5)');
+      }
       const report = await withContextAsync(out, (ctx) => runMission(ctx, {
         missionId: id,
         repo: path.resolve(repo),
@@ -177,6 +180,7 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
         maxCost: num(last(p, 'max-cost')),
         raiseBudget: last(p, 'raise-budget') === 'true',
         noReviewSandbox: last(p, 'no-review-sandbox') === 'true',
+        unsandboxedReview: last(p, 'unsandboxed-review') === 'true',
         dryRun: last(p, 'dry-run') === 'true',
         timeoutMs: num(last(p, 'timeout')) !== undefined ? num(last(p, 'timeout'))! * 1000 : undefined,
         concurrency: num(last(p, 'concurrency')),

@@ -115,6 +115,8 @@ CREATE TABLE attempts (
   sandbox_write      INTEGER CHECK (sandbox_write IN (0,1)),
   sandbox_exec       INTEGER CHECK (sandbox_exec IN (0,1)),
   authorize_decision_id TEXT REFERENCES decisions(id),
+  -- Why a person declined the review profile; only ever on profile 'none'.
+  sandbox_reason     TEXT CHECK (sandbox_reason IN ('unsandboxed-review','no-review-sandbox')),
   -- {present, envName, label}: which credential, never its value.
   credential         TEXT,
   -- sha256 of the per-attempt MCP socket token (R11.2), never the token.
@@ -128,7 +130,8 @@ CREATE TABLE attempts (
   CHECK (origin = 'daylight' OR authorize_decision_id IS NULL),
   -- R7, as a constraint as well as a store check: write never stands without its grant.
   CHECK (sandbox_write = 0 OR sandbox_write IS NULL OR authorize_decision_id IS NOT NULL),
-  CHECK (sandbox_exec = 0 OR sandbox_exec IS NULL OR sandbox_write = 1)
+  CHECK (sandbox_exec = 0 OR sandbox_exec IS NULL OR sandbox_write = 1),
+  CHECK (sandbox_reason IS NULL OR sandbox_profile = 'none')
 );
 CREATE INDEX attempts_task ON attempts(task_id, started_at);
 CREATE INDEX attempts_session ON attempts(session_id);

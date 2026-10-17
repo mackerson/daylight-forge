@@ -194,6 +194,9 @@ What to point at:
   `--acknowledge-possible-secret` alongside `--confirm` to approve or override (R16).
 - Whenever bwrap is present, reviews run under the bwrap `review` profile: the repo read-only,
   no `<out>`, claims filed only through the attempt's MCP socket. Real providers get no profile
-  until the live spike, so with bwrap present they are refused for review too. P0 test doubles
+  until the live spike, so with bwrap present a real-provider review is refused unless you pass
+  `--unsandboxed-review`, which runs it exactly as P0 did, warns that the reviewer can read
+  `<out>` (Sec H5), and stamps each attempt profile `none`, reason `unsandboxed-review`. P0 test doubles
   that write `<out>` directly pass `--no-review-sandbox`, which is accepted only for an all-`mock`
-  roster and recorded on each attempt as profile `none`. Sec H5 stays open until the live spike.
+  roster and recorded on each attempt as profile `none`, reason `no-review-sandbox`. Sec H5 stays
+  open until the live spike.
