@@ -1,7 +1,8 @@
 # Daylight Software Forge — P1 completion report
 
 Status: written 2026-10-16 at `daylight` @ 15efdfc (the WS9 merge), before the P1 acceptance run
-finished. Sections 4 and 8 are placeholders until `ACCEPTANCE-P1.md` exists. The owner's
+finished. Sections 4 and 8 were then filled from `ACCEPTANCE-P1.md`, the engine and CLI phase of
+acceptance (logs in `acc/`). The UI halves of acceptance wait for an unlocked desktop. The owner's
 decisions of the same day (R17: author exec allowed as option (a), trailer attribution kept) are
 recorded here. The code change for exec, a small flip commit, is landing; it is not part of
 15efdfc. The GitHub repository is being renamed from its pre-rename name to
@@ -32,56 +33,38 @@ P1 turns Daylight from a tool that reviews code into one that writes code under 
 protected specification, then a scoped author workspace, then an independent test, then an
 approved merge (FORGE_PLAN §1).
 
-- **Implement missions.** An implement mission comes from an approved work item, or from
-  `--no-work-item`, which records a human `adhoc-mission` decision (R10.1). It starts as a `draft`
-  with write off. Write is turned on by one act only: `mission authorize`, a guarded human
-  decision (ADR-9, ADR-34). Neither an adapter, a config default, an env var nor an agent can turn
-  it on. The store refuses any attempt that has write but no matching authorize decision, and
-  `unauthorizedWriteAttempts()` is the R7 invariant written as a query.
-- **Sandboxed authors.** `forge run` builds a detached workspace for the author: a sibling bare
-  repo with alternates and a tree materialised by `read-tree` and `checkout-index`. There is no
-  git worktree and no host hook (ADR-8). The mock author then runs inside the bubblewrap `author`
-  profile: write on the tree, network `none`, exec off, environment cleared, `<out>` and `$HOME`
-  never mounted. It reaches the MCP server only through one socket per attempt, checked by a
-  per-attempt token (R11.2). Capture turns the change into a candidate with a redacted diff. The
-  author's own narrative is labelled "author-claimed, unverified" and never feeds the verdict
+- **Implement missions.** An implement mission comes from an approved work item, or from a
+  recorded human `adhoc-mission` decision (R10.1). It starts as a `draft` with write off. Only
+  the guarded human act `mission authorize` turns write on (ADR-9, ADR-34). The store refuses any
+  write attempt that lacks a matching authorize decision.
+- **Sandboxed authors.** `forge run` gives the author a detached workspace, with no git worktree
+  and no host hook (ADR-8). The author runs in the bubblewrap `author` profile: write on the tree,
+  network `none`, exec off, environment cleared, and `<out>` and `$HOME` never mounted. It reaches
+  MCP through one token-checked socket per attempt (R11.2). The result is a candidate with a
+  redacted diff. The author's narrative is labelled unverified and never feeds the verdict
   (ADR-19).
-- **Gates and holdouts.** Gates and holdouts each have a role (ADR-18). Both must be `falsified`
-  at the base before a human can lock them. A vacuous gate is refused at lock unless it is named
-  and accepted. The lock digest is recomputed inside the lock transaction, and the lock is refused
-  if the set moved after the human confirmed it (TRACKED, landed in WS8 93337e6). The verdict is a
-  pure function of the gate rows, the diff digest and policy. It ignores exit code, attempt state,
-  narrative and claims (ADR-19; invariant `verdict-is-pure`). Holdout content never reaches the
-  author, `mission inspect`, `events`, `artifact` or the renderer process (WS8 H1 fix, verified in
-  ws9-review D1).
-- **Approve and apply.** Approve is allowed only for an `accepted-by-gates` candidate, with the
-  verdict recomputed at decision time. Override needs a rationale. Every policy violation is
-  uncurable (R15.4). Apply works by git plumbing: the commit is built and re-diffed in a scratch
-  bare repo, and only then rebuilt in the real object store, so a failed apply leaves zero objects
-  behind (WS4 L-1 fix). It writes a new create-only ref, `refs/heads/daylight/<missionId>`. HEAD,
-  the index and the working tree are never touched (ADR-17). Ten planted hooks, gpg and fsmonitor
-  never ran in review. `closeMission(succeeded)` on an implement mission is refused until an
-  application exists (ADR-23).
-- **Ledger.** Usage is recorded per turn in `attempt_usage`, deduplicated on `(attempt_id,
-  request_id)`. `cost_source` has three values: `provider`, `stdout-scan` and `none`. Only
-  `provider` counts as known (R10.2). `daylight report --project` groups by runner, model, origin,
-  mission, work item or actor. Unknown values print as `unknown` or as a `≥` floor, never as
-  `$0.00`. Commit trailers carry ids only, never dollars or tokens (ADR-29, R4 Q3a). The invariant
-  `money-code-has-no-price-table` blocks any price table.
-- **Ingester.** `daylight ingest claude-code` imports Claude Code sessions as `work` missions. It
-  stores only vetted facts: digests, counts and vetted paths, never transcript text (ADR-15). An
-  ingested attempt has `origin: 'ingested'` and `sandbox: null`, its cost is always unknown, and
-  every ledger and UI view labels it "outside Daylight's controls" (R12.1).
-- **Work items.** `spec register` and `spec decompose` run blind mock decomposers over the MCP
-  tool `propose_work_item`. Proposals are untrusted data: they are redacted on both sides of the
-  outbox and consumed exactly once, and no gate is created automatically (invariant
-  `spec-intake-never-authors-gates`). An approved work item is the normal source of an implement
-  mission.
-- **UI.** Mission Control gains Forge screens: work items, implement detail, gate set, candidate
-  review, ledger and ingest sources. It also gains a derived `needs` strip, which is never stored
-  (ADR-13). The renderer gets types only, with no engine runtime. Every decision goes through the
-  main process, which supplies the OS user as actor, previews the confirm digest, shows a native
-  dialog, then acts. The renderer cannot name an actor, confirm code, path or ref (R14 S-8).
+- **Gates and holdouts.** Both must be `falsified` at the base before a human locks them, and a
+  vacuous gate is refused unless explicitly accepted (ADR-18). The lock refuses a gate set that
+  moved after confirmation. The verdict is a pure function of the gate rows, the diff digest and
+  policy (`verdict-is-pure`). Holdout content never reaches the author or the renderer process.
+- **Approve and apply.** Only an `accepted-by-gates` candidate can be approved, with the verdict
+  recomputed at decision time. Every policy violation is uncurable (R15.4). Apply builds and
+  verifies the commit in a scratch repo by plumbing, then writes a create-only ref
+  `refs/heads/daylight/<missionId>`. HEAD, the index and the working tree are never touched, and
+  no hook runs (ADR-17). An implement mission cannot close as succeeded without an application
+  (ADR-23).
+- **Ledger.** Usage is recorded per turn and deduplicated. `cost_source` is `provider`,
+  `stdout-scan` or `none`, and only `provider` counts as known (R10.2). `report --project` never
+  prints unknown as `$0.00`. Trailers carry ids only (ADR-29). No price table is allowed
+  (invariant).
+- **Ingester.** Claude Code sessions become `work` missions that store digests, counts and vetted
+  paths, never text (ADR-15). Ingested attempts are labelled "outside Daylight's controls"
+  (R12.1).
+- **Work items.** Blind mock decomposers propose work items through MCP. The proposals are
+  redacted, consumed once and never turned into gates automatically.
+- **UI.** The Forge screens are work items, implement detail, gate set, candidate review, ledger
+  and ingest. They also carry a derived `needs` strip (ADR-13). Every decision goes through main:
+  OS-user actor, confirm preview, native dialog (R14 S-8).
 
 Two cross-cutting changes underpin all of this:
 
@@ -104,7 +87,8 @@ Two cross-cutting changes underpin all of this:
   authorize and at attempt start (R15.5). The owner then chose (a): exec is permitted only when
   the mission's `authorize` decision grants it, and it is stamped on the attempt. The nested
   sandbox is always `--unshare-net`, and gate tests are never mounted. The flip commit that lifts
-  R15.5's refusal is landing. Nothing in §3 measures it.
+  R15.5's refusal is landing. Nothing in §3 or §4 measures it; acceptance confirmed the
+  pre-flip refusal.
 - **No gate dependencies.** Gates must be zero-dependency or vendored. Install snapshots are P2
   (R4 Q1a, ADR-28).
 - The rest of the deferred list is in §10.
@@ -114,10 +98,9 @@ Two cross-cutting changes underpin all of this:
 ## 2. Changed files, by workstream
 
 Source: `git log --first-parent -m --shortstat 13a5775..15efdfc`. Each row is the merge commit's
-change against the previous `daylight` tip. Every workstream merge commit has exactly the tree of
-the branch head it merged; this was checked with `git log --format=%T` on each pair. So the totals
-measured at those heads (§3) are totals for the merged tree. The one exception is 4bfdbe5, the
-plan document, whose branch was cut from an older tip.
+change against the previous `daylight` tip. Every workstream merge has exactly its merged head's
+tree (checked with `git log --format=%T`), so the counts measured at those heads (§3) hold for
+the merge. The exception is 4bfdbe5, the plan, whose branch started from an older tip.
 
 | Order | Merge | Workstream | Files | Insertions | Deletions | Main new or changed surface |
 |---|---|---|---|---|---|---|
@@ -182,16 +165,13 @@ At the WS9 merge, the ws9-review delta section reports:
 
 The invariant count in `check` grew from 6 green at P0 to 17 at WS8, one or two per workstream.
 
-Flakes and environment notes:
+Flakes:
 
-- WS-R's writer saw one `experiment.ts` failure, which passed on rerun.
-- WS5's reviewer saw one `forge-gate.ts` failure. WS8 traced it to two locks in one millisecond
-  being ordered by random id, and fixed it (cea8692).
-- WS8 gave `experiment.ts` a private TMPDIR (d75c73d) and ran `test:all` three times with no
-  flake.
-- Several reviewers' first runs failed in `forge-sandbox.ts` with `listen EINVAL … mcp.sock`. A
-  scratchpad-depth TMPDIR exceeds the 108-byte Unix socket path limit. Each rerun under a short
-  TMPDIR passed. This is environment, not code, but it means `test:all` needs a short TMPDIR.
+- The one `forge-gate.ts` flake was traced to same-millisecond lock ordering and fixed
+  (cea8692).
+- WS8 and acceptance each ran `test:all` three times with no flake.
+- `test:all` needs a short TMPDIR: a deep one exceeds the 108-byte Unix socket path in
+  `forge-sandbox.ts`.
 
 ### 3.2 Review loop
 
@@ -221,8 +201,9 @@ counted the tests that went red.
 Totals across the P1 workstreams, excluding WS0 whose audit findings came from the P0 reviews:
 **6 High, 23 Medium, 73 Low** found. Every High was fixed and re-verified before its merge.
 
-BUILD-LEDGER.md says "every High/Medium finding was fixed and re-verified before merge". That is
-true for every High. Four Mediums instead closed in a later workstream, by design:
+BUILD-LEDGER.md first said "every High/Medium finding was fixed and re-verified before merge".
+It has since been corrected (§11). The claim is true for every High. Four Mediums instead closed
+in a later workstream, by design:
 
 - WS2 F2 closed in the redaction workstream.
 - Redaction M2 closed in WS8 and WS9.
@@ -235,42 +216,77 @@ One Medium, WS0 R1, was accepted under R2 and never fixed.
 
 ## 4. P1 acceptance checklist
 
-**Pending: acceptance run in progress.** `ACCEPTANCE-P1.md` does not exist yet. The rows below
-are the FORGE_PLAN §9 criteria (mocks only, on the planted fixture `fixtures/daylight-demo`). The
-Result and Evidence columns are left for the acceptance run. Nothing here is claimed as passed.
+Source: `ACCEPTANCE-P1.md` (engine and CLI phase, 2026-10-16 22:28–23:00), with logs in `acc/`.
+How it was run:
 
-| # | Criterion (FORGE_PLAN §9) | Result | Evidence |
+- private TMPDIR and XDG data home;
+- mocks only, with stub `claude`, `codex`, `grok` and `opencode` first on PATH, each logging every
+  spawn and exiting 99;
+- no `--probe`, no GUI, no live run;
+- `CLAUDECODE` and `DAYLIGHT_SESSION` unset so human decisions could be taken (the `CLAUDECODE=1`
+  refusal was exercised separately), so every decision is recorded as the OS user.
+
+HEAD moved during the run. Steps 1–3b ran on 594f163 (WS8). Steps 4 (security) and 5 (timings)
+ran on 15efdfc (WS9). The acceptance file reports that `engine/` is byte-identical between the
+two, so the engine and CLI results hold for both.
+
+**Tally, as the acceptance file states it: 32 items. 29 PASS, 2 PARTIAL (criteria 5 and 7),
+1 PASS by inspection (R15.3), 0 FAIL.** The UI halves of criteria 2 and 6 are deferred to the
+unlocked-desktop phase, not failed.
+
+| # | Criterion (FORGE_PLAN §9) | Status | Note from the acceptance file |
 |---|---|---|---|
-| 1 | Spec intake: `spec register`, two blind mock decomposers, one `spec-ambiguity` need, approve one work item, neither proposal visible to the other | pending | pending |
-| 2 | Authorize: implement mission `draft`, `write:false`; `authorize`; `mission.authorized`; `write:true` on mission, attempt row and UI | pending | pending |
-| 3 | Gates: a gate and a holdout baseline `falsified`; a vacuous third gate refused at lock; lock with rationale and digest | pending | pending |
-| 4 | Run: mock author in bwrap; workspace created and removed; checkout untouched; candidate summary, redacted diff, narrative labelled unverified | pending | pending |
-| 5 | Verdicts: `accepted-by-gates`; `no-diff` for "all tests pass"; policy violation for `.daylight-gates/**`; `secret-in-diff` for `/proc/self/environ` | pending | pending |
-| 6 | Approve and apply: only the accepted candidate (CLI and GUI); override needs a rationale; ref with ADR-29 trailers, no dollars or tokens; HEAD and tree unchanged; `closeMission(succeeded)` refused before apply, allowed after | pending | pending |
-| 7 | Report: `report --project --group model` prints `≥ $X (N unknown)`, token columns with unknown counts, case-study line | pending | pending |
-| 8 | Ingest: a synthetic transcript becomes a `work` mission, turns deduplicated, child attempts, `costUsd` unknown, no transcript text in any artifact | pending | pending |
-| 9 | Export: export, then import into a fresh dir, replays byte-equal; a v1 export and a v1 `daylight.db` are refused with the one-line message | pending | pending |
-| R-a | `pnpm typecheck` clean, `pnpm test:all` green | pending | pending |
-| R-b | Test count at or above the WS-R baseline (1,407) | pending | pending |
-| R-c | R1 preserved-guarantee tests intact | pending | pending |
-| R-d | R7 write/authorize invariant holds; no "author cannot write" invariant exists | pending | pending |
-| R-e | WS-R identifier invariant and prompt/allowlist consistency test pass | pending | pending |
+| 1 | Spec intake: two blind decomposers, one `spec-ambiguity`, approve one, neither proposal visible to the other | PASS | Ambiguity needs two different mock scripts; one script for both decomposers yields identical proposals and no ambiguity |
+| 2 | Authorize: draft write:false → `mission.authorized`, write:true on mission, attempt row and UI | PASS (CLI); UI deferred | DB `sandbox_write=1` with `authorize_decision_id` |
+| 3 | Gates: gate + holdout falsified at base; vacuous third refused at lock; lock with rationale and digest | PASS | Lock digest equals preview digest; locked with `--only` |
+| 4 | Run: mock author in bwrap, workspace created and removed, checkout untouched, redacted diff, narrative unverified | PASS | Author env was PATH, HOME, PWD only; no workspace or socket dir left behind |
+| 5 | Verdicts: accepted; no-diff; policy violation for `.daylight-gates/**`; `secret-in-diff` via `/proc/self/environ` | PARTIAL | The first three hold. The environ variant cannot yield `secret-in-diff`, because the sandbox env is scrubbed (a good property). It was proven instead with a literal `sk-ant-…` token, which is uncurable. The criterion should be reworded |
+| 6 | Approve only the accepted candidate (CLI, GUI); override needs rationale; ref with trailers, no dollars or tokens; HEAD and tree unchanged; close refused before apply, allowed after | PASS (CLI); GUI deferred | Trailers observed: `Daylight-Mission`, `Daylight-Attempt` and the mock's `Co-Authored-By`; 0 cost or token matches. This is the id-only set, not ADR-29's full list (§7) |
+| 7 | Report: `≥ $X (N unknown)`, token unknown counts, case-study line | PARTIAL | `unknown` columns and counts shown. The `≥` floor and the case-study line cannot be observed with all-unknown mocks; `ledger.ts` in `test:all` is their proof |
+| 8 | Ingest: synthetic transcript → `work` mission, deduplicated turns, child attempts, cost unknown, no transcript text stored | PASS | 1 of 3 sessions ingested (1 foreign, 1 unresolvable, by design); sentinel text 0 hits in `<out>` and the DB |
+| 9 | Export → import replays byte-equal; v1 export and v1 db refused in one line | PASS | `mission replay --format json` byte-equal (48,736 B) across dirs and runs |
 
-Known gaps the acceptance run should check rather than assume:
+Repository-wide checks, all PASS:
 
-- **Criterion 6.** Apply's trailers are fewer than ADR-29 lists. The code writes
-  `Daylight-Mission`, `Daylight-Attempt` and one `Co-Authored-By` (`engine/mission/ledger.ts`
-  `trailersFor`; ws4-review §2). There is no `Daylight-Project`, `-Base`, `-Work-Item`,
-  `-Candidate`, `-Gates` or `-Decision`. The "no dollars or tokens" half holds; the full ADR-29
-  message does not.
-- **Criterion 6, ref name.** The ref is `refs/heads/daylight/<missionId>`, not ADR-17's
-  `<m8>/<c8>` (WS4 L-6, unruled).
-- **The WS8 e2e.** `engine/test/forge-e2e.ts` already walks most of criteria 1–9 with mocks
-  (ws8-report "e2e"). Acceptance is a separate run and has not been recorded here.
+- typecheck clean;
+- `test:all` green, 2,898 at 594f163, at or above the WS-R baseline of 1,407;
+- R1 preserved guarantees (P0 checklist 12/12);
+- the R7 invariant: 4 write attempts, each with an authorize decision, 0 exec;
+- the WS-R identifier invariant and the MCP-names consistency test.
+
+The remaining rows are hard constraints and testable rulings, all PASS except R15.3, which passed
+by inspection: `detectSandbox` does not consult PATH, so bwrap could not be hidden.
+
+Security spot checks (acceptance §4):
+
+- 0 stub spawns across every Forge path, apart from one deliberate `--unsandboxed-review` spawn.
+- The planted key had 0 raw hits in `<out>`, the DB, events, inspect, candidate, report, replay
+  and exports.
+- The holdout body appears only in the artifact store and in export files, which a byte-equal
+  replay needs.
+
+Findings from acceptance F1–F3 are in §9. The doc deviations are in §5.
 
 ---
 
 ## 5. Demo launch instructions
+
+**Acceptance found six deviations between DEMO.md and the code** (ACCEPTANCE-P1 §2). They are not
+yet fixed in DEMO.md:
+
+- **D1.** `daylight` is not on PATH: `bin` is declared but not linked. Use `pnpm daylight` or
+  `node engine/cli.ts`.
+- **D2.** `--out /tmp/forge-out` is refused when `<out>` lies inside the temp dir and
+  `XDG_RUNTIME_DIR` is unset or not private (ssh, CI, `env -i`). The message gives no remedy, and
+  `spec decompose` exits 0 with the mission `blocked`.
+- **D3.** "Run once without `--confirm`" previews for authorize, gate lock and the forge decisions,
+  but `work-item approve` and `reject` refuse instead. Use `daylight confirm` there.
+- **D5.** A vacuous gate needs `--only <ids>` or `--accept-vacuous <id>` at lock. DEMO.md names
+  neither.
+- **D6.** The Forge section has no export, import or replay commands, and P0's `demo replay
+  --recording` refuses a Forge recording. The working path is `mission export`, then `map` the
+  same repo into the fresh dir, then `mission import`, then `mission replay`.
+- **D8.** "~1,440 assertions" is stale: 2,898 were measured at 594f163.
 
 The operator guide is `docs/daylight/DEMO.md`. Its Forge section is the P1 mock walkthrough, and
 WS8's reviewer exercised it command by command (ws8-review §8).
@@ -349,12 +365,11 @@ exist. The P0 statement in DEMO.md ("There is no recorded two-reviewer run yet")
   checks. Credentials appear as `{present, envName, label}` only.
 - **Mock adapters.** The author, reviewer and decomposer are scripts named by
   `DAYLIGHT_MOCK_ADAPTER`. Each is labelled `mock` in its artifacts, and an applied commit
-  credits `Daylight mock adapter (test double) <mock@daylight.invalid>`. A mock that wants a
-  known cost declares the claude stream shape, so its $0.05 flows through `normalize` as
-  `provider` (R10.3). That figure is a test constant, not a price.
-- **Stub provider binaries.** The e2e and reviewer probes put stand-in `claude`, `codex`, `grok`
-  and `opencode` first on PATH. Each one writes a marker and exits 99. They exist to prove the
-  real binaries are refused; the e2e asserts that the marker never appears.
+  credits `Daylight mock adapter (test double) <mock@daylight.invalid>`. A mock's $0.05 cost
+  is a test constant, not a price (R10.3).
+- **Stub provider binaries.** The stand-in `claude`, `codex`, `grok` and `opencode` used by the
+  e2e, probes and acceptance write a marker and exit 99. They prove that the real binaries are
+  refused.
 
 ---
 
@@ -394,41 +409,67 @@ exist. The P0 statement in DEMO.md ("There is no recorded two-reviewer run yet")
   - The lows-sweep writer's first `pnpm exec electron` in a fresh clone ran Electron's lazy
     installer. That downloaded the pinned v43.4.0 binary and checked it against the package's
     checksums. The download was not intended, and the writer flagged it (lows-report §3).
-- **Process slip.** The WS-R writer once ran `pnpm daylight adapters --help`. At that time
-  `adapters` ignored `--help` and probed `claude --help`, `grok models` and `opencode models`.
-  These were list and help invocations, not agent runs, but they executed real binaries against
-  the rules. The lows sweep fixed the cause (411f44a: `--help` honoured, probing needs `--probe`).
+- **Process slip.** The WS-R writer ran `adapters --help`, which then ignored `--help` and probed
+  the real `claude`, `grok` and `opencode` binaries with list and help calls, against the rules.
+  The lows sweep fixed `adapters` (411f44a). Acceptance F1 shows the same bug in other P0
+  subcommands (§9).
 
 ---
 
 ## 8. Baseline vs measured timings
 
-**Pending: acceptance run in progress.** No P1 timing has been measured. `engine/bench/daylight.ts`
-was not re-run during the build: the WS-R writer left it alone deliberately, because a re-run
-would overwrite MEASURED.md's banner. P1 numbers go here from `ACCEPTANCE-P1.md`.
+Source: `ACCEPTANCE-P1.md` §5 (`acc/step5.out`), run on 15efdfc. It ran the same operations as
+`engine/bench/daylight.ts` but not the bench itself, which writes `docs/`. Machine: Ryzen 9
+7845HX, Node 24.18.0, kernel 7.2.9, bubblewrap 0.13.0. P0 figures are from MEASURED.md
+(2026-10-12). The figures below are as the acceptance file states them.
 
-For comparison, these are the frozen P0 figures on the same machine (AMD Ryzen 9 7845HX,
-integrated Radeon 610M, Node 24.18.0, Electron 43.4.0, bubblewrap 0.13.0):
+| Operation | P0 (MEASURED.md) | P1 (acceptance) |
+|---|---|---|
+| this repo, cold `map` | 0.75 s / 267 MB (152 files) | 1.26 s / 387 MB (207 files) |
+| this repo, warm `map` | 0.39 s | 0.69 s / 304 MB |
+| this repo, `derive` | 0.29 s | 0.47 s / 222 MB |
+| fixture (6 files), cold / warm `map`, `derive` | 0.26 / 0.25 / 0.24 s, 155 MB | 0.37 / 0.37 / 0.37 s, 176–181 MB |
+| `demo prepare` | 0.53 s / 160 MB | 0.74 s / 179 MB |
+| `mission run`, two mock reviewers + compare, `--no-review-sandbox` (P0 method) | 0.35 s / 159 MB | 0.48 s / 179 MB |
+| `mission run`, two MCP mock reviewers under the `review` profile (P1 default) | — | 0.53 s / 186 MB |
+| `experiment run` (bwrap, 2 runs) | 0.44 s / 160 MB | 0.58 s / 178 MB |
+| `forge run` (mock author, author profile, gate + holdout) | — | 0.88 s |
+| `engine/test/forge-e2e.ts` alone | — | 38.1 s / 128 MB, 95 passed |
+| `pnpm test:all` | 1,197 assertions | 2,898 assertions; 138.0 / 138.3 / 139.0 s over three runs, 0 flakes |
+| `pnpm typecheck` | — | 3.8 s |
 
-| Measure | BASELINE.md (pre-P0, 02c7a5c) | MEASURED.md (P0, f089b8a589cc) | P1 |
-|---|---|---|---|
-| Cold `map`, this repo | 0.64 s (112 files) | 0.75 s (152 files) | pending |
-| Warm `map`, this repo | 0.36 s | 0.39 s | pending |
-| `derive`, this repo | 0.25 s | 0.29 s | pending |
-| Peak RSS, cold map | not measured | 267 MB | pending |
-| `demo prepare` | — | 0.53 s, 160 MB | pending |
-| `mission run`, two mock reviewers + compare | — | 0.35 s, 159 MB | pending |
-| `experiment run`, bwrap, 2 runs | — | 0.44 s, 160 MB | pending |
-| Renderer, this repo graph, p95 | 8.4 ms (uncapped session) | 4.3 / 4.3 / 8.3 ms (3 runs) | pending |
-| Renderer, 10k map tree, fps / p95 | 86.5 fps / 12.6 ms | 92.2 fps / 12.6 ms | pending |
-| `forge run`, mock author (new in P1) | — | — | pending |
+The acceptance file does not explain the slower `map`. The repo grew from 152 to 207 files, and
+this is a single sample, so the regression stays unexplained until re-measured. Renderer frame rows were not measured, since that is the UI phase. The P0 renderer
+figures (MEASURED.md) remain the latest.
 
-The 10k map is a private employer repository used only as a local load fixture. The bench takes
-its path from `DAYLIGHT_BENCH_10K`, and nobody in the build read that directory (R8.4).
+Nobody in the build read the private 10k map directory (R8.4).
 
 ---
 
 ## 9. Unresolved risks
+
+- **Found by acceptance, High (F1): P0 subcommands ignore `--help`. Fix landing in the final
+  commit.** `agent --help` and `run --help` ran the real command and spawned the `claude` stub 3
+  times with the full review prompt; real binaries would have spent money. `export --help` ran the
+  real export and overwrote the tracked `.codemap/knowledge.json` (2,240 lines down to 89 B) and
+  `.codemap/ARCHITECTURE.md`. `extract`, `invariants`, `focus`, `map`, `import`, `adopt`, `check`,
+  `plan`, `derive`, `query` and `quality` likewise do their real work on `--help`. Only `adapters`
+  (lows sweep) and the mission and Forge subcommands print usage. Until the fix lands, nobody with
+  real provider binaries on PATH should run a P0 subcommand with `--help`. The acceptance run left
+  the checkout dirty in `.codemap/`, to be restored with `git checkout -- .codemap/`.
+- **Found by acceptance, Medium (F2).** DEMO.md's out path fails on non-desktop sessions, and
+  `spec decompose` exits 0 on a blocked mission (§5, D2).
+- **Found by acceptance, Low (F3): holdout test path leaks in two operator views.** `mission
+  replay --format json` shows it 8 times and `gate list` once, while inspect, events and candidate
+  withhold it. These are CLI-only views that the shell does not call. Export files carry holdout
+  bodies by design, for byte-equal replay, so a recording discloses its holdouts. This should be
+  documented.
+- **Found by acceptance, Low (F4, F5).** `work-item approve` and `reject` refuse instead of
+  previewing without `--confirm`. Each `test:all` leaves about 10 non-empty temp dirs (about
+  20 MB) behind; TRACKED describes them as empty, and they are not.
+- **Found by acceptance, Info (F9): two post-review commits.** The WS2 (65a472e) and WS5
+  (f7ed74d) merges each include one commit after the head their reviewer verified. Both merges
+  are clean, so this is a gap in review coverage, not in merge integrity.
 
 - **Sec H5, reviewer reach. Open.** The P0 path runs reviewers unsandboxed with `cwd` at the
   repository root, where they can read `<out>` (the ledger and claims db). P1's state:
@@ -457,31 +498,19 @@ its path from `DAYLIGHT_BENCH_10K`, and nobody in the build read that directory 
   - The low tier (generic `password:`, `*KEY*=`) masks logs but stores a diff as written. It is
     then a curable `possible-secret` warning that a human must acknowledge (R16). On the 78-case
     benign corpus it raises 12 low-tier false positives and 0 high-tier ones.
-- **Residuals in TRACKED.md** that are not closed by a later merge, as far as this writer could
-  check against the reviews:
-  - ws0-review R1, legacy event-id dedupe: pre-existing `<out>` dirs double-ingest nested-payload
-    events once (accepted under R2).
-  - A dead runner's scratch dir with no `work` at all still concludes its pending row `invalid`.
-    This is a same-uid, ledger-only effect, left for the owner (lows-report §5).
-  - Sec L2 (redact experiment streams) and Ledger L6. TRACKED says L6 was not done in WS0;
-    WS1's `INSERT OR IGNORE` on supplied event ids may address it (ws1-report), but no review
-    says it is closed.
-  - Lows-review L1: a test file killed by a signal leaks its `daylight-xdg-*` dir. L2: the
-    launcher's sign-in hint.
-  - ws1-review L10: an honest export of a mission whose write was later revoked is refused on
-    import.
-  - WS2's literal-fan-in invariant misses `--bind` in a bare array literal (backstopped by mount
-    assertions).
-  - WS8 L5: author writes into `/work/.git/` vanish from the diff without a flag (WS2's capture;
-    nothing reaches the repository).
-  - WS5 F4 (no count of malformed usage lines) and F5 (id-less turns).
-  - Redaction L2–L5, L7 (low-tier false positives on call expressions) and L8 (a second,
-    diverging key-prefix list in `capture.ts`).
-  - WS9 L2: the P0 strip's literal `$0.00 today`, against the rule that unknown never renders as
-    zero.
-  - The GUI has no `--raise-budget` control.
-  - WS1's `commitExists` helper was not moved into `project.ts`. WS6's own call is already
-    hardened.
+- **Open TRACKED.md residuals** (as far as this writer could check against the reviews):
+  - ws0 R1 legacy event-id dedupe (accepted under R2);
+  - the no-`work` scratch-dir row conclusion (owner's call, lows-report §5);
+  - Sec L2 and Ledger L6 (no review closes them);
+  - lows L1 (signal-killed tests leak a dir) and L2 (sign-in hint);
+  - ws1 L10 (revoked-write export refused);
+  - WS2's array-literal `--bind` gap;
+  - WS8 L5 (`/work/.git` writes unflagged);
+  - WS5 F4 and F5;
+  - redaction L2–L5, L7 and L8;
+  - WS9 L2 (literal `$0.00 today`);
+  - no GUI `--raise-budget`;
+  - `commitExists` not moved into `project.ts`.
 - **Same-uid races accepted:**
   - path-based `lstat`/`unlink` in the capture spill sweep (lows-review F5);
   - the check-then-open window on parent components without `openat2(RESOLVE_BENEATH)` (ws0-review
@@ -601,15 +630,22 @@ Subtotals through the WS9 merge, re-summed from the table by this writer and mat
 - Fable 5.1 reviewers and reconciler: **15 agents, 3,787,775 tokens**
 - **Total: 9,895,034 tokens**
 
-The table's Outcome column is the ledger's own shorthand. "→ fixed" means every High and Medium
-was dealt with before merge. §3.2 gives the itemised record, including the Lows left open and the
-four Mediums that closed in a later workstream.
+The table's Outcome column is the ledger's own shorthand. The ledger's corrected statement, quoted
+exactly:
+
+> Every merged branch was written by an Opus agent and independently reviewed by a Fable agent.
+> Every High finding was fixed and re-verified before its branch merged. Mediums were fixed before
+> merge OR explicitly tracked and closed by a later workstream (four cases: e.g. ws9-review M1 closed
+> by WS8, ws2-review F2 closed by the redaction workstream), with one exception never fixed: ws0-review
+> R1 (legacy nested-payload event ids double-ingest once), accepted under RULINGS R2 because v1 data
+> is disposable.
+
+§3.2 gives the itemised record. Acceptance also found that the WS2 and WS5 merges each carry one
+commit after the head their reviewer verified (§9, F9).
 
 **Writer and reviewer separation.** Every merged branch was written by an Opus agent in its own
 worktree. A different agent, on Fable, reviewed it with the code, PLAN and RULINGS, and treated
-the writer's report as hypotheses (R6). Reviewers worked read-only: they ran mutations in scratch
-copies or `--shared` clones, never in the worktree, and their reviews record that the worktree
-was left clean. The roles split by model: 19 Opus agents produced code, plans and inventories,
+the writer's report as hypotheses (R6). Reviewers worked read-only and mutated only scratch copies. The roles split by model: 19 Opus agents produced code, plans and inventories,
 and 15 Fable agents reviewed and reconciled. R6 provides a third Fable as tie-breaker for
 writer/reviewer disagreements. No tie-break agent appears in the ledger.
 
