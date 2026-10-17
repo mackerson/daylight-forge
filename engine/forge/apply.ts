@@ -20,14 +20,15 @@ import { candidateVerdict } from './verdict.ts';
  * (resolution 10). No worktree, no checkout, no hook: HEAD, the index and the working tree
  * of the real checkout are never touched, and the human merges the branch themselves.
  *
- * The untrusted diff is parsed only inside a scratch bare repository with an empty config,
- * whose object store borrows the real one through alternates. The real repository receives
- * exactly the result: each changed blob (`hash-object -w --no-filters`), a tree built on a
- * private index (`read-tree`, `update-index --index-info`, `write-tree`), a commit
- * (`commit-tree --no-gpg-sign`) and one new ref (`update-ref <ref> <commit> ""`, which refuses
- * an existing ref). Then the commit is re-diffed against the base with the capture flags and
- * must hash to the candidate's diff digest; on a mismatch the ref is deleted and nothing is
- * recorded as applied.
+ * The untrusted diff is parsed only inside a scratch bare repository with an empty config and
+ * its own object store (reading the real one through alternates). The tree and the commit are
+ * built there first and re-diffed against the base with capture's flags; only a commit that
+ * hashes to the candidate's diff digest is rebuilt in the real repository, deterministically,
+ * from exactly its blobs (`hash-object -w --no-filters`), a tree on a private index
+ * (`read-tree`, `update-index --index-info`, `write-tree`) and `commit-tree --no-gpg-sign`,
+ * each checked to be the object the scratch verified. Then one new ref
+ * (`update-ref <ref> <commit> ""`, which refuses an existing ref), and a second re-diff of the
+ * commit it names: on a mismatch the ref is deleted and nothing is recorded as applied.
  */
 
 export class ApplyFailed extends Error {
@@ -46,6 +47,8 @@ const REAL_REPO_CONFIG = [
 
 const ZERO = '0'.repeat(40);
 const MAX_BUFFER = 64 * 1024 * 1024;
+/** Largest file apply commits; capture refuses far smaller trees, so this only stops a hand-planted row. */
+const MAX_BLOB = 32 * 1024 * 1024;
 
 export const refFor = applyRefFor;
 
@@ -235,6 +238,26 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
     }
     const scratchTree = text(gitIn({ gitDir: s.gitDir }, ['write-tree'], onScratch));
     const entries = parseRaw(gitIn({ gitDir: s.gitDir }, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-abbrev', c.baseCommit, scratchTree]).toString('utf8'));
+    for (const e of entries) {
+      if (e.status === 'D') continue;
+      if (e.newMode !== '100644' && e.newMode !== '100755') refuse(`${e.path} would be mode ${e.newMode}; only files are applied`);
+      const size = Number(text(gitIn({ gitDir: s.gitDir }, ['cat-file', '-s', e.newSha])));
+      if (!(size <= MAX_BLOB)) refuse(`${e.path} would be ${size} bytes; apply takes files up to ${MAX_BLOB}`);
+    }
+    const commitEnv = {
+      GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_AUTHOR_DATE: when,
+      GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email, GIT_COMMITTER_DATE: when,
+    };
+    const commitArgs = (tree: string) => ['commit-tree', '--no-gpg-sign', tree, '-p', c.baseCommit, '-F', '-'];
+
+    // The whole result is built and verified in the scratch's own object store first, so a
+    // diff that does not reproduce leaves not one object in the repository's.
+    const scratchCommit = text(gitIn({ gitDir: s.gitDir }, commitArgs(scratchTree), { input: message, env: commitEnv }));
+    const first = digestOf(rediff(s, c.baseCommit, scratchCommit));
+    if (first !== c.diffArtifact.digest) {
+      emit('forge.apply.failed', { candidateId: c.id, ref, expected: c.diffArtifact.digest, actual: first, refDeleted: false, stage: 'scratch' });
+      throw new ApplyFailed(`apply failed: the diff commits to something that diffs to ${first}, not the approved ${c.diffArtifact.digest}; nothing was written to ${repo}`);
+    }
 
     const info: string[] = [];
     for (const e of entries) {
@@ -242,7 +265,6 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
         info.push(`0 ${ZERO}\t${e.path}`);
         continue;
       }
-      if (e.newMode !== '100644' && e.newMode !== '100755') refuse(`${e.path} would be mode ${e.newMode}; only files are applied`);
       const blob = gitIn({ gitDir: s.gitDir }, ['cat-file', 'blob', e.newSha]);
       const sha = text(gitIn({ repo }, ['hash-object', '-w', '--no-filters', '--stdin'], { input: blob }));
       if (sha !== e.newSha) refuse(`${e.path} hashed to ${sha} in the repository, not ${e.newSha}`);
@@ -252,14 +274,8 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
     if (info.length) gitIn({ repo }, ['update-index', '-z', '--index-info'], { ...onReal, input: `${info.join('\0')}\0` });
     const tree = text(gitIn({ repo }, ['write-tree'], onReal));
     if (tree !== scratchTree) refuse(`the repository built tree ${tree}, not the ${scratchTree} the diff gives`);
-
-    const commit = text(gitIn({ repo }, ['commit-tree', '--no-gpg-sign', tree, '-p', c.baseCommit, '-F', '-'], {
-      input: message,
-      env: {
-        GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_AUTHOR_DATE: when,
-        GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email, GIT_COMMITTER_DATE: when,
-      },
-    }));
+    const commit = text(gitIn({ repo }, commitArgs(tree), { input: message, env: commitEnv }));
+    if (commit !== scratchCommit) refuse(`the repository built commit ${commit}, not the verified ${scratchCommit}`);
     try {
       gitIn({ repo }, ['update-ref', '-m', `daylight apply ${c.id}`, ref, commit, '']);
     } catch {
@@ -267,12 +283,12 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
     }
     created = commit;
 
-    const again = digestOf(rediff(s, c.baseCommit, commit));
-    if (again !== c.diffArtifact.digest) {
-      gitIn({ repo }, ['update-ref', '-d', ref, commit]);
+    // Second check, on the commit the ref now names.
+    const v = verifyIn(s, repo, { base: c.baseCommit, commit, ref, expected: c.diffArtifact.digest });
+    if ('actual' in v) {
       created = null;
-      emit('forge.apply.failed', { candidateId: c.id, commit, ref, expected: c.diffArtifact.digest, actual: again, refDeleted: true });
-      throw new ApplyFailed(`apply failed: commit ${commit} diffs to ${again}, not the approved ${c.diffArtifact.digest}; ${ref} was deleted`);
+      emit('forge.apply.failed', { candidateId: c.id, commit, ref, expected: c.diffArtifact.digest, actual: v.actual, refDeleted: v.refDeleted, stage: 'repository' });
+      throw new ApplyFailed(`apply failed: commit ${commit} diffs to ${v.actual}, not the approved ${c.diffArtifact.digest}; ${ref} was deleted`);
     }
 
     const application = ctx.store.recordApplication({
@@ -287,6 +303,30 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
   } finally {
     // Anything that threw after the ref was made (the store refusing, say) takes the ref with it.
     if (created) succeeds(() => gitIn({ repo }, ['update-ref', '-d', ref, created as string]));
+    s.dispose();
+  }
+}
+
+export interface VerifyTarget {
+  base: string;
+  commit: string;
+  /** Deleted, if it still names `commit`, when the digest does not match. */
+  ref: string;
+  expected: string;
+}
+
+function verifyIn(s: Scratch, repo: string, t: VerifyTarget): { ok: true } | { actual: string; refDeleted: boolean } {
+  const actual = digestOf(rediff(s, t.base, t.commit));
+  if (actual === t.expected) return { ok: true };
+  return { actual, refDeleted: succeeds(() => gitIn({ repo }, ['update-ref', '-d', t.ref, t.commit])) };
+}
+
+/** Re-diff `commit` against `base` with capture's flags; on a mismatch delete `ref`. */
+export function verifyApplied(repo: string, t: VerifyTarget): { ok: true } | { actual: string; refDeleted: boolean } {
+  const s = scratchFor(repo);
+  try {
+    return verifyIn(s, repo, t);
+  } finally {
     s.dispose();
   }
 }

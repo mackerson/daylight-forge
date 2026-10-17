@@ -26,7 +26,7 @@ import { candidateVerdict } from '../forge/verdict.ts';
 import {
   CandidateRefused, decideCandidate, type CandidateOperation, type DecideContext,
 } from '../forge/decide.ts';
-import { ApplyFailed, applicationRefusals, applyCandidate, refFor } from '../forge/apply.ts';
+import { ApplyFailed, applicationRefusals, applyCandidate, refFor, verifyApplied } from '../forge/apply.ts';
 import { coAuthorOf, commitMessage, subjectOf } from '../forge/trailers.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { captureCandidate } from '../forge/diff.ts';
@@ -103,6 +103,12 @@ const snapshot = () => ({
   readme: sha(path.join(repo, 'README.md')), add: sha(path.join(repo, 'src', 'add.js')),
 });
 const before = snapshot();
+/** Every loose object file and pack in the repository's store, sorted. */
+const looseObjects = () => {
+  const dir = path.join(repo, '.git', 'objects');
+  return fs.readdirSync(dir).filter((n) => /^[0-9a-f]{2}$/.test(n) || n === 'pack')
+    .flatMap((n) => fs.readdirSync(path.join(dir, n)).map((f) => `${n}/${f}`)).sort();
+};
 const refExists = (ref: string) => spawnSync('git', ['-C', repo, 'show-ref', '--verify', '--quiet', ref], { env: GIT_ENV }).status === 0;
 
 // ---- the store --------------------------------------------------------------------------
@@ -431,20 +437,41 @@ section('a tampered diff never becomes a commit on the base branch');
 {
   const f = newMission('applies but does not reproduce');
   // The bytes are what was approved and evaluated, but git accepts them without the `index`
-  // line, so the commit they make re-diffs to something else: the post-verify is the guard.
-  const c = evaluated(f, candidate(f, { diff: (b) => Buffer.from(b.toString('utf8').split('\n').filter((l) => !l.startsWith('index ')).join('\n')) }));
+  // line, so the commit they make re-diffs to something else. Content no other candidate has,
+  // so any object it left behind would be new.
+  const c = evaluated(f, candidate(f, {
+    edit: (t) => fs.writeFileSync(path.join(t, 'src', 'add.js'), 'module.exports = (m, n) => n + m; // unique\n'),
+    diff: (b) => Buffer.from(b.toString('utf8').split('\n').filter((l) => !l.startsWith('index ')).join('\n')),
+  }));
   check('the non-reproducing candidate was accepted by gates', c.verdict === 'accepted-by-gates', c.verdictReasons.join());
   decide(c, 'approve-candidate');
   const mainBefore = raw(['rev-parse', 'refs/heads/main']);
+  const objectsBefore = looseObjects();
   const err = throws(() => apply(c));
-  check('apply whose commit does not re-diff to the approved digest fails', err instanceof ApplyFailed && /was deleted/.test(err.message), err?.message);
-  check('the ref was deleted', !refExists(refFor(f.mission.id)));
+  check('apply whose commit does not re-diff to the approved digest fails', err instanceof ApplyFailed && /nothing was written/.test(err.message), err?.message);
+  check('no ref was ever made', !refExists(refFor(f.mission.id)) && !fs.existsSync(path.join(repo, '.git', 'logs', 'refs', 'heads', 'daylight', f.mission.id)));
+  check('not one object was added to the repository\'s store', JSON.stringify(looseObjects()) === JSON.stringify(objectsBefore),
+    `${objectsBefore.length} → ${looseObjects().length}`);
   check('application.failed is recorded with both digests', named('forge.apply.failed').some((e) => e.payload.candidateId === c.id
-    && e.payload.expected === c.diffArtifact.digest && e.payload.actual !== c.diffArtifact.digest && e.payload.refDeleted === true));
+    && e.payload.expected === c.diffArtifact.digest && e.payload.actual !== c.diffArtifact.digest && e.payload.refDeleted === false));
   check('no application row', d.store.application(c.id) === null);
   check('the base branch is untouched', raw(['rev-parse', 'refs/heads/main']) === mainBefore && mainBefore === before.main);
   check('the checkout is still byte-identical', JSON.stringify(snapshot()) === JSON.stringify(before));
   check('no hook ran', fs.readdirSync(markers).length === 0);
+}
+
+section('the post-verify on the real commit deletes its ref on a mismatch');
+{
+  // The scratch pre-verify catches every mismatch the test can construct, so the second check
+  // (after the ref exists) is exercised directly.
+  const commit = d.store.application(good.id)!.commit;
+  const ref = 'refs/heads/daylight/post-verify-probe';
+  raw(['update-ref', ref, commit]);
+  const ok = verifyApplied(repo, { base, commit, ref, expected: good.diffArtifact.digest });
+  check('a commit that re-diffs to the expected digest keeps its ref', 'ok' in ok && refExists(ref));
+  const bad = verifyApplied(repo, { base, commit, ref, expected: digestOf('some other diff') });
+  check('one that does not loses its ref', 'actual' in bad && bad.actual === good.diffArtifact.digest && bad.refDeleted && !refExists(ref));
+  check('and no hook ran', fs.readdirSync(markers).length === 0);
 }
 
 section('the applications invariant catches a row that does not match its commit');
