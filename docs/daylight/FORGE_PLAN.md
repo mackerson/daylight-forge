@@ -602,7 +602,8 @@ Items 1–4 are R9's open items, recorded so that no writer invents an answer.
    - keep `Claude Opus 5.5`, the honest record. The director recommends this.
    - rewrite the trailers to Fable 5.1, per the owner's global rule. This rewrites history.
 
-   The question is unanswered, so its status is **Open**. It is separate from the
+   **Decided: keep** by the owner on 2026-10-16 (R17.2): Opus-written commits keep their
+   Claude Opus 5.5 trailer; merges carry Fable 5.1. It is separate from the
    `Co-Authored-By` line that Daylight writes on applied candidates.
 4. **The live author run (Q5) and its credential (Q4a) (R9.4, ADR-30, ADR-31).** Neither is
    authorised, so the status is **Open**. The target repository, the credential's provisioning

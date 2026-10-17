@@ -28,7 +28,7 @@ nothing runs in the open.
 ```bash
 pnpm install
 pnpm ui:build
-pnpm typecheck && pnpm test:all        # ~3,090 assertions in 55 files; includes the acceptance checklist
+pnpm typecheck && pnpm test:all        # ~3,100 assertions in 55 files; includes the acceptance checklist
 ```
 
 ## The guided demo, in order
@@ -148,7 +148,8 @@ spend-capped credential (RULINGS R4 Q4/Q5, R9.4). Everything below runs with a m
 exercises. Author exec is decided (R9.2 → (a), R17.1, 2026-10-16): `mission authorize --write
 --execute` grants it, and the author then gets one extra MCP tool, `run`, whose argv runs in a
 nested sandbox over its workspace with no network, no MCP socket and no gate tests; output is
-kept as artifacts. Without `--execute` the default stays no exec and there is no `run` tool;
+kept as artifacts on the attempt, and each call is an `attempt.exec` event (argv digest,
+redacted command, exit code, duration) that `mission inspect` and an export carry. Without `--execute` the default stays no exec and there is no `run` tool;
 `--execute` without `--write` is refused.
 
 Needs `bwrap` and `prlimit`: the author, decomposer and gate sandboxes are not optional, and
@@ -185,7 +186,7 @@ daylight mission authorize m_I --write --rationale '…' --confirm <c> $O
 daylight gate add m_I --role gate    --test add.test.js  --expect-exit 0 --expect-stdout '# fail 0' $O
 daylight gate add m_I --role holdout --test hold.test.js --expect-exit 0 --expect-stdout '# fail 0' $O
 daylight gate baseline m_I <repo> $O                                # both must be falsified
-daylight gate lock m_I --rationale '…' --confirm <c> $O             # the full gate+holdout set
+daylight gate lock m_I --rationale '…' --confirm <c> $O             # the full set; <c> from the `gate set` digest
 # a gate that already passes on the base is vacuous and refuses the lock: fix the test, accept it
 # by name with --accept-vacuous x_…, or lock a subset with --only x_…,x_… (the preview's digest changes)
 DAYLIGHT_MOCK_ADAPTER=<author.cjs> daylight forge run m_I <repo> --tools mock $O
@@ -197,7 +198,7 @@ daylight report --project --group model $O                          # cost: unkn
 daylight mission export m_I --file implement.json $O
 F="--out $HOME/daylight-forge-fresh"
 daylight map <repo> $F && daylight mission import --file implement.json $F   # map first: it pins the project
-daylight mission replay m_I $F --format json                        # byte-equal to the same with $O
+daylight mission replay m_I $F --format json                        # equal to $O's except each event's sequence
 ```
 
 An export carries each holdout's test and runs, because a byte-equal replay needs them: treat
