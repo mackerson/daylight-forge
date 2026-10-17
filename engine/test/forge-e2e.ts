@@ -324,6 +324,14 @@ section('holdout content reaches no renderer-facing read: events, artifact, the 
   check('nor does events --mission', leaks(mine).length === 0, leaks(mine).join(' '));
   const inspected = run(['mission', 'inspect', implement.id, '--out', out, '--format', 'json']).out;
   check('nor does mission inspect', leaks(inspected).length === 0, leaks(inspected).join(' '));
+  // Acceptance F3: replay and gate list named the holdout's path.
+  for (const form of [['--format', 'json'], []]) {
+    const replayed = run(['mission', 'replay', implement.id, '--out', out, ...form]).out;
+    check(`nor does mission replay ${form.join(' ') || '(text)'}`, replayed.length > 100 && leaks(replayed).length === 0, leaks(replayed).join(' '));
+    const listed = run(['gate', 'list', implement.id, '--out', out, ...form]);
+    check(`nor does gate list ${form.join(' ') || '(text)'}, which still lists the holdout by id`,
+      listed.code === 0 && listed.out.includes(holdout.id) && leaks(listed.out).length === 0, leaks(listed.out).join(' ') + listed.err.slice(-200));
+  }
   for (const [what, digest] of [['test', holdout.test], ['expectation', holdout.expected], ['run record', holdout.runs[0]]] as const) {
     const r = run(['artifact', digest, '--out', out, '--format', 'json']);
     check(`artifact <the holdout's ${what} digest> is refused`, r.code === 1 && !r.out.includes(SENTINEL) && /holdout/.test(r.err), `${r.code} ${r.err.slice(-200)}`);
