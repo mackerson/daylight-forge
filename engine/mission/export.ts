@@ -499,15 +499,15 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     const candidate = db.prepare(
       `INSERT OR IGNORE INTO candidates
        (id, mission_id, attempt_id, project_id, base_commit, diff_artifact, summary_artifact,
-        narrative_artifact, files, policy_violations, secret_hits, gate_set_digest, profile,
+        narrative_artifact, files, policy_violations, secret_hits, possible_secret_hits, gate_set_digest, profile,
         attempt_state, attempt_failure, verdict, verdict_reasons, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const c of file.candidates) {
       const r = candidate.run(
         c.id, c.missionId, c.attemptId, c.projectId, c.baseCommit, JSON.stringify(c.diffArtifact),
         JSON.stringify(c.summaryArtifact), json(c.narrativeArtifact), JSON.stringify(c.files),
-        JSON.stringify(c.policyViolations), c.secretHits, c.gateSetDigest, JSON.stringify(c.profile),
+        JSON.stringify(c.policyViolations), c.secretHits, c.possibleSecretHits ?? 0, c.gateSetDigest, JSON.stringify(c.profile),
         c.attemptState, c.attemptFailure ?? null, c.verdict, JSON.stringify(c.verdictReasons), c.createdAt,
       );
       added.candidates += Number(r.changes);

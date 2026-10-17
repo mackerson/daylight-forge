@@ -284,7 +284,8 @@ export type CreateWorkItemInput = Pick<
   | 'statement' | 'examples' | 'negativeExamples' | 'proposedBy'
 > & { id?: string; attemptId?: string; proposalArtifact?: ArtifactRef };
 
-export type CreateCandidateInput = Omit<Candidate, 'id' | 'verdict' | 'verdictReasons' | 'createdAt'>;
+export type CreateCandidateInput = Omit<Candidate, 'id' | 'verdict' | 'verdictReasons' | 'createdAt' | 'possibleSecretHits'>
+  & { possibleSecretHits?: number };
 
 export type CreateGateEvaluationInput = Omit<GateEvaluation, 'id' | 'createdAt'>;
 
@@ -1392,8 +1393,13 @@ export class MissionStore {
         throw new Error(`artifact ${ref.id} belongs to ${ref.projectId}, not ${input.projectId}`);
       }
     }
+    const possibleSecretHits = input.possibleSecretHits ?? 0;
+    if (!Number.isInteger(possibleSecretHits) || possibleSecretHits < 0) {
+      throw new Error('possibleSecretHits is a count of low-confidence secret matches');
+    }
     const c: Candidate = {
       ...input,
+      possibleSecretHits,
       id: newId('candidate'),
       verdict: 'pending',
       verdictReasons: [],
@@ -1403,14 +1409,14 @@ export class MissionStore {
       .prepare(
         `INSERT INTO candidates
          (id, mission_id, attempt_id, project_id, base_commit, diff_artifact, summary_artifact,
-          narrative_artifact, files, policy_violations, secret_hits, gate_set_digest, profile,
+          narrative_artifact, files, policy_violations, secret_hits, possible_secret_hits, gate_set_digest, profile,
           attempt_state, attempt_failure, verdict, verdict_reasons, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         c.id, c.missionId, c.attemptId, c.projectId, c.baseCommit, JSON.stringify(c.diffArtifact),
         JSON.stringify(c.summaryArtifact), c.narrativeArtifact ? JSON.stringify(c.narrativeArtifact) : null,
-        JSON.stringify(c.files), JSON.stringify(c.policyViolations), c.secretHits, c.gateSetDigest,
+        JSON.stringify(c.files), JSON.stringify(c.policyViolations), c.secretHits, c.possibleSecretHits, c.gateSetDigest,
         JSON.stringify(c.profile), c.attemptState, c.attemptFailure ?? null, c.verdict,
         JSON.stringify(c.verdictReasons), c.createdAt,
       );
@@ -1875,6 +1881,7 @@ function rowToCandidate(row: unknown): Candidate {
     files: parseJson<CandidateFile[]>(r.files as string, []),
     policyViolations: parseJson<PolicyViolation[]>(r.policy_violations as string, []),
     secretHits: r.secret_hits as number,
+    possibleSecretHits: r.possible_secret_hits as number,
     gateSetDigest: r.gate_set_digest as string,
     profile: parseJson<Candidate['profile']>(r.profile as string, null as unknown as Candidate['profile']),
     attemptState: r.attempt_state as AttemptState,

@@ -534,6 +534,11 @@ export interface Candidate {
   files: CandidateFile[];
   policyViolations: PolicyViolation[];
   secretHits: number;
+  /**
+   * Low-confidence secret matches in the diff (R16): a curable warning, never a violation.
+   * Approve and override need the person's explicit acknowledgement while it is non-zero.
+   */
+  possibleSecretHits: number;
   gateSetDigest: string;
   /** `name` uses the attempt's vocabulary (`Attempt.sandbox.profile`), so it is always `author`. */
   profile: { name: Extract<SandboxProfileName, 'author'>; network: NetworkMode; write: boolean; exec: boolean };

@@ -148,7 +148,7 @@ section('the verdict does not read the attempt (ADR-19)');
     lockDecision: () => null, experiment: () => null, gateEvaluations: () => [], candidate: () => c,
   }) as unknown as MissionStore;
   const base: Candidate = {
-    id: 'c_1', missionId: 'm_1', attemptId: 'a_1', projectId: 'git:p', baseCommit: BASE,
+    id: 'c_1', possibleSecretHits: 0, missionId: 'm_1', attemptId: 'a_1', projectId: 'git:p', baseCommit: BASE,
     diffArtifact: { id: D('d'), kind: 'diff', digest: D('d'), projectId: 'git:p' }, summaryArtifact: { id: D('s'), kind: 'summary', digest: D('s'), projectId: 'git:p' },
     files: [FILE], policyViolations: [], secretHits: 0, gateSetDigest: D('9'),
     profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed', verdict: 'pending', verdictReasons: [], createdAt: 1,

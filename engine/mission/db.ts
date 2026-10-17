@@ -265,6 +265,7 @@ CREATE TABLE candidates (
   files              TEXT NOT NULL,
   policy_violations  TEXT NOT NULL,
   secret_hits        INTEGER NOT NULL,
+  possible_secret_hits INTEGER NOT NULL DEFAULT 0 CHECK (possible_secret_hits >= 0),
   gate_set_digest    TEXT NOT NULL,
   profile            TEXT NOT NULL,
   attempt_state      TEXT NOT NULL,
