@@ -21,14 +21,30 @@ export const MASK = '[REDACTED]';
 export type ShapeName =
   | 'pem-private-key' | 'jwt' | 'aws-access-key-id' | 'aws-secret-access-key' | 'github-token'
   | 'gitlab-token' | 'google-api-key' | 'slack-token' | 'npm-token' | 'openai-key'
-  | 'url-password' | 'authorization-header' | 'bearer' | 'npmrc-auth-token' | 'netrc-password'
-  | 'assignment';
+  | 'url-password' | 'authorization-header' | 'authorization-header-short' | 'bearer' | 'bearer-short'
+  | 'npmrc-auth-token' | 'netrc-password' | 'assignment';
 
-interface Shape {
+/**
+ * R16. `high`: a structured token shape, near-certain to be a credential. `low`: a generic
+ * shape (an assignment, a prose-like header) that over-masks real text. Both are masked
+ * everywhere; only the diff scanner tells them apart, high being uncurable and low a warning.
+ */
+export type Confidence = 'high' | 'low';
+
+interface Matcher {
   name: ShapeName;
   /** Replaces every match in `text` and calls `hit` once per secret masked. */
   mask(text: string, hit: () => void): string;
 }
+
+interface Shape extends Matcher {
+  confidence: Confidence;
+  /** A low shape that is high in a file whose path matches this. */
+  highInPath?: RegExp;
+}
+
+const high = (m: Matcher): Shape => ({ ...m, confidence: 'high' });
+const low = (m: Matcher, highInPath?: RegExp): Shape => ({ ...m, confidence: 'low', highInPath });
 
 type Groups = Record<string, string | undefined>;
 
@@ -37,7 +53,7 @@ type Groups = Record<string, string | undefined>;
  * it) survives, so an assignment still names its variable and a URL its host. A value that is
  * already the mask is left alone and not counted, which keeps a second pass at zero.
  */
-function pattern(name: ShapeName, res: RegExp[], accept?: (g: Groups) => boolean): Shape {
+function pattern(name: ShapeName, res: RegExp[], accept?: (g: Groups) => boolean): Matcher {
   return {
     name,
     mask(text, hit) {
@@ -90,7 +106,7 @@ const PEM_TAIL = /(?:\\[nr]|\\\/|[A-Za-z0-9+/=])*(?:\r?\n[+\- >]?[ \t]*(?:[A-Za-
  * would make `BEGIN[\s\S]*?END` rescan the rest of the text from every one of them. Here each
  * END search starts where the last block ended, and once one fails no later BEGIN looks again.
  */
-const pemShape: Shape = {
+const pemShape: Matcher = {
   name: 'pem-private-key',
   mask(text, hit) {
     const ranges: [number, number][] = [];
@@ -124,7 +140,7 @@ const B64URL = /[A-Za-z0-9_-]*/y;
  * glued to anything. Also by hand: a regex needing two dots would rescan a long dotless run of
  * `eyJeyJ…` from every `eyJ` in it. A failed candidate resumes past its header.
  */
-const jwtShape: Shape = {
+const jwtShape: Matcher = {
   name: 'jwt',
   mask(text, hit) {
     const ranges: [number, number][] = [];
@@ -178,49 +194,61 @@ const PASSWORD_NAME = String.raw`(?:[A-Za-z0-9]{0,32}[_.-]){0,4}(?:[a-z][a-zA-Z0
  * before it, and the GitHub and `sk-ant-` forms also match glued at their full length. Every
  * unbounded run either ends its pattern or follows a lookbehind anchor, so no input makes a
  * shape rescan what it has already read.
+ *
+ * Every high shape runs before every low one, so a token that both would match counts high.
  */
+const AUTH_HEADER = String.raw`(?<![A-Za-z0-9])(?<keep>(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*["']?(?<scheme>(?:basic|bearer|digest|token|negotiate|ntlm|aws4-hmac-sha256)[ \t]+)?)`;
+const AUTH_VALUE = '[A-Za-z0-9._~+/=:,-]';
+const BEARER = String.raw`(?<![A-Za-z0-9])(?<keep>Bearer[ \t]+)`;
+const BEARER_VALUE = '[A-Za-z0-9._~+/=-]';
+
 const SHAPES: Shape[] = [
-  pemShape,
-  jwtShape,
-  pattern('aws-access-key-id', [/(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])/g]),
-  pattern('aws-secret-access-key', [/(?<keep>aws_?secret_?access_?key["']?[ \t]*[:=][ \t]*["']?)(?<val>[A-Za-z0-9/+=]{16,})/gi]),
-  pattern('github-token', [
+  high(pemShape),
+  high(jwtShape),
+  high(pattern('aws-access-key-id', [/(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])/g])),
+  high(pattern('aws-secret-access-key', [/(?<keep>aws_?secret_?access_?key["']?[ \t]*[:=][ \t]*["']?)(?<val>[A-Za-z0-9/+=]{16,})/gi])),
+  high(pattern('github-token', [
     /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{8,}/g,
     /gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g,
     /github_pat_[A-Za-z0-9_]{8,}/g,
-  ]),
-  pattern('gitlab-token', [/glpat-[A-Za-z0-9_-]{20,}/g]),
-  pattern('google-api-key', [/AIza[0-9A-Za-z_-]{35}/g]),
-  pattern('slack-token', [/xox[abprs]-[A-Za-z0-9-]{8,}/g]),
-  pattern('npm-token', [/npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g]),
-  pattern('openai-key', [
+  ])),
+  high(pattern('gitlab-token', [/glpat-[A-Za-z0-9_-]{20,}/g])),
+  high(pattern('google-api-key', [/AIza[0-9A-Za-z_-]{35}/g])),
+  high(pattern('slack-token', [/xox[abprs]-[A-Za-z0-9-]{8,}/g])),
+  high(pattern('npm-token', [/npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g])),
+  high(pattern('openai-key', [
     /sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}/g,
     /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}/g,
-  ]),
+  ])),
   // `scheme://user:password@host`: only the password goes.
-  pattern('url-password', [/(?<=:\/\/)(?<keep>[^\s:/@]{1,256}:)(?<val>[^\s/@]{1,512})(?=@)/g]),
-  // Without a scheme word a short value is more likely prose ("authorization: required").
-  pattern('authorization-header', [
-    /(?<![A-Za-z0-9])(?<keep>(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*["']?(?<scheme>(?:basic|bearer|digest|token|negotiate|ntlm|aws4-hmac-sha256)[ \t]+)?)(?<val>[A-Za-z0-9._~+/=:,-]{8,})/gi,
-  ], (g) => g.scheme !== undefined || (g.val ?? '').length >= 16),
-  pattern('bearer', [/(?<![A-Za-z0-9])(?<keep>Bearer[ \t]+)(?<val>[A-Za-z0-9._~+/=-]{8,})/g]),
-  pattern('npmrc-auth-token', [
+  high(pattern('url-password', [/(?<=:\/\/)(?<keep>[^\s:/@]{1,256}:)(?<val>[^\s/@]{1,512})(?=@)/g])),
+  // A credential of token length; a shorter one is the low `-short` shape below.
+  high(pattern('authorization-header', [new RegExp(`${AUTH_HEADER}(?<val>${AUTH_VALUE}{20,})`, 'gi')])),
+  high(pattern('bearer', [new RegExp(`${BEARER}(?<val>${BEARER_VALUE}{20,})`, 'g')])),
+  high(pattern('npmrc-auth-token', [
     new RegExp(String.raw`(?<![^\s:+"'])(?<keep>_(?:authToken|auth|password)[ \t]*=[ \t]*["']?)${NOT_A_REF}(?<val>[^\s'"]{8,})`, 'g'),
-  ]),
-  pattern('netrc-password', [
+  ])),
+  // Without a scheme word a short value is more likely prose ("authorization: required").
+  low(pattern('authorization-header-short', [new RegExp(`${AUTH_HEADER}(?<val>${AUTH_VALUE}{8,})`, 'gi')],
+    (g) => g.scheme !== undefined || (g.val ?? '').length >= 16)),
+  low(pattern('bearer-short', [new RegExp(`${BEARER}(?<val>${BEARER_VALUE}{8,})`, 'g')])),
+  // High only in a `.netrc`/`_netrc` file; elsewhere `password <word>` is as likely prose.
+  low(pattern('netrc-password', [
     /(?<![A-Za-z0-9_])(?<keep>login[ \t]+\S{1,256}[ \t]+password[ \t]+)(?<val>\S{1,512})/g,
     /(?<=(?:^|\n)[+\- ]?[ \t]*)(?<keep>password[ \t]+)(?<val>\S{4,512})/g,
-  ]),
-  pattern('assignment', [
+  ]), /(?:^|\/)[._]netrc$/),
+  low(pattern('assignment', [
     // `NAME=value`, or `NAME = "value"`: spaced, only a quoted literal is a value, not code.
     new RegExp(String.raw`(?<![A-Za-z0-9_])(?<keep>(?:${UPPER_NAME}|${LOWER_NAME})(?:=["']?|[ \t]*=[ \t]*["']))${NOT_A_REF}(?<val>[^\s'"]{8,})`, 'g'),
     // `password: value` (YAML, JSON, a config dump).
     new RegExp(String.raw`(?<![A-Za-z0-9_])(?<keep>${PASSWORD_NAME}["']?[ \t]*:[ \t]*(?<q>["']?))${NOT_A_REF}(?<val>[^\s'",;)}\]]{8,})`, 'g'),
-  ], (g) => !(g.q === '' && CODE_PATH.test(g.val ?? ''))),
+  ], (g) => !(g.q === '' && CODE_PATH.test(g.val ?? '')))),
 ];
 
 /** Every shape's name, in the order they run. */
 export const SHAPE_NAMES: readonly ShapeName[] = SHAPES.map((s) => s.name);
+export const SHAPE_TIERS: Readonly<Record<ShapeName, Confidence>> =
+  Object.fromEntries(SHAPES.map((s) => [s.name, s.confidence])) as Record<ShapeName, Confidence>;
 
 /** Values worth hiding from the environment this process was given. */
 export function secretsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -243,32 +271,43 @@ function escapeRegExp(s: string): string {
  */
 export const MAX_REDACT_CHARS = 32 * 1024 * 1024;
 
+/** `redactions` is `high + low`. */
+export interface Redacted {
+  text: string;
+  redactions: number;
+  /** Known values and structured token shapes. */
+  high: number;
+  /** Generic shapes, masked the same but only a warning in a diff. */
+  low: number;
+}
+
 /**
- * What comes back for text that was not scanned. It counts as a redaction, so a caller that
- * treats any hit as a secret (the diff scanner) refuses the text rather than storing it.
+ * What comes back for text that was not scanned. It counts as a high redaction, so the diff
+ * scanner refuses the text rather than storing it.
  */
-function unscanned(why: string): { text: string; redactions: number } {
-  return { text: `[REDACTED: not scanned, ${why}]`, redactions: 1 };
+function unscanned(why: string): Redacted {
+  return { text: `[REDACTED: not scanned, ${why}]`, redactions: 1, high: 1, low: 0 };
 }
 
 export function redact(
   text: string,
   secrets: string[] = [],
   env: NodeJS.ProcessEnv = process.env,
-  o: { maxChars?: number } = {},
-): { text: string; redactions: number } {
+  o: { maxChars?: number; path?: string } = {},
+): Redacted {
   if (typeof text !== 'string') return unscanned('not text');
   const max = o.maxChars ?? MAX_REDACT_CHARS;
   if (text.length > max) return unscanned(`${text.length} characters is over the ${max}-character limit`);
   try {
-    return scan(text, secrets, env);
+    return scan(text, secrets, env, o.path);
   } catch (err) {
     return unscanned(`the scan failed (${(err as Error)?.name ?? 'error'})`);
   }
 }
 
-function scan(text: string, secrets: string[], env: NodeJS.ProcessEnv): { text: string; redactions: number } {
-  let redactions = 0;
+function scan(text: string, secrets: string[], env: NodeJS.ProcessEnv, file: string | undefined): Redacted {
+  let high = 0;
+  let low = 0;
   let out = text;
 
   // Longest first, so a secret that contains another secret is masked whole.
@@ -279,12 +318,15 @@ function scan(text: string, secrets: string[], env: NodeJS.ProcessEnv): { text: 
   for (const secret of known) {
     const re = new RegExp(escapeRegExp(secret), 'g');
     out = out.replace(re, () => {
-      redactions++;
+      high++;
       return MASK;
     });
   }
 
-  for (const shape of SHAPES) out = shape.mask(out, () => { redactions++; });
+  for (const shape of SHAPES) {
+    const isHigh = shape.confidence === 'high' || (file !== undefined && shape.highInPath?.test(file) === true);
+    out = shape.mask(out, () => { if (isHigh) high++; else low++; });
+  }
 
-  return { text: out, redactions };
+  return { text: out, redactions: high + low, high, low };
 }

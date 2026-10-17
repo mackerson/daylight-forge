@@ -37,8 +37,16 @@ export interface FileFlag {
   /** Touches a path only a human may change: protected, gate or spec. */
   protected: boolean;
   rules: PolicyRule[];
-  /** Redactions made in this file's part of the diff. */
+  /** High-confidence redactions in this file's part of the diff (R16): each is `secret-in-diff`. */
   secretHits: number;
+  /** Low-confidence matches in this file's part: a curable `possible-secret` warning. */
+  possibleSecretHits: number;
+}
+
+/** R16: a warning the approve dialog shows and the human acknowledges; never a violation. */
+export interface CandidateWarning {
+  rule: 'possible-secret';
+  path: string | null;
 }
 
 export interface CandidateSummary {
@@ -51,7 +59,11 @@ export interface CandidateSummary {
 /** Everything a Candidate row needs from the workspace; WS8 adds ids, gates and the verdict. */
 export interface CandidateDraft {
   baseCommit: string;
-  /** The stored bytes: the diff itself, or its redacted copy when a secret was found. */
+  /**
+   * The stored bytes: the diff itself, or its redacted copy when a high-confidence secret was
+   * found. A low-confidence match alone leaves the diff as written, since a curable candidate's
+   * stored diff is what the gates run and `apply` commits.
+   */
   diff: Buffer;
   /** `sha256:` of `diff`. */
   diffDigest: string;
@@ -59,7 +71,9 @@ export interface CandidateDraft {
   files: CandidateFile[];
   flags: FileFlag[];
   policyViolations: PolicyViolation[];
+  warnings: CandidateWarning[];
   secretHits: number;
+  possibleSecretHits: number;
   summary: CandidateSummary;
   /** `no-diff` and `policy-violation` are final here; `pending` waits for the gates. */
   verdict: 'pending' | 'no-diff' | 'policy-violation';
@@ -169,13 +183,15 @@ export function captureCandidate(
   const parts = fileParts(text);
   const aligned = parts.length === files.length;
   const hitsByPath = new Map<string, number>();
+  const possibleByPath = new Map<string, number>();
   let secretHits = 0;
+  let possibleSecretHits = 0;
   const redactedParts = parts.map((part, i) => {
-    const r = redact(part, o.secrets ?? [], o.env ?? process.env);
-    if (r.redactions) {
-      secretHits += r.redactions;
-      if (aligned) hitsByPath.set(files[i].path, r.redactions);
-    }
+    const r = redact(part, o.secrets ?? [], o.env ?? process.env, aligned ? { path: files[i].path } : {});
+    secretHits += r.high;
+    possibleSecretHits += r.low;
+    if (aligned && r.high) hitsByPath.set(files[i].path, r.high);
+    if (aligned && r.low) possibleByPath.set(files[i].path, r.low);
     return r.text;
   });
   const stored = secretHits ? Buffer.from(redactedParts.join(''), 'latin1') : patch;
@@ -188,11 +204,19 @@ export function captureCandidate(
     if (aligned) for (const p of hitsByPath.keys()) violations.push({ rule: 'secret-in-diff', path: p });
     else violations.push({ rule: 'secret-in-diff', path: null });
   }
+  const warnings: CandidateWarning[] = [];
+  if (possibleSecretHits) {
+    if (aligned) for (const p of possibleByPath.keys()) warnings.push({ rule: 'possible-secret', path: p });
+    else warnings.push({ rule: 'possible-secret', path: null });
+  }
   const flags: FileFlag[] = files.map((f) => {
     const rules = [...new Set(pathViolations(f, policyCtx))];
     const hits = hitsByPath.get(f.path) ?? 0;
     if (hits) rules.push('secret-in-diff');
-    return { path: f.path, protected: rules.some((r) => PROTECTED_RULES.has(r)), rules, secretHits: hits };
+    return {
+      path: f.path, protected: rules.some((r) => PROTECTED_RULES.has(r)), rules,
+      secretHits: hits, possibleSecretHits: possibleByPath.get(f.path) ?? 0,
+    };
   });
 
   const summary: CandidateSummary = {
@@ -217,7 +241,9 @@ export function captureCandidate(
     files,
     flags,
     policyViolations: violations,
+    warnings,
     secretHits,
+    possibleSecretHits,
     summary,
     verdict: !files.length ? 'no-diff' : violations.length ? 'policy-violation' : 'pending',
   };

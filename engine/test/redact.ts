@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore } from '../mission/artifacts.ts';
-import { MAX_REDACT_CHARS, redact, MASK, SHAPE_NAMES, type ShapeName } from '../mission/redact.ts';
+import { MAX_REDACT_CHARS, redact, MASK, SHAPE_NAMES, SHAPE_TIERS, type ShapeName } from '../mission/redact.ts';
 import { captureCandidate } from '../forge/diff.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { harness } from './harness.ts';
@@ -87,10 +87,12 @@ const CASES: Case[] = [
   { shape: 'assignment', text: 'adminPassword: "FAKEpassw0rd"', sentinel: 'FAKEpassw0rd', glue: ['_'] },
 
   { shape: 'authorization-header', text: 'Authorization: Basic RkFLRWF1dGg6aHVudGVyMg==', sentinel: 'RkFLRWF1dGg6', kept: 'Authorization: Basic ', glue: ['_', '-H \'', '"'] },
-  { shape: 'authorization-header', text: 'authorization: token FAKEauthTok1', sentinel: 'FAKEauthTok', glue: ['_'] },
-  { shape: 'authorization-header', text: 'Proxy-Authorization: FAKEraw0123456789abc', sentinel: 'FAKEraw', glue: ['_'] },
-  { shape: 'authorization-header', text: '"Authorization":"Bearer FAKEbearer12"', sentinel: 'FAKEbearer', glue: ['_', '{'] },
-  { shape: 'bearer', text: 'Bearer FAKEbearer12', sentinel: 'FAKEbearer', kept: 'Bearer ', glue: ['_', 'with '] },
+  { shape: 'authorization-header', text: 'Proxy-Authorization: FAKEraw0123456789abcdef', sentinel: 'FAKEraw', glue: ['_'] },
+  { shape: 'authorization-header-short', text: 'authorization: token FAKEauthTok1', sentinel: 'FAKEauthTok', glue: ['_'] },
+  { shape: 'authorization-header-short', text: 'Proxy-Authorization: FAKEraw0123456789ab', sentinel: 'FAKEraw', glue: ['_'] },
+  { shape: 'authorization-header-short', text: '"Authorization":"Bearer FAKEbearer12"', sentinel: 'FAKEbearer', glue: ['_', '{'] },
+  { shape: 'bearer', text: 'Bearer FAKEbearer0123456789xyz', sentinel: 'FAKEbearer', kept: 'Bearer ', glue: ['_', 'with '] },
+  { shape: 'bearer-short', text: 'Bearer FAKEbearer12', sentinel: 'FAKEbearer', kept: 'Bearer ', glue: ['_', 'with '] },
 
   { shape: 'npmrc-auth-token', text: '//registry.npmjs.org/:_authToken=FAKEnpmTok1', sentinel: 'FAKEnpmTok', kept: ':_authToken=', glue: ['_', 'abc'] },
   { shape: 'npmrc-auth-token', text: '_auth=RkFLRW5wbWF1dGg=', sentinel: 'RkFLRW5wbWF1dGg', glue: ['\n', '\n+'] },
@@ -321,18 +323,87 @@ section('the diff scanner flags every shape as secret-in-diff');
   const d = captureCandidate(ws, {}, { artifacts, projectId: 'p', env: {} });
   if (!('verdict' in d)) throw new Error(d.refused);
 
+  // R16: a high-confidence shape is uncurable, a low one a curable warning. A `.netrc` line is
+  // high only in a file named `.netrc`, and these are all `.txt`.
+  const tierOf = (c: Case) => (c.shape === 'netrc-password' ? 'low' : SHAPE_TIERS[c.shape]);
+  const highFiles = [...planted].filter(([, c]) => tierOf(c) === 'high').map(([p]) => p);
+  const lowFiles = [...planted].filter(([, c]) => tierOf(c) === 'low').map(([p]) => p);
   const flagged = new Set(d.policyViolations.filter((v) => v.rule === 'secret-in-diff').map((v) => v.path));
-  const missed = [...planted.keys()].filter((p) => !flagged.has(p));
-  check(`every one of ${planted.size} planted files is a secret-in-diff violation`, missed.length === 0, missed.join(', '));
-  const unflagged = d.flags.filter((f) => planted.has(f.path) && (!f.rules.includes('secret-in-diff') || f.secretHits < 1));
+  const warned = new Set(d.warnings.filter((w) => w.rule === 'possible-secret').map((w) => w.path));
+  const missed = highFiles.filter((p) => !flagged.has(p));
+  check(`every one of ${highFiles.length} high-confidence files is a secret-in-diff violation`, missed.length === 0, missed.join(', '));
+  const unflagged = d.flags.filter((f) => highFiles.includes(f.path) && (!f.rules.includes('secret-in-diff') || f.secretHits < 1));
   check('and carries the flag with a hit count', unflagged.length === 0, unflagged.map((f) => f.path).join(', '));
-  check('a clean file beside them is not flagged', !flagged.has('clean.txt') && !d.flags.find((f) => f.path === 'clean.txt')?.rules.includes('secret-in-diff'));
+  const lowWrong = lowFiles.filter((p) => flagged.has(p) || !warned.has(p) || !(d.flags.find((f) => f.path === p)?.possibleSecretHits));
+  check(`every one of ${lowFiles.length} low-confidence files is a possible-secret warning, not a violation`, lowFiles.length > 0 && lowWrong.length === 0,
+    lowWrong.map((p) => `${p} ${JSON.stringify(d.flags.find((f) => f.path === p))}`).join(', '));
+  check('a clean file beside them is not flagged', !flagged.has('clean.txt') && !warned.has('clean.txt') && !d.flags.find((f) => f.path === 'clean.txt')?.rules.includes('secret-in-diff'));
   check('the candidate cannot go on to the gates', d.verdict === 'policy-violation');
   const stored = artifacts.get(d.diffArtifact!).toString('latin1');
   const leaked = [...new Set([...planted.values()].map((c) => c.sentinel))].filter((s) => stored.includes(s));
   check('the stored diff holds none of the planted secrets', leaked.length === 0, `${leaked.length} sentinel(s) survived`);
   check('the stored diff is labelled redacted', stored.includes(MASK) && d.diff.toString('latin1') === stored);
   ws.dispose();
+
+  section('confidence tiers in the diff scanner (R16)');
+  const one = (files: Record<string, string>) => {
+    const w = createWorkspace(repo, base);
+    for (const [rel, body] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(w.tree, rel)), { recursive: true });
+      fs.writeFileSync(path.join(w.tree, rel), body);
+    }
+    const c = captureCandidate(w, {}, { artifacts, projectId: 'p', env: {} });
+    w.dispose();
+    if (!('verdict' in c)) throw new Error(c.refused);
+    return c;
+  };
+  const secretIn = (c: ReturnType<typeof one>) => c.policyViolations.filter((v) => v.rule === 'secret-in-diff').map((v) => v.path);
+  const possibleIn = (c: ReturnType<typeof one>) => c.warnings.filter((w) => w.rule === 'possible-secret').map((w) => w.path);
+
+  const ts = one({ 'src/login.ts': 'export const opts = { password: undefined };\n' });
+  check('`password: undefined` in a .ts diff is a possible-secret only', possibleIn(ts).join() === 'src/login.ts' && secretIn(ts).length === 0, JSON.stringify(ts.warnings));
+  check('and the candidate stays curable', ts.verdict === 'pending' && ts.policyViolations.length === 0, ts.verdict);
+  check('and its diff is stored as written, so the gates test the real code',
+    ts.diff.toString('utf8').includes('password: undefined') && !ts.diff.toString('utf8').includes(MASK) && ts.possibleSecretHits === 1 && ts.secretHits === 0);
+  check('the stored artifact is the same bytes', artifacts.get(ts.diffArtifact!).equals(ts.diff));
+
+  const glued = one({ 'src/ids.ts': `export const id = "msg_sk-FAKEglued${rep('g', 20)}";\n` });
+  check('a glued `sk-` key is secret-in-diff and uncurable', secretIn(glued).join() === 'src/ids.ts' && glued.verdict === 'policy-violation');
+  check('and only its redacted copy is stored', !glued.diff.toString('utf8').includes('FAKEglued'));
+
+  const keyPath = one({ 'deploy.env': 'KEY_PATH=/etc/ssl/private/site.pem\n' });
+  check('`KEY_PATH=/etc/ssl/…` is a possible-secret', possibleIn(keyPath).join() === 'deploy.env' && keyPath.verdict === 'pending');
+  const shortPath = one({ 'deploy.env': 'KEY_PATH=/etc/x\n' });
+  check('`KEY_PATH=/etc/x` is under the 8-character value floor and not flagged at all',
+    possibleIn(shortPath).length === 0 && secretIn(shortPath).length === 0 && shortPath.verdict === 'pending');
+
+  const netrcLine = 'machine example.invalid login deploy password FAKEnetrcTier\n';
+  const netrc = one({ '.netrc': netrcLine, 'home/u/_netrc': netrcLine, 'notes.txt': netrcLine });
+  check('a .netrc password in a file named .netrc or _netrc is secret-in-diff',
+    secretIn(netrc).sort().join() === '.netrc,home/u/_netrc', JSON.stringify(netrc.policyViolations));
+  check('the same line in another file is a possible-secret', possibleIn(netrc).join() === 'notes.txt', JSON.stringify(netrc.warnings));
+  check('a diff with any high hit stores none of its low ones either', !netrc.diff.toString('utf8').includes('FAKEnetrcTier'));
+
+  const mixed = one({ 'a.ts': 'const o = { password: undefined };\n', 'b.ts': `const k = "glpat-FAKEmixed${rep('m', 20)}";\n` });
+  check('a file with only a low hit keeps its warning beside another file\'s violation',
+    possibleIn(mixed).join() === 'a.ts' && secretIn(mixed).join() === 'b.ts' && mixed.verdict === 'policy-violation');
+}
+
+section('the four reported false positives are all low confidence');
+{
+  const FP = ['password: undefined', 'KEY_PATH=/etc/ssl/private/site.pem', 'notes\npassword reset123\n', 'Bearer instruments are paper'];
+  const wrong = FP.map((s) => [s, redact(s, [], {})] as const).filter(([, r]) => !(r.low >= 1 && r.high === 0));
+  check(`all ${FP.length} are masked as low and none as high`, wrong.length === 0,
+    wrong.map(([s, r]) => `${JSON.stringify(s)} high=${r.high} low=${r.low}`).join(' | '));
+  const hi = redact(`x_sk-FAKEhigh${rep('h', 20)} Bearer FAKEbearer0123456789xyz`, [], {});
+  check('a glued `sk-` key and a ≥20-char Bearer token are high', hi.high === 2 && hi.low === 0, `${hi.high}/${hi.low}`);
+  check('a known secret value is high', redact('the value FAKEknownValue1 here', ['FAKEknownValue1'], {}).high === 1);
+  check('text that was not scanned counts as high, so it fails closed', redact('x'.repeat(30), [], {}, { maxChars: 10 }).high === 1);
+  const tiers = Object.entries(SHAPE_TIERS);
+  check('every shape has a tier', tiers.length === SHAPE_NAMES.length && tiers.every(([, t]) => t === 'high' || t === 'low'));
+  const LOW: ShapeName[] = ['assignment', 'netrc-password', 'bearer-short', 'authorization-header-short'];
+  check('exactly the generic shapes are low', tiers.filter(([, t]) => t === 'low').map(([n]) => n).sort().join() === [...LOW].sort().join(),
+    tiers.filter(([, t]) => t === 'low').map(([n]) => n).join());
 }
 
 done();
