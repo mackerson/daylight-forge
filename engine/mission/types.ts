@@ -603,7 +603,7 @@ export interface IngestSource {
 
 export type NeedKind =
   | 'blocked' | 'dispute' | 'spec-ambiguity' | 'gate-lock' | 'gate-vacuous'
-  | 'candidate-decision' | 'apply';
+  | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {

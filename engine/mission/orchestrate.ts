@@ -28,9 +28,10 @@ import {
 } from './disputes.ts';
 import { currentRevision } from './project.ts';
 import type {
-  ArtifactRef, Attempt, DaylightEvent, Decision, Experiment, ExpectedObservation, Mission,
-  MissionKind, MissionOutcome, Task,
+  Application, ArtifactRef, Attempt, Candidate, DaylightEvent, Decision, Experiment, ExpectedObservation,
+  GateEvaluation, Mission, MissionKind, MissionOutcome, Need, Task,
 } from './types.ts';
+import { needsOf } from './needs.ts';
 
 /**
  * The mission loop, as far as P0 takes it: independent reviews → compare → experiment →
@@ -763,44 +764,67 @@ export interface InspectedDispute {
   decisionId?: string;
 }
 
+export { needsOf, projectNeeds } from './needs.ts';
+export type { Need } from './types.ts';
+
 /**
- * Something a person has to do before the mission can move, derived and never stored.
- *
- * A mission whose reviews are done and whose reviewers disagree is `running` — the state
- * table has no "waiting on you", and should not: a dispute is not a failure, so `blocked`
- * would be the wrong word. But it is the one moment the product exists to produce, so it is
- * computed here and the list counts it.
+ * A holdout as anyone outside the gate runner may see it: that it exists, its role, how it
+ * concluded and what froze it. Never its hypothesis, prediction, command, test or runs (ADR-18,
+ * ws9-review M1): withholding at render time is not enough, so it never leaves the engine.
  */
-export interface Need {
-  kind: 'blocked' | 'dispute';
-  ref: string;
-  why: string;
+export type WithheldExperiment = Pick<Experiment, 'id' | 'missionId' | 'role' | 'conclusion' | 'harnessDigest' | 'lockedBy'> & { withheld: true };
+
+export function publicExperiment(x: Experiment): Experiment | WithheldExperiment {
+  if (x.role !== 'holdout') return x;
+  return {
+    id: x.id, missionId: x.missionId, role: x.role, conclusion: x.conclusion, harnessDigest: x.harnessDigest,
+    ...(x.lockedBy ? { lockedBy: x.lockedBy } : {}), withheld: true,
+  };
 }
 
-export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Comparison): Need[] {
-  if (mission.state === 'closed') return [];
-  if (mission.state === 'blocked') {
-    return [{ kind: 'blocked', ref: mission.id, why: mission.outcomeReason ?? 'blocked' }];
-  }
-  const tasks = ctx.store.tasks(mission.id);
-  if (!tasks.length || tasks.some((t) => t.state !== 'done')) return [];
-  const disputes = (comparison ?? compare(ctx.claims, mission.scope, missionClaims(mission.id))).disputes;
-  return disputes
-    .filter((d) => d.belief.status === 'CONTRADICTED')
-    .map((d) => ({ kind: 'dispute', ref: `${d.subject} ${d.predicate}`, why: 'the reviewers disagree; a person decides' }));
+/** A holdout's evaluation keeps its conclusion and digests; its run records stay in the row. */
+export function publicGateEvaluations(ctx: DaylightContext, rows: GateEvaluation[]): GateEvaluation[] {
+  const holdout = (id: string) => ctx.store.experiment(id)?.role === 'holdout';
+  return rows.map((g) => (holdout(g.experimentId) ? { ...g, executions: [] } : g));
+}
+
+/**
+ * Events with a holdout's content withheld: an event about a holdout keeps its name, ids and
+ * outcome, and loses every other payload field and every artifact it points at.
+ */
+export function publicEvents(ctx: DaylightContext, missionId: string, events: DaylightEvent[]): DaylightEvent[] {
+  const holdouts = ctx.store.experimentsFor(missionId, 'holdout');
+  if (!holdouts.length) return events;
+  const ids = new Set(holdouts.map((x) => x.id));
+  const artifacts = new Set(holdouts.flatMap((x) => [x.testArtifact.id, x.expectedArtifact.id, ...x.executions.map((r) => r.id)]));
+  for (const g of ctx.store.gateEvaluations({ missionId })) if (ids.has(g.experimentId)) for (const r of g.executions) artifacts.add(r.id);
+  return events.map((e) => {
+    const p = e.payload as Record<string, unknown>;
+    const about = typeof p.experimentId === 'string' && ids.has(p.experimentId);
+    const points = (e.artifactIds ?? []).some((a) => artifacts.has(a));
+    if (!about && !points && p.role !== 'holdout') return e;
+    const keep: Record<string, unknown> = { role: 'holdout', withheld: true };
+    for (const k of ['experimentId', 'gateEvaluationId', 'target', 'diffDigest', 'conclusion', 'runIndex', 'status', 'runs']) {
+      if (k in p) keep[k] = p[k];
+    }
+    return { ...e, payload: keep, artifactIds: [] };
+  });
 }
 
 export interface Inspection {
   mission: Mission;
   tasks: Task[];
   attempts: Attempt[];
-  experiments: Experiment[];
+  experiments: Array<Experiment | WithheldExperiment>;
   decisions: Decision[];
   disputes: InspectedDispute[];
   unverified: Belief[];
   settled: Belief[];
   events: DaylightEvent[];
   needs: Need[];
+  candidates: Candidate[];
+  gateEvaluations: GateEvaluation[];
+  applications: Application[];
 }
 
 interface ComparisonRecord {
@@ -845,13 +869,16 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
     mission,
     tasks,
     attempts,
-    experiments: ctx.store.experiments(missionId),
+    experiments: ctx.store.experiments(missionId).map(publicExperiment),
     decisions,
     disputes: [...byKey.values()].sort((a, b) => a.subject.localeCompare(b.subject)),
     unverified: comparison.unverified,
     settled: comparison.settled,
-    events: all.slice(-eventLimit),
+    events: publicEvents(ctx, missionId, all.slice(-eventLimit)),
     needs: needsOf(ctx, mission, comparison),
+    candidates: ctx.store.candidates(missionId),
+    gateEvaluations: publicGateEvaluations(ctx, ctx.store.gateEvaluations({ missionId })),
+    applications: ctx.store.applications(missionId),
   };
 }
 
