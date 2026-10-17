@@ -145,8 +145,11 @@ renders the mission on the Mission Control stage.
 `unavailable` for implement until the owner authorises one live run with a dedicated,
 spend-capped credential (RULINGS R4 Q4/Q5, R9.4). Everything below runs with a mock author
 (`DAYLIGHT_MOCK_ADAPTER=<script>`, roster `mock`) and is what `engine/test/forge-e2e.ts`
-exercises. Author exec is refused until R9.2 is decided: `mission authorize --execute` is
-refused, and so is an attempt on any mission that holds execute.
+exercises. Author exec is decided (R9.2 → (a), R17.1, 2026-10-16): `mission authorize --write
+--execute` grants it, and the author then gets one extra MCP tool, `run`, whose argv runs in a
+nested sandbox over its workspace with no network, no MCP socket and no gate tests; output is
+kept as artifacts. Without `--execute` the default stays no exec and there is no `run` tool;
+`--execute` without `--write` is refused.
 
 Needs `bwrap` and `prlimit`: the author, decomposer and gate sandboxes are not optional, and
 `forge run`, `spec decompose` and the e2e fail when they are missing.
@@ -184,8 +187,8 @@ What to point at:
   on spec missions `spec-ambiguity` and `work-item-undecided`), `candidates`,
   `gateEvaluations` and `applications`. A holdout appears only as its id, role, conclusion and
   digests; its test, prediction and runs never leave the engine.
-- The author ran in a detached workspace under the `author` profile (network none, write, no
-  exec), reaching its MCP server only through its own socket; the workspace is removed after
+- The author ran in a detached workspace under the `author` profile (network none, write, and
+  exec only if the authorize decision carried `--execute`; the attempt row records which), reaching its MCP server only through its own socket; the workspace is removed after
   capture unless `--keep-workspace`. The narrative it printed is labelled *author-claimed,
   unverified* and never feeds the verdict.
 - Refusals worth showing: an author that edits `package.json` gets `policy-violation`, no gate

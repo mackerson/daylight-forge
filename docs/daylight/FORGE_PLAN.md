@@ -31,7 +31,7 @@ acceptance criteria.
 Deferred (PLAN §5): egress proxy, Docker/VM profile, repair loops, rebase onto a moved HEAD,
 `--onto-current` and merge automation, CI/PR gates, model routing, codex/grok/opencode authors,
 signed decisions, seeded-mutation gate scoring, a `requirements` table, live console streaming,
-ledger M7. Gate dependency snapshots are P2 (ADR-28). Author exec is open, not deferred (ADR-35).
+ledger M7. Gate dependency snapshots are P2 (ADR-28). Author exec is decided: (a), the nested `run` tool (ADR-35).
 
 ## 2. How we got here
 
@@ -123,7 +123,8 @@ rulings.
   - every git call uses the hardened environment (`GIT_CONFIG_GLOBAL=/dev/null`,
     `GIT_CONFIG_NOSYSTEM=1`, `core.hooksPath=/dev/null`, `core.fsmonitor=false`).
 - **Consequences.** The author sees no git metadata and never writes to the real `.git`. Whether
-  code runs in the workspace depends on R9.2 (ADR-35). Under option (b) it never does.
+  code runs in the workspace only through the author's nested `run` tool, on an explicit exec
+  grant (ADR-35, decided (a)).
 - **Status.** Decided.
 
 ### ADR-9 — Authorize and gate lock are separate human acts (resolution 2)
@@ -394,10 +395,17 @@ rulings.
   - **(a)** exec allowed inside the author bwrap: rw detached tree, network `none`, prlimit,
     gate tests never mounted. Exec is an explicit, recorded profile flag.
   - **(b)** write only; the gates execute (PLAN as written).
-- **Decision.** None. The owner has not answered. The director *recommends* (a); that is a
-  recommendation, not a decision. WS2 builds the profile so either option is a flag.
-- **Consequences.** Whether `forge-author-no-exec` ships depends on the answer.
-- **Status.** Open, awaiting the owner (§10).
+- **Decision.** (a), by the owner on 2026-10-16 (R17.1), as refined by R11.1: exec is the MCP
+  `run` tool, never a shell beside the agent. Its argv runs in a nested bwrap over the same
+  detached tree with `--unshare-net` (in fact `--unshare-all`), prlimit, no MCP socket and the
+  gate tests never mounted. It is permitted only when the mission's `authorize` decision carried
+  `execute: true` explicitly (default false); `--execute` without `--write` is refused; the
+  attempt row and the candidate profile record `exec`, and the store refuses an exec attempt
+  whose grant did not carry it.
+- **Consequences.** `forge-author-no-exec` does not ship. R15.5's refuse-until-decided is lifted.
+  The e2e proves the nested sandbox has no TCP and no gate paths, and that a write-only grant has
+  no `run` tool.
+- **Status.** Decided (a), 2026-10-16.
 
 ## 6. Schema v2 and versioning constants
 
@@ -587,8 +595,8 @@ Items 1–4 are R9's open items, recorded so that no writer invents an answer.
      this option. That is a recommendation, not a decision.
    - **(b)** write only, and the gates execute (PLAN as written).
 
-   The question is unanswered, so its status is **Open**. WS2 builds the profile so that either
-   option is a flag.
+   **Decided (a)** by the owner on 2026-10-16 (R17.1): exec is the nested no-network `run` tool
+   on an explicit `--execute` grant. See ADR-35.
 3. **Commit trailer attribution (R9.3).** This covers Opus-written commits: WS0's 35 unpushed commits
    (the merge 0334326 carries Fable 5.1) and this document's own commits. The options are:
    - keep `Claude Opus 5.5`, the honest record. The director recommends this.
