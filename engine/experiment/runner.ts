@@ -7,14 +7,14 @@ import type { Readable, Writable } from 'node:stream';
 import { ArtifactStore, canonicalJson } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
-  NewExperiment,
+  ExperimentRole, NewExperiment,
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
   checkAllowlist, DEFAULT_LIMITS, detectSandbox, NO_SCOPE_LIMITATION, SANDBOX_LIMITATIONS, sandboxArgv,
-  sandboxBinaries, scopeEnv, SYSTEM_PATH, type SandboxLimits, type SandboxProfile,
+  sandboxBinaries, scopeEnv, SYSTEM_PATH, WORK, type SandboxLimits, type SandboxProfile,
 } from './sandbox.ts';
-import type { ExecutionRecord, ExecutionStatus, Observation } from './types.ts';
+import type { ExecutionRecord, ExecutionStatus, ExecutionTarget, Observation } from './types.ts';
 
 /**
  * The experiment runner: a registered test, run inside a sandbox, at a named revision.
@@ -77,7 +77,13 @@ export interface RegisterInput {
   testPath: string;
   command: string[];
   sandboxProfile?: string;
+  /** `gate` or `holdout` for a Forge gate. Absent, the experiment is a P0 probe. */
+  role?: ExperimentRole;
+  /** Minted first (`newId('experiment')`) when the test path has to name the experiment. */
+  id?: string;
 }
+
+const isForgeRole = (role: ExperimentRole | undefined): boolean => role === 'gate' || role === 'holdout';
 
 const isEmptyPrediction = (p: ExpectedObservation): boolean =>
   p.exitCode === undefined && !p.stdoutIncludes?.length && !p.stderrIncludes?.length;
@@ -117,8 +123,14 @@ export function harnessHolds(
   } catch (err) {
     return { ok: false, why: `the registered prediction cannot be read: ${(err as Error).message}` };
   }
-  const { testPath, ...prediction } = registered;
+  const { testPath, role, baseRevision, ...prediction } = registered;
   if (canonicalJson(prediction) !== canonicalJson(x.prediction)) return edited('the prediction');
+  // A gate's role and base are in its expectation, so an UPDATE turning a holdout into a gate,
+  // a probe into either, or re-pointing its base is a different harness. Probes carry neither.
+  if (role !== undefined || baseRevision !== undefined || isForgeRole(x.role)) {
+    if (role !== x.role) return edited('the role');
+    if (baseRevision !== x.baseRevision) return edited('the base revision');
+  }
   if (testPath === undefined) return { ok: true, legacy: true };
   if (testPath !== x.testArtifact.path) return edited('the test path');
   return { ok: true, legacy: false };
@@ -145,12 +157,18 @@ export function registerExperiment(input: RegisterInput): Experiment {
     ...meta, kind: 'test', path: rel, label: 'registered test',
   });
   // Where the test is placed decides what runs, so it is part of the protected expectation
-  // and, through that artifact's digest, of the harness digest.
-  const expectedArtifact = input.artifacts.put(JSON.stringify({ ...input.prediction, testPath: rel }, null, 2), {
+  // and, through that artifact's digest, of the harness digest. A gate's role and base are
+  // too; a probe's expectation is exactly what P0 wrote, so its digests do not move.
+  const expectation = isForgeRole(input.role)
+    ? { ...input.prediction, testPath: rel, role: input.role, baseRevision: input.baseRevision }
+    : { ...input.prediction, testPath: rel };
+  const expectedArtifact = input.artifacts.put(JSON.stringify(expectation, null, 2), {
     ...meta, kind: 'expected', label: 'prediction', mediaType: 'application/json',
   });
 
   const experiment = input.store.createExperiment({
+    ...(input.id !== undefined ? { id: input.id } : {}),
+    ...(input.role !== undefined ? { role: input.role } : {}),
     missionId: input.missionId,
     projectId: input.projectId,
     claimIds: input.claimIds,
@@ -531,36 +549,50 @@ function foreignWorktree(work: string, worktreesDir: string | null): string | nu
   return 'its worktree metadata names another checkout';
 }
 
-export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
-  sweepAbandoned({ ...ctx, projectId: experiment.projectId });
+type Emit = (name: string, payload: Record<string, unknown>, artifactIds?: string[]) => void;
+
+/**
+ * Where one experiment's runs are written down: each record an artifact and an event the
+ * moment it exists. The P0 runner and the gate runner share it, so a gate run is recorded
+ * exactly as a probe run is, plus what it ran against.
+ */
+interface Recorder {
+  now: () => number;
+  meta: { projectId: string; revision: string };
+  records: ExecutionRecord[];
+  refs: ArtifactRef[];
+  emit: Emit;
+  record(r: ExecutionRecord): ArtifactRef;
+  refuse(status: ExecutionStatus, why: string, startedAt: number, argv?: string[]): void;
+}
+
+function recorder(
+  experiment: Experiment, ctx: RunContext, limitations: string[], target?: ExecutionTarget,
+): Recorder {
   const now = ctx.now ?? (() => Date.now());
-  const runs = Math.max(1, ctx.runs ?? 2);
-  const timeoutMs = ctx.timeoutMs ?? 60_000;
-  const profile = ctx.sandbox ?? detectSandbox();
-  const emit = (name: string, payload: Record<string, unknown>, artifactIds?: string[]) =>
+  const meta = { projectId: experiment.projectId, revision: experiment.baseRevision };
+  const records: ExecutionRecord[] = [];
+  const refs: ArtifactRef[] = [];
+  const emit: Emit = (name, payload, artifactIds) =>
     ctx.events?.append({
       projectId: experiment.projectId,
       missionId: experiment.missionId,
       category: 'experiment',
       name,
       artifactIds,
-      payload: { experimentId: experiment.id, ...payload },
+      payload: { experimentId: experiment.id, ...(target ? { target: target.kind, diffDigest: target.diffDigest } : {}), ...payload },
     });
-  const meta = { projectId: experiment.projectId, revision: experiment.baseRevision };
-  const records: ExecutionRecord[] = [];
-  const refs: ArtifactRef[] = [];
-  const limitations = [...experiment.limitations];
-
   const record = (r: ExecutionRecord) => {
-    records.push(r);
-    const ref = ctx.artifacts.put(JSON.stringify(r, null, 2), {
-      ...meta, kind: 'result', label: `run ${r.runIndex}: ${r.status}`, mediaType: 'application/json',
+    const full: ExecutionRecord = target ? { ...r, target } : r;
+    records.push(full);
+    const ref = ctx.artifacts.put(JSON.stringify(full, null, 2), {
+      ...meta, kind: 'result', label: `run ${full.runIndex}: ${full.status}`, mediaType: 'application/json',
     });
     refs.push(ref);
     emit('experiment.run.finished', {
-      runIndex: r.runIndex, status: r.status, exitCode: r.exitCode, timedOut: r.timedOut,
-      matchesPrediction: r.matchesPrediction, why: r.why,
-    }, [ref.id, ...(r.stdoutRef ? [r.stdoutRef.id] : []), ...(r.stderrRef ? [r.stderrRef.id] : [])]);
+      runIndex: full.runIndex, status: full.status, exitCode: full.exitCode, timedOut: full.timedOut,
+      matchesPrediction: full.matchesPrediction, why: full.why,
+    }, [ref.id, ...(full.stdoutRef ? [full.stdoutRef.id] : []), ...(full.stderrRef ? [full.stderrRef.id] : [])]);
     return ref;
   };
   const refuse = (status: ExecutionStatus, why: string, startedAt: number, argv: string[] = []) => {
@@ -573,6 +605,87 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       harnessDigest: experiment.harnessDigest, startedAt, finishedAt: now(),
     });
   };
+  return { now, meta, records, refs, emit, record, refuse };
+}
+
+interface RunLoop {
+  experiment: Experiment;
+  ctx: RunContext;
+  profile: SandboxProfile;
+  rec: Recorder;
+  /** The host directory bound read-only at `/work`, as given and as resolved. */
+  worktree: string;
+  root: string;
+  testRel: string;
+  /** Where the registered bytes were placed on the host, as the mount point. */
+  placed: string;
+  registered: Buffer;
+  runs: number;
+  timeoutMs: number;
+  limitations: string[];
+  /** After each run: why the tree under test is no longer the one it was, or null. */
+  treeDrift?: () => string | null;
+  /** After a run that finished: why its output cannot be read as a result, or null. */
+  unreadable?: (stdout: string) => string | null;
+}
+
+/** The runs themselves: the registered test, bound in from memory, `runs` times. */
+async function runRegistered(o: RunLoop): Promise<void> {
+  const { experiment, ctx, rec } = o;
+  const binaries = sandboxBinaries(o.profile);
+  if (!binaries.scope) o.limitations.push(NO_SCOPE_LIMITATION);
+  for (let i = 0; i < o.runs; i++) {
+    const runStarted = rec.now();
+    // The test is bound into the sandbox from the verified buffer on every run. The worktree
+    // copy is only the mount point, and a same-uid process can rewrite it between runs.
+    const argv = sandboxArgv(o.profile, {
+      worktree: o.worktree,
+      command: experiment.command,
+      limits: ctx.limits ?? DEFAULT_LIMITS,
+      env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id },
+      files: [{ fd: TEST_FD, path: o.testRel }],
+      statusFd: STATUS_FD,
+    });
+    const shown = argv.map((a) => (a === o.worktree || a === o.root ? '<worktree>' : a));
+    rec.emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
+
+    const run = await execute(argv, o.timeoutMs, o.registered, binaries.scope ?? binaries.prlimit);
+    const label = (s: string) => `run ${i} ${s}`;
+    const stdoutRef = ctx.artifacts.put(run.stdout, { ...rec.meta, kind: 'log', label: label('stdout') });
+    const stderrRef = ctx.artifacts.put(run.stderr, { ...rec.meta, kind: 'log', label: label('stderr') });
+    if (run.truncated) o.limitations.push(`run ${i}: output exceeded ${STREAM_CAP} bytes and was cut`);
+    const { observed, matches } = observe(experiment.prediction, run);
+    // Something rewrote the copy while we held the worktree. The bytes that ran were still
+    // the registered ones, but a harness under attack is not one to draw a conclusion from.
+    const drifted = !sameFile(o.placed, o.registered);
+    const moved = drifted ? null : o.treeDrift?.() ?? null;
+    const unstarted = launchFailure(run);
+    const unreadable = drifted || moved || unstarted || run.timedOut ? null : o.unreadable?.(run.stdout) ?? null;
+    const status: ExecutionStatus = drifted || moved || unstarted || unreadable ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
+    rec.record({
+      experimentId: experiment.id, runIndex: i,
+      status,
+      why: drifted
+        ? `the worktree copy of ${o.testRel} changed during the experiment; something else is writing to it`
+        : moved ?? unstarted ?? unreadable ?? (run.timedOut ? `killed at the ${o.timeoutMs}ms wall-clock ceiling` : undefined),
+      command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
+      sandboxBinaries: binaries,
+      exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
+      durationMs: rec.now() - runStarted, stdoutRef, stderrRef,
+      prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,
+      harnessDigest: experiment.harnessDigest, startedAt: runStarted, finishedAt: rec.now(),
+    });
+  }
+}
+
+export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
+  sweepAbandoned({ ...ctx, projectId: experiment.projectId });
+  const runs = Math.max(1, ctx.runs ?? 2);
+  const timeoutMs = ctx.timeoutMs ?? 60_000;
+  const profile = ctx.sandbox ?? detectSandbox();
+  const limitations = [...experiment.limitations];
+  const rec = recorder(experiment, ctx, limitations);
+  const { records, refs, emit, refuse } = rec;
   const finish = (): Experiment => {
     const conclusion = concludeFrom(records);
     const updated = ctx.store.updateExperiment(experiment.id, {
@@ -582,7 +695,7 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
     return updated;
   };
 
-  const startedAt = now();
+  const startedAt = rec.now();
 
   // Everything that can disqualify the experiment is checked before a worktree exists, so a
   // refused run leaves nothing behind and spawns nothing.
@@ -685,48 +798,9 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       limitations.push('registered before the test path was covered by the harness digest; the path on the row is trusted as is');
     }
 
-    const binaries = sandboxBinaries(profile);
-    if (!binaries.scope) limitations.push(NO_SCOPE_LIMITATION);
-    for (let i = 0; i < runs; i++) {
-      const runStarted = now();
-      // The test is bound into the sandbox from the verified buffer on every run. The worktree
-      // copy is only the mount point, and a same-uid process can rewrite it between runs.
-      const argv = sandboxArgv(profile, {
-        worktree,
-        command: experiment.command,
-        limits: ctx.limits ?? DEFAULT_LIMITS,
-        env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id },
-        files: [{ fd: TEST_FD, path: testRel }],
-        statusFd: STATUS_FD,
-      });
-      const shown = argv.map((a) => (a === worktree || a === root ? '<worktree>' : a));
-      emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
-
-      const run = await execute(argv, timeoutMs, registered, binaries.scope ?? binaries.prlimit);
-      const label = (s: string) => `run ${i} ${s}`;
-      const stdoutRef = ctx.artifacts.put(run.stdout, { ...meta, kind: 'log', label: label('stdout') });
-      const stderrRef = ctx.artifacts.put(run.stderr, { ...meta, kind: 'log', label: label('stderr') });
-      if (run.truncated) limitations.push(`run ${i}: output exceeded ${STREAM_CAP} bytes and was cut`);
-      const { observed, matches } = observe(experiment.prediction, run);
-      // Something rewrote the copy while we held the worktree. The bytes that ran were still
-      // the registered ones, but a harness under attack is not one to draw a conclusion from.
-      const drifted = !sameFile(target, registered);
-      const unstarted = launchFailure(run);
-      const status: ExecutionStatus = drifted || unstarted ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
-      record({
-        experimentId: experiment.id, runIndex: i,
-        status,
-        why: drifted
-          ? `the worktree copy of ${testRel} changed during the experiment; something else is writing to it`
-          : unstarted ?? (run.timedOut ? `killed at the ${timeoutMs}ms wall-clock ceiling` : undefined),
-        command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
-        sandboxBinaries: binaries,
-        exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
-        durationMs: now() - runStarted, stdoutRef, stderrRef,
-        prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,
-        harnessDigest: experiment.harnessDigest, startedAt: runStarted, finishedAt: now(),
-      });
-    }
+    await runRegistered({
+      experiment, ctx, profile, rec, worktree, root, testRel, placed: target, registered, runs, timeoutMs, limitations,
+    });
     return finish();
   } finally {
     // The worktree is disposable by definition. Removed whatever happened above, and pruned
@@ -742,5 +816,200 @@ export async function runExperiment(experiment: Experiment, ctx: RunContext): Pr
       // Nothing to prune is not an error worth surfacing.
     }
     fs.rmSync(base, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Write `bytes` at `target` as a new regular file, through no symlink, inside `root`. The
+ * parent is created; a parent that resolves outside `root` refuses.
+ */
+function placeExclusive(root: string, target: string, bytes: Buffer): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const parent = fs.realpathSync(path.dirname(target));
+  if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`the directory for ${path.relative(root, target)} resolves outside the worktree`);
+  }
+  const fd = fs.openSync(
+    target,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+    0o644,
+  );
+  try {
+    fs.writeFileSync(fd, bytes);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// ---- gates -------------------------------------------------------------------------
+
+/**
+ * A tree a gate runs in. The Forge workspace (WS2) materialises it from a sibling git dir,
+ * never the real checkout: the base, or the base with one candidate's diff applied.
+ */
+export interface GateTree {
+  /** Host directory bound read-only at `/work`. */
+  tree: string;
+  /** The sibling git dir whose `index` describes `tree`. */
+  gitDir: string;
+  dispose(): void;
+}
+
+export interface GateRunContext extends RunContext {
+  target: ExecutionTarget;
+  /** Builds the tree to run in. Throws to refuse: the run is then `invalid`. */
+  materialise: () => GateTree;
+}
+
+export interface GateRunResult {
+  conclusion: ExperimentConclusion;
+  executions: ArtifactRef[];
+  limitations: string[];
+  records: ExecutionRecord[];
+}
+
+/** One run cannot tell a flaky gate from a verdict, so a gate never runs fewer. */
+export const MIN_GATE_RUNS = 2;
+
+const TESTS_SUMMARY = /^(?:# |ℹ )tests (\d+)\s*$/m;
+
+/**
+ * Why a gate run's output is not a result: the node test runner prints a `tests N` summary
+ * in both the tap and spec reporters, so no summary means the suite never got going, and
+ * `tests 0` means there was nothing in it. Either is `invalid`, never a failing gate.
+ */
+export function noTestsReported(stdout: string): string | null {
+  const m = TESTS_SUMMARY.exec(stdout);
+  if (!m) return 'the test runner printed no tests summary; a suite that never reports crashed at load, which is not a failing gate';
+  if (Number(m[1]) === 0) return 'the test runner reported 0 tests; an empty gate is not evidence either way';
+  return null;
+}
+
+/**
+ * Why `t.tree` no longer matches its index, apart from the placed test, or null. A same-uid
+ * process can write to the host directory between runs; a tree that moved is not the one the
+ * digest names.
+ */
+function treeDriftOf(t: GateTree, testRel: string): string | null {
+  const run = (args: string[]) =>
+    execFileSync('git', [
+      ...HARDENED_GIT_CONFIG, '-c', 'core.autocrlf=false', `--git-dir=${t.gitDir}`, `--work-tree=${t.tree}`, ...args,
+    ], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+      env: { ...hardenedGitEnv(), GIT_INDEX_FILE: path.join(t.gitDir, 'index') },
+    });
+  try {
+    try {
+      run(['update-index', '-q', '--refresh']);
+    } catch {
+      // Non-zero when entries need updating; diff-files below names them.
+    }
+    const changed = run(['diff-files', '--name-only', '-z']).split('\0').filter(Boolean);
+    const extra = run(['ls-files', '--others', '-z']).split('\0').filter((f) => f && f !== testRel);
+    const moved = [...changed, ...extra];
+    if (!moved.length) return null;
+    return `the tree under test changed during the gate run (${moved.slice(0, 5).join(', ')}${moved.length > 5 ? ', …' : ''}); something else is writing to it`;
+  } catch (err) {
+    return `the tree under test could not be checked against its index: ${String((err as Error).message).split('\n')[0].slice(0, 300)}`;
+  }
+}
+
+const lexists = (p: string): boolean => {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Run a gate or holdout against the base or one candidate, in a tree the caller materialises.
+ *
+ * The same sandbox, the same verified-buffer binding and the same records as a P0 run, with
+ * three differences. The tree is a detached Forge workspace, never a worktree of the real
+ * repository. After every run the tree is checked against its own index, so anything but the
+ * placed test having moved is `invalid`. And nothing is written to the experiment row: a
+ * gate's conclusion belongs to the gate evaluation the caller records, so a dead runner
+ * leaves no row naming a locked gate (interfaces-reconciled R-8).
+ */
+export async function runGate(x: Experiment, ctx: GateRunContext): Promise<GateRunResult> {
+  if (!isForgeRole(x.role)) throw new Error(`runGate runs gates and holdouts; ${x.id} is a ${String(x.role)}`);
+  const runs = ctx.runs ?? MIN_GATE_RUNS;
+  const timeoutMs = ctx.timeoutMs ?? 60_000;
+  const profile = ctx.sandbox ?? detectSandbox();
+  const limitations = [...x.limitations];
+  const target: ExecutionTarget = { kind: ctx.target.kind, diffDigest: ctx.target.diffDigest };
+  const rec = recorder(x, ctx, limitations, target);
+  const done = (): GateRunResult => ({
+    conclusion: rec.records.length ? concludeFrom(rec.records) : 'invalid',
+    executions: rec.refs, limitations, records: rec.records,
+  });
+  const startedAt = rec.now();
+  const refuse = (why: string): GateRunResult => {
+    rec.refuse('invalid', why, startedAt);
+    return done();
+  };
+
+  if (!profile.available) {
+    rec.refuse('denied', `sandbox unavailable: ${profile.why ?? 'no profile'}`, startedAt);
+    return done();
+  }
+  if (target.kind === 'base' ? target.diffDigest !== null : !/^sha256:[0-9a-f]{64}$/.test(target.diffDigest ?? '')) {
+    return refuse('a base run names no diff, and a candidate run names its diff by sha256 digest');
+  }
+  if (runs < MIN_GATE_RUNS) return refuse(`a gate runs at least ${MIN_GATE_RUNS} times; one run cannot tell a flake from a verdict`);
+  const rev = commitOf(x.baseRevision);
+  if ('why' in rev) return refuse(rev.why);
+  if (!ctx.artifacts.has(x.testArtifact)) return refuse(`registered test ${x.testArtifact.digest} is not in the artifact store`);
+  const testRel = x.testArtifact.path;
+  if (!testRel) return refuse('the registered test has no path to be placed at');
+  const harness = harnessHolds(x, ctx.artifacts);
+  if (!harness.ok) return refuse(harness.why);
+  if (harness.legacy) return refuse('a gate\'s expectation must name its test path, role and base; this one names no path');
+  const allowed = checkAllowlist(x.command, WORK);
+  if (!allowed.ok) return refuse(`command refused: ${allowed.why}`);
+
+  let tree: GateTree;
+  try {
+    tree = ctx.materialise();
+  } catch (err) {
+    return refuse(`the tree under test could not be materialised: ${String((err as Error).message).split('\n')[0].slice(0, 300)}`);
+  }
+  try {
+    // A tree that is gone or unreadable by now is a broken harness: recorded, never thrown.
+    let root: string;
+    let link: string | null;
+    try {
+      root = fs.realpathSync(tree.tree);
+      link = symlinkOnPath(root, testRel);
+    } catch (err) {
+      return refuse(`the tree under test cannot be read: ${(err as Error).message}`);
+    }
+    const placed = path.resolve(root, testRel);
+    if (!placed.startsWith(`${root}${path.sep}`)) return refuse(`test path ${testRel} escapes the tree under test`);
+    if (link) return refuse(`${link} is a symlink in the tree under test; the test is never placed through one`);
+    // The gate's path is the gate's alone. Anything already there came from the base or the
+    // diff, and either way it is not the registered test, identical or not.
+    if (lexists(placed)) return refuse(`a file is already at ${testRel} in the tree under test; a gate's test path belongs to the gate`);
+    let registered: Buffer;
+    try {
+      registered = ctx.artifacts.get(x.testArtifact);
+      placeExclusive(root, placed, registered);
+    } catch (err) {
+      return refuse(`the registered test could not be placed at ${testRel}: ${(err as Error).message}`);
+    }
+    const before = treeDriftOf(tree, testRel);
+    if (before) return refuse(before);
+    const here = checkAllowlist(x.command, root);
+    if (!here.ok) return refuse(`command refused: ${here.why}`);
+
+    await runRegistered({
+      experiment: x, ctx, profile, rec, worktree: tree.tree, root, testRel, placed, registered, runs, timeoutMs,
+      limitations, treeDrift: () => treeDriftOf(tree, testRel), unreadable: noTestsReported,
+    });
+    return done();
+  } finally {
+    tree.dispose();
   }
 }

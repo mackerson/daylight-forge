@@ -97,5 +97,19 @@
       },
       "callee": "(^|\\.)(writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|writeSync|copyFileSync|renameSync|symlinkSync)$"
     }
+  },
+  {
+    "id": "verdict-is-pure",
+    "prose": "A candidate's verdict is computed from rows handed to it. engine/forge/verdict.ts never calls into the swarm, the mission store or the experiment runner.",
+    "rationale": "ADR-19: attempt state, exit code and narrative are not verdict inputs. A verdict that could look things up could read them; this keeps the only inputs the VerdictRows its caller passes, which carry no such field. engine/test/forge-gate.ts holds the property half: the verdict is the same across attempt state, exit code and narrative.",
+    "predicate": {
+      "type": "forbidden-call",
+      "from": {
+        "file": "^engine/forge/verdict\\.ts$"
+      },
+      "to": {
+        "file": "^engine/(swarm/|mission/store\\.ts$|experiment/)"
+      }
+    }
   }
 ]
