@@ -161,7 +161,7 @@ async function gate(sub: string | undefined, p: Parsed, out: () => string, asJso
       else {
         say(l.lock ? `locked: ${l.lock.gateSetDigest}` : 'not locked');
         for (const g of l.gates) {
-          say(`${g.role.padEnd(7)} ${g.experimentId} ${g.testPath} baseline=${g.baseline ?? 'none'}${g.lockedBy ? ' locked' : ''}${g.vacuousOverride ? ' vacuous-accepted' : ''}`);
+          say(`${g.role.padEnd(7)} ${g.experimentId} ${g.testPath ?? '(path withheld)'} baseline=${g.baseline ?? 'none'}${g.lockedBy ? ' locked' : ''}${g.vacuousOverride ? ' vacuous-accepted' : ''}`);
         }
       }
       return 0;

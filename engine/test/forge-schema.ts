@@ -410,6 +410,18 @@ let authorId: string;
   check('exec without write is refused', !!throws(() => store.startAttempt({
     taskId: author.id, runnerId: 'agent:mock:a', sandbox: { profile: 'author', exec: true },
   })));
+  check('exec on a write grant that did not carry execute is refused (R17.1)', !!throws(() => store.startAttempt({
+    taskId: store.createTask({ missionId: adhoc.id, role: 'author', objective: 'exec without its grant' }).id, runnerId: 'agent:mock:a',
+    sandbox: { profile: 'author', write: true, exec: true, authorizeDecisionId: otherAuth.id },
+  })));
+  {
+    const t = store.createTask({ missionId: mission.id, role: 'author', objective: 'exec on its grant' });
+    const x = store.startAttempt({
+      taskId: t.id, runnerId: 'agent:mock:x', sandbox: { profile: 'author', network: 'none', write: true, exec: true, authorizeDecisionId: decision.id },
+    });
+    check('exec on a grant that carried execute is stamped on the attempt (R17.1)', store.attempt(x.id)!.sandbox!.exec === true);
+    store.finishAttempt(x.id, { state: 'cancelled', costUsd: null, failure: 'test' });
+  }
   check('an unknown network mode is refused', !!throws(() => store.startAttempt({
     taskId: author.id, runnerId: 'agent:mock:a', sandbox: { network: 'filtered' as never },
   })));

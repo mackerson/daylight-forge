@@ -423,6 +423,16 @@ section('daylight work-item list | show | approve | reject (the module WS8 dispa
     !shown.stdout.split('\n').some((l) => l.trim() === confirmCodeOf(target.contentDigest)));
 
   const code8 = confirmCodeOf(target.contentDigest);
+  // Acceptance F4: like `mission decide`, a decision without --confirm previews instead of refusing.
+  const preview = run(['approve', target.id, '--actor', HUMAN]);
+  check('approve without --confirm previews what would be confirmed and exits 2',
+    preview.code === 2 && preview.stdout.includes(target.id) && preview.stdout.includes(`digest ${target.contentDigest}`) && /--confirm/.test(preview.stderr),
+    `${preview.code} ${preview.stdout} ${preview.stderr}`);
+  const previewJson = run(['reject', target.id, '--actor', HUMAN, '--format', 'json']);
+  const pj = previewJson.code === 2 ? JSON.parse(previewJson.stdout) as { confirm?: string; digest?: string; lines?: string[] } : {};
+  check('reject without --confirm previews as one JSON document', pj.confirm === 'required' && /^sha256:/.test(pj.digest ?? '') && (pj.lines ?? []).length > 0,
+    previewJson.stdout + previewJson.stderr);
+  check('and a preview decides nothing', ctx.store.workItem(target.id)!.status === 'proposed');
   const agent = run(['approve', target.id, '--actor', HUMAN, '--rationale', 'ok', '--confirm', code8], { ...CLEAN_ENV, CLAUDECODE: '1' });
   check('approve from an agent shell exits 1 with the guard\'s reason', agent.code === 1 && /CLAUDECODE/.test(agent.stderr), agent.stderr);
   const wrong = run(['approve', target.id, '--actor', HUMAN, '--rationale', 'ok', '--confirm', '00000000', '--format', 'json']);

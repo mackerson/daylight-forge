@@ -60,6 +60,9 @@ const sandboxColumns = (s: AttemptSandbox | null): Array<string | number | null>
 const tokenColumns = (t: TokenUsage): [number | null, number | null, number | null, number | null] =>
   [t.input, t.output, t.cacheRead, t.cacheWrite];
 
+const mergeRefs = (have: ArtifactRef[], add: ArtifactRef[]): ArtifactRef[] =>
+  [...have, ...add.filter((r) => !have.some((h) => h.id === r.id))];
+
 const maxOf = (a: number | null, b: number | null): number | null =>
   a === null ? b : b === null ? a : Math.max(a, b);
 
@@ -68,6 +71,11 @@ export function grantsWrite(d: Decision | null | undefined, missionId: string): 
   const scope = d?.scope as { operation?: unknown; permissions?: { write?: unknown } } | undefined;
   return !!d && d.missionId === missionId && d.kind === 'approve' && isHumanActor(d.actor)
     && scope?.operation === 'authorize-mission' && scope.permissions?.write === true;
+}
+
+/** A write grant (`grantsWrite`) that also carried `execute: true` explicitly (R17.1). */
+export function grantsExec(d: Decision | null | undefined, missionId: string): boolean {
+  return grantsWrite(d, missionId) && (d!.scope as { permissions?: { execute?: unknown } }).permissions?.execute === true;
 }
 
 /**
@@ -96,7 +104,7 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
 /**
  * Why an attempt row breaks R7 or R12, or null: an ingested attempt outside a work mission or
  * with a sandbox record; a Daylight attempt without one, with an unknown profile or network,
- * with exec but no write, or with write that `grant` (its named decision) does not give.
+ * with exec but no write, or with write or exec that `grant` (its named decision) does not give.
  * `startAttempt` and `importMission` both ask this.
  */
 export function attemptRefusal(
@@ -126,6 +134,9 @@ export function attemptRefusal(
       return `decision ${s.authorizeDecisionId} is not a human authorize-mission decision granting write on mission ${mission.id}`;
     }
     if (!mission.permissions.write) return `mission ${mission.id} does not hold write`;
+    if (s.exec && (!grantsExec(grant, mission.id) || !mission.permissions.execute)) {
+      return `attempt ${a.id} asks for exec, which decision ${s.authorizeDecisionId} did not grant on mission ${mission.id}`;
+    }
   }
   return null;
 }
@@ -795,7 +806,8 @@ export class MissionStore {
           costSource,
           result.exitCode ?? null, result.signal ?? null,
           result.timedOut ? 1 : 0, result.failure ?? null,
-          JSON.stringify(result.artifacts ?? []), result.model ?? null,
+          // Kept: what was attached while it ran (its exec logs) stays beside what it ended with.
+          JSON.stringify(mergeRefs(a.artifacts, result.artifacts ?? [])), result.model ?? null,
           ...tokenColumns(result.tokens ?? a.tokens), result.usageSource ?? a.usageSource, attemptId,
         );
       for (const ref of result.artifacts ?? []) this.recordArtifact(ref);
@@ -804,6 +816,25 @@ export class MissionStore {
       if (t.state === 'running') {
         this.transitionTask(t.id, result.state === 'completed' ? 'done' : 'failed');
       }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return this.requireAttempt(attemptId);
+  }
+
+  /**
+   * Attach artifacts to a running attempt (its `run` tool's logs, R17.1) and record their rows,
+   * so the attempt, `mission inspect` and an export all name them.
+   */
+  attachAttemptArtifacts(attemptId: string, refs: ArtifactRef[]): Attempt {
+    const a = this.requireAttempt(attemptId);
+    if (a.state !== 'running') throw new Error(`attempt ${attemptId} is ${a.state}; artifacts are attached while it runs`);
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('UPDATE attempts SET artifacts=? WHERE id=?').run(JSON.stringify(mergeRefs(a.artifacts, refs)), attemptId);
+      for (const ref of refs) this.recordArtifact(ref);
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');
@@ -1704,6 +1735,12 @@ export class MissionStore {
     };
   }
 
+  /** One `attempt.exec` event per `run` call (R17.1): the count travels with the events in an export. */
+  private execRunsOf(attemptId: string): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM events WHERE attempt_id=? AND name='attempt.exec'").get(attemptId) as { n: number };
+    return Number(row.n);
+  }
+
   private rowToAttempt(row: unknown): Attempt {
     const r = row as Record<string, unknown>;
     return {
@@ -1724,6 +1761,7 @@ export class MissionStore {
       timedOut: !!(r.timed_out as number),
       failure: (r.failure as string | null) ?? undefined,
       artifacts: parseJson<ArtifactRef[]>(r.artifacts as string, []),
+      ...(r.sandbox_exec === 1 ? { execRuns: this.execRunsOf(r.id as string) } : {}),
       tokens: {
         input: (r.input_tokens as number | null) ?? null,
         output: (r.output_tokens as number | null) ?? null,

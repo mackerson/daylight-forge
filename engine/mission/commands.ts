@@ -241,7 +241,8 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       if (!id) throw new Usage('mission replay needs a <mission-id>');
       const events = withContext(out, (ctx) => {
         if (!ctx.store.mission(id)) throw new Error(`unknown mission ${id}`);
-        return ctx.events.forMission(id);
+        // As `events` and `mission inspect` do: a holdout's path, digests and runs stay in the engine.
+        return withholdHoldoutEvents(holdoutContent(ctx, [id]), ctx.events.forMission(id));
       });
       if (asJson) json(events);
       else {

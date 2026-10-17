@@ -307,8 +307,8 @@ export const NETWORK_MODES: readonly NetworkMode[] = ['none', 'shared'];
  * `write` is a mode, not a violation: an implement attempt writes to its detached workspace.
  * It is only ever true when an `authorize-mission` decision of the attempt's mission granted
  * it (R7), named in `authorizeDecisionId`, and the store refuses anything else. `exec` needs
- * `write` and otherwise has no behaviour here: whether an author may execute at all is an open
- * owner question (R9.2, R11.1).
+ * `write` and a grant that carried `execute: true` (R17.1); it offers the author the MCP `run`
+ * tool, whose commands run in a nested sandbox with no network (R11.1).
  */
 export interface AttemptSandbox {
   profile: SandboxProfileName;
@@ -367,6 +367,12 @@ export interface Attempt {
   /** Short reason when the state is `failed` or `cancelled`. */
   failure?: string;
   artifacts: ArtifactRef[];
+  /**
+   * How many times an exec attempt's author called its `run` tool (R17.1): its `attempt.exec`
+   * events, present only on an attempt stamped exec. Derived, so the schema (which never
+   * migrates) is unchanged and an export carries it with the events.
+   */
+  execRuns?: number;
   /** Totals over the attempt's `attempt_usage` rows. The ledger of record, never a sum of events. */
   tokens: TokenUsage;
   usageSource: UsageSource;

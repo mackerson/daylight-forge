@@ -16,7 +16,7 @@ import { missionSpend, spendRefusal } from '../swarm/usage.ts';
 import { authorFor, authorLauncher, authorServer, authorTools } from './authors.ts';
 import { captureCandidate } from './diff.ts';
 import { authorBrief, evaluate, resolveCommit, type GateContext } from './gate.ts';
-import { MCP_CONFIG, newMcpToken } from './sandbox.ts';
+import { MCP_CONFIG, newMcpToken, type ExecResult } from './sandbox.ts';
 import { createWorkspace, sweepWorkspaces, type Workspace } from './workspace.ts';
 
 /**
@@ -31,8 +31,9 @@ import { createWorkspace, sweepWorkspaces, type Workspace } from './workspace.ts
  * digest, and judged by the gates. One attempt per run; nothing here decides, applies or
  * closes anything: those are a person's.
  *
- * Exec is refused (R15.5): until the owner decides R9.2, an attempt never starts with exec,
- * and a mission that was somehow granted it is refused here too.
+ * Exec (R17.1) is the author's MCP `run` tool, whose commands run in a nested sandbox with no
+ * network and no gate tests. An attempt carries exec only when the mission's authorize
+ * decision granted `execute: true` explicitly; the stamp on its row is then the only source.
  */
 
 export class ImplementRefused extends Error {
@@ -74,6 +75,8 @@ const DEFAULT_TIMEOUT_MS = 600_000;
 const AUTHOR_MAX_TURNS = 60;
 /** The narrative an author printed, at most; it is a claim, not evidence. */
 const MAX_NARRATIVE_BYTES = 16 * 1024;
+/** Of a `run` command, at most this much is kept (redacted) on its event; the digest covers all of it. */
+const MAX_EXEC_COMMAND = 2048;
 
 const sha12 = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 12);
 
@@ -143,18 +146,18 @@ function specPathOf(ctx: DaylightContext, item: WorkItem | null): string | undef
 /** Reasons this mission may not have an author attempt now; empty when it may. */
 function preflight(
   ctx: DaylightContext, m: Mission, root: string, profile: SandboxProfile, o: ImplementOptions,
-): { why: string[]; authorize: Decision | null; lock: Decision | null; base: string | null } {
+): { why: string[]; authorize: Decision | null; exec: boolean; lock: Decision | null; base: string | null } {
   const why: string[] = [];
   if (m.kind !== 'implement') why.push(`mission ${m.id} is ${m.kind}; only an implement mission has an author`);
   if (m.state !== 'ready' && m.state !== 'running') why.push(`mission ${m.id} is ${m.state}; an author runs on a ready or running mission`);
   if (!m.permissions.write) why.push(`mission ${m.id} does not hold write; a person grants it with \`daylight mission authorize --write\``);
-  if (m.permissions.execute) {
-    why.push(`mission ${m.id} holds execute, and author exec is refused until the owner decides R9.2`);
-  }
   const authorize = ctx.store.authorizeDecision(m.id);
-  const granted = authorize?.scope.permissions as { write?: unknown } | undefined;
+  const granted = authorize?.scope.permissions as { write?: unknown; execute?: unknown } | undefined;
   if (!authorize || !isHumanActor(authorize.actor) || granted?.write !== true) {
     why.push(`mission ${m.id} has no human authorize-mission decision granting write`);
+  }
+  if (m.permissions.execute !== (granted?.execute === true)) {
+    why.push(`mission ${m.id}'s execute permission does not match its authorize decision`);
   }
   const lock = ctx.store.lockDecision(m.id);
   if (!lock) why.push(`mission ${m.id} has no gate lock; a person locks the gates before an author runs`);
@@ -182,7 +185,7 @@ function preflight(
   }
   const spend = spendRefusal(missionSpend(ctx, m.id), o.maxCost ?? budget);
   if (spend) why.push(spend);
-  return { why, authorize, lock, base };
+  return { why, authorize, exec: granted?.execute === true, lock, base };
 }
 
 /**
@@ -249,15 +252,16 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
     const token = newMcpToken();
     const started = ctx.store.startAttempt({
       taskId: task.id, runnerId, sessionId: `${mission.id}:${task.id}:a${task.attemptIds.length + 1}`,
-      sandbox: { profile: 'author', network, write: true, exec: false, authorizeDecisionId: authorize.id },
+      sandbox: { profile: 'author', network, write: true, exec: pre.exec, authorizeDecisionId: authorize.id },
       gateSetDigest: lockDigest, mcpToken: token, credential, pid: process.pid,
     });
     attemptId = started.id;
     // The store's own row is the only grant source from here on (ws2 ask).
     const row = ctx.store.attempt(started.id)!;
-    if (row.sandbox?.exec) throw new ImplementRefused(`attempt ${row.id} carries exec, which is refused until the owner decides R9.2`);
+    const exec = row.sandbox?.exec === true;
+    if (exec !== pre.exec) throw new ImplementRefused(`attempt ${row.id}'s exec stamp does not match its authorize decision`);
     emit(ctx, mission, 'lifecycle', 'attempt.started', {
-      state: mission.state, runnerId, profile: 'author', network, write: true, exec: false, authorizeDecisionId: authorize.id, gateSetDigest: lockDigest,
+      state: mission.state, runnerId, profile: 'author', network, write: true, exec, authorizeDecisionId: authorize.id, gateSetDigest: lockDigest,
     }, { taskId: task.id, attemptId: row.id });
 
     try {
@@ -272,7 +276,20 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
     const spend = missionSpend(ctx, mission.id);
     const ceiling = o.maxCost ?? mission.budget.maxUsd;
     const workspace = ws;
-    await withAttemptSocket(ctx, row, token, () => authorServer({ attempt: row, tree: workspace.tree, out: ctx.out, profile, artifacts: ctx.artifacts }),
+    // Every `run` call goes on the ledger (review R1): its logs onto the attempt, one event each.
+    const onRun = (r: ExecResult, argv: string[]) => {
+      ctx.store.attachAttemptArtifacts(row.id, r.artifacts);
+      const [stdoutRef, stderrRef] = r.artifacts;
+      emit(ctx, mission, 'process', 'attempt.exec', {
+        state: mission.state,
+        commandDigest: `sha256:${createHash('sha256').update(JSON.stringify(argv)).digest('hex')}`,
+        // A person reads what ran; a secret-shaped argument is masked before it is stored.
+        command: redact(argv.join(' ').slice(0, MAX_EXEC_COMMAND)).text,
+        exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, truncated: r.truncated, durationMs: r.durationMs,
+        stdoutArtifactId: stdoutRef?.id ?? null, stderrArtifactId: stderrRef?.id ?? null,
+      }, { taskId: task.id, attemptId: row.id, artifactIds: r.artifacts.map((a) => a.id) });
+    };
+    await withAttemptSocket(ctx, row, token, () => authorServer({ attempt: row, tree: workspace.tree, out: ctx.out, profile, artifacts: ctx.artifacts, onRun }),
       (mcp) => captureRun(author.adapter, {
         prompt, cwd: workspace.tree, mcpConfigPath: MCP_CONFIG, session: row.sessionId!, model: spec.model,
         timeoutMs: o.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTurns: AUTHOR_MAX_TURNS,
@@ -301,7 +318,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
         diffArtifact: captured.diffArtifact!, summaryArtifact, ...(narrativeArtifact ? { narrativeArtifact } : {}),
         files: captured.files, policyViolations: captured.policyViolations, secretHits: captured.secretHits,
         possibleSecretHits: captured.possibleSecretHits,
-        gateSetDigest: lockDigest, profile: { name: 'author', network, write: true, exec: false },
+        gateSetDigest: lockDigest, profile: { name: 'author', network, write: true, exec },
         attemptState: finished.state, ...(finished.failure ? { attemptFailure: finished.failure } : {}),
       });
       emit(ctx, mission, 'lifecycle', 'forge.candidate.recorded', {

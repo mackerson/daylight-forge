@@ -429,6 +429,11 @@ if (!live.available) {
       return l.gates.length === 3 && v?.baseline === 'supported' && v.vacuousOverride && v.lockedBy === d.id
         && l.gates.find((g) => g.experimentId === h2.id)?.lockedBy === null;
     })());
+    check('gate list withholds a holdout\'s path and keeps a gate\'s', (() => {
+      const l = listGates(ctx, m2.id);
+      return l.gates.find((g) => g.experimentId === h2.id)?.testPath === null && !!l.gates.find((g) => g.experimentId === g2.id)?.testPath
+        && !JSON.stringify(l).includes(dctx.store.experiment(h2.id)!.testArtifact.path!);
+    })());
   }
 
   section('the author is shown gates, never holdouts');

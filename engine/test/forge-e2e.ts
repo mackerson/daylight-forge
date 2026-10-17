@@ -5,7 +5,8 @@
  * step the P1 loop has: spec → blind decomposer over the attempt socket → work item approved
  * → implement mission → authorize → gate and holdout → baseline → lock → a mock author in the
  * bwrap author profile writes the fix → gates → approve → apply onto a new branch → the
- * project ledger → export, import and replay. Then the refusals: an exec grant, an author who
+ * project ledger → export, import and replay. Then exec as the author's nested no-network
+ * `run` tool (R17.1), granted and not, and the refusals: exec without write, an author who
  * touches a protected path, a decision taken from inside an agent session, and no sandbox.
  *
  * Mocks only: no real provider binary is ever run. bwrap is required: without it this file
@@ -14,6 +15,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { detectSandbox } from '../experiment/sandbox.ts';
@@ -218,13 +220,13 @@ let implement!: Mission;
   check('and needs a person to authorize it', kinds(inspect(implement.id).needs).includes('mission-awaiting-authorize'));
 }
 
-section('authorize: exec is refused (R15.5), write is granted');
+section('authorize: exec without write is refused (R17.1), write is granted');
 let authorizeId = '';
 {
-  const ex = confirmOf('authorize-mission', implement.id, ['--write', '--execute']);
-  check('confirm refuses an exec grant before any dialog', !!ex.refusal && /R9\.2/.test(ex.refusal), String(ex.refusal));
-  const exr = run(['mission', 'authorize', implement.id, '--out', out, '--write', '--execute', '--rationale', 'r', '--confirm', ex.digest8]);
-  check('and mission authorize --execute is refused', exr.code === 1 && /R9\.2/.test(exr.err), exr.err.slice(-200));
+  const ex = confirmOf('authorize-mission', implement.id, ['--execute']);
+  check('confirm refuses an exec grant without write before any dialog', !!ex.refusal && /without --write/.test(ex.refusal), String(ex.refusal));
+  const exr = run(['mission', 'authorize', implement.id, '--out', out, '--execute', '--rationale', 'r', '--confirm', ex.digest8]);
+  check('and mission authorize --execute without --write is refused', exr.code === 1 && /without --write/.test(exr.err), exr.err.slice(-200));
   check('leaving the mission a draft without write', inspect(implement.id).mission.state === 'draft' && !inspect(implement.id).mission.permissions.write);
   const c = confirmOf('authorize-mission', implement.id, ['--write']);
   const m = json<Mission>(run(['mission', 'authorize', implement.id, '--out', out, '--write', '--rationale', 'build the approved item', '--confirm', c.digest8, '--format', 'json']));
@@ -322,6 +324,14 @@ section('holdout content reaches no renderer-facing read: events, artifact, the 
   check('nor does events --mission', leaks(mine).length === 0, leaks(mine).join(' '));
   const inspected = run(['mission', 'inspect', implement.id, '--out', out, '--format', 'json']).out;
   check('nor does mission inspect', leaks(inspected).length === 0, leaks(inspected).join(' '));
+  // Acceptance F3: replay and gate list named the holdout's path.
+  for (const form of [['--format', 'json'], []]) {
+    const replayed = run(['mission', 'replay', implement.id, '--out', out, ...form]).out;
+    check(`nor does mission replay ${form.join(' ') || '(text)'}`, replayed.length > 100 && leaks(replayed).length === 0, leaks(replayed).join(' '));
+    const listed = run(['gate', 'list', implement.id, '--out', out, ...form]);
+    check(`nor does gate list ${form.join(' ') || '(text)'}, which still lists the holdout by id`,
+      listed.code === 0 && listed.out.includes(holdout.id) && leaks(listed.out).length === 0, leaks(listed.out).join(' ') + listed.err.slice(-200));
+  }
   for (const [what, digest] of [['test', holdout.test], ['expectation', holdout.expected], ['run record', holdout.runs[0]]] as const) {
     const r = run(['artifact', digest, '--out', out, '--format', 'json']);
     check(`artifact <the holdout's ${what} digest> is refused`, r.code === 1 && !r.out.includes(SENTINEL) && /holdout/.test(r.err), `${r.code} ${r.err.slice(-200)}`);
@@ -432,6 +442,144 @@ section('negative: an author that touches a protected path');
     inspect(m.id).needs.some((n) => n.kind === 'gate-lock' && /no baseline/.test(n.why)), JSON.stringify(inspect(m.id).needs));
   const neither = run(['mission', 'create', repo, '--kind', 'implement', '--out', out]);
   check('an implement mission with neither --work-item nor --no-work-item is a usage error (exit 2)', neither.code === 2, `${neither.code} ${neither.err.slice(-200)}`);
+}
+
+section('exec (R17.1): the author\'s run tool, only on an exec grant, in a nested no-network sandbox');
+{
+  const listener = net.createServer((c) => c.destroy());
+  await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  const port = (listener.address() as net.AddressInfo).port;
+  /** An ad hoc implement mission granted `grant`, with a gate and a holdout locked, and their test paths. */
+  const lockedMission = (objective: string, grant: string[]) => {
+    const c0 = confirmOf('adhoc-mission', objective);
+    const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective,
+      '--rationale', 'r', '--confirm', c0.digest8, '--out', out, '--format', 'json']));
+    const c1 = confirmOf('authorize-mission', m.id, grant);
+    const auth = run(['mission', 'authorize', m.id, '--out', out, ...grant, '--rationale', 'r', '--confirm', c1.digest8, '--format', 'json']);
+    for (const [role, file] of [['gate', 'add.test.js'], ['holdout', 'holdout.test.js']]) {
+      run(['gate', 'add', m.id, '--role', role, '--test', path.join(tmp, file), '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', file, '--out', out]);
+    }
+    run(['gate', 'baseline', m.id, repo, '--out', out]);
+    const c2 = confirmOf('lock-gates', m.id);
+    run(['gate', 'lock', m.id, '--out', out, '--rationale', 'r', '--confirm', c2.digest8]);
+    const d = openDaylight(out);
+    try {
+      const testPaths = (['gate', 'holdout'] as const).flatMap((role) => d.store.experimentsFor(m.id, role).map((x) => x.testArtifact.path!));
+      return { mission: json<Mission>(auth), authorized: auth, testPaths };
+    } finally {
+      d.close();
+    }
+  };
+  /** An author that writes the fix, then asks its MCP server to `run` a probe of the sandbox the command lands in. */
+  const runner = (testPaths: string[]) => {
+    const probe = [
+      "const net = require('node:net'); const fs = require('node:fs');",
+      `const present = ${JSON.stringify(testPaths)}.filter((p) => fs.existsSync('/work/' + p));`,
+      "const report = (v) => { console.log(JSON.stringify({ connect: v, present, gateDir: fs.existsSync('/work/.daylight-gates'),",
+      "  socket: fs.existsSync('/run/daylight/mcp.sock'), cwd: process.cwd() })); process.exit(0); };",
+      `const s = net.connect(${port}, '127.0.0.1');`,
+      "s.on('connect', () => report('connected')); s.on('error', (e) => report(e.code)); setTimeout(() => report('timeout'), 3000);",
+    ].join('\n');
+    // The second call carries a secret-shaped argument: what the ledger records of it must be masked.
+    return mcpMock([
+      { name: 'run', arguments: { argv: ['node', '-e', probe], timeoutSeconds: 30 } },
+      { name: 'run', arguments: { argv: ['node', '-e', 'process.exit(3)', EXEC_SECRET] } },
+    ]).replace("'use strict';\n",
+      `'use strict';\nrequire('node:fs').writeFileSync('/work/src/add.js', ${JSON.stringify('module.exports = (a, b) => a + b;\n')});\n`);
+  };
+  type Reply = { result?: { isError?: boolean; tools?: Array<{ name: string }>; content?: Array<{ text: string }> }; error?: unknown };
+  /** The mock's MCP replies, from the stdout log captureRun kept on its attempt. */
+  const repliesOf = (a: Attempt): Record<string, Reply> => {
+    const d = openDaylight(out);
+    try {
+      const log = d.store.attempt(a.id)!.artifacts.find((r) => r.kind === 'log' && r.label?.startsWith('stdout'));
+      return log ? JSON.parse(d.artifacts.text(log).trim().split('\n').at(-1)!) as Record<string, Reply> : {};
+    } finally {
+      d.close();
+    }
+  };
+  const EXEC_SECRET = `sk-ant-api03-${'EXECARGSECRET'.repeat(6)}`;
+  const grantOf = (id: string) => inspect(id).decisions.find((d) => d.scope.operation === 'authorize-mission');
+
+  try {
+    const granted = lockedMission('make add return the sum (with exec)', ['--write', '--execute']);
+    check('authorize --write --execute is granted: write and execute, carried explicitly on the decision',
+      granted.authorized.code === 0 && granted.mission.permissions.write && granted.mission.permissions.execute
+      && (grantOf(granted.mission.id)?.scope.permissions as { execute?: unknown } | undefined)?.execute === true,
+      granted.authorized.err.slice(-300));
+    const script = path.join(tmp, 'mock-author-run.cjs');
+    fs.writeFileSync(script, runner(granted.testPaths));
+    const r = run(['forge', 'run', granted.mission.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: script });
+    const res = json<{ candidate: Candidate; verdict: string; attempt: Attempt }>(r);
+    check('the attempt is stamped exec, still write, no network, its decision named',
+      r.code === 0 && res.attempt.sandbox?.exec === true && res.attempt.sandbox.write && res.attempt.sandbox.network === 'none'
+      && res.attempt.sandbox.authorizeDecisionId === grantOf(granted.mission.id)?.id,
+      `${JSON.stringify(res.attempt?.sandbox)} ${r.err.slice(-400)}`);
+    check('as are the candidate\'s profile and the attempt.started event', res.candidate?.profile.exec === true
+      && inspect(granted.mission.id).events.some((e) => e.name === 'attempt.started' && e.attemptId === res.attempt.id && e.payload.exec === true));
+    const replies = repliesOf(res.attempt);
+    check('the author\'s MCP server offers run', !!replies['2']?.result?.tools?.some((t) => t.name === 'run'), JSON.stringify(replies['2']).slice(0, 300));
+    const reply = JSON.parse(replies['3']?.result?.content?.[0]?.text ?? '{}') as { exitCode?: number; stdout?: string; artifacts?: string[] };
+    check('the run call succeeded', reply.exitCode === 0 && !replies['3']?.result?.isError, JSON.stringify(replies['3']).slice(0, 400));
+    const seen = JSON.parse(reply.stdout?.trim() || '{}') as { connect?: string; present?: string[]; gateDir?: boolean; socket?: boolean; cwd?: string };
+    check('the command ran in the nested sandbox: at /work, with no MCP socket bound', seen.cwd === '/work' && seen.socket === false, JSON.stringify(seen));
+    check('a TCP connect to a listening 127.0.0.1 port fails inside it', !!seen.connect && seen.connect !== 'connected' && seen.connect !== 'timeout', String(seen.connect));
+    check('the gate and holdout test paths are absent inside it', granted.testPaths.length === 2 && seen.present?.length === 0 && seen.gateDir === false, JSON.stringify(seen));
+    const stored = reply.artifacts?.[0] ? run(['artifact', reply.artifacts[0], '--out', out, '--format', 'json']) : null;
+    check('its output is captured as an artifact in <out>', !!stored && stored.code === 0 && json<{ text: string }>(stored).text.includes('"connect"'), stored?.err.slice(-200));
+
+    // Review R1: every run call is on the ledger, not only on disk.
+    type ExecEvent = { name: string; attemptId?: string; artifactIds?: string[]; payload: Record<string, unknown> };
+    const ledgerOf = (dir: string) => {
+      const v = json<{ attempts: Array<Attempt & { execRuns?: number }>; events: ExecEvent[] }>(run(['mission', 'inspect', granted.mission.id, '--out', dir, '--format', 'json']));
+      const a = v.attempts.find((x) => x.id === res.attempt.id);
+      return { a, runs: v.events.filter((e) => e.name === 'attempt.exec' && e.attemptId === res.attempt.id), raw: JSON.stringify(v) };
+    };
+    const here = ledgerOf(out);
+    check('each run call emits attempt.exec with a command digest, exit code, duration and both artifact ids',
+      here.runs.length === 2 && here.runs.every((e) => /^sha256:[0-9a-f]{64}$/.test(String(e.payload.commandDigest)) && typeof e.payload.durationMs === 'number'
+        && typeof e.payload.stdoutArtifactId === 'string' && typeof e.payload.stderrArtifactId === 'string')
+      && here.runs[0].payload.exitCode === 0 && here.runs[1].payload.exitCode === 3, JSON.stringify(here.runs.map((e) => e.payload)).slice(0, 600));
+    check('the first event names the artifacts the run tool returned', reply.artifacts?.[0] === here.runs[0]?.payload.stdoutArtifactId
+      && JSON.stringify(here.runs[0]?.artifactIds) === JSON.stringify([here.runs[0]?.payload.stdoutArtifactId, here.runs[0]?.payload.stderrArtifactId]));
+    check('the exec artifacts are recorded rows on the attempt, and it counts its runs',
+      here.a?.execRuns === 2 && here.runs.every((e) => (e.artifactIds ?? []).every((id) => here.a!.artifacts.some((r) => r.id === id)))
+      && json<{ ref: unknown }>(run(['artifact', String(here.runs[0].payload.stdoutArtifactId), '--out', out, '--format', 'json'])).ref !== null,
+      `${here.a?.execRuns} ${JSON.stringify(here.a?.artifacts.map((r) => r.label))}`);
+    check('a secret in a run command never reaches the ledger: the event carries it masked', !here.raw.includes(EXEC_SECRET)
+      && /REDACTED/.test(String(here.runs[1]?.payload.command)), String(here.runs[1]?.payload.command));
+    const execExport = path.join(tmp, 'exec-mission.json');
+    const out3 = path.join(tmp, 'out-exec');
+    run(['mission', 'export', granted.mission.id, '--file', execExport, '--out', out]);
+    run(['map', repo, '--out', out3, '--top', '0']);
+    const imported = run(['mission', 'import', '--file', execExport, '--out', out3]);
+    const there = ledgerOf(out3);
+    check('export → import carries the exec runs: events, count, and readable artifact rows',
+      imported.code === 0 && there.a?.execRuns === 2 && there.runs.length === 2
+      && JSON.stringify(there.runs.map((e) => e.payload)) === JSON.stringify(here.runs.map((e) => e.payload))
+      && json<{ ref: unknown; text: string }>(run(['artifact', String(there.runs[0].payload.stdoutArtifactId), '--out', out3, '--format', 'json'])).text.includes('"connect"'),
+      imported.err.slice(-300) + ` ${there.a?.execRuns} ${there.runs.length}`);
+    check('and the export file never holds the secret argument', !fs.readFileSync(execExport, 'utf8').includes(EXEC_SECRET));
+
+    const plain = lockedMission('make add return the sum (no exec)', ['--write']);
+    const noExec = path.join(tmp, 'mock-author-run-refused.cjs');
+    fs.writeFileSync(noExec, runner(plain.testPaths));
+    const r2 = run(['forge', 'run', plain.mission.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: noExec });
+    const res2 = json<{ attempt: Attempt }>(r2);
+    check('authorized without exec, the attempt is stamped exec false', r2.code === 0 && plain.mission.permissions.execute === false && res2.attempt.sandbox?.exec === false,
+      `${JSON.stringify(res2.attempt?.sandbox)} ${r2.err.slice(-300)}`);
+    const replies2 = repliesOf(res2.attempt);
+    // A server with no tools at all answers tools/list with "method not found"; either way, no run.
+    check('its MCP server has no run tool', !!replies2['2'] && (!!replies2['2'].error || !replies2['2'].result?.tools?.some((t) => t.name === 'run')),
+      JSON.stringify(replies2['2']).slice(0, 300));
+    check('and the run call is refused, nothing executed', (!!replies2['3']?.error || replies2['3']?.result?.isError === true)
+      && !JSON.stringify(replies2['3']).includes('connect'), JSON.stringify(replies2['3']).slice(0, 300));
+    const plainView = json<{ attempts: Array<Attempt & { execRuns?: number }>; events: Array<{ name: string }> }>(
+      run(['mission', 'inspect', plain.mission.id, '--out', out, '--format', 'json']));
+    check('and the ledger shows no exec run for it', plainView.attempts.every((a) => (a.execRuns ?? 0) === 0) && !plainView.events.some((e) => e.name === 'attempt.exec'));
+  } finally {
+    listener.close();
+  }
 }
 
 section('reviews run under the review profile by default whenever bwrap is present');

@@ -408,7 +408,8 @@ export function authorBrief(ctx: GateContext, missionId: string): { missionId: s
 export interface GateListing {
   experimentId: string;
   role: ExperimentRole;
-  testPath: string;
+  /** Null for a holdout: its path never leaves the gate runner, as in `mission inspect`. */
+  testPath: string | null;
   harnessDigest: string;
   baseline: GateEvaluation['conclusion'] | null;
   lockedBy: string | null;
@@ -423,7 +424,7 @@ export function listGates(ctx: GateContext, missionId: string): { missionId: str
     missionId: m.id,
     lock: lockRow?.scope ?? null,
     gates: gatesOf(ctx, m).map((x) => ({
-      experimentId: x.id, role: x.role, testPath: x.testArtifact.path ?? '', harnessDigest: x.harnessDigest,
+      experimentId: x.id, role: x.role, testPath: x.role === 'holdout' ? null : x.testArtifact.path ?? '', harnessDigest: x.harnessDigest,
       baseline: baselineOf(ctx, m, x)?.conclusion ?? null, lockedBy: x.lockedBy ?? null,
       vacuousOverride: !!lockRow?.scope.vacuousOverrides.includes(x.id),
     })),

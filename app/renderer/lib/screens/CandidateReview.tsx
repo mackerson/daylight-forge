@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Experiment, ForgeCandidatePayload, MissionInspect } from '../types.ts';
 import {
-  applyAllowed, approveAllowed, diffLines, flaggedFiles, RATIONALE_PRESETS, RULE_WORDS, shortDigest,
+  applyAllowed, approveAllowed, diffLines, EXEC_OFF, EXEC_RULE, flaggedFiles, RATIONALE_PRESETS, RULE_WORDS, shortDigest,
   shortRef, verdictWord,
 } from './forge-words.ts';
 import { Choice, GuardOutcome, RationalePicker, toneClass, useAct, type ForgeApi } from './ForgeParts.tsx';
@@ -83,7 +83,7 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
         <div className="toolbar wrap" style={{ marginTop: 6 }}>
           <span className="pill accent">profile {c.profile.name}</span>
           <span className={`pill ${c.profile.write ? 'warn' : ''}`}>{c.profile.write ? 'write on' : 'write off'}</span>
-          <span className={`pill ${c.profile.exec ? 'warn' : ''}`}>{c.profile.exec ? 'exec on' : 'exec off'}</span>
+          <span className={`pill ${c.profile.exec ? 'warn' : ''}`} title={c.profile.exec ? EXEC_RULE : EXEC_OFF}>{c.profile.exec ? 'exec on' : 'exec off'}</span>
           <span className="pill">network {c.profile.network}</span>
           {c.secretHits > 0 && <span className="pill bad">{c.secretHits} secret{c.secretHits === 1 ? '' : 's'} redacted</span>}
           {c.possibleSecretHits > 0 && <span className="pill warn">{c.possibleSecretHits} possible secret{c.possibleSecretHits === 1 ? '' : 's'}</span>}

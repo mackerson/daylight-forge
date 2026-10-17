@@ -470,6 +470,7 @@ const EXEC_REPLY_CAP = 32 * 1024;
 
 export interface ExecResult {
   exitCode: number | null;
+  durationMs: number;
   signal: string | null;
   timedOut: boolean;
   truncated: boolean;
@@ -535,7 +536,9 @@ export async function runExec(
   o: { tree: string; command: string[]; out: string; timeoutMs?: number; profile?: SandboxProfile; artifacts?: ArtifactStore; limits?: SandboxLimits },
 ): Promise<ExecResult> {
   const launch = execLaunch(o.profile ?? detectSandbox(), attempt, o);
+  const t0 = Date.now();
   const run = await spawnLaunch(launch, Math.min(o.timeoutMs ?? 60_000, 600_000));
+  const durationMs = Date.now() - t0;
   const out = redact(run.stdout).text;
   const err = redact(run.stderr).text;
   const artifacts: ArtifactRef[] = [];
@@ -544,7 +547,7 @@ export async function runExec(
     artifacts.push(o.artifacts.put(err, { kind: 'log', projectId: attempt.projectId, label: `exec stderr (${attempt.id})` }));
   }
   return {
-    exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
+    exitCode: run.exitCode, durationMs, signal: run.signal, timedOut: run.timedOut,
     truncated: run.truncated || out.length > EXEC_REPLY_CAP || err.length > EXEC_REPLY_CAP,
     stdout: out.slice(0, EXEC_REPLY_CAP), stderr: err.slice(0, EXEC_REPLY_CAP), artifacts,
   };
