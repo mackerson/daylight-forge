@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { mappedProject, mappedRoot, openDaylight, requireMappedRepo, type DaylightContext } from '../mission/context.ts';
-import { publicGateEvaluations, runMission } from '../mission/orchestrate.ts';
+import { adjudicateConfirm, parseDecisionValue, publicGateEvaluations, runMission } from '../mission/orchestrate.ts';
 import { needsOf } from '../mission/needs.ts';
 import { currentRevision } from '../mission/project.ts';
 import type { Mission } from '../mission/types.ts';
@@ -64,6 +64,12 @@ const last = (p: Parsed, k: string): string | undefined => p.flags.get(k)?.at(-1
 const need = (p: Parsed, k: string): string => {
   const v = last(p, k);
   if (v === undefined || v === 'true') throw new Usage(`--${k} is required`);
+  return v;
+};
+/** `--value` exactly as `mission decide` reads it: `true` is a value here, not a bare flag. */
+const valueOf = (p: Parsed): string => {
+  const v = last(p, 'value');
+  if (v === undefined) throw new Usage('--value is required');
   return v;
 };
 const list = (s: string | undefined): string[] => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -146,9 +152,9 @@ const EXEC_REFUSED = 'author exec is refused until the owner decides R9.2; autho
 
 // ---- confirm ---------------------------------------------------------------------------
 
-const OPERATIONS: readonly ConfirmOperation[] = [
+const OPERATIONS: readonly (ConfirmOperation | 'adjudicate')[] = [
   'authorize-mission', 'adhoc-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
-  'approve-candidate', 'reject-candidate', 'override-candidate', 'apply',
+  'approve-candidate', 'reject-candidate', 'override-candidate', 'apply', 'adjudicate',
 ];
 
 /**
@@ -158,13 +164,23 @@ const OPERATIONS: readonly ConfirmOperation[] = [
  * refused regardless; a UI shows it instead of a dialog.
  */
 function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
-  const [operation, subjectId] = p.positionals as [ConfirmOperation | undefined, string | undefined];
+  const [operation, subjectId] = p.positionals as [ConfirmOperation | 'adjudicate' | undefined, string | undefined];
   if (!operation || !OPERATIONS.includes(operation)) throw new Usage(`confirm needs one of: ${OPERATIONS.join(', ')}`);
   if (!subjectId) throw new Usage(`confirm ${operation} needs a subject`);
   const actor = actorFor(last(p, 'actor'));
   const write = last(p, 'write') === 'true';
   const execute = last(p, 'execute') === 'true';
   return withContext(out, (ctx) => {
+    if (operation === 'adjudicate') {
+      // P0 `mission decide`: the subject is the mission, the belief comes in as flags.
+      const m = ctx.store.mission(subjectId);
+      if (!m) throw new Error(`unknown mission ${subjectId}`);
+      const c = adjudicateConfirm(m, {
+        subject: need(p, 'subject'), predicate: need(p, 'predicate'), value: parseDecisionValue(valueOf(p)),
+        experimentId: last(p, 'experiment'),
+      });
+      return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
+    }
     let opts = {};
     if (operation === 'authorize-mission') opts = { permissions: { write, execute }, maxUsd: num(last(p, 'max-usd')) ?? null };
     if (operation === 'lock-gates') {

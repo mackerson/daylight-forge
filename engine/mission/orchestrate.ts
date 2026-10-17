@@ -17,6 +17,8 @@ import { authorFor, reviewLauncher } from '../forge/authors.ts';
 import { ROLE_MCP_TOOLS } from '../forge/decompose.ts';
 import { MCP_CONFIG, MCP_SERVER_KEY, mcpRuntimeDir, newMcpToken, type McpEndpoint } from '../forge/sandbox.ts';
 import { specOf } from '../forge/spec.ts';
+import { assertHumanDecision, confirmCodeOf } from '../forge/policy.ts';
+import { canonicalJson, digestOf } from './artifacts.ts';
 import { createDecomposeServer, createServer, listenAttemptSocket } from '../mcp/server.ts';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AttemptCredential, AttemptSandbox, SandboxReason, TaskRole } from './types.ts';
@@ -1034,8 +1036,48 @@ export interface DecideOptions {
   predicate: string;
   value: unknown;
   rationale: string;
-  actor?: string;
+  /** `human:<name>`; the CLI supplies the OS user's. */
+  actor: string;
   experimentId?: string;
+  /** `--confirm <digest8>` of `adjudicateConfirm` for exactly this subject, predicate and value. */
+  confirm: string | undefined;
+  /** Read by the guard; `process.env` at the CLI. */
+  env: Readonly<Record<string, string | undefined>>;
+}
+
+/** A `--value` as the CLI reads it: true, false, a number, JSON, else the string itself. */
+export function parseDecisionValue(raw: string): unknown {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * What a person confirms for a P0 adjudication (R14 D-9: every decision goes through the one
+ * guard): the mission, its revision, and exactly the belief being settled and the experiment
+ * cited, so a code confirmed for one value does not record another.
+ */
+export function adjudicateConfirm(
+  mission: Pick<Mission, 'id' | 'projectId' | 'baseRevision'>,
+  o: { subject: string; predicate: string; value: unknown; experimentId?: string },
+): { digest: string; digest8: string; lines: string[] } {
+  const digest = digestOf(canonicalJson({
+    operation: 'adjudicate', missionId: mission.id, projectId: mission.projectId, revision: mission.baseRevision,
+    subject: o.subject, predicate: o.predicate, value: o.value ?? null, experimentId: o.experimentId ?? null,
+  }));
+  return {
+    digest, digest8: confirmCodeOf(digest),
+    lines: [
+      `decide on mission ${mission.id} at ${mission.baseRevision}`,
+      `${o.subject} ${o.predicate} = ${JSON.stringify(o.value ?? null)}`,
+      `experiment: ${o.experimentId ?? 'none'}`,
+    ],
+  };
 }
 
 /**
@@ -1047,6 +1089,8 @@ export interface DecideOptions {
 export function decide(ctx: DaylightContext, opts: DecideOptions): { decision: Decision; belief: Belief } {
   const mission = ctx.store.mission(opts.missionId);
   if (!mission) throw new Error(`unknown mission ${opts.missionId}`);
+  assertHumanDecision(opts.env, opts.actor, opts.confirm,
+    adjudicateConfirm(mission, { subject: opts.subject, predicate: opts.predicate, value: opts.value, experimentId: opts.experimentId }).digest);
   if (mission.state === 'closed') throw new Error(`mission ${mission.id} is closed`);
   if (!opts.rationale.trim()) throw new Error('a decision needs a rationale');
 
@@ -1073,7 +1117,7 @@ export function decide(ctx: DaylightContext, opts: DecideOptions): { decision: D
         : []),
     ],
   });
-  const actor = opts.actor ?? 'human';
+  const actor = opts.actor;
   const record = {
     missionId: mission.id,
     projectId: mission.projectId,

@@ -62,8 +62,11 @@ store.close();
 if (yes) console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.05, num_turns: 3 }));
 `);
 
-const env = {
+const env: Record<string, string | undefined> = {
   ...process.env,
+  // A decision is refused inside an agent session; this test is the person deciding.
+  CLAUDECODE: undefined,
+  DAYLIGHT_SESSION: undefined,
   DAYLIGHT_MOCK_ADAPTER: mock,
   // A suspicious name with a long value: it must never reach an artifact.
   MOCK_SECRET_TOKEN: 'SECRET_MOCK_TOKEN_abcdefghijklmnop',
@@ -245,14 +248,27 @@ section('execute permission is a grant, not a default');
 
 section('a human decides');
 {
-  const r = run(['mission', 'decide', prepared.missionId, '--out', out, '--subject', 'src/session-cache.ts', '--predicate', 'bug_verdict',
-    '--value', 'true', '--rationale', 'The registered test fails at this revision.', '--experiment', prepared.experimentId, '--actor', 'human:test', '--format', 'json']);
+  const what = ['--subject', 'src/session-cache.ts', '--predicate', 'bug_verdict', '--value', 'true', '--experiment', prepared.experimentId];
+  const confirm = json<{ digest: string; digest8: string; lines: string[]; refusal: string | null }>(
+    run(['confirm', 'adjudicate', prepared.missionId, '--out', out, ...what, '--format', 'json']));
+  check('confirm shows what the decision records', confirm.refusal === null && /^[0-9a-f]{8}$/.test(confirm.digest8)
+    && confirm.lines.some((l) => l.includes('bug_verdict')), JSON.stringify(confirm));
+  const decideWith = (extra: string[], o: Record<string, string> = {}) => run(['mission', 'decide', prepared.missionId, '--out', out, ...what,
+    '--rationale', 'The registered test fails at this revision.', ...extra, '--format', 'json'], o);
+  const unconfirmed = decideWith([]);
+  check('without --confirm nothing is recorded: the digest is shown, exit 2', unconfirmed.code === 2 && unconfirmed.out.includes(confirm.digest), unconfirmed.err.slice(-200));
+  const agentSession = decideWith(['--confirm', confirm.digest8], { CLAUDECODE: '1' });
+  check('under CLAUDECODE the decision is refused', agentSession.code === 1 && /CLAUDECODE/.test(agentSession.err), agentSession.err.slice(-200));
+  check('under DAYLIGHT_SESSION too', decideWith(['--confirm', confirm.digest8], { DAYLIGHT_SESSION: 's' }).code === 1);
+  check('an agent actor is refused', decideWith(['--confirm', confirm.digest8, '--actor', 'agent:claude:x']).code !== 0);
+  check('a confirm for another value is refused', decideWith(['--confirm', '00000000']).code === 1);
+  const r = decideWith(['--confirm', confirm.digest8, '--actor', 'human:test']);
   check('exits 0', r.code === 0, r.err.slice(-300));
   const { decision, belief } = json<{ decision: { id: string; artifactIds: string[]; actor: string }; belief: { status: string } }>(r);
   check('the belief is CONFIRMED by a human claim', belief.status === 'CONFIRMED');
   check('the decision links the experiment\'s result records', decision.artifactIds.length === 2
     && decision.artifactIds.every((id) => experiment.executions.some((x) => x.id === id)));
-  check('and names who decided', decision.actor === 'human:test');
+  check('and names who decided: the OS user, whatever --actor said', decision.actor === `human:${os.userInfo().username}`, decision.actor);
   const view = json<Inspection>(run(['mission', 'inspect', prepared.missionId, '--out', out, '--format', 'json']));
   check('the dispute is still on record, now CONFIRMED, with its decision', view.disputes.length === 1
     && view.disputes[0].status === 'CONFIRMED' && view.disputes[0].decisionId === decision.id);

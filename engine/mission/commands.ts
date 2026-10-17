@@ -7,13 +7,13 @@ import { redact } from './redact.ts';
 import { openDaylight, type DaylightContext } from './context.ts';
 import { importMission, readExport, writeExport } from './export.ts';
 import {
-  closeMission, createMission, decide, holdoutContent, inspectMission, needsOf, proposeExperiment, runMission,
-  runMissionExperiment, withholdHoldoutEvents,
+  adjudicateConfirm, closeMission, createMission, decide, holdoutContent, inspectMission, needsOf, parseDecisionValue,
+  proposeExperiment, runMission, runMissionExperiment, withholdHoldoutEvents,
 } from './orchestrate.ts';
 import { AGENT_SESSION_VARS } from '../forge/policy.ts';
 import { renderReport } from './report.ts';
 import { runProjectReport } from './commands-report.ts';
-import { missionAuthorizeCommand, missionCreateImplementCommand } from '../forge/commands.ts';
+import { missionAuthorizeCommand, missionCreateImplementCommand, osActor } from '../forge/commands.ts';
 import { mappedProject } from './context.ts';
 import type { MissionKind, MissionOutcome } from './types.ts';
 
@@ -72,16 +72,6 @@ const num = (s: string | undefined): number | undefined => {
   const n = Number(s);
   if (!Number.isFinite(n)) throw new Usage(`not a number: ${s}`);
   return n;
-};
-const parseValue = (raw: string): unknown => {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
 };
 
 const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
@@ -210,14 +200,27 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
     case 'decide': {
       const id = p.positionals[0];
       if (!id) throw new Usage('mission decide needs a <mission-id>');
-      const result = withContext(out, (ctx) => decide(ctx, {
-        missionId: id,
-        subject: need(p, 'subject'),
-        predicate: need(p, 'predicate'),
-        value: parseValue(need(p, 'value')),
-        rationale: need(p, 'rationale'),
-        actor: last(p, 'actor'),
+      // The decision is the OS user's (S-8): another human name is ignored, an agent is refused.
+      const given = last(p, 'actor');
+      if (given?.startsWith('agent:')) throw new Usage(`--actor ${given}: a decision is a person's, never an agent's`);
+      const what = {
+        subject: need(p, 'subject'), predicate: need(p, 'predicate'), value: parseDecisionValue(need(p, 'value')),
         experimentId: last(p, 'experiment'),
+      };
+      const confirm = last(p, 'confirm');
+      if (confirm === undefined) {
+        const c = withContext(out, (ctx) => {
+          const m = ctx.store.mission(id);
+          if (!m) throw new Error(`unknown mission ${id}`);
+          return adjudicateConfirm(m, what);
+        });
+        if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
+        else for (const l of [...c.lines, `digest ${c.digest}`]) say(l);
+        console.error('usage: re-run with --confirm <the first eight hex characters of the digest>');
+        return 2;
+      }
+      const result = withContext(out, (ctx) => decide(ctx, {
+        missionId: id, ...what, rationale: need(p, 'rationale'), actor: osActor(), confirm, env: process.env,
       }));
       if (asJson) json(result);
       else say(`decision ${result.decision.id}: ${result.belief.subject} ${result.belief.predicate} is now ${result.belief.status}`);
