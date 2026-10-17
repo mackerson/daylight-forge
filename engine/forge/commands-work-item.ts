@@ -124,7 +124,7 @@ export function runWorkItemCommand(argv: string[], io: WorkItemIo): number {
           const c = confirmDigest(ctx, sub === 'approve' ? 'approve-work-item' : 'reject-work-item', id);
           if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
           else for (const l of [...c.lines, `digest ${c.digest}`]) say(plain(l));
-          io.stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
+          io.stderr("usage: re-run with --rationale '<why>' --confirm <the first eight hex characters of the digest>\n");
           return 2;
         }
         const { decision, workItem } = decideWorkItem(ctx, {

@@ -132,7 +132,7 @@ export const EXEC_OFF = 'no exec: the authorize decision did not grant it, so th
 
 /** The questions still open that change what these screens mean. Always shown (R9). */
 export const OPEN_ITEMS: readonly { id: string; text: string }[] = [
-  { id: 'H5', text: 'reviewer unsandboxed — H5 open (R9.1): review attempts run with profile none' },
+  { id: 'H5', text: 'real reviewers unsandboxed — H5 open (R9.1): mock reviews run under the review profile; claude and codex get none until the live spike' },
   { id: 'Q5', text: 'claude unavailable for implement — Q5 pending: no live author run is authorised' },
 ];
 

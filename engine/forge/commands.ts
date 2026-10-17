@@ -258,7 +258,7 @@ export async function missionAuthorizeCommand(p: Parsed, out: () => string, asJs
     }
     const r = authorizeMission(ctx, { missionId, rationale: last(p, 'rationale'), write, execute, maxUsd, actor, confirm, env });
     if (asJson) json(r.mission);
-    else say(`authorized ${r.mission.id} (${r.mission.state}): write ${r.mission.permissions.write ? 'yes' : 'no'}, by ${actor} (${r.decisionId})`);
+    else say(`authorized ${r.mission.id} (${r.mission.state}): write ${r.mission.permissions.write ? 'yes' : 'no'}, exec ${r.mission.permissions.execute ? 'yes' : 'no'}, by ${actor} (${r.decisionId})`);
     return 0;
   });
 }
