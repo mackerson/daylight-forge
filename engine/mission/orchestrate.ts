@@ -303,7 +303,7 @@ export interface RunMissionReport {
  * before it starts anything. Released on return and on process exit; a SIGKILL leaves the
  * file, which names a dead pid and so is taken over.
  */
-function takeRunClaim(out: string, missionId: string): () => void {
+export function takeRunClaim(out: string, missionId: string): () => void {
   const file = path.join(out, `mission-run.${missionId}.pid`);
   for (let tries = 0; tries < 2; tries++) {
     try {
