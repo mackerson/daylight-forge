@@ -170,6 +170,7 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
         model: last(p, 'model'),
         maxCost: num(last(p, 'max-cost')),
         raiseBudget: last(p, 'raise-budget') === 'true',
+        reviewSandbox: last(p, 'review-sandbox') === 'true',
         dryRun: last(p, 'dry-run') === 'true',
         timeoutMs: num(last(p, 'timeout')) !== undefined ? num(last(p, 'timeout'))! * 1000 : undefined,
         concurrency: num(last(p, 'concurrency')),

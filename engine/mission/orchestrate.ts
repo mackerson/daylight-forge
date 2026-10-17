@@ -11,6 +11,15 @@ import {
 import { captureRun } from '../swarm/capture.ts';
 import { serverCommand, SYSTEM_RULES } from '../swarm/driver.ts';
 import { available } from '../swarm/adapters.ts';
+import { credentialFor, missionSpend } from '../swarm/usage.ts';
+import { detectSandbox, type SandboxProfile } from '../experiment/sandbox.ts';
+import { authorFor, reviewLauncher } from '../forge/authors.ts';
+import { ROLE_MCP_TOOLS } from '../forge/decompose.ts';
+import { MCP_CONFIG, MCP_SERVER_KEY, mcpRuntimeDir, newMcpToken, type McpEndpoint } from '../forge/sandbox.ts';
+import { specOf } from '../forge/spec.ts';
+import { createDecomposeServer, createServer, listenAttemptSocket } from '../mcp/server.ts';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AttemptCredential, AttemptSandbox, TaskRole } from './types.ts';
 import type { Belief, ClaimStatus } from '../store/types.ts';
 import type { DaylightContext } from './context.ts';
 import { requireMappedRepo } from './context.ts';
@@ -114,7 +123,54 @@ export function mockAdapter(): Adapter | null {
     bin: process.execPath,
     perInvocationMcp: true,
     argv: (run) => [script, run.mcpConfigPath, run.prompt],
+    // A mock that wants its cost known prints the claude stream's own result line (R10.3).
+    streamShape: 'claude',
   };
+}
+
+/**
+ * The variable each provider's own key is read from, for the ledger's credential record:
+ * presence, name and label only, never the value (Q4a). A mock has its own, so a test can
+ * say what it was given without touching a real provider's.
+ */
+export const CREDENTIAL_ENV: Readonly<Record<string, string>> = Object.freeze({
+  claude: 'ANTHROPIC_API_KEY', codex: 'OPENAI_API_KEY', grok: 'XAI_API_KEY', opencode: 'OPENCODE_API_KEY',
+  mock: 'DAYLIGHT_MOCK_CREDENTIAL',
+});
+
+/** Recorded before an attempt starts, so a refusal leaves no half-started attempt behind. */
+export function attemptCredential(tool: string, env: NodeJS.ProcessEnv = process.env): AttemptCredential | undefined {
+  const name = CREDENTIAL_ENV[tool];
+  if (!name) return undefined;
+  const label = env.DAYLIGHT_CREDENTIAL_LABEL;
+  return credentialFor(name, label && /^[\w .:@/-]{1,64}$/.test(label) ? label : null, env);
+}
+
+/** `mcp__daylight__<tool>` for each of a role's MCP tools: the allowlist the adapter hook takes (D-2). */
+export const roleAllowlist = (role: keyof typeof ROLE_MCP_TOOLS): string[] =>
+  ROLE_MCP_TOOLS[role].map((t) => `mcp__${MCP_SERVER_KEY}__${t}`);
+
+/**
+ * One attempt's MCP socket (R11.2) for as long as `run` takes: a private runtime dir, a listener
+ * that serves only this attempt's token, and both removed afterwards whatever happens.
+ */
+export async function withAttemptSocket<T>(
+  ctx: DaylightContext, attempt: Pick<Attempt, 'id'>, token: string, serve: () => McpServer,
+  run: (mcp: McpEndpoint) => Promise<T>,
+): Promise<T> {
+  const rt = mcpRuntimeDir({ out: ctx.out });
+  try {
+    const sock = await listenAttemptSocket({
+      socketPath: rt.socket, attemptId: attempt.id, resolve: (t) => ctx.store.attemptByMcpToken(t), serve,
+    });
+    try {
+      return await run({ socket: rt.socket, token });
+    } finally {
+      await sock.close();
+    }
+  } finally {
+    rt.dispose();
+  }
 }
 
 export function adapterFor(tool: string): Adapter | null {
@@ -188,6 +244,23 @@ export interface RunMissionOptions {
   missionId: string;
   repo: string;
   tools: string[];
+  /**
+   * `review` (the default) runs independent reviewers and then the compare step. `decompose`
+   * runs blind decomposers on a spec mission's decompose tasks: no compare, only the
+   * `propose_work_item` tool, always under the review profile over the attempt's socket.
+   */
+  role?: Extract<TaskRole, 'review' | 'decompose'>;
+  /** The prompt every attempt gets. Defaults to the review prompt; decompose passes the spec's. */
+  prompt?: string;
+  /**
+   * Run review attempts under the bwrap `review` profile over a per-attempt MCP socket, with
+   * `<out>` unmounted (R9.1). Refused, not weakened, when the profile cannot be built. Real
+   * providers are refused under it until the owner authorises the live spike (R15.1); without
+   * it reviewers run as P0 did and are recorded as profile `none` (Sec H5 open).
+   */
+  reviewSandbox?: boolean;
+  /** Injected in tests; defaults to `detectSandbox()`. */
+  sandbox?: SandboxProfile;
   model?: string;
   maxCost?: number;
   /** Lets `maxCost` exceed the budget recorded on the mission. Without it that is refused. */
@@ -263,12 +336,17 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/** Review tasks already on the mission, by the source they are pinned to. */
-function reviewTasksBySource(tasks: Task[]): Map<string, Task> {
+/** Tasks of one role already on the mission, by the source they are pinned to. */
+function tasksBySource(tasks: Task[], role: TaskRole): Map<string, Task> {
   const out = new Map<string, Task>();
-  for (const t of tasks) if (t.role === 'review' && t.runnerHint) out.set(t.runnerHint, t);
+  for (const t of tasks) if (t.role === role && t.runnerHint) out.set(t.runnerHint, t);
   return out;
 }
+
+/** A sandboxed review or decompose attempt: read-only, no exec, and no network for a mock. */
+const SANDBOXED_REVIEW: AttemptSandbox = {
+  profile: 'review', network: 'none', write: false, exec: false, authorizeDecisionId: null,
+};
 
 export async function runMission(ctx: DaylightContext, opts: RunMissionOptions): Promise<RunMissionReport> {
   const found = ctx.store.mission(opts.missionId);
@@ -292,22 +370,47 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     );
   }
   const notes: string[] = [];
-  const { runnable, unavailable } = planMissionRoster(opts.tools, opts.model);
+  const role = opts.role ?? 'review';
+  if (role !== 'review' && role !== 'decompose') throw new Error(`runMission runs review or decompose attempts, not ${String(role)}`);
+  if (role === 'decompose' && mission.kind !== 'spec') throw new Error(`mission ${mission.id} is ${mission.kind}; only a spec mission decomposes`);
+  if (role === 'review' && mission.kind === 'spec') throw new Error(`mission ${mission.id} is a spec mission; it is decomposed, not reviewed`);
+  // Decomposers reach their one tool only over the attempt socket, so they are always sandboxed.
+  const sandboxed = role === 'decompose' || !!opts.reviewSandbox;
+  const profile = sandboxed ? (opts.sandbox ?? detectSandbox()) : null;
+  if (profile && !profile.available) {
+    throw new Error(`${role} attempts run under the bwrap review profile, which cannot be built here: ${profile.why ?? 'unavailable'}`);
+  }
+  const planned = planMissionRoster(opts.tools, opts.model);
+  const unavailable = [...planned.unavailable];
+  const runnable = planned.runnable.filter(({ spec }) => {
+    if (!sandboxed || spec.tool === 'mock') return true;
+    unavailable.push(`${specKey(spec)} (real providers run under no sandbox profile until the owner authorises the live spike, R15.1)`);
+    return false;
+  });
+  const prompt = opts.prompt ?? buildReviewPrompt(mission);
+  // The registered spec, so the decompose server can refuse a bad anchor at once.
+  const decomposeCheck = role === 'decompose' ? { spec: specOf(ctx, mission.id).bytes } : undefined;
   const diversity = sourceDiversity(runnable.map((r) => r.spec));
-  if (runnable.length && diversity < 2) {
+  if (role === 'review' && runnable.length && diversity < 2) {
     notes.push(
       `roster has ${diversity} independent source; nothing it claims can be corroborated and ` +
         'no disagreement can be discovered',
     );
   }
 
-  // Tasks are durable: a second run re-uses the review task for a source it has seen, so a
-  // retry is a new attempt on the same task rather than a new task with no history.
-  const existing = reviewTasksBySource(ctx.store.tasks(mission.id));
+  // Tasks are durable: a second run re-uses the task for a source it has seen, so a retry is
+  // a new attempt on the same task rather than a new task with no history.
+  const existing = tasksBySource(ctx.store.tasks(mission.id), role);
   const plans: ReviewPlan[] = [];
   for (const { spec, adapter } of runnable) {
     const key = specKey(spec);
-    let task = existing.get(key);
+    // decompose() pins its tasks to the roster entry as typed (`mock`), not its key (`mock:default`).
+    let task = existing.get(key) ?? [...existing.values()].find((t) => specKey(parseSpec(t.runnerHint!, opts.model)) === key);
+    if (!task && role === 'decompose') {
+      // decompose() creates its tasks before it runs them; a decompose run never invents one.
+      unavailable.push(`${key} (no decompose task on mission ${mission.id})`);
+      continue;
+    }
     if (!task) {
       task = ctx.store.createTask({
         missionId: mission.id,
@@ -318,13 +421,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
       });
       lifecycle(ctx, mission, 'task.created', { role: 'review', runnerHint: key }, { taskId: task.id });
     }
-    const cfgPath = path.join(ctx.out, `mcp.${slug(key)}.${mission.id}.json`);
-    plans.push({ spec, taskId: task.id, prompt: buildReviewPrompt(mission), mcpConfigPath: cfgPath });
+    const cfgPath = sandboxed ? MCP_CONFIG : path.join(ctx.out, `mcp.${slug(key)}.${mission.id}.json`);
+    plans.push({ spec, taskId: task.id, prompt, mcpConfigPath: cfgPath });
     void adapter;
   }
   const reviewTasks = ctx.store.tasks(mission.id).filter((t) => t.role === 'review');
-  let compareTask = ctx.store.tasks(mission.id).find((t) => t.role === 'compare');
-  if (!compareTask && reviewTasks.length) {
+  let compareTask = role === 'review' ? ctx.store.tasks(mission.id).find((t) => t.role === 'compare') : undefined;
+  if (role === 'review' && !compareTask && reviewTasks.length) {
     compareTask = ctx.store.createTask({
       missionId: mission.id,
       role: 'compare',
@@ -383,7 +486,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     lifecycle(ctx, mission, 'attempt.orphaned', { failure: orphan.failure }, { taskId: orphan.taskId, attemptId: orphan.id });
   }
 
-  if (!runnable.length) {
+  if (!plans.length) {
     // `blocked` is re-entered through `running` so the new reason replaces the old one and
     // the transition table stays the only path between states. A mission already running
     // (a finished review waiting on a person, or a crashed run) goes straight to blocked.
@@ -415,9 +518,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   const ceiling = opts.maxCost ?? mission.budget.maxUsd;
   // The budget is the mission's, so a run starts from what every earlier attempt recorded —
   // the ledger's figure, not an adapter's — and a null anywhere makes the total a floor.
-  const recorded = ctx.store.tasks(mission.id).flatMap((t) => ctx.store.attempts(t.id));
-  let spent = recorded.reduce((n, a) => n + (a.costUsd ?? 0), 0);
-  let costKnown = recorded.every((a) => a.costUsd !== null);
+  let spent = missionSpend(ctx, mission.id).spentUsd;
   const failures: string[] = [];
   const queue = [...todo];
   const limit = Math.max(1, opts.concurrency ?? 1);
@@ -432,57 +533,88 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     // The session is the correlation key for every MCP event this agent produces. It carries
     // the mission id first so the server can withhold the other reviewers' claims by prefix.
     const session = `${mission.id}:${task.id}:a${task.attemptIds.length + 1}`;
-    const attempt = ctx.store.startAttempt({ taskId: task.id, runnerId, sessionId: session });
+    const credential = attemptCredential(spec.tool);
+    const token = sandboxed ? newMcpToken() : undefined;
+    const attempt = ctx.store.startAttempt({
+      taskId: task.id, runnerId, sessionId: session, credential,
+      ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : {}),
+    });
     open.add(attempt.id);
-    lifecycle(ctx, mission, 'attempt.started', { runnerId, session }, { taskId: task.id, attemptId: attempt.id });
+    lifecycle(ctx, mission, 'attempt.started', {
+      runnerId, session, ...(sandboxed ? { profile: SANDBOXED_REVIEW.profile, network: SANDBOXED_REVIEW.network } : {}),
+    }, { taskId: task.id, attemptId: attempt.id });
     opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} started`);
 
-    fs.writeFileSync(
-      plan.mcpConfigPath,
-      JSON.stringify(
-        mcpConfig(cmd, ctx.out, spec.tool, spec.model, session, { DAYLIGHT_BLIND_PREFIX: mission.id }),
-        null, 2,
-      ),
-    );
-
-    const result = await captureRun(
-      adapter,
-      {
-        prompt: plan.prompt,
-        cwd: root,
-        mcpConfigPath: plan.mcpConfigPath,
-        session,
-        model: spec.model,
-        timeoutMs,
-        maxTurns: 40,
-        maxCost: share,
-      },
-      {
-        store: ctx.store,
-        events: ctx.events,
-        artifacts: ctx.artifacts,
-        projectId: mission.projectId,
-        missionId: mission.id,
-        taskId: task.id,
-        attemptId: attempt.id,
-        runnerId,
-        revision: mission.baseRevision,
-        onChunk: opts.onChunk ? (s, t) => opts.onChunk!(attempt.id, s, t) : undefined,
-      },
-    );
+    const run: Parameters<typeof captureRun>[1] = {
+      prompt: plan.prompt,
+      cwd: root,
+      mcpConfigPath: plan.mcpConfigPath,
+      session,
+      model: spec.model,
+      timeoutMs,
+      maxTurns: 40,
+      maxCost: share,
+      ...(role === 'decompose' ? { allowedTools: roleAllowlist('decompose') } : {}),
+    };
+    const capture: Parameters<typeof captureRun>[2] = {
+      store: ctx.store,
+      events: ctx.events,
+      artifacts: ctx.artifacts,
+      projectId: mission.projectId,
+      missionId: mission.id,
+      taskId: task.id,
+      attemptId: attempt.id,
+      runnerId,
+      revision: mission.baseRevision,
+      onChunk: opts.onChunk ? (s, t) => opts.onChunk!(attempt.id, s, t) : undefined,
+      credential,
+    };
+    let result: Awaited<ReturnType<typeof captureRun>> | null = null;
+    if (!sandboxed) {
+      fs.writeFileSync(
+        plan.mcpConfigPath,
+        JSON.stringify(
+          mcpConfig(cmd, ctx.out, spec.tool, spec.model, session, { DAYLIGHT_BLIND_PREFIX: mission.id }),
+          null, 2,
+        ),
+      );
+      result = await captureRun(adapter, run, capture);
+    } else {
+      // The store's own row is the only source of what this attempt was granted (ws2 ask).
+      const row = ctx.store.attempt(attempt.id)!;
+      const mock = authorFor('mock');
+      try {
+        if (mock.status !== 'available') throw new Error(mock.why);
+        const serve = (): McpServer => (ctx.store.task(row.taskId)?.role === 'decompose'
+          ? createDecomposeServer({ dir: ctx.out, attemptId: row.id, agentTool: spec.tool, model: spec.model, check: decomposeCheck }).server
+          : createServer({ dir: ctx.out, session, agentTool: spec.tool, model: spec.model, blindPrefix: mission.id }).server);
+        result = await withAttemptSocket(ctx, row, token!, serve, (mcp) => captureRun(mock.adapter, {
+          ...run,
+          launch: reviewLauncher({ attempt: row, repo: root, mounts: mock.mounts, mcp, out: ctx.out, profile: profile! }),
+        }, capture));
+      } catch (err) {
+        // Fail closed: a review profile that cannot be built is a failed attempt, never an unsandboxed one.
+        const why = `the review sandbox could not be started: ${(err as Error).message}`.slice(0, 500);
+        if (ctx.store.attempt(attempt.id)?.state === 'running') {
+          ctx.store.finishAttempt(attempt.id, { state: 'failed', costUsd: null, failure: why });
+        }
+        lifecycle(ctx, mission, 'attempt.refused', { why }, { taskId: task.id, attemptId: attempt.id });
+      }
+    }
     open.delete(attempt.id);
     const costUsd = ctx.store.attempt(attempt.id)?.costUsd ?? null;
-    spent += costUsd ?? 0;
+    spent = missionSpend(ctx, mission.id).spentUsd;
     if (costUsd === null) {
-      costKnown = false;
       unknownCost.push(key);
     }
     ingestMcpEvents(ctx, mission.id);
-    if (!result.ok) {
+    if (!result) {
+      failures.push(`${key}: the review sandbox could not be started`);
+    } else if (!result.ok) {
       const why = result.timedOut ? 'timed out' : result.overBudget ? 'over budget' : `exit ${result.exitCode}`;
       failures.push(`${key}: ${why}`);
     }
-    opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} ${result.ok ? 'finished' : 'failed'}`);
+    opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} ${result?.ok ? 'finished' : 'failed'}`);
   };
 
   while (queue.length) {
@@ -508,10 +640,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     await Promise.all(wave.map((p) => launch(p, share)));
   }
 
+  const costKnown = missionSpend(ctx, mission.id).costKnown;
   if (failures.length) {
     block(failures.join('; '));
     return finish(report(undefined, spent, costKnown));
   }
+  // A decompose run ends when its attempts do; what they proposed is ingested by decompose().
+  if (role === 'decompose') return finish(report(undefined, spent, costKnown));
 
   if (compareTask && ctx.store.task(compareTask.id)!.state !== 'done') {
     const comparison = runCompare(ctx, ctx.store.mission(mission.id)!, compareTask.id);

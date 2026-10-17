@@ -437,7 +437,7 @@ section('a ceiling holds under concurrency, unknown spend and a raised flag');
 
   // Two reviewers that each report $0.05, launched together under a $0.06 ceiling.
   const costly = path.join(tmp, 'mock-costly.mjs');
-  fs.writeFileSync(costly, `console.log(JSON.stringify({ total_cost_usd: 0.05 })); setTimeout(() => process.exit(0), 300);\n`);
+  fs.writeFileSync(costly, `console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.05 })); setTimeout(() => process.exit(0), 300);\n`);
   const shared = mk('shared ceiling', '0.06');
   const wave = json<Ran>(run(['mission', 'run', shared.id, repo, '--out', out, '--tools', 'mock:a,mock:b', '--concurrency', '2', '--format', 'json'],
     { DAYLIGHT_MOCK_ADAPTER: costly }));
