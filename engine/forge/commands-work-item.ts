@@ -2,6 +2,7 @@ import path from 'node:path';
 import { mappedProject, openDaylight } from '../mission/context.ts';
 import { redact } from '../mission/redact.ts';
 import type { WorkItem, WorkItemStatus } from '../mission/types.ts';
+import { confirmDigest } from './confirm.ts';
 import { DecisionRefused } from './policy.ts';
 import { decideWorkItem, listWorkItems, showWorkItem } from './work-items.ts';
 
@@ -117,6 +118,15 @@ export function runWorkItemCommand(argv: string[], io: WorkItemIo): number {
       case 'reject': {
         const id = p.positionals[0];
         if (!id) throw new Usage(`work-item ${sub} <w_…> --actor human:<name> --rationale … --confirm <digest8>`);
+        if (p.flags.get('confirm') === undefined) {
+          // As `mission decide` does: show what would be confirmed, decide nothing, exit 2.
+          if (!ctx.store.workItem(id)) throw new Error(`unknown work item ${id}`);
+          const c = confirmDigest(ctx, sub === 'approve' ? 'approve-work-item' : 'reject-work-item', id);
+          if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
+          else for (const l of [...c.lines, `digest ${c.digest}`]) say(plain(l));
+          io.stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
+          return 2;
+        }
         const { decision, workItem } = decideWorkItem(ctx, {
           id, kind: sub, actor: need('actor'), rationale: need('rationale'), confirm: p.flags.get('confirm'), env: io.env,
         });
