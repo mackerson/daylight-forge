@@ -6,8 +6,9 @@ import { digestOf } from '../mission/artifacts.ts';
 import type { Application, Candidate, Decision, Mission } from '../mission/types.ts';
 import { HARDENED_GIT_CONFIG, hardenedGitEnv } from '../experiment/runner.ts';
 import {
-  CandidateRefused, candidateConfirm, candidateDecisionOf, candidateStanding, requireImplement, type DecideContext,
+  CandidateRefused, candidateStanding, requireImplement, type DecideContext,
 } from './decide.ts';
+import { applyRefFor, candidateDecisionOf, confirmDigest } from './confirm.ts';
 import { DIFF_FLAGS } from './diff.ts';
 import { verdictRows } from './gate.ts';
 import { assertHumanDecision } from './policy.ts';
@@ -46,7 +47,7 @@ const REAL_REPO_CONFIG = [
 const ZERO = '0'.repeat(40);
 const MAX_BUFFER = 64 * 1024 * 1024;
 
-export const refFor = (missionId: string) => `refs/heads/daylight/${missionId}`;
+export const refFor = applyRefFor;
 
 interface GitOpts {
   input?: Buffer | string;
@@ -149,7 +150,7 @@ function identityOf(repo: string, actor: string, given?: { name: string; email: 
 export interface ApplyInput {
   candidateId: string;
   actor: string;
-  /** `--confirm <digest8>` of `candidateConfirm('apply', candidateId, {decisionId, ref})`. */
+  /** `--confirm <digest8>` of `confirmDigest('apply', candidateId)`. */
   confirm: string | undefined;
   /** The commit's author and committer; by default the repository's git identity. */
   identity?: { name: string; email: string };
@@ -163,15 +164,6 @@ export interface ApplyResult {
 }
 
 export type ApplyContext = DecideContext & { now?: () => number };
-
-/** What `apply` would confirm now: the approving decision and the ref it would create. */
-export function applyConfirm(ctx: Pick<DecideContext, 'store'>, candidateId: string) {
-  const c = ctx.store.candidate(candidateId);
-  if (!c) throw new CandidateRefused(`unknown candidate ${candidateId}`);
-  const d = candidateDecisionOf(ctx, c);
-  const ref = refFor(c.missionId);
-  return { ...candidateConfirm(ctx, 'apply', c.id, { decisionId: d?.id, ref }), decisionId: d?.id ?? null, ref };
-}
 
 function approvingDecision(c: Candidate, d: Decision | null): Decision {
   if (!d) throw new CandidateRefused(`candidate ${c.id} has no approve or override decision`);
@@ -187,7 +179,7 @@ function approvingDecision(c: Candidate, d: Decision | null): Decision {
 export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResult {
   const c = ctx.store.candidate(input.candidateId);
   if (!c) throw new CandidateRefused(`unknown candidate ${input.candidateId}`);
-  const preview = applyConfirm(ctx, c.id);
+  const preview = confirmDigest(ctx, 'apply', c.id);
   assertHumanDecision(ctx.env ?? process.env, input.actor, input.confirm, preview.digest);
   const m = requireImplement(ctx, c);
   const emit = (name: string, payload: Record<string, unknown>) =>
@@ -198,7 +190,7 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
   };
 
   const repo = ctx.repoRoot;
-  const ref = preview.ref;
+  const ref = applyRefFor(c.missionId);
   let d: Decision;
   try {
     d = approvingDecision(c, candidateDecisionOf(ctx, c));

@@ -1,6 +1,6 @@
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import type { MissionStore } from '../mission/store.ts';
-import type { DecisionOperation } from '../mission/types.ts';
+import type { Candidate, Decision, DecisionOperation } from '../mission/types.ts';
 import { confirmCodeOf } from './policy.ts';
 
 /**
@@ -15,10 +15,28 @@ import { confirmCodeOf } from './policy.ts';
  * - `lock-gates` (mission id, plus the experiment ids to lock): `store.gateSet`'s digest, the
  *   same computation `lockGates` records, so any subset is confirmable.
  * - `approve-work-item` / `reject-work-item` (work item id): the item's content digest.
- * - `approve-candidate` / `reject-candidate` / `override-candidate` / `apply` (candidate id):
- *   the diff's digest, the bytes that will be committed.
+ * - `approve-candidate` / `reject-candidate` / `override-candidate` (candidate id): a digest
+ *   over the operation, candidate id, mission, diff digest, gate-set digest and base, so a code
+ *   confirmed for one candidate, diff, gate set or act confirms nothing else (two candidates
+ *   with byte-identical diffs still get different codes).
+ * - `apply` (candidate id): the same, plus the approving decision it will apply and the ref
+ *   it will create.
  */
 export type ConfirmOperation = DecisionOperation | 'apply';
+
+/** The branch `apply` creates for a mission. Never overwritten. */
+export const applyRefFor = (missionId: string) => `refs/heads/daylight/${missionId}`;
+
+const CANDIDATE_OPERATIONS = ['approve-candidate', 'reject-candidate', 'override-candidate'];
+
+/** The latest approve, reject or override of this candidate, or null. Later decisions replace earlier ones. */
+export function candidateDecisionOf(
+  ctx: { store: Pick<MissionStore, 'decisions'> }, c: Pick<Candidate, 'id' | 'missionId'>,
+): Decision | null {
+  return ctx.store.decisions(c.missionId)
+    .filter((d) => d.scope.candidateId === c.id && CANDIDATE_OPERATIONS.includes(String(d.scope.operation)))
+    .at(-1) ?? null;
+}
 
 export interface ConfirmDigest {
   digest: string;
@@ -26,7 +44,7 @@ export interface ConfirmDigest {
   lines: string[];
 }
 
-type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate'>;
+type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate' | 'decisions'>;
 
 export interface ConfirmOptions {
   /** `lock-gates`: exactly the experiments the lock will name. Required. */
@@ -87,9 +105,18 @@ export function confirmDigest(
     case 'apply': {
       const c = ctx.store.candidate(subjectId);
       if (!c) throw new Error(`unknown candidate ${subjectId}`);
-      return out(c.diffArtifact.digest, [
-        `${operation} candidate ${c.id} on mission ${c.missionId}`, `verdict ${c.verdict}`,
-        `base ${c.baseCommit}`, `${c.files.length} file(s), gates ${c.gateSetDigest}`,
+      const applying = operation === 'apply'
+        ? { decisionId: candidateDecisionOf(ctx, c)?.id ?? null, ref: applyRefFor(c.missionId) }
+        : null;
+      const id = {
+        operation, candidateId: c.id, missionId: c.missionId, diffDigest: c.diffArtifact.digest,
+        gateSetDigest: c.gateSetDigest, baseCommit: c.baseCommit, ...applying,
+      };
+      return out(digestOf(canonicalJson(id)), [
+        `${operation} candidate ${c.id} on mission ${c.missionId}`,
+        `diff ${c.diffArtifact.digest} (${c.files.length} file(s)) on base ${c.baseCommit}`,
+        `gates ${c.gateSetDigest}`, `verdict as recorded: ${c.verdict}`,
+        ...(applying ? [`decision ${applying.decisionId ?? 'none'}`, `creates ${applying.ref}`] : []),
       ]);
     }
     default:

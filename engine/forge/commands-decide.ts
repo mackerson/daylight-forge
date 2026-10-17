@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { mappedRoot, openDaylight, type DaylightContext } from '../mission/context.ts';
 import { defaultOut } from '../paths.ts';
-import { ApplyFailed, applyCandidate, applyConfirm } from './apply.ts';
-import { CandidateRefused, candidateConfirm, decideCandidate, type CandidateOperation } from './decide.ts';
+import { ApplyFailed, applyCandidate } from './apply.ts';
+import { confirmDigest } from './confirm.ts';
+import { CandidateRefused, decideCandidate, type CandidateOperation } from './decide.ts';
 import { DecisionRefused } from './policy.ts';
 
 /**
@@ -85,7 +86,7 @@ function forge(sub: string | undefined, p: Parsed, d: DaylightContext, asJson: b
 
   if (sub === 'apply') {
     if (confirm === undefined) {
-      const v = applyConfirm(ctx, candidateId);
+      const v = confirmDigest(ctx, 'apply', candidateId);
       return preview(v.digest, v.lines, asJson);
     }
     const r = applyCandidate(ctx, { candidateId, actor, confirm });
@@ -95,7 +96,7 @@ function forge(sub: string | undefined, p: Parsed, d: DaylightContext, asJson: b
   }
   const operation = OPS[sub];
   if (confirm === undefined) {
-    const v = candidateConfirm(ctx, operation, candidateId);
+    const v = confirmDigest(ctx, operation, candidateId);
     return preview(v.digest, v.lines, asJson);
   }
   const decision = decideCandidate(ctx, {

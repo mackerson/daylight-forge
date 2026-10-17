@@ -1,17 +1,15 @@
-import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import type { Candidate, CandidateDecisionScope, Decision, Mission, PolicyRule } from '../mission/types.ts';
-import type { ConfirmDigest } from './confirm.ts';
+import { candidateDecisionOf, confirmDigest } from './confirm.ts';
 import { verdictRows, type GateContext } from './gate.ts';
-import { assertHumanDecision, confirmCodeOf } from './policy.ts';
+import { assertHumanDecision } from './policy.ts';
 import { candidateVerdict } from './verdict.ts';
 
 /**
  * `forge approve|reject|override` (PLAN F-4.9, resolution 13, RULINGS R10.4, R14 D-9).
  *
- * Every candidate decision goes through WS1's one guard (`assertHumanDecision`) against a
- * digest over the operation, the candidate id, its diff digest and the gate-set digest it was
- * built against, so a code confirmed for one candidate, one diff or one gate set confirms
- * nothing else. An approve is admitted only when the verdict, recomputed here from rows (never
+ * Every candidate decision goes through WS1's one guard (`assertHumanDecision`) against the
+ * one digest `confirmDigest` defines for it (candidate id, diff digest and gate-set digest),
+ * so the CLI, the GUI and `guardCheck` agree on a single code. An approve is admitted only when the verdict, recomputed here from rows (never
  * read off the candidate), is `accepted-by-gates`; an override needs a rationale and still
  * cannot cure the flags no human may wave through. A reject needs only a reason.
  */
@@ -48,38 +46,6 @@ export function uncurable(c: Pick<Candidate, 'policyViolations' | 'secretHits'>)
 
 const OPERATIONS: readonly CandidateOperation[] = ['approve-candidate', 'reject-candidate', 'override-candidate'];
 
-/**
- * What a person confirms for a candidate act: `--confirm` is `confirmCodeOf(digest)`. `apply`
- * also names the approving decision and the ref it will create.
- */
-export function candidateConfirm(
-  ctx: Pick<DecideContext, 'store'>, operation: CandidateOperation | 'apply', candidateId: string,
-  extra: { decisionId?: string; ref?: string } = {},
-): ConfirmDigest {
-  const c = ctx.store.candidate(candidateId);
-  if (!c) throw new CandidateRefused(`unknown candidate ${candidateId}`);
-  const id = {
-    operation, candidateId: c.id, missionId: c.missionId, diffDigest: c.diffArtifact.digest,
-    gateSetDigest: c.gateSetDigest, baseCommit: c.baseCommit,
-    ...(operation === 'apply' ? { decisionId: extra.decisionId ?? null, ref: extra.ref ?? null } : {}),
-  };
-  const digest = digestOf(canonicalJson(id));
-  const lines = [
-    `${operation} candidate ${c.id} on mission ${c.missionId}`,
-    `diff ${c.diffArtifact.digest} (${c.files.length} file(s)) on base ${c.baseCommit}`,
-    `gates ${c.gateSetDigest}`,
-    `verdict as recorded: ${c.verdict}`,
-    ...(operation === 'apply' ? [`decision ${extra.decisionId ?? 'none'}`, `creates ${extra.ref ?? 'no ref'}`] : []),
-  ];
-  return { digest, digest8: confirmCodeOf(digest), lines };
-}
-
-/** The latest approve, reject or override of this candidate, or null. Later decisions replace earlier ones. */
-export function candidateDecisionOf(ctx: Pick<DecideContext, 'store'>, c: Pick<Candidate, 'id' | 'missionId'>): Decision | null {
-  const ds = ctx.store.decisions(c.missionId).filter((d) =>
-    d.scope.candidateId === c.id && OPERATIONS.includes(d.scope.operation as CandidateOperation));
-  return ds.at(-1) ?? null;
-}
 
 /** Shared by approve, override and apply: the bytes, the lock and the flags, or why not. */
 export function candidateStanding(ctx: DecideContext, c: Candidate): string[] {
@@ -112,7 +78,7 @@ export interface DecideInput {
   operation: CandidateOperation;
   actor: string;
   rationale: string;
-  /** `--confirm <digest8>` of `candidateConfirm(operation, candidateId)`. */
+  /** `--confirm <digest8>` of `confirmDigest(operation, candidateId)`. */
   confirm: string | undefined;
   /** Commit subject to use instead of the work item title (approve and override only). */
   subject?: string;
@@ -124,7 +90,7 @@ export function decideCandidate(ctx: DecideContext, input: DecideInput): Decisio
   if (!OPERATIONS.includes(input.operation)) throw new CandidateRefused(`not a candidate operation: ${String(input.operation)}`);
   const c = ctx.store.candidate(input.candidateId);
   if (!c) throw new CandidateRefused(`unknown candidate ${input.candidateId}`);
-  const preview = candidateConfirm(ctx, input.operation, c.id);
+  const preview = confirmDigest(ctx, input.operation, c.id);
   assertHumanDecision(ctx.env ?? process.env, input.actor, input.confirm, preview.digest);
   const m = requireImplement(ctx, c);
   if (!input.rationale?.trim()) throw new CandidateRefused(`${input.operation} needs a rationale`);

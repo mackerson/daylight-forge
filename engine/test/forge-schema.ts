@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
+import { ArtifactStore, canonicalJson, digestOf } from '../mission/artifacts.ts';
 import { openDaylight } from '../mission/context.ts';
 import { IncompatibleDatabase, openDaylightDb, schemaVersion } from '../mission/db.ts';
 import { EventLog } from '../mission/events.ts';
@@ -683,8 +683,17 @@ section('confirm digests');
   const lock = confirmDigest(ctx, 'lock-gates', mission.id, { experimentIds: lockDecision.scope.experimentIds as string[] });
   check('lock-gates confirms the gate-set digest the lock records', lock.digest === lockDigest && lock.digest8 === lock.digest.slice(7, 15));
   check('and lists each gate', lock.lines.length === 3);
-  check('a candidate act confirms the diff digest', confirmDigest(ctx, 'approve-candidate', candidateId).digest
-    === store.candidate(candidateId)!.diffArtifact.digest && confirmDigest(ctx, 'apply', candidateId).digest8.length === 8);
+  {
+    const cand = store.candidate(candidateId)!;
+    const approve = confirmDigest(ctx, 'approve-candidate', candidateId).digest;
+    check('a candidate act confirms candidate, diff and gate set together, not the diff digest alone',
+      approve === digestOf(canonicalJson({
+        operation: 'approve-candidate', candidateId, missionId: cand.missionId, diffDigest: cand.diffArtifact.digest,
+        gateSetDigest: cand.gateSetDigest, baseCommit: cand.baseCommit,
+      })) && approve !== cand.diffArtifact.digest);
+    check('each candidate act has its own code', approve !== confirmDigest(ctx, 'reject-candidate', candidateId).digest
+      && confirmDigest(ctx, 'apply', candidateId).digest !== approve && confirmDigest(ctx, 'apply', candidateId).digest8.length === 8);
+  }
   check('a work-item act confirms the content digest', confirmDigest(ctx, 'approve-work-item', w.id).digest === w.contentDigest);
   const grant = { permissions: { write: true, execute: false }, maxUsd: 2 };
   const auth = confirmDigest(ctx, 'authorize-mission', mission.id, grant);

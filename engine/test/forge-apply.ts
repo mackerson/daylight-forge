@@ -20,13 +20,13 @@ import { digestOf } from '../mission/artifacts.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { Candidate, CandidateFile, DaylightEventInput, Experiment, Mission, PolicyViolation } from '../mission/types.ts';
 import { confirmDigest } from '../forge/confirm.ts';
-import { DecisionRefused } from '../forge/policy.ts';
+import { confirmCodeOf, DecisionRefused, guardCheck } from '../forge/policy.ts';
 import { verdictRows } from '../forge/gate.ts';
 import { candidateVerdict } from '../forge/verdict.ts';
 import {
-  CandidateRefused, candidateConfirm, decideCandidate, type CandidateOperation, type DecideContext,
+  CandidateRefused, decideCandidate, type CandidateOperation, type DecideContext,
 } from '../forge/decide.ts';
-import { ApplyFailed, applicationRefusals, applyCandidate, applyConfirm, refFor } from '../forge/apply.ts';
+import { ApplyFailed, applicationRefusals, applyCandidate, refFor } from '../forge/apply.ts';
 import { coAuthorOf, commitMessage, subjectOf } from '../forge/trailers.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { captureCandidate } from '../forge/diff.ts';
@@ -199,14 +199,14 @@ function evaluated(f: Fixture, c: Candidate, conclusion: 'supported' | 'falsifie
   return d.store.updateCandidateVerdict(c.id, v.verdict, v.reasons);
 }
 
-const code = (op: CandidateOperation, c: Candidate) => candidateConfirm(ctx, op, c.id).digest8;
+const code = (op: CandidateOperation, c: Candidate) => confirmDigest(ctx, op, c.id).digest8;
 const decide = (c: Candidate, op: CandidateOperation, o: { env?: Record<string, string>; actor?: string; confirm?: string; rationale?: string } = {}) =>
   decideCandidate({ ...ctx, env: o.env ?? {} }, {
     candidateId: c.id, operation: op, actor: o.actor ?? HUMAN, rationale: o.rationale ?? 'reviewed',
     confirm: o.confirm ?? code(op, c),
   });
 const apply = (c: Candidate, o: { env?: Record<string, string>; confirm?: string } = {}) =>
-  applyCandidate({ ...ctx, env: o.env ?? {} }, { candidateId: c.id, actor: HUMAN, confirm: o.confirm ?? applyConfirm(ctx, c.id).digest8 });
+  applyCandidate({ ...ctx, env: o.env ?? {} }, { candidateId: c.id, actor: HUMAN, confirm: o.confirm ?? confirmDigest(ctx, 'apply', c.id).digest8 });
 const decisionsOn = (c: Candidate) => d.store.decisions(c.missionId).filter((x) => x.scope.candidateId === c.id);
 
 // ---- approve ----------------------------------------------------------------------------
@@ -269,7 +269,7 @@ const good = evaluated(main, candidate(main));
   })) instanceof DecisionRefused);
   check('the reject code does not approve', throws(() => decide(good, 'approve-candidate', { confirm: code('reject-candidate', good) })) instanceof DecisionRefused);
   check('a code over the diff digest alone does not approve',
-    throws(() => decide(good, 'approve-candidate', { confirm: confirmDigest(ctx, 'approve-candidate', good.id).digest8 })) instanceof DecisionRefused);
+    throws(() => decide(good, 'approve-candidate', { confirm: confirmCodeOf(good.diffArtifact.digest) })) instanceof DecisionRefused);
   check('the digest covers candidate, diff and gate set', (() => {
     const other = candidate(main);
     return other.diffArtifact.digest === good.diffArtifact.digest && code('approve-candidate', other) !== code('approve-candidate', good);
@@ -439,8 +439,22 @@ section('the decide commands, through the module');
   const c = evaluated(f, candidate(f));
   const shown = cli(['approve', c.id, repo, '--actor', HUMAN, '--rationale', 'r']);
   const preview = shown.code === 2 ? JSON.parse(shown.stdout) as { digest: string } : null;
-  check('approve without --confirm shows the digest and stops', !!preview && preview.digest === candidateConfirm(ctx, 'approve-candidate', c.id).digest, shown.stderr);
+  check('approve without --confirm shows the digest and stops', !!preview && preview.digest === confirmDigest(ctx, 'approve-candidate', c.id).digest, shown.stderr);
   const confirm = preview?.digest.slice(7, 15) ?? '';
+  // The GUI asks guardCheck with confirmDigest's digest before it shells out; the CLI must
+  // accept exactly the code that check accepts, and nothing else.
+  const shared = confirmDigest(ctx, 'approve-candidate', c.id);
+  check('the CLI preview, confirmDigest and guardCheck agree on one code',
+    shared.digest8 === confirm && guardCheck({}, HUMAN, shared.digest8, shared.digest) === null);
+  for (const [why, other] of [
+    ['the diff-digest-only code', confirmCodeOf(c.diffArtifact.digest)],
+    ['the reject code', confirmDigest(ctx, 'reject-candidate', c.id).digest8],
+    ['a made-up code', '00000000'],
+  ] as const) {
+    const r = cli(['approve', c.id, repo, '--actor', HUMAN, '--rationale', 'r', '--confirm', other]);
+    check(`CLI approve with ${why} is refused, as guardCheck says`, r.code === 1 && JSON.parse(r.stdout).refused === true
+      && guardCheck({}, HUMAN, other, shared.digest) !== null, r.stdout + r.stderr);
+  }
   const agent = cli(['approve', c.id, repo, '--actor', HUMAN, '--rationale', 'r', '--confirm', confirm], { CLAUDECODE: '1' });
   check('approve under CLAUDECODE is refused', agent.code === 1 && JSON.parse(agent.stdout).refused === true, agent.stdout + agent.stderr);
   const ok = cli(['approve', c.id, repo, '--actor', HUMAN, '--rationale', 'r', '--confirm', confirm]);
