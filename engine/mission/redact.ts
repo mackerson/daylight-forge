@@ -182,7 +182,10 @@ const UPPER_NAME = String.raw`[A-Za-z0-9_]{0,64}(?:KEY|TOKEN|SECRET|PASSWORD|PAS
  * `db-password`, `apiKey`), so `monkey` or `turkey` are not names of secrets.
  */
 const LOWER_NAME = String.raw`(?:[A-Za-z0-9]{0,32}[_.-]){0,4}(?:[a-z][a-zA-Z0-9]{0,32}(?:Key|Token|Secret|Password|Passwd|Credentials?)|apikey|key|token|secret|password|passwd|pwd|credentials?)`;
-const PASSWORD_NAME = String.raw`(?:[A-Za-z0-9]{0,32}[_.-]){0,4}(?:[a-z][a-zA-Z0-9]{0,32}(?:Password|Passwd)|password|passwd|pwd|PASSWORD|PASSWD)`;
+/** Names in `name: value` form: the same, plus the `X-Api-Key` header in any case. */
+const COLON_NAME = String.raw`(?<name>${UPPER_NAME}|${LOWER_NAME}|(?:[A-Za-z0-9]{0,32}[_-])?[Aa][Pp][Ii]-[Kk][Ee][Yy])`;
+/** A bare `key:` is a map or list key far more often than a credential. */
+const BARE_KEY = /^key$/i;
 
 /**
  * Token shapes, by provider convention. Order matters: a provider shape runs before the
@@ -240,9 +243,9 @@ const SHAPES: Shape[] = [
   low(pattern('assignment', [
     // `NAME=value`, or `NAME = "value"`: spaced, only a quoted literal is a value, not code.
     new RegExp(String.raw`(?<![A-Za-z0-9_])(?<keep>(?:${UPPER_NAME}|${LOWER_NAME})(?:=["']?|[ \t]*=[ \t]*["']))${NOT_A_REF}(?<val>[^\s'"]{8,})`, 'g'),
-    // `password: value` (YAML, JSON, a config dump).
-    new RegExp(String.raw`(?<![A-Za-z0-9_])(?<keep>${PASSWORD_NAME}["']?[ \t]*:[ \t]*(?<q>["']?))${NOT_A_REF}(?<val>[^\s'",;)}\]]{8,})`, 'g'),
-  ], (g) => !(g.q === '' && CODE_PATH.test(g.val ?? '')))),
+    // `name: value` (YAML, JSON, an object literal, a header, a token endpoint's response).
+    new RegExp(String.raw`(?<![A-Za-z0-9_])(?<keep>${COLON_NAME}["']?[ \t]*:[ \t]*(?<q>["']?))${NOT_A_REF}(?<val>[^\s'",;)}\]]{8,})`, 'g'),
+  ], (g) => !(g.q === '' && CODE_PATH.test(g.val ?? '')) && !BARE_KEY.test(g.name ?? ''))),
 ];
 
 /** Every shape's name, in the order they run. */
