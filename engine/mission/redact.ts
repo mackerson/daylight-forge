@@ -50,7 +50,9 @@ function pattern(name: ShapeName, res: RegExp[], accept?: (g: Groups) => boolean
             hit();
             return MASK;
           }
-          if (g.val.startsWith(MASK) || (accept && !accept(g))) return m;
+          // A value class that stops at `]` sees the mask as `[REDACTED`.
+          const masked = g.val.startsWith(MASK) || MASK.startsWith(g.val);
+          if (masked || (accept && !accept(g))) return m;
           hit();
           return (g.keep ?? '') + MASK;
         });
@@ -235,11 +237,37 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Past this many characters the text is not scanned. Every shape is linear, so this bounds
+ * time and memory, not backtracking; it sits well above a diff part or a capped console.
+ */
+export const MAX_REDACT_CHARS = 32 * 1024 * 1024;
+
+/**
+ * What comes back for text that was not scanned. It counts as a redaction, so a caller that
+ * treats any hit as a secret (the diff scanner) refuses the text rather than storing it.
+ */
+function unscanned(why: string): { text: string; redactions: number } {
+  return { text: `[REDACTED: not scanned, ${why}]`, redactions: 1 };
+}
+
 export function redact(
   text: string,
   secrets: string[] = [],
   env: NodeJS.ProcessEnv = process.env,
+  o: { maxChars?: number } = {},
 ): { text: string; redactions: number } {
+  if (typeof text !== 'string') return unscanned('not text');
+  const max = o.maxChars ?? MAX_REDACT_CHARS;
+  if (text.length > max) return unscanned(`${text.length} characters is over the ${max}-character limit`);
+  try {
+    return scan(text, secrets, env);
+  } catch (err) {
+    return unscanned(`the scan failed (${(err as Error)?.name ?? 'error'})`);
+  }
+}
+
+function scan(text: string, secrets: string[], env: NodeJS.ProcessEnv): { text: string; redactions: number } {
   let redactions = 0;
   let out = text;
 

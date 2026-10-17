@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore } from '../mission/artifacts.ts';
-import { redact, MASK } from '../mission/redact.ts';
+import { MAX_REDACT_CHARS, redact, MASK } from '../mission/redact.ts';
 import { captureCandidate } from '../forge/diff.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { harness } from './harness.ts';
@@ -187,6 +187,73 @@ section('benign text that looks a little like a secret is left alone');
   const touched = BENIGN.map((s) => [s, scrub(s)] as const).filter(([s, r]) => r.redactions || r.text !== s);
   check(`none of ${BENIGN.length} benign strings is masked`, touched.length === 0,
     touched.map(([s, r]) => `${JSON.stringify(s.slice(0, 50))} -> ${JSON.stringify(r.text.slice(0, 80))}`).join(' | '));
+}
+
+section('a second pass changes nothing and counts nothing');
+{
+  const all = CASES.map((c, i) => `${i}: ${(c.glue ?? ['_'])[0]}${c.text}`).join('\n');
+  const inputs = [...CASES.map((c) => c.text), all, `${MASK} ${MASK}`, `API_KEY=${MASK}`, `https://u:${MASK}@h`, `password ${MASK}`];
+  const drift = inputs.filter((s) => {
+    const once = scrub(s);
+    const twice = scrub(once.text);
+    return twice.text !== once.text || twice.redactions !== 0;
+  });
+  check(`redact(redact(x)) === redact(x) with zero hits, for ${inputs.length} inputs`, drift.length === 0,
+    drift.map((s) => JSON.stringify(s.slice(0, 40))).join(' | '));
+}
+
+section('huge, binary and hostile input finishes and fails closed');
+{
+  const MB5 = 5 * 1024 * 1024;
+  const fill = (unit: string) => unit.repeat(Math.ceil(MB5 / unit.length)).slice(0, MB5);
+  const timed = <T>(f: () => T): [T, number] => {
+    const t = performance.now();
+    const r = f();
+    return [r, performance.now() - t];
+  };
+  // Generous: a linear pass over 5 MB takes well under a second, a quadratic one hours.
+  const BUDGET_MS = 15_000;
+
+  const key = `ghp_FAKEhuge${rep('h', 26)}`;
+  const big = `${fill('lorem ipsum dolor sit amet\n').slice(0, MB5 - 200)}\n${key}\n-----BEGIN PRIVATE KEY-----\nFAKEhugePEM\n-----END PRIVATE KEY-----\n`;
+  const [r, ms] = timed(() => scrub(big));
+  check(`5 MB of text is scanned whole, its tail secrets masked (${Math.round(ms)} ms)`,
+    ms < BUDGET_MS && !r.text.includes('FAKEhuge') && r.redactions === 2, `${r.redactions}`);
+
+  const bytes = Buffer.from(Array.from({ length: MB5 }, (_, i) => (i * 7919) % 256)).toString('latin1');
+  const nul = `${fill('\0')}API_KEY=FAKEafterNUL\0`;
+  for (const [what, input] of [['5 MB of every byte value', bytes], ['5 MB of NUL bytes then a key', nul]] as const) {
+    let threw = '';
+    let out: ReturnType<typeof scrub> | undefined;
+    const [, t] = timed(() => {
+      try { out = scrub(input); } catch (err) { threw = String(err); }
+    });
+    check(`${what} does not throw (${Math.round(t)} ms)`, !threw && t < BUDGET_MS && typeof out?.text === 'string', threw);
+  }
+  check('a key after 5 MB of NULs is still masked', !scrub(nul).text.includes('FAKEafterNUL'));
+
+  // Each would make a backtracking shape rescan from every start: `_eyJ` cost 15 s per 200 KB
+  // and `A_KEY` 7 s on the shape list this replaced.
+  const HOSTILE = ['eyJ', '_eyJ', 'eyJabcdefgh.', '-----BEGIN PRIVATE KEY-----', '-----BEGIN RSA PRIVATE KEY-----\n',
+    'A_KEY', 'my_api_key', 'a-', '://a:', 'login a password ', 'Authorization: ', 'Bearer ', ' _auth=', 'password: ', 'ghp_', 'AKIA'];
+  const slow: string[] = [];
+  for (const unit of HOSTILE) {
+    const [, t] = timed(() => scrub(fill(unit)));
+    if (t >= BUDGET_MS) slow.push(`${JSON.stringify(unit)} ${Math.round(t)} ms`);
+  }
+  check(`${HOSTILE.length} hostile 5 MB repetitions each finish in linear time`, slow.length === 0, slow.join(', '));
+
+  const cap = 4 * 1024 * 1024;
+  const over = `${fill('x').slice(0, MB5 - 40)} API_KEY=FAKEoverCap1`;
+  const bailed = redact(over, [], {}, { maxChars: cap });
+  check('over the cap, nothing of the input comes back', !bailed.text.includes('FAKEoverCap') && !bailed.text.includes('xxxx') && bailed.text.length < 200, bailed.text.slice(0, 120));
+  check('and it counts as a redaction, so a diff scanner fails closed', bailed.redactions >= 1);
+  check('the notice says why', bailed.text.startsWith('[REDACTED') && /not scanned/.test(bailed.text), bailed.text);
+  check('the notice is itself stable under a second pass', scrub(bailed.text).text === bailed.text && scrub(bailed.text).redactions === 0);
+  check('at the cap exactly, the input is scanned', redact('API_KEY=FAKEatCap12', [], {}, { maxChars: 19 }).text === `API_KEY=${MASK}`);
+  check(`the default cap is ${MAX_REDACT_CHARS} chars, above a 5 MB diff part`, MAX_REDACT_CHARS > MB5);
+  const notText = redact(Buffer.from('API_KEY=FAKEbuffer12') as unknown as string, [], {});
+  check('a non-string fails closed rather than throwing', !notText.text.includes('FAKEbuffer') && notText.redactions >= 1, notText.text);
 }
 
 section('the diff scanner flags every shape as secret-in-diff');
