@@ -143,6 +143,52 @@ section('the parts that are not the secret survive');
   check('a token in an assignment is masked once', g.text === `GITHUB_TOKEN=${MASK}` && g.redactions === 1, JSON.stringify(g));
 }
 
+section('benign text that looks a little like a secret is left alone');
+{
+  const blob = Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 131 + 7) % 256)).toString('base64');
+  const url = Buffer.from(Array.from({ length: 600 }, (_, i) => (i * 97 + 3) % 256)).toString('base64url');
+  check('the base64 fixtures carry no JWT header by construction', !blob.includes('eyJ') && !url.includes('eyJ'));
+  const BENIGN = [
+    'sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==',
+    '123e4567-e89b-12d3-a456-426614174000',
+    'f47ac10b-58cc-4372-a567-0e02b2c3d479 and 00000000-0000-0000-0000-000000000000',
+    blob,
+    url,
+    `data:image/png;base64,${blob.slice(0, 400)}`,
+    'KEY=1',
+    'API_KEY=short',
+    'TOKEN=',
+    'MAX_TOKENS=4096',
+    'export API_KEY=${API_KEY}',
+    '//registry.npmjs.org/:_authToken=${NPM_TOKEN}',
+    'DB_PASSWORD=$DB_PASSWORD',
+    'monkey=bananas123 turkey=sandwich99 hockey_score=12345678',
+    'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+    'commit 4c454fe0c1b1f2c3d4e5f60718293a4b5c6d7e8f\nindex 3b18e51..a4f9c2d 100644',
+    'Merge 83bf0ea and f7ed74d into a5c8394',
+    'Use the sk- prefix to spot an OpenAI key; sk- alone is not one.',
+    'a task-management-system with a disk-cache-directory and a risk-assessment-matrix',
+    'laughs_counter1234567 and sighs_and_whispers and highs_lows_tracker',
+    'AKIA is the prefix of an AWS access key id; ASIA is a temporary one.',
+    'The bearer of this letter may pass. Authorization: required. authorization: pending',
+    'git@github.com:acme/repo.git and ssh://git@example.invalid/repo.git',
+    'https://example.invalid/pkg@1.2.3 and http://localhost:8080/path?x=1',
+    'password: string',
+    'password: this.password,',
+    'const password = getPassword();',
+    'if (password.length < 8) throw new Error("password too short");',
+    'Reset your password via the link we sent you.',
+    'Bearer tokens are described in RFC 6750.',
+    'eyJ alone, and eyJabc without dots',
+    'color: #ff00ff; version 1.2.3-beta.4',
+  ];
+  const touched = BENIGN.map((s) => [s, scrub(s)] as const).filter(([s, r]) => r.redactions || r.text !== s);
+  check(`none of ${BENIGN.length} benign strings is masked`, touched.length === 0,
+    touched.map(([s, r]) => `${JSON.stringify(s.slice(0, 50))} -> ${JSON.stringify(r.text.slice(0, 80))}`).join(' | '));
+}
+
 section('the diff scanner flags every shape as secret-in-diff');
 {
   const GIT_ENV = {
