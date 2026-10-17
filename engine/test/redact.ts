@@ -5,10 +5,19 @@
  * source. Each shape is tried where it is easy (space-delimited) and where `\b` used to fail
  * it: at a line start, at a line end, and glued to the word characters before it.
  */
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ArtifactStore } from '../mission/artifacts.ts';
 import { redact, MASK } from '../mission/redact.ts';
+import { captureCandidate } from '../forge/diff.ts';
+import { createWorkspace } from '../forge/workspace.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-test-redact-'));
+process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const scrub = (s: string) => redact(s, [], {});
 
@@ -33,7 +42,7 @@ const CASES: Case[] = [
   { shape: 'pem-private-key', text: `-----BEGIN PRIVATE KEY-----\n${PEM_BODY}\n-----END PRIVATE KEY-----`, sentinel: 'FAKEpem', glue: ['_', 'abc'] },
   { shape: 'pem-private-key', text: `-----BEGIN ENCRYPTED PRIVATE KEY-----\r\n${PEM_BODY}\r\n-----END ENCRYPTED PRIVATE KEY-----`, sentinel: 'FAKEpem', glue: ['_'] },
   { shape: 'pem-private-key', text: `-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n${PEM_BODY}\n-----END PGP PRIVATE KEY BLOCK-----`, sentinel: 'FAKEpem', glue: ['_'] },
-  { shape: 'pem-private-key', text: `-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,FAKEDEK\n\n${PEM_BODY}\n-----END EC PRIVATE KEY-----`, sentinel: 'FAKE', glue: ['_'] },
+  { shape: 'pem-private-key', text: `-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,FAKEDEK\n\n${PEM_BODY}\n-----END EC PRIVATE KEY-----`, sentinel: 'FAKEDEK', glue: ['_'] },
   // As a diff adds it, and as a JSON log escapes it.
   { shape: 'pem-private-key', text: `+-----BEGIN RSA PRIVATE KEY-----\n+${PEM_BODY}\n+-----END RSA PRIVATE KEY-----`, sentinel: 'FAKEpem', glue: ['_'] },
   { shape: 'pem-private-key', text: `"-----BEGIN PRIVATE KEY-----\\n${PEM_BODY}\\n-----END PRIVATE KEY-----\\n"`, sentinel: 'FAKEpem', glue: ['_'] },
@@ -132,6 +141,55 @@ section('the parts that are not the secret survive');
   check('an unterminated PEM block is masked to the end of its body only', t === `${MASK}\nconst after = 1;\n`, JSON.stringify(t));
   const g = scrub('GITHUB_TOKEN=ghp_FAKEgithubaaaaaaaaaaaaaaaaaaaaaaaaaa');
   check('a token in an assignment is masked once', g.text === `GITHUB_TOKEN=${MASK}` && g.redactions === 1, JSON.stringify(g));
+}
+
+section('the diff scanner flags every shape as secret-in-diff');
+{
+  const GIT_ENV = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@daylight',
+    GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@daylight',
+    GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const repo = path.join(tmp, 'repo');
+  fs.mkdirSync(repo);
+  const git = (args: string[]) =>
+    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-q']);
+  fs.writeFileSync(path.join(repo, 'README'), 'fixture\n');
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'fixture']);
+  const base = git(['rev-parse', 'HEAD']);
+  const artifacts = new ArtifactStore(path.join(tmp, 'out'));
+
+  // One file per case, and one more with each glued to a word, so a hit is pinned to its file.
+  const ws = createWorkspace(repo, base);
+  const planted = new Map<string, Case>();
+  CASES.forEach((c, i) => {
+    for (const [suffix, text] of [['plain', c.text], ['glued', `${(c.glue ?? ['_'])[0]}${c.text}`]]) {
+      const rel = `secrets/${String(i).padStart(2, '0')}-${c.shape}-${suffix}.txt`;
+      fs.mkdirSync(path.dirname(path.join(ws.tree, rel)), { recursive: true });
+      fs.writeFileSync(path.join(ws.tree, rel), `line before\n${text}\nline after\n`);
+      planted.set(rel, c);
+    }
+  });
+  fs.writeFileSync(path.join(ws.tree, 'clean.txt'), 'nothing secret here\n');
+  const d = captureCandidate(ws, {}, { artifacts, projectId: 'p', env: {} });
+  if (!('verdict' in d)) throw new Error(d.refused);
+
+  const flagged = new Set(d.policyViolations.filter((v) => v.rule === 'secret-in-diff').map((v) => v.path));
+  const missed = [...planted.keys()].filter((p) => !flagged.has(p));
+  check(`every one of ${planted.size} planted files is a secret-in-diff violation`, missed.length === 0, missed.join(', '));
+  const unflagged = d.flags.filter((f) => planted.has(f.path) && (!f.rules.includes('secret-in-diff') || f.secretHits < 1));
+  check('and carries the flag with a hit count', unflagged.length === 0, unflagged.map((f) => f.path).join(', '));
+  check('a clean file beside them is not flagged', !flagged.has('clean.txt') && !d.flags.find((f) => f.path === 'clean.txt')?.rules.includes('secret-in-diff'));
+  check('the candidate cannot go on to the gates', d.verdict === 'policy-violation');
+  const stored = artifacts.get(d.diffArtifact!).toString('latin1');
+  const leaked = [...new Set([...planted.values()].map((c) => c.sentinel))].filter((s) => stored.includes(s));
+  check('the stored diff holds none of the planted secrets', leaked.length === 0, `${leaked.length} sentinel(s) survived`);
+  check('the stored diff is labelled redacted', stored.includes(MASK) && d.diff.toString('latin1') === stored);
+  ws.dispose();
 }
 
 done();
