@@ -325,7 +325,11 @@ section('apply commits an approved candidate with plumbing only');
   check('the application row names the commit, ref, decision and human', r.application.commit === r.commit && r.application.ref === r.ref
     && r.application.appliedBy === HUMAN && d.store.application(good.id)?.id === r.application.id
     && r.application.decisionId === decisionsOn(good).at(-1)!.id);
-  check('forge.applied names the commit and tree', named('forge.applied').some((e) => e.payload.commit === r.commit && e.payload.tree === r.tree));
+  check('the application row records the tree, and it re-derives from the commit', (() => {
+    const row = d.store.application(good.id)!;
+    return row.tree === r.tree && row.tree === raw(['rev-parse', `${row.commit}^{tree}`]) && /^[0-9a-f]{40}$/.test(row.tree);
+  })());
+  check('forge.applied names the commit and tree',named('forge.applied').some((e) => e.payload.commit === r.commit && e.payload.tree === r.tree));
   const msg = raw(['log', '-1', '--format=%B', r.commit]);
   const trailers = execFileSync('git', ['interpret-trailers', '--parse'], { input: msg, encoding: 'utf8' }).trim().split('\n');
   check('the subject is the mission objective (ad hoc: no work item)', msg.split('\n')[0] === 'make add add');
@@ -399,12 +403,30 @@ section('the applications invariant catches a row that does not match its commit
   const f = newMission('forged row');
   const c = evaluated(f, candidate(f));
   const dd = decide(c, 'approve-candidate');
-  d.store.recordApplication({ candidateId: c.id, decisionId: dd.id, baseCommit: base, commit: base, ref: refFor(f.mission.id), appliedBy: HUMAN });
+  d.store.recordApplication({ candidateId: c.id, decisionId: dd.id, baseCommit: base, commit: base, tree: raw(['rev-parse', `${base}^{tree}`]), ref: refFor(f.mission.id), appliedBy: HUMAN });
   const breaches = applicationRefusals(ctx, { projectId: PROJECT.id });
   check('an application whose commit is not the approved diff is reported', breaches.length === 2
     && breaches.every((b) => b.startsWith(d.store.application(c.id)!.id))
     && breaches.some((b) => /parent is none/.test(b)) && breaches.some((b) => b.includes(`not ${c.diffArtifact.digest}`)), breaches.join(' | '));
   check('the real application is not reported', !breaches.some((b) => b.startsWith(d.store.application(good.id)!.id)));
+
+  // A row whose commit is right but whose recorded tree is not that commit's.
+  const g = newMission('forged tree');
+  const edit = (t: string) => fs.writeFileSync(path.join(t, 'src', 'add.js'), 'module.exports = (p, q) => p + q;\n');
+  const gc = evaluated(g, candidate(g, { edit }));
+  decide(gc, 'approve-candidate');
+  const real = apply(gc);
+  // Same bytes, so the same diff digest: only the recorded tree is wrong.
+  const twin = evaluated(g, candidate(g, { edit }));
+  const td = decide(twin, 'approve-candidate');
+  const forged = d.store.recordApplication({
+    candidateId: twin.id, decisionId: td.id, baseCommit: base, commit: real.commit, tree: 'b'.repeat(40), ref: 'refs/heads/x', appliedBy: HUMAN,
+  });
+  const found = applicationRefusals(ctx, { projectId: PROJECT.id }).filter((b) => b.startsWith(forged.id));
+  check('a recorded tree that is not the commit\'s tree is reported, and only that',
+    found.length === 1 && found[0].includes(`tree is ${real.tree}, not the recorded ${'b'.repeat(40)}`), found.join(' | '));
+  check('the real application of the same commit is not', !applicationRefusals(ctx, { projectId: PROJECT.id }).some((b) => b.startsWith(real.application.id)));
+  raw(['update-ref', '-d', real.ref]);
 }
 
 section('trailers');

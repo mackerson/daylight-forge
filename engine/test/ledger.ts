@@ -334,7 +334,7 @@ function buildFixture(ctx: DaylightContext) {
     missionId: impl.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'good',
     scope: { operation: 'approve-candidate', candidateId: c.id, diffDigest: diff.digest, gateSetDigest: 'sha256:gs1', baseCommit: 'base1' }, artifactIds: [],
   });
-  const p = s.recordApplication({ candidateId: c.id, decisionId: approve.id, baseCommit: 'base1', commit: 'c0ffee'.padEnd(40, '0'), ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN });
+  const p = s.recordApplication({ candidateId: c.id, decisionId: approve.id, baseCommit: 'base1', commit: 'c0ffee'.padEnd(40, '0'), tree: 'beef'.padEnd(40, '0'), ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN });
 
   const review = s.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'look', baseRevision: 'base2' });
   const rt = () => s.createTask({ missionId: review.id, role: 'review', objective: 'r' }).id;

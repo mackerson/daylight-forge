@@ -555,14 +555,16 @@ let candidateId: string;
     missionId: mission.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'r',
     scope: { ...approveScope, diffDigest: digestOf('different bytes') }, artifactIds: [],
   });
-  const app = { candidateId: c.id, baseCommit: 'base1', commit: 'c0ffee', ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN };
+  const app = { candidateId: c.id, baseCommit: 'base1', commit: 'c0ffee', tree: 'a'.repeat(40), ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN };
   check('apply with a decision on another diff is refused', !!throws(() => store.recordApplication({ ...app, decisionId: wrong.id })));
   const approve = store.recordDecision({
     missionId: mission.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'good', scope: approveScope, artifactIds: [],
   });
   check('apply by a non-human is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id, appliedBy: 'agent:a:b' })));
   check('apply on another base is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id, baseCommit: 'base2' })));
+  check('apply without a tree sha is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id, tree: 'not-a-sha' })));
   const p = store.recordApplication({ ...app, decisionId: approve.id });
+  check('the application keeps its tree sha', store.application(c.id)?.tree === 'a'.repeat(40));
   check('an approved candidate is applied once', p.id.startsWith('p_') && store.application(c.id)?.id === p.id && p.missionId === mission.id);
   check('a second application is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id })));
   const closed = store.closeMission(mission.id, 'succeeded', 'applied');

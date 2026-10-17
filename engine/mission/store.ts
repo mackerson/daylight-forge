@@ -280,6 +280,7 @@ export interface CreateApplicationInput {
   decisionId: string;
   baseCommit: string;
   commit: string;
+  tree: string;
   ref: string;
   appliedBy: string;
 }
@@ -1486,6 +1487,7 @@ export class MissionStore {
       throw new Error(`application base ${input.baseCommit} is not candidate ${c.id}'s base ${c.baseCommit}`);
     }
     if (!isHumanActor(input.appliedBy)) throw new Error(`apply needs a human:<name> actor, not ${input.appliedBy}`);
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(input.tree)) throw new Error(`application tree ${JSON.stringify(input.tree)} is not a git object id`);
     if (this.application(c.id)) throw new Error(`candidate ${c.id} is already applied`);
     const p: Application = {
       id: newId('application'),
@@ -1495,6 +1497,7 @@ export class MissionStore {
       projectId: c.projectId,
       baseCommit: input.baseCommit,
       commit: input.commit,
+      tree: input.tree,
       ref: input.ref,
       appliedBy: input.appliedBy,
       at: this.now(),
@@ -1502,10 +1505,10 @@ export class MissionStore {
     this.db
       .prepare(
         `INSERT INTO applications
-         (id, candidate_id, mission_id, decision_id, project_id, base_commit, commit_sha, ref, applied_by, at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+         (id, candidate_id, mission_id, decision_id, project_id, base_commit, commit_sha, tree_sha, ref, applied_by, at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.ref, p.appliedBy, p.at);
+      .run(p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.tree, p.ref, p.appliedBy, p.at);
     return p;
   }
 
@@ -1886,6 +1889,7 @@ function rowToApplication(row: unknown): Application {
     projectId: r.project_id as string,
     baseCommit: r.base_commit as string,
     commit: r.commit_sha as string,
+    tree: r.tree_sha as string,
     ref: r.ref as string,
     appliedBy: r.applied_by as string,
     at: r.at as number,

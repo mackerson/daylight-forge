@@ -300,6 +300,7 @@ CREATE TABLE applications (
   project_id   TEXT NOT NULL,
   base_commit  TEXT NOT NULL,
   commit_sha   TEXT NOT NULL,
+  tree_sha     TEXT NOT NULL,
   ref          TEXT NOT NULL,
   applied_by   TEXT NOT NULL,
   at           INTEGER NOT NULL

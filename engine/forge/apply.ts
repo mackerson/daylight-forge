@@ -276,7 +276,7 @@ export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResul
     }
 
     const application = ctx.store.recordApplication({
-      candidateId: c.id, decisionId: d.id, baseCommit: c.baseCommit, commit, ref, appliedBy: input.actor,
+      candidateId: c.id, decisionId: d.id, baseCommit: c.baseCommit, commit, tree, ref, appliedBy: input.actor,
     });
     created = null;
     emit('forge.applied', {
@@ -327,6 +327,8 @@ export function applicationRefusals(ctx: Pick<DecideContext, 'store' | 'repoRoot
         // A root commit has no parent, which is itself the breach reported below.
       }
       if (parent !== c.baseCommit) out.push(`${p.id}: commit ${p.commit}'s parent is ${parent}, not the base ${c.baseCommit}`);
+      const tree = text(gitIn({ gitDir: s.gitDir }, ['rev-parse', '--verify', `${p.commit}^{tree}`]));
+      if (tree !== p.tree) out.push(`${p.id}: commit ${p.commit}'s tree is ${tree}, not the recorded ${p.tree}`);
       const digest = digestOf(rediff(s, c.baseCommit, p.commit));
       if (digest !== c.diffArtifact.digest) out.push(`${p.id}: commit ${p.commit} diffs to ${digest}, not ${c.diffArtifact.digest}`);
     }
