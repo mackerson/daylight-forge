@@ -148,7 +148,8 @@ function preview(digest: string, lines: string[], asJson: boolean): number {
   return 2;
 }
 
-const EXEC_REFUSED = 'author exec is refused until the owner decides R9.2; authorize write without --execute';
+// R17.1: exec runs over the author's own writable tree, so it is granted only beside write.
+const EXEC_WITHOUT_WRITE = 'author exec is granted only with write: authorize --execute without --write is refused';
 
 // ---- confirm ---------------------------------------------------------------------------
 
@@ -199,7 +200,7 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
     const lines = possible.length
       ? [...c.lines, ...possible.map((p) => `possible secret in ${p}: acknowledge it (--acknowledge-possible-secret) to ${operation === 'approve-candidate' ? 'approve' : 'override'}`)]
       : c.lines;
-    const refusal = guardCheck(env, actor, c.digest8, c.digest) ?? (operation === 'authorize-mission' && execute ? EXEC_REFUSED : null);
+    const refusal = guardCheck(env, actor, c.digest8, c.digest) ?? (operation === 'authorize-mission' && execute && !write ? EXEC_WITHOUT_WRITE : null);
     return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines, refusal, possibleSecrets: possible };
   });
 }
@@ -219,19 +220,20 @@ export interface AuthorizeInput {
 
 /**
  * `mission authorize`: the one path to write (R7). The guard first, against the grant's own
- * digest; then exec is refused until R9.2 is decided (R15.5); then the store records the
- * decision and the grant in one transaction, and `mission.authorized` says so.
+ * digest; then exec without write is refused (exec is the nested no-network `run` tool over
+ * the author's writable tree, R17.1); then the store records the decision and the grant,
+ * `execute` explicitly, in one transaction, and `mission.authorized` says so.
  */
 export function authorizeMission(ctx: DaylightContext, input: AuthorizeInput): { mission: Mission; decisionId: string } {
   const digest = confirmDigest(ctx, 'authorize-mission', input.missionId, {
     permissions: { write: input.write, execute: input.execute }, maxUsd: input.maxUsd,
   }).digest;
   assertHumanDecision(input.env, input.actor, input.confirm, digest);
-  if (input.execute) throw new DecisionRefused(`refused: ${EXEC_REFUSED}`);
+  if (input.execute && !input.write) throw new DecisionRefused(`refused: ${EXEC_WITHOUT_WRITE}`);
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: an authorization needs a rationale');
   const { mission, decision } = ctx.store.authorizeMission({
     missionId: input.missionId, actor: input.actor, rationale: input.rationale.trim(),
-    permissions: { write: input.write, execute: false }, maxUsd: input.maxUsd,
+    permissions: { write: input.write, execute: input.execute }, maxUsd: input.maxUsd,
   });
   ctx.events.append({
     projectId: mission.projectId, missionId: mission.id, actorId: input.actor, category: 'approval', name: 'mission.authorized',
@@ -240,7 +242,7 @@ export function authorizeMission(ctx: DaylightContext, input: AuthorizeInput): {
   return { mission, decisionId: decision.id };
 }
 
-/** `mission authorize <m> --rationale … [--write] [--max-usd N] --confirm <digest8>`. */
+/** `mission authorize <m> --rationale … [--write [--execute]] [--max-usd N] --confirm <digest8>`. */
 export async function missionAuthorizeCommand(p: Parsed, out: () => string, asJson: boolean, env: NodeJS.ProcessEnv): Promise<number> {
   const missionId = p.positionals[0];
   if (!missionId) throw new Usage('mission authorize needs a <mission-id>');

@@ -70,6 +70,11 @@ export function grantsWrite(d: Decision | null | undefined, missionId: string): 
     && scope?.operation === 'authorize-mission' && scope.permissions?.write === true;
 }
 
+/** A write grant (`grantsWrite`) that also carried `execute: true` explicitly (R17.1). */
+export function grantsExec(d: Decision | null | undefined, missionId: string): boolean {
+  return grantsWrite(d, missionId) && (d!.scope as { permissions?: { execute?: unknown } }).permissions?.execute === true;
+}
+
 /**
  * Why a decision row is not one the store would have recorded, or null. `recordDecision` and
  * `importMission` both ask this, so a file cannot carry a decision the store would refuse.
@@ -96,7 +101,7 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
 /**
  * Why an attempt row breaks R7 or R12, or null: an ingested attempt outside a work mission or
  * with a sandbox record; a Daylight attempt without one, with an unknown profile or network,
- * with exec but no write, or with write that `grant` (its named decision) does not give.
+ * with exec but no write, or with write or exec that `grant` (its named decision) does not give.
  * `startAttempt` and `importMission` both ask this.
  */
 export function attemptRefusal(
@@ -126,6 +131,9 @@ export function attemptRefusal(
       return `decision ${s.authorizeDecisionId} is not a human authorize-mission decision granting write on mission ${mission.id}`;
     }
     if (!mission.permissions.write) return `mission ${mission.id} does not hold write`;
+    if (s.exec && (!grantsExec(grant, mission.id) || !mission.permissions.execute)) {
+      return `attempt ${a.id} asks for exec, which decision ${s.authorizeDecisionId} did not grant on mission ${mission.id}`;
+    }
   }
   return null;
 }
