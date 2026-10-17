@@ -109,7 +109,7 @@ const prepared = json<Prepared>(run(['demo', 'prepare', '--out', out, '--dest', 
 
 section('dry run spawns nothing and leases nothing');
 {
-  const r = run(['mission', 'run', prepared.missionId, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--dry-run', '--format', 'json']);
+  const r = run(['mission', 'run', prepared.missionId, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--dry-run', '--format', 'json']);
   check('exits 0', r.code === 0, r.err.slice(-300));
   const report = json<{ mission: Mission; plans: unknown[]; attempts: unknown[] }>(r);
   check('plans both reviewers', report.plans.length === 2);
@@ -124,7 +124,7 @@ section('dry run spawns nothing and leases nothing');
 
 section('two independent reviewers, blind to each other');
 {
-  const r = run(['mission', 'run', prepared.missionId, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']);
+  const r = run(['mission', 'run', prepared.missionId, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--format', 'json']);
   check('exits 0', r.code === 0, r.err.slice(-500));
   check('reports progress as ##daylight lines on stderr', r.err.includes('##daylight {"mission"'));
   const report = json<{ mission: Mission; attempts: Inspection['attempts']; comparison: { disputes: Inspection['disputes']; unverified: unknown[] }; sourceDiversity: number; costKnown: boolean }>(r);
@@ -356,7 +356,7 @@ section('an import that disagrees with what is already here says so');
 section('a reviewer that fails blocks the mission; it does not fail it');
 {
   const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'crash test', '--scope', 'src/session-cache.ts', '--format', 'json']));
-  const r = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:crash,mock:yes', '--format', 'json']);
+  const r = run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:crash,mock:yes', '--format', 'json']);
   check('exits 0 — a blocked mission is data', r.code === 0, r.err.slice(-300));
   const report = json<{ mission: Mission; attempts: Inspection['attempts'] }>(r);
   check('the mission is blocked, with the failure as its reason', report.mission.state === 'blocked' && /exit 1/.test(report.mission.outcomeReason ?? ''), report.mission.outcomeReason);
@@ -370,7 +370,7 @@ section('a reviewer that fails blocks the mission; it does not fail it');
   check('the failed reviewer\'s stderr is kept', text.includes('mock crash'), text.slice(0, 100));
   check('with the secret redacted', !text.includes('SECRET_MOCK_TOKEN') && text.includes('[REDACTED]'), text.slice(0, 120));
 
-  const retry = json<{ mission: Mission; attempts: Inspection['attempts'] }>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:crash,mock:yes', '--format', 'json']));
+  const retry = json<{ mission: Mission; attempts: Inspection['attempts'] }>(run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:crash,mock:yes', '--format', 'json']));
   check('a second run retries only the failed task', retry.attempts.filter((a) => a.runnerId === 'agent:mock:crash').length === 2
     && retry.attempts.filter((a) => a.runnerId === 'agent:mock:yes').length === 1);
   check('and is blocked again', retry.mission.state === 'blocked');
@@ -380,7 +380,7 @@ section('a reviewer that fails blocks the mission; it does not fail it');
 
   const closed = run(['mission', 'close', m.id, '--out', out, '--outcome', 'cancelled', '--reason', 'gave up', '--format', 'json']);
   check('closing needs and records a reason', closed.code === 0 && json<Mission>(closed).outcomeReason === 'gave up');
-  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes']);
+  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes']);
   check('a closed mission cannot be run', rerun.code === 1 && /closed/.test(rerun.err), rerun.err.slice(-200));
   const noReason = run(['mission', 'close', prepared.missionId, '--out', out, '--outcome', 'succeeded', '--reason', '  ']);
   check('closing without a reason is refused', noReason.code === 1 && /needs a reason/.test(noReason.err));
@@ -398,7 +398,7 @@ section('events');
 section('an empty roster blocks a mission that is already running');
 {
   const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'empty roster', '--scope', 'src/session-cache.ts', '--format', 'json']));
-  const first = json<{ mission: Mission }>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  const first = json<{ mission: Mission }>(run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--format', 'json']));
   check('a finished review leaves the mission running', first.mission.state === 'running');
   const none = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'nosuchtool', '--format', 'json']);
   check('a roster with nothing runnable still exits 0', none.code === 0, none.err.slice(-300));
@@ -413,9 +413,9 @@ section('the budget is the mission\'s, across runs');
   const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'budget across runs',
     '--scope', 'src/session-cache.ts', '--max-cost', '0.05', '--format', 'json']));
   type Ran = { mission: Mission; attempts: Inspection['attempts']; spent: number; costKnown: boolean };
-  const first = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes', '--format', 'json']));
+  const first = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes', '--format', 'json']));
   check('the first run spends what its reviewer reported', first.spent === 0.05 && first.costKnown, `${first.spent} ${first.costKnown}`);
-  const second = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  const second = json<Ran>(run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--format', 'json']));
   check('a second run starts from what the mission has already spent', second.spent === 0.05, String(second.spent));
   check('so a spent budget blocks it before launching anyone',
     second.mission.state === 'blocked' && /budget exhausted/.test(second.mission.outcomeReason ?? ''), second.mission.outcomeReason);
@@ -430,23 +430,23 @@ section('a ceiling holds under concurrency, unknown spend and a raised flag');
     '--objective', objective, '--scope', 'src/session-cache.ts', '--max-cost', maxCost, '--format', 'json']));
 
   const raise = mk('raise', '0.05');
-  const raised = run(['mission', 'run', raise.id, repo, '--out', out, '--tools', 'mock:yes', '--max-cost', '1', '--format', 'json']);
+  const raised = run(['mission', 'run', raise.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes', '--max-cost', '1', '--format', 'json']);
   check('--max-cost above the mission\'s budget is refused', raised.code === 1 && /--raise-budget/.test(raised.err), raised.err.slice(-200));
-  const allowed = run(['mission', 'run', raise.id, repo, '--out', out, '--tools', 'mock:yes', '--max-cost', '1', '--raise-budget', '--format', 'json']);
+  const allowed = run(['mission', 'run', raise.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes', '--max-cost', '1', '--raise-budget', '--format', 'json']);
   check('and allowed when the raise is explicit', allowed.code === 0, allowed.err.slice(-200));
 
   // Two reviewers that each report $0.05, launched together under a $0.06 ceiling.
   const costly = path.join(tmp, 'mock-costly.mjs');
   fs.writeFileSync(costly, `console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.05 })); setTimeout(() => process.exit(0), 300);\n`);
   const shared = mk('shared ceiling', '0.06');
-  const wave = json<Ran>(run(['mission', 'run', shared.id, repo, '--out', out, '--tools', 'mock:a,mock:b', '--concurrency', '2', '--format', 'json'],
+  const wave = json<Ran>(run(['mission', 'run', shared.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:a,mock:b', '--concurrency', '2', '--format', 'json'],
     { DAYLIGHT_MOCK_ADAPTER: costly }));
   const reviews = wave.attempts.filter((a) => a.runnerId.startsWith('agent:mock:'));
   check('each reviewer in a wave gets its share of the remainder, not all of it',
     reviews.length === 2 && reviews.every((a) => a.failure === 'over budget'), JSON.stringify(reviews.map((a) => a.failure)));
 
   const unknown = mk('unknown spend', '1');
-  const blind = json<Ran>(run(['mission', 'run', unknown.id, repo, '--out', out, '--tools', 'mock:no,mock:yes', '--format', 'json']));
+  const blind = json<Ran>(run(['mission', 'run', unknown.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:no,mock:yes', '--format', 'json']));
   check('an attempt with unknown cost blocks the next wave under a ceiling',
     blind.mission.state === 'blocked' && /unknown/.test(blind.mission.outcomeReason ?? ''), blind.mission.outcomeReason);
   check('so the second reviewer did not run', !blind.attempts.some((a) => a.runnerId === 'agent:mock:yes'));
@@ -459,12 +459,12 @@ section('a mission compares and exports its own reviewers, not another mission\'
   const out4 = path.join(tmp, 'out4');
   const repo4 = path.join(tmp, 'repo4');
   const first = json<Prepared>(run(['demo', 'prepare', '--out', out4, '--dest', repo4, '--format', 'json']));
-  const a = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', first.missionId, repo4, '--out', out4, '--tools', 'mock:yes,mock:no', '--format', 'json']));
+  const a = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', first.missionId, repo4, '--out', out4, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--format', 'json']));
   check('the first mission has its dispute', a.comparison.disputes.length === 1);
   // A second mission with a single reviewer has nobody to disagree with.
   const m = json<Mission>(run(['mission', 'create', repo4, '--out', out4, '--kind', 'verify', '--objective', 'one reviewer',
     '--scope', 'src/session-cache.ts', '--format', 'json']));
-  const r = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', m.id, repo4, '--out', out4, '--tools', 'mock:no', '--format', 'json']));
+  const r = json<{ comparison: { disputes: unknown[] } }>(run(['mission', 'run', m.id, repo4, '--out', out4, '--no-review-sandbox', '--tools', 'mock:no', '--format', 'json']));
   check('one reviewer\'s mission records no dispute from another mission\'s reviewers', r.comparison.disputes.length === 0, String(r.comparison.disputes.length));
   const view = json<Inspection>(run(['mission', 'inspect', m.id, '--out', out4, '--format', 'json']));
   check('and inspect agrees', view.disputes.length === 0, String(view.disputes.length));
@@ -519,7 +519,7 @@ process.exit(0);
 `);
   const m = json<Mission>(run(['mission', 'create', repo, '--out', out, '--kind', 'verify', '--objective', 'crash recovery', '--scope', 'src/session-cache.ts', '--format', 'json']));
   const { spawn } = await import('node:child_process');
-  const startSlow = () => spawn(process.execPath, [CLI, 'mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], {
+  const startSlow = () => spawn(process.execPath, [CLI, 'mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:slow', '--format', 'json'], {
     stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, DAYLIGHT_MOCK_ADAPTER: slowMock, MOCK_SLOW: '1' },
   });
   const untilStarted = (child: ReturnType<typeof startSlow>) => new Promise<void>((resolve) => {
@@ -534,7 +534,7 @@ process.exit(0);
 
   const stopped = startSlow();
   await untilStarted(stopped);
-  const busy = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: slowMock });
+  const busy = run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:slow', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: slowMock });
   check('a second run of a mission that is being run is refused', busy.code === 1 && /already being run/.test(busy.err), busy.err.slice(-200));
   stopped.kill('SIGTERM');
   await closed(stopped);
@@ -547,7 +547,7 @@ process.exit(0);
   crashed.kill('SIGKILL');
   await closed(crashed);
   check('a killed run leaves its attempt running', attemptsOf().filter((a) => a.state === 'running').length === 1);
-  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--tools', 'mock:slow', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: slowMock });
+  const rerun = run(['mission', 'run', m.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:slow', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: slowMock });
   check('the next run proceeds', rerun.code === 0, rerun.err.slice(-300));
   const after = attemptsOf();
   check('and nothing is left running', after.every((a) => a.state !== 'running'), JSON.stringify(after.map((a) => a.state)));

@@ -254,12 +254,13 @@ export interface RunMissionOptions {
   /** The prompt every attempt gets. Defaults to the review prompt; decompose passes the spec's. */
   prompt?: string;
   /**
-   * Run review attempts under the bwrap `review` profile over a per-attempt MCP socket, with
-   * `<out>` unmounted (R9.1). Refused, not weakened, when the profile cannot be built. Real
-   * providers are refused under it until the owner authorises the live spike (R15.1); without
-   * it reviewers run as P0 did and are recorded as profile `none` (Sec H5 open).
+   * Whenever bwrap is present, review attempts run under the `review` profile over a
+   * per-attempt MCP socket with `<out>` unmounted (R9.1); a profile that cannot be built fails
+   * the attempt, never runs it open. This opts out, for test doubles only: accepted when every
+   * roster entry is `mock`, refused before anything runs otherwise, and recorded on each
+   * attempt as profile `none`. Real providers get no profile until the live spike (R15.1).
    */
-  reviewSandbox?: boolean;
+  noReviewSandbox?: boolean;
   /** Injected in tests; defaults to `detectSandbox()`. */
   sandbox?: SandboxProfile;
   model?: string;
@@ -376,8 +377,16 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   if (role === 'decompose' && mission.kind !== 'spec') throw new Error(`mission ${mission.id} is ${mission.kind}; only a spec mission decomposes`);
   if (role === 'review' && mission.kind === 'spec') throw new Error(`mission ${mission.id} is a spec mission; it is decomposed, not reviewed`);
   // Decomposers reach their one tool only over the attempt socket, so they are always sandboxed.
-  const sandboxed = role === 'decompose' || !!opts.reviewSandbox;
-  const profile = sandboxed ? (opts.sandbox ?? detectSandbox()) : null;
+  if (opts.noReviewSandbox) {
+    if (role === 'decompose') throw new Error('--no-review-sandbox does not apply to decompose: a decomposer reaches its tool only over the socket');
+    // Checked on the roster as typed, before any binary is looked up or run.
+    const real = opts.tools.map((t) => parseSpec(t, opts.model).tool).filter((t) => t !== 'mock');
+    if (real.length) throw new Error(`--no-review-sandbox is for mock reviewers only; refused for ${[...new Set(real)].join(', ')}`);
+  }
+  const detected = opts.sandbox ?? detectSandbox();
+  // Fail closed: sandboxed whenever bwrap is present, unless a mock-only roster opted out.
+  const sandboxed = role === 'decompose' || (!opts.noReviewSandbox && detected.available);
+  const profile = sandboxed ? detected : null;
   if (profile && !profile.available) {
     throw new Error(`${role} attempts run under the bwrap review profile, which cannot be built here: ${profile.why ?? 'unavailable'}`);
   }

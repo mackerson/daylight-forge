@@ -192,6 +192,8 @@ What to point at:
   runs, and approve, override and apply are all refused (every violation is uncurable, R15.4);
   a candidate whose diff matched a low-confidence secret shape needs
   `--acknowledge-possible-secret` alongside `--confirm` to approve or override (R16).
-- Reviews can run under the bwrap `review` profile with `mission run … --review-sandbox`
-  (mocks only; real providers are refused under it until the live spike). Without the flag
-  reviewers run as in P0 and are recorded as profile `none`: Sec H5 stays open.
+- Whenever bwrap is present, reviews run under the bwrap `review` profile: the repo read-only,
+  no `<out>`, claims filed only through the attempt's MCP socket. Real providers get no profile
+  until the live spike, so with bwrap present they are refused for review too. P0 test doubles
+  that write `<out>` directly pass `--no-review-sandbox`, which is accepted only for an all-`mock`
+  roster and recorded on each attempt as profile `none`. Sec H5 stays open until the live spike.

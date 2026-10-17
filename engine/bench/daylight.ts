@@ -167,7 +167,7 @@ store.submit({ subject: 'src/session-cache.ts', predicate: 'bug_verdict', value:
 store.close();
 console.log(JSON.stringify({ reviewer: env.DAYLIGHT_MODEL }));
 `);
-  const run = await timed(['mission', 'run', missionId, demoRepo, '--out', demoOut, '--tools', 'mock:yes,mock:no', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: mock });
+  const run = await timed(['mission', 'run', missionId, demoRepo, '--out', demoOut, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: mock });
   const experiment = await timed(['experiment', 'run', experimentId, demoRepo, '--out', demoOut, '--format', 'json']);
   const conclusion = (JSON.parse(execFileSync(process.execPath, [CLI, 'mission', 'inspect', missionId, '--out', demoOut, '--format', 'json'], { encoding: 'utf8' })) as
     { experiments: Array<{ conclusion: string; executions: unknown[] }> }).experiments[0];

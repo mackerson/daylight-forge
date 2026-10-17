@@ -116,7 +116,7 @@ const prepared = json<{ root: string; commit: string; projectId: string; mission
 section('2. run status separation: exit 0 is not an outcome');
 {
   const r = json<{ mission: Mission; attempts: Inspection['attempts'] }>(
-    run(['mission', 'run', prepared.missionId, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--format', 'json']),
+    run(['mission', 'run', prepared.missionId, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--format', 'json']),
   );
   const reviews = r.attempts.filter((a) => a.runnerId.startsWith('agent:mock:'));
   check('both reviewers exited 0', reviews.length === 2 && reviews.every((a) => a.state === 'completed'));
@@ -129,7 +129,7 @@ section('2. run status separation: exit 0 is not an outcome');
   ]));
   const crash = mk('crash');
   const c = json<{ mission: Mission; attempts: Inspection['attempts'] }>(
-    run(['mission', 'run', crash.id, repo, '--out', out, '--tools', 'mock:crash', '--format', 'json']),
+    run(['mission', 'run', crash.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:crash', '--format', 'json']),
   );
   check('a failed reviewer blocks the mission and says why',
     c.mission.state === 'blocked' && /exit 1/.test(c.mission.outcomeReason ?? ''), c.mission.outcomeReason);
@@ -137,7 +137,7 @@ section('2. run status separation: exit 0 is not an outcome');
 
   const slow = mk('timeout');
   const t = json<{ mission: Mission; attempts: Inspection['attempts'] }>(
-    run(['mission', 'run', slow.id, repo, '--out', out, '--tools', 'mock:slow', '--timeout', '2', '--format', 'json']),
+    run(['mission', 'run', slow.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:slow', '--timeout', '2', '--format', 'json']),
   );
   check('a timed-out reviewer blocks the mission with "timed out"',
     t.mission.state === 'blocked' && /timed out/.test(t.mission.outcomeReason ?? ''), t.mission.outcomeReason);
@@ -145,7 +145,7 @@ section('2. run status separation: exit 0 is not an outcome');
 
   const budget = mk('budget', ['--max-cost', '0.005']);
   const b = json<{ mission: Mission; attempts: Inspection['attempts'] }>(
-    run(['mission', 'run', budget.id, repo, '--out', out, '--tools', 'mock:yes,mock:no', '--max-cost', '0.005', '--format', 'json']),
+    run(['mission', 'run', budget.id, repo, '--out', out, '--no-review-sandbox', '--tools', 'mock:yes,mock:no', '--max-cost', '0.005', '--format', 'json']),
   );
   const budgeted = b.mission.state === 'blocked' && /budget|spent/i.test(b.mission.outcomeReason ?? '');
   check('budget exhaustion between launches blocks the mission with the spend named', budgeted, b.mission.outcomeReason);

@@ -383,32 +383,49 @@ section('negative: an author that touches a protected path');
   check('and no ref exists for this mission', !git(['for-each-ref', '--format=%(refname)', 'refs/heads/daylight/']).includes(m.id));
 }
 
-section('review attempts under the review profile (--review-sandbox), mocks only');
+section('reviews run under the review profile by default whenever bwrap is present');
 {
   const reviewer = path.join(tmp, 'mock-reviewer.cjs');
   fs.writeFileSync(reviewer, mcpMock([{ name: 'submit_claim', arguments: {
     subject: 'src/add.js', predicate: 'purpose', value: 'subtracts where it should add', confidence: 0.8, evidence: [{ file: 'src/add.js', line: 1 }],
   } }]));
   const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'verify', '--objective', 'what does add do', '--scope', 'src/add.js', '--out', out, '--format', 'json']));
-  const r = run(['mission', 'run', m.id, repo, '--tools', 'mock:a', '--review-sandbox', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: reviewer });
+  const r = run(['mission', 'run', m.id, repo, '--tools', 'mock:a', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: reviewer });
   const rep = json<{ attempts: Attempt[] }>(r);
   const a = rep.attempts.find((x) => x.runnerId === 'agent:mock:a');
-  check('the reviewer ran under the review profile: read-only, no network', a?.state === 'completed' && a.sandbox?.profile === 'review' && !a.sandbox.write, `${JSON.stringify(a?.sandbox)} ${r.err.slice(-300)}`);
+  check('with no flag, the mock reviewer ran under the review profile: read-only, no network',
+    a?.state === 'completed' && a.sandbox?.profile === 'review' && !a.sandbox.write && a.sandbox.network === 'none', `${JSON.stringify(a?.sandbox)} ${r.err.slice(-300)}`);
   const d = openDaylight(out);
   try {
     const claims = d.claims.claimsFor('src/add.js', 'purpose');
-    check('its claim reached <out> only through the socket, under its own session', claims.some((c) => c.source.kind === 'agent' && c.source.sessionId === a?.sessionId), JSON.stringify(claims.map((c) => c.source)));
+    check('its claim reached <out> only through the MCP socket, under its own session', claims.some((c) => c.source.kind === 'agent' && c.source.sessionId === a?.sessionId), JSON.stringify(claims.map((c) => c.source)));
   } finally {
     d.close();
   }
-  // A stand-in named claude, first on PATH, so the roster finds a "real" provider without the
-  // real binary anywhere near this test. It is refused before anything could spawn it.
+
+  const m2 = json<Mission>(run(['mission', 'create', repo, '--kind', 'verify', '--objective', 'what does add do, unsandboxed', '--scope', 'src/add.js', '--out', out, '--format', 'json']));
+  const declined = json<{ attempts: Attempt[] }>(run(['mission', 'run', m2.id, repo, '--tools', 'mock:b', '--no-review-sandbox', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: reviewer }));
+  const b = declined.attempts.find((x) => x.runnerId === 'agent:mock:b');
+  check('--no-review-sandbox on an all-mock roster runs as P0 did, stamped profile none', b?.state === 'completed' && b.sandbox?.profile === 'none', JSON.stringify(b?.sandbox));
+
+  // Stand-ins named claude and codex, first on PATH, so the roster finds "real" providers without
+  // the real binaries anywhere near this test. Each writes a marker if it is ever spawned.
   const fakeBin = path.join(tmp, 'fake-bin');
+  const marker = path.join(tmp, 'fake-provider-ran');
   fs.mkdirSync(fakeBin);
-  fs.writeFileSync(path.join(fakeBin, 'claude'), '#!/bin/sh\nexit 99\n', { mode: 0o755 });
-  const real = run(['mission', 'run', m.id, repo, '--tools', 'claude', '--review-sandbox', '--dry-run', '--out', out, '--format', 'json'],
-    { PATH: `${fakeBin}:${baseEnv.PATH ?? ''}` });
-  check('a real provider is refused under the profile until the live spike (R15.1)', json<{ unavailable: string[] }>(real).unavailable.some((u) => /R15\.1/.test(u)), real.out.slice(0, 300));
+  for (const name of ['claude', 'codex']) {
+    fs.writeFileSync(path.join(fakeBin, name), `#!/bin/sh\necho ran > ${JSON.stringify(marker)}\nexit 99\n`, { mode: 0o755 });
+  }
+  const stubbed = { PATH: `${fakeBin}:${baseEnv.PATH ?? ''}`, DAYLIGHT_MOCK_ADAPTER: reviewer };
+  const m3 = json<Mission>(run(['mission', 'create', repo, '--kind', 'verify', '--objective', 'a real reviewer', '--scope', 'src/add.js', '--out', out, '--format', 'json']));
+  const refused = run(['mission', 'run', m3.id, repo, '--tools', 'mock:c,claude', '--no-review-sandbox', '--out', out, '--format', 'json'], stubbed);
+  const after = inspect(m3.id);
+  check('--no-review-sandbox with claude in the roster is refused before anything spawns',
+    refused.code !== 0 && /--no-review-sandbox/.test(refused.err) && !fs.existsSync(marker) && after.attempts.length === 0 && after.mission.state === 'ready',
+    `${refused.code} ${refused.err.slice(-300)} attempts=${after.attempts.length} state=${after.mission.state}`);
+  const real = run(['mission', 'run', m3.id, repo, '--tools', 'codex', '--out', out, '--format', 'json'], stubbed);
+  check('by default a real provider is refused under the profile until the live spike (R15.1), and never spawned',
+    json<{ unavailable: string[] }>(real).unavailable.some((u) => /R15\.1/.test(u)) && !fs.existsSync(marker), real.out.slice(0, 300));
 }
 
 section('a possible secret (R16) is curable, but approve needs it acknowledged');
