@@ -217,7 +217,7 @@ const SHAPES: Shape[] = [
   ])),
   high(pattern('gitlab-token', [/glpat-[A-Za-z0-9_-]{20,}/g])),
   high(pattern('google-api-key', [/AIza[0-9A-Za-z_-]{35}/g])),
-  high(pattern('slack-token', [/xox[abprs]-[A-Za-z0-9-]{8,}/g])),
+  high(pattern('slack-token', [/xox[abeprs]-[A-Za-z0-9-]{8,}/g])),
   high(pattern('npm-token', [/npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g])),
   high(pattern('openai-key', [
     /sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}/g,

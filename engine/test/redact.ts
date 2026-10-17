@@ -64,7 +64,7 @@ const CASES: Case[] = [
   { shape: 'github-token', text: `${'gh'}p_FAKEshort12`, sentinel: 'FAKEshort', glue: ['_', '-'] },
   { shape: 'github-token', text: `github_pat_11FAKEpat${rep('b', 70)}`, sentinel: 'FAKEpat', glue: ['_', 'abc'] },
 
-  ...['a', 'b', 'p', 'r', 's'].map((k): Case => (
+  ...['a', 'b', 'e', 'p', 'r', 's'].map((k): Case => (
     { shape: 'slack-token', text: `xox${k}-1234-5678-FAKEslack`, sentinel: 'FAKEslack', glue: ['_', 'abc'] })),
 
   { shape: 'aws-access-key-id', text: 'AKIAFAKE0123456789AB'.slice(0, 20), sentinel: 'FAKE0123', glue: ['_', 'abc', 'key='] },
