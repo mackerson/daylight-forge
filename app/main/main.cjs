@@ -1214,7 +1214,7 @@ ipcMain.handle('daylight:mission-run', (_e, opts = {}) => {
   return { id: runJob(`mission:${mid.slice(0, 10)}${opts.dryRun ? ':dry' : ''}`, argv) };
 });
 
-ipcMain.handle('daylight:mission-decide', (_e, opts = {}) => {
+ipcMain.handle('daylight:mission-decide', async (_e, opts = {}) => {
   const mid = idOf(opts.id);
   const subject = str(opts.subject, 1000);
   const predicate = str(opts.predicate, 200);
@@ -1222,17 +1222,30 @@ ipcMain.handle('daylight:mission-decide', (_e, opts = {}) => {
   if (!mid || !subject || !predicate || !rationale) {
     return { error: 'a decision needs a mission, a subject, a predicate and a rationale' };
   }
-  const argv = [
-    'mission', 'decide', mid, '--out', state.dir,
+  // The actor is the OS user, taken here; whatever the renderer sent is ignored (S-8).
+  const actor = `human:${safeUsername()}`;
+  const what = [
     '--subject', subject, '--predicate', predicate,
     '--value', typeof opts.value === 'string' ? opts.value : JSON.stringify(opts.value ?? null),
-    '--rationale', rationale, '--format', 'json',
   ];
-  const actor = str(opts.actor, 200);
-  argv.push('--actor', actor || `human:${safeUsername()}`);
   const experiment = idOf(opts.experiment);
-  if (experiment) argv.push('--experiment', experiment);
-  return cliJson(argv, { timeout: 30_000 });
+  if (experiment) what.push('--experiment', experiment);
+  // Every decision goes through the engine's one guard (R14 D-9): preview, a native dialog, then the act.
+  const preview = await cliJson(['confirm', 'adjudicate', mid, '--out', state.dir, ...what, '--actor', actor, '--format', 'json'], { timeout: 30_000 });
+  if (!preview || preview.error) return { error: preview?.error ?? 'no confirm digest, so nothing was recorded' };
+  if (typeof preview.digest !== 'string' || typeof preview.digest8 !== 'string' || preview.digest.slice(7, 15) !== preview.digest8) {
+    return { error: 'the engine gave no usable confirm digest, so nothing was recorded' };
+  }
+  if (preview.refusal) return { error: preview.refusal };
+  const lines = Array.isArray(preview.lines) ? preview.lines.filter((l) => typeof l === 'string').slice(0, 20) : [];
+  const answer = await dialog.showMessageBox(win, {
+    type: 'question', title: 'Daylight — record decision', message: `Record decision: confirm ${preview.digest8}`,
+    detail: [...lines, '', `rationale: ${rationale}`, `recorded as ${actor}`, `digest ${preview.digest}`].join('\n'),
+    buttons: ['Cancel', 'Record decision'], defaultId: 0, cancelId: 0, noLink: true,
+  });
+  if (!answer || answer.response !== 1) return { canceled: true };
+  return cliJson(['mission', 'decide', mid, '--out', state.dir, ...what, '--rationale', rationale,
+    '--confirm', preview.digest8, '--format', 'json'], { timeout: 30_000 });
 });
 
 ipcMain.handle('daylight:mission-close', (_e, opts = {}) => {
@@ -1302,33 +1315,11 @@ ipcMain.handle('daylight:demo-replay', async () => {
  * mission is open — the renderer tells main which one.
  */
 // Older Electron without node:sqlite: the CLI path below does the same read more slowly.
-const { openEventsReadOnly, sqliteAvailable } = require('./daylight-db.cjs');
+const { openEventsReadOnly, rowToEvent, withholdHoldouts, sqliteAvailable } = require('./daylight-db.cjs');
 /** The refused file last reported, so a stale db in <out> costs one log line, not one per poll. */
 let refusedDb = null;
 
 const dlWatch = { missionId: null, since: 0, dir: null, timer: null, busy: false };
-
-function rowToEvent(r) {
-  const json = (v, fallback) => {
-    if (v === null || v === undefined || v === '') return fallback;
-    try { return JSON.parse(v); } catch { return fallback; }
-  };
-  return {
-    schemaVersion: r.schema_version,
-    id: r.id,
-    sequence: Number(r.sequence),
-    at: Number(r.at),
-    projectId: r.project_id,
-    missionId: r.mission_id ?? undefined,
-    taskId: r.task_id ?? undefined,
-    attemptId: r.attempt_id ?? undefined,
-    actorId: r.actor_id ?? undefined,
-    category: r.category,
-    name: r.name,
-    artifactIds: json(r.artifact_ids, undefined),
-    payload: json(r.payload, {}),
-  };
-}
 
 async function readDaylightEvents(since, missionId, limit) {
   const file = path.join(state.dir, 'daylight.db');
@@ -1351,7 +1342,8 @@ async function readDaylightEvents(since, missionId, limit) {
             'SELECT * FROM events WHERE sequence > ? AND mission_id = ? ORDER BY sequence LIMIT ?',
           ).all(since, missionId, limit)
         : db.prepare('SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?').all(since, limit);
-      return { events: rows.map(rowToEvent) };
+      // Holdout content never reaches the renderer; the CLI fallback below withholds the same.
+      return { events: withholdHoldouts(db, rows.map(rowToEvent)) };
     } catch (err) {
       // A locked or half-migrated file: fall through to the CLI, which waits its turn.
       console.error(`daylight.db read failed, using the CLI: ${err.message}`);

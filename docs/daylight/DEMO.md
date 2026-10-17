@@ -138,3 +138,65 @@ narrative must say so. The two models may also both be wrong; the experiment is 
 `pnpm package` builds a portable directory including the fixture; `./daylight` launches it. Verified
 headless on this machine: the packaged app with `DAYLIGHT_DIR` pointing at a prepared directory
 renders the mission on the Mission Control stage.
+
+## Forge (P1): building a change, mock walkthrough
+
+**The live author run is not yet authorised.** Real providers (`claude`, `codex`, …) are
+`unavailable` for implement until the owner authorises one live run with a dedicated,
+spend-capped credential (RULINGS R4 Q4/Q5, R9.4). Everything below runs with a mock author
+(`DAYLIGHT_MOCK_ADAPTER=<script>`, roster `mock`) and is what `engine/test/forge-e2e.ts`
+exercises. Author exec is refused until R9.2 is decided: `mission authorize --execute` is
+refused, and so is an attempt on any mission that holds execute.
+
+Needs `bwrap` and `prlimit`: the author, decomposer and gate sandboxes are not optional, and
+`forge run`, `spec decompose` and the e2e fail when they are missing.
+
+Every decision below needs `--confirm <digest8>`: run the command once without it (or
+`daylight confirm <operation> <subject>`) to see what you are confirming, then again with the
+first eight hex characters of the digest. Decisions are refused under `CLAUDECODE` or
+`DAYLIGHT_SESSION` (an agent approving its own work), and are recorded as `human:<your OS
+user>`; naming another actor is refused.
+
+```bash
+O='--out /tmp/forge-out'
+daylight map <repo> $O
+daylight spec register <repo> --file docs/spec.md $O               # → spec mission m_S
+DAYLIGHT_MOCK_ADAPTER=<decomposer.cjs> daylight spec decompose m_S <repo> --tools mock $O
+daylight work-item list $O                                          # proposals; spec-ambiguity needs
+daylight work-item approve w_… --rationale '…' --confirm <c> $O
+daylight mission create <repo> --kind implement --work-item w_… $O # draft, write off
+daylight mission authorize m_I --write --rationale '…' --confirm <c> $O
+daylight gate add m_I --role gate    --test add.test.js  --expect-exit 0 --expect-stdout '# fail 0' $O
+daylight gate add m_I --role holdout --test hold.test.js --expect-exit 0 --expect-stdout '# fail 0' $O
+daylight gate baseline m_I <repo> $O                                # both must be falsified
+daylight gate lock m_I --rationale '…' --confirm <c> $O             # the full gate+holdout set
+DAYLIGHT_MOCK_ADAPTER=<author.cjs> daylight forge run m_I <repo> --tools mock $O
+daylight forge candidate c_… $O                                     # redacted diff, holdouts withheld
+daylight forge approve c_… --rationale '…' --confirm <c> $O         # only if accepted-by-gates
+daylight forge apply c_… <repo> --confirm <c> $O                    # a new ref; HEAD and tree untouched
+daylight mission close m_I --outcome succeeded --reason '…' $O      # refused before an apply
+daylight report --project --group model $O                          # cost: unknown, never $0
+```
+
+What to point at:
+- `mission inspect m_I --format json` carries `needs` (derived, never stored:
+  `mission-awaiting-authorize`, `gate-lock`, `gate-vacuous`, `candidate-decision`, `apply`, and
+  on spec missions `spec-ambiguity` and `work-item-undecided`), `candidates`,
+  `gateEvaluations` and `applications`. A holdout appears only as its id, role, conclusion and
+  digests; its test, prediction and runs never leave the engine.
+- The author ran in a detached workspace under the `author` profile (network none, write, no
+  exec), reaching its MCP server only through its own socket; the workspace is removed after
+  capture unless `--keep-workspace`. The narrative it printed is labelled *author-claimed,
+  unverified* and never feeds the verdict.
+- Refusals worth showing: an author that edits `package.json` gets `policy-violation`, no gate
+  runs, and approve, override and apply are all refused (every violation is uncurable, R15.4);
+  a candidate whose diff matched a low-confidence secret shape needs
+  `--acknowledge-possible-secret` alongside `--confirm` to approve or override (R16).
+- Whenever bwrap is present, reviews run under the bwrap `review` profile: the repo read-only,
+  no `<out>`, claims filed only through the attempt's MCP socket. Real providers get no profile
+  until the live spike, so with bwrap present a real-provider review is refused unless you pass
+  `--unsandboxed-review`, which runs it exactly as P0 did, warns that the reviewer can read
+  `<out>` (Sec H5), and stamps each attempt profile `none`, reason `unsandboxed-review`. P0 test doubles
+  that write `<out>` directly pass `--no-review-sandbox`, which is accepted only for an all-`mock`
+  roster and recorded on each attempt as profile `none`, reason `no-review-sandbox`. Sec H5 stays
+  open until the live spike.

@@ -148,7 +148,7 @@ function newMission(objective: string, o: { lock?: boolean } = {}): Fixture {
     });
   }
   const gateSetDigest = o.lock === false ? null
-    : d.store.lockGates(mission.id, { experimentIds: gates.map((x) => x.id), actor: HUMAN, rationale: 'these', vacuousOverrides: [] }).gateSetDigest;
+    : d.store.lockGates(mission.id, { experimentIds: gates.map((x) => x.id), expectedGateSetDigest: d.store.gateSet(mission.id, gates.map((x) => x.id)).gateSetDigest, actor: HUMAN, rationale: 'these', vacuousOverrides: [] }).gateSetDigest;
   d.store.transitionMission(mission.id, 'running');
   return { mission, grant, gates, gateSetDigest };
 }

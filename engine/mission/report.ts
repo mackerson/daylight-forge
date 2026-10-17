@@ -101,6 +101,10 @@ export function renderReport(ctx: DaylightContext, view: Inspection): string {
   h(2, `Experiments (${view.experiments.length})`);
   if (!view.experiments.length) out.push('No experiment was registered.');
   for (const x of view.experiments) {
+    if ('withheld' in x) {
+      out.push(`### ${x.id} — holdout, ${x.conclusion}`, '', 'Content withheld: a holdout is never shown outside the gate runner.', '');
+      continue;
+    }
     out.push(`### ${x.id} — ${x.conclusion}`, '');
     out.push(`**Hypothesis.** ${x.hypothesis}  `);
     out.push(`**Bears on.** ${code(x.subject)} · ${code(x.predicate)}${x.claimIds.length ? ` (claims ${x.claimIds.join(', ')})` : ''}  `);
@@ -165,6 +169,7 @@ export function renderReport(ctx: DaylightContext, view: Inspection): string {
   };
   for (const a of view.attempts) a.artifacts.forEach(add);
   for (const x of view.experiments) {
+    if ('withheld' in x) continue;
     add(x.testArtifact);
     add(x.expectedArtifact);
     x.executions.forEach(add);

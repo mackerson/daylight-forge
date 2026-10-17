@@ -11,6 +11,17 @@ import {
 import { captureRun } from '../swarm/capture.ts';
 import { serverCommand, SYSTEM_RULES } from '../swarm/driver.ts';
 import { available } from '../swarm/adapters.ts';
+import { credentialFor, missionSpend } from '../swarm/usage.ts';
+import { detectSandbox, type SandboxProfile } from '../experiment/sandbox.ts';
+import { authorFor, reviewLauncher } from '../forge/authors.ts';
+import { ROLE_MCP_TOOLS } from '../forge/decompose.ts';
+import { MCP_CONFIG, MCP_SERVER_KEY, mcpRuntimeDir, newMcpToken, type McpEndpoint } from '../forge/sandbox.ts';
+import { specOf } from '../forge/spec.ts';
+import { assertHumanDecision, confirmCodeOf } from '../forge/policy.ts';
+import { canonicalJson, digestOf } from './artifacts.ts';
+import { createDecomposeServer, createServer, listenAttemptSocket } from '../mcp/server.ts';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AttemptCredential, AttemptSandbox, SandboxReason, TaskRole } from './types.ts';
 import type { Belief, ClaimStatus } from '../store/types.ts';
 import type { DaylightContext } from './context.ts';
 import { requireMappedRepo } from './context.ts';
@@ -19,9 +30,10 @@ import {
 } from './disputes.ts';
 import { currentRevision } from './project.ts';
 import type {
-  ArtifactRef, Attempt, DaylightEvent, Decision, Experiment, ExpectedObservation, Mission,
-  MissionKind, MissionOutcome, Task,
+  Application, ArtifactRef, Attempt, Candidate, DaylightEvent, Decision, Experiment, ExpectedObservation,
+  GateEvaluation, Mission, MissionKind, MissionOutcome, Need, Task,
 } from './types.ts';
+import { needsOf } from './needs.ts';
 
 /**
  * The mission loop, as far as P0 takes it: independent reviews → compare → experiment →
@@ -114,7 +126,54 @@ export function mockAdapter(): Adapter | null {
     bin: process.execPath,
     perInvocationMcp: true,
     argv: (run) => [script, run.mcpConfigPath, run.prompt],
+    // A mock that wants its cost known prints the claude stream's own result line (R10.3).
+    streamShape: 'claude',
   };
+}
+
+/**
+ * The variable each provider's own key is read from, for the ledger's credential record:
+ * presence, name and label only, never the value (Q4a). A mock has its own, so a test can
+ * say what it was given without touching a real provider's.
+ */
+export const CREDENTIAL_ENV: Readonly<Record<string, string>> = Object.freeze({
+  claude: 'ANTHROPIC_API_KEY', codex: 'OPENAI_API_KEY', grok: 'XAI_API_KEY', opencode: 'OPENCODE_API_KEY',
+  mock: 'DAYLIGHT_MOCK_CREDENTIAL',
+});
+
+/** Recorded before an attempt starts, so a refusal leaves no half-started attempt behind. */
+export function attemptCredential(tool: string, env: NodeJS.ProcessEnv = process.env): AttemptCredential | undefined {
+  const name = CREDENTIAL_ENV[tool];
+  if (!name) return undefined;
+  const label = env.DAYLIGHT_CREDENTIAL_LABEL;
+  return credentialFor(name, label && /^[\w .:@/-]{1,64}$/.test(label) ? label : null, env);
+}
+
+/** `mcp__daylight__<tool>` for each of a role's MCP tools: the allowlist the adapter hook takes (D-2). */
+export const roleAllowlist = (role: keyof typeof ROLE_MCP_TOOLS): string[] =>
+  ROLE_MCP_TOOLS[role].map((t) => `mcp__${MCP_SERVER_KEY}__${t}`);
+
+/**
+ * One attempt's MCP socket (R11.2) for as long as `run` takes: a private runtime dir, a listener
+ * that serves only this attempt's token, and both removed afterwards whatever happens.
+ */
+export async function withAttemptSocket<T>(
+  ctx: DaylightContext, attempt: Pick<Attempt, 'id'>, token: string, serve: () => McpServer,
+  run: (mcp: McpEndpoint) => Promise<T>,
+): Promise<T> {
+  const rt = mcpRuntimeDir({ out: ctx.out });
+  try {
+    const sock = await listenAttemptSocket({
+      socketPath: rt.socket, attemptId: attempt.id, resolve: (t) => ctx.store.attemptByMcpToken(t), serve,
+    });
+    try {
+      return await run({ socket: rt.socket, token });
+    } finally {
+      await sock.close();
+    }
+  } finally {
+    rt.dispose();
+  }
 }
 
 export function adapterFor(tool: string): Adapter | null {
@@ -188,6 +247,30 @@ export interface RunMissionOptions {
   missionId: string;
   repo: string;
   tools: string[];
+  /**
+   * `review` (the default) runs independent reviewers and then the compare step. `decompose`
+   * runs blind decomposers on a spec mission's decompose tasks: no compare, only the
+   * `propose_work_item` tool, always under the review profile over the attempt's socket.
+   */
+  role?: Extract<TaskRole, 'review' | 'decompose'>;
+  /** The prompt every attempt gets. Defaults to the review prompt; decompose passes the spec's. */
+  prompt?: string;
+  /**
+   * Whenever bwrap is present, review attempts run under the `review` profile over a
+   * per-attempt MCP socket with `<out>` unmounted (R9.1); a profile that cannot be built fails
+   * the attempt, never runs it open. This opts out, for test doubles only: accepted when every
+   * roster entry is `mock`, refused before anything runs otherwise, and recorded on each
+   * attempt as profile `none`. Real providers get no profile until the live spike (R15.1).
+   */
+  noReviewSandbox?: boolean;
+  /**
+   * Run reviews exactly as P0 did, with no profile, so real providers can review before the
+   * live spike (R7: an explicit mode, recorded). Each attempt is stamped profile `none`, reason
+   * `unsandboxed-review`; the reviewer can read `<out>` (Sec H5). The CLI warns.
+   */
+  unsandboxedReview?: boolean;
+  /** Injected in tests; defaults to `detectSandbox()`. */
+  sandbox?: SandboxProfile;
   model?: string;
   maxCost?: number;
   /** Lets `maxCost` exceed the budget recorded on the mission. Without it that is refused. */
@@ -229,7 +312,7 @@ export interface RunMissionReport {
  * before it starts anything. Released on return and on process exit; a SIGKILL leaves the
  * file, which names a dead pid and so is taken over.
  */
-function takeRunClaim(out: string, missionId: string): () => void {
+export function takeRunClaim(out: string, missionId: string): () => void {
   const file = path.join(out, `mission-run.${missionId}.pid`);
   for (let tries = 0; tries < 2; tries++) {
     try {
@@ -263,12 +346,17 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/** Review tasks already on the mission, by the source they are pinned to. */
-function reviewTasksBySource(tasks: Task[]): Map<string, Task> {
+/** Tasks of one role already on the mission, by the source they are pinned to. */
+function tasksBySource(tasks: Task[], role: TaskRole): Map<string, Task> {
   const out = new Map<string, Task>();
-  for (const t of tasks) if (t.role === 'review' && t.runnerHint) out.set(t.runnerHint, t);
+  for (const t of tasks) if (t.role === role && t.runnerHint) out.set(t.runnerHint, t);
   return out;
 }
+
+/** A sandboxed review or decompose attempt: read-only, no exec, and no network for a mock. */
+const SANDBOXED_REVIEW: AttemptSandbox = {
+  profile: 'review', network: 'none', write: false, exec: false, authorizeDecisionId: null,
+};
 
 export async function runMission(ctx: DaylightContext, opts: RunMissionOptions): Promise<RunMissionReport> {
   const found = ctx.store.mission(opts.missionId);
@@ -292,22 +380,82 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     );
   }
   const notes: string[] = [];
-  const { runnable, unavailable } = planMissionRoster(opts.tools, opts.model);
+  const role = opts.role ?? 'review';
+  if (role !== 'review' && role !== 'decompose') throw new Error(`runMission runs review or decompose attempts, not ${String(role)}`);
+  if (role === 'decompose' && mission.kind !== 'spec') throw new Error(`mission ${mission.id} is ${mission.kind}; only a spec mission decomposes`);
+  if (role === 'review' && mission.kind === 'spec') throw new Error(`mission ${mission.id} is a spec mission; it is decomposed, not reviewed`);
+  // Decomposers reach their one tool only over the attempt socket, so they are always sandboxed.
+  if (opts.noReviewSandbox && opts.unsandboxedReview) {
+    throw new Error('--no-review-sandbox and --unsandboxed-review are two names for one opt-out; pass one');
+  }
+  if (role === 'decompose' && opts.unsandboxedReview) {
+    throw new Error('--unsandboxed-review does not apply to decompose: a decomposer reaches its tool only over the socket');
+  }
+  if (opts.noReviewSandbox) {
+    if (role === 'decompose') throw new Error('--no-review-sandbox does not apply to decompose: a decomposer reaches its tool only over the socket');
+    // Checked on the roster as typed, before any binary is looked up or run.
+    const real = opts.tools.map((t) => parseSpec(t, opts.model).tool).filter((t) => t !== 'mock');
+    if (real.length) throw new Error(`--no-review-sandbox is for mock reviewers only; refused for ${[...new Set(real)].join(', ')}`);
+  }
+  const detected = opts.sandbox ?? detectSandbox();
+  // Fail closed: sandboxed whenever bwrap is present, unless a person opted out by name.
+  const declined: SandboxReason | undefined = opts.unsandboxedReview ? 'unsandboxed-review' : opts.noReviewSandbox ? 'no-review-sandbox' : undefined;
+  if (role === 'review' && !declined && !detected.available) {
+    // No profile can be built: refused, never run open by default (fail closed).
+    throw new Error(
+      `refused: reviews run under the bwrap review profile, which cannot be built here (${detected.why ?? 'unavailable'}); ` +
+        'install bubblewrap and prlimit, or pass --unsandboxed-review to run them as P0 did (Sec H5: the reviewer can read <out>), ' +
+        'or --no-review-sandbox for an all-mock roster',
+    );
+  }
+  const sandboxed = role === 'decompose' || (!declined && detected.available);
+  const profile = sandboxed ? detected : null;
+  if (profile && !profile.available) {
+    throw new Error(`${role} attempts run under the bwrap review profile, which cannot be built here: ${profile.why ?? 'unavailable'}`);
+  }
+  if (sandboxed && role === 'review') {
+    // Refused before any binary is looked up or run.
+    // A tool with no adapter is reported unavailable below, as it always was; only real providers are refused here.
+    const real = [...new Set(opts.tools.map((t) => parseSpec(t, opts.model).tool).filter((t) => t !== 'mock' && Object.hasOwn(ADAPTERS, t)))];
+    if (real.length) {
+      throw new Error(
+        `refused: ${real.join(', ')} would review under the bwrap review profile, which real providers do not get until ` +
+          'the owner authorises the live spike (R15.1); after that spike they run sandboxed, or pass --unsandboxed-review ' +
+          'to run them now exactly as P0 did, unsandboxed (Sec H5: the reviewer can read <out>)',
+      );
+    }
+  }
+  const planned = planMissionRoster(opts.tools, opts.model);
+  const unavailable = [...planned.unavailable];
+  const runnable = planned.runnable.filter(({ spec }) => {
+    if (!sandboxed || spec.tool === 'mock') return true;
+    unavailable.push(`${specKey(spec)} (real providers run under no sandbox profile until the owner authorises the live spike, R15.1)`);
+    return false;
+  });
+  const prompt = opts.prompt ?? buildReviewPrompt(mission);
+  // The registered spec, so the decompose server can refuse a bad anchor at once.
+  const decomposeCheck = role === 'decompose' ? { spec: specOf(ctx, mission.id).bytes } : undefined;
   const diversity = sourceDiversity(runnable.map((r) => r.spec));
-  if (runnable.length && diversity < 2) {
+  if (role === 'review' && runnable.length && diversity < 2) {
     notes.push(
       `roster has ${diversity} independent source; nothing it claims can be corroborated and ` +
         'no disagreement can be discovered',
     );
   }
 
-  // Tasks are durable: a second run re-uses the review task for a source it has seen, so a
-  // retry is a new attempt on the same task rather than a new task with no history.
-  const existing = reviewTasksBySource(ctx.store.tasks(mission.id));
+  // Tasks are durable: a second run re-uses the task for a source it has seen, so a retry is
+  // a new attempt on the same task rather than a new task with no history.
+  const existing = tasksBySource(ctx.store.tasks(mission.id), role);
   const plans: ReviewPlan[] = [];
   for (const { spec, adapter } of runnable) {
     const key = specKey(spec);
-    let task = existing.get(key);
+    // decompose() pins its tasks to the roster entry as typed (`mock`), not its key (`mock:default`).
+    let task = existing.get(key) ?? [...existing.values()].find((t) => specKey(parseSpec(t.runnerHint!, opts.model)) === key);
+    if (!task && role === 'decompose') {
+      // decompose() creates its tasks before it runs them; a decompose run never invents one.
+      unavailable.push(`${key} (no decompose task on mission ${mission.id})`);
+      continue;
+    }
     if (!task) {
       task = ctx.store.createTask({
         missionId: mission.id,
@@ -318,13 +466,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
       });
       lifecycle(ctx, mission, 'task.created', { role: 'review', runnerHint: key }, { taskId: task.id });
     }
-    const cfgPath = path.join(ctx.out, `mcp.${slug(key)}.${mission.id}.json`);
-    plans.push({ spec, taskId: task.id, prompt: buildReviewPrompt(mission), mcpConfigPath: cfgPath });
+    const cfgPath = sandboxed ? MCP_CONFIG : path.join(ctx.out, `mcp.${slug(key)}.${mission.id}.json`);
+    plans.push({ spec, taskId: task.id, prompt, mcpConfigPath: cfgPath });
     void adapter;
   }
   const reviewTasks = ctx.store.tasks(mission.id).filter((t) => t.role === 'review');
-  let compareTask = ctx.store.tasks(mission.id).find((t) => t.role === 'compare');
-  if (!compareTask && reviewTasks.length) {
+  let compareTask = role === 'review' ? ctx.store.tasks(mission.id).find((t) => t.role === 'compare') : undefined;
+  if (role === 'review' && !compareTask && reviewTasks.length) {
     compareTask = ctx.store.createTask({
       missionId: mission.id,
       role: 'compare',
@@ -383,7 +531,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     lifecycle(ctx, mission, 'attempt.orphaned', { failure: orphan.failure }, { taskId: orphan.taskId, attemptId: orphan.id });
   }
 
-  if (!runnable.length) {
+  if (!plans.length) {
     // `blocked` is re-entered through `running` so the new reason replaces the old one and
     // the transition table stays the only path between states. A mission already running
     // (a finished review waiting on a person, or a crashed run) goes straight to blocked.
@@ -415,9 +563,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   const ceiling = opts.maxCost ?? mission.budget.maxUsd;
   // The budget is the mission's, so a run starts from what every earlier attempt recorded —
   // the ledger's figure, not an adapter's — and a null anywhere makes the total a floor.
-  const recorded = ctx.store.tasks(mission.id).flatMap((t) => ctx.store.attempts(t.id));
-  let spent = recorded.reduce((n, a) => n + (a.costUsd ?? 0), 0);
-  let costKnown = recorded.every((a) => a.costUsd !== null);
+  let spent = missionSpend(ctx, mission.id).spentUsd;
   const failures: string[] = [];
   const queue = [...todo];
   const limit = Math.max(1, opts.concurrency ?? 1);
@@ -432,57 +578,89 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     // The session is the correlation key for every MCP event this agent produces. It carries
     // the mission id first so the server can withhold the other reviewers' claims by prefix.
     const session = `${mission.id}:${task.id}:a${task.attemptIds.length + 1}`;
-    const attempt = ctx.store.startAttempt({ taskId: task.id, runnerId, sessionId: session });
+    const credential = attemptCredential(spec.tool);
+    const token = sandboxed ? newMcpToken() : undefined;
+    const attempt = ctx.store.startAttempt({
+      taskId: task.id, runnerId, sessionId: session, credential,
+      ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : declined ? { sandbox: { reason: declined } } : {}),
+    });
     open.add(attempt.id);
-    lifecycle(ctx, mission, 'attempt.started', { runnerId, session }, { taskId: task.id, attemptId: attempt.id });
+    lifecycle(ctx, mission, 'attempt.started', {
+      runnerId, session, ...(sandboxed ? { profile: SANDBOXED_REVIEW.profile, network: SANDBOXED_REVIEW.network } : {}),
+    }, { taskId: task.id, attemptId: attempt.id });
     opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} started`);
 
-    fs.writeFileSync(
-      plan.mcpConfigPath,
-      JSON.stringify(
-        mcpConfig(cmd, ctx.out, spec.tool, spec.model, session, { DAYLIGHT_BLIND_PREFIX: mission.id }),
-        null, 2,
-      ),
-    );
-
-    const result = await captureRun(
-      adapter,
-      {
-        prompt: plan.prompt,
-        cwd: root,
-        mcpConfigPath: plan.mcpConfigPath,
-        session,
-        model: spec.model,
-        timeoutMs,
-        maxTurns: 40,
-        maxCost: share,
-      },
-      {
-        store: ctx.store,
-        events: ctx.events,
-        artifacts: ctx.artifacts,
-        projectId: mission.projectId,
-        missionId: mission.id,
-        taskId: task.id,
-        attemptId: attempt.id,
-        runnerId,
-        revision: mission.baseRevision,
-        onChunk: opts.onChunk ? (s, t) => opts.onChunk!(attempt.id, s, t) : undefined,
-      },
-    );
+    const run: Parameters<typeof captureRun>[1] = {
+      prompt: plan.prompt,
+      cwd: root,
+      mcpConfigPath: plan.mcpConfigPath,
+      session,
+      model: spec.model,
+      timeoutMs,
+      maxTurns: 40,
+      maxCost: share,
+      ...(role === 'decompose' ? { allowedTools: roleAllowlist('decompose') } : {}),
+    };
+    const capture: Parameters<typeof captureRun>[2] = {
+      store: ctx.store,
+      events: ctx.events,
+      artifacts: ctx.artifacts,
+      projectId: mission.projectId,
+      missionId: mission.id,
+      taskId: task.id,
+      attemptId: attempt.id,
+      runnerId,
+      revision: mission.baseRevision,
+      onChunk: opts.onChunk ? (s, t) => opts.onChunk!(attempt.id, s, t) : undefined,
+      credential,
+    };
+    let result: Awaited<ReturnType<typeof captureRun>> | null = null;
+    if (!sandboxed) {
+      fs.writeFileSync(
+        plan.mcpConfigPath,
+        JSON.stringify(
+          mcpConfig(cmd, ctx.out, spec.tool, spec.model, session, { DAYLIGHT_BLIND_PREFIX: mission.id }),
+          null, 2,
+        ),
+      );
+      result = await captureRun(adapter, run, capture);
+    } else {
+      // The store's own row is the only source of what this attempt was granted (ws2 ask).
+      const row = ctx.store.attempt(attempt.id)!;
+      // Only mocks reach here until the Q5 live spike; resolved by tool so a real provider then gets its own adapter.
+      const mock = authorFor(spec.tool);
+      try {
+        if (mock.status !== 'available') throw new Error(mock.why);
+        const serve = (): McpServer => (ctx.store.task(row.taskId)?.role === 'decompose'
+          ? createDecomposeServer({ dir: ctx.out, attemptId: row.id, agentTool: spec.tool, model: spec.model, check: decomposeCheck }).server
+          : createServer({ dir: ctx.out, session, agentTool: spec.tool, model: spec.model, blindPrefix: mission.id }).server);
+        result = await withAttemptSocket(ctx, row, token!, serve, (mcp) => captureRun(mock.adapter, {
+          ...run,
+          launch: reviewLauncher({ attempt: row, repo: root, mounts: mock.mounts, mcp, out: ctx.out, profile: profile! }),
+        }, capture));
+      } catch (err) {
+        // Fail closed: a review profile that cannot be built is a failed attempt, never an unsandboxed one.
+        const why = `the review sandbox could not be started: ${(err as Error).message}`.slice(0, 500);
+        if (ctx.store.attempt(attempt.id)?.state === 'running') {
+          ctx.store.finishAttempt(attempt.id, { state: 'failed', costUsd: null, failure: why });
+        }
+        lifecycle(ctx, mission, 'attempt.refused', { why }, { taskId: task.id, attemptId: attempt.id });
+      }
+    }
     open.delete(attempt.id);
     const costUsd = ctx.store.attempt(attempt.id)?.costUsd ?? null;
-    spent += costUsd ?? 0;
+    spent = missionSpend(ctx, mission.id).spentUsd;
     if (costUsd === null) {
-      costKnown = false;
       unknownCost.push(key);
     }
     ingestMcpEvents(ctx, mission.id);
-    if (!result.ok) {
+    if (!result) {
+      failures.push(`${key}: the review sandbox could not be started`);
+    } else if (!result.ok) {
       const why = result.timedOut ? 'timed out' : result.overBudget ? 'over budget' : `exit ${result.exitCode}`;
       failures.push(`${key}: ${why}`);
     }
-    opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} ${result.ok ? 'finished' : 'failed'}`);
+    opts.onProgress?.(ctx.store.mission(mission.id)!, `${key} ${result?.ok ? 'finished' : 'failed'}`);
   };
 
   while (queue.length) {
@@ -508,10 +686,13 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     await Promise.all(wave.map((p) => launch(p, share)));
   }
 
+  const costKnown = missionSpend(ctx, mission.id).costKnown;
   if (failures.length) {
     block(failures.join('; '));
     return finish(report(undefined, spent, costKnown));
   }
+  // A decompose run ends when its attempts do; what they proposed is ingested by decompose().
+  if (role === 'decompose') return finish(report(undefined, spent, costKnown));
 
   if (compareTask && ctx.store.task(compareTask.id)!.state !== 'done') {
     const comparison = runCompare(ctx, ctx.store.mission(mission.id)!, compareTask.id);
@@ -628,44 +809,101 @@ export interface InspectedDispute {
   decisionId?: string;
 }
 
+export { needsOf, projectNeeds } from './needs.ts';
+export type { Need } from './types.ts';
+
 /**
- * Something a person has to do before the mission can move, derived and never stored.
- *
- * A mission whose reviews are done and whose reviewers disagree is `running` — the state
- * table has no "waiting on you", and should not: a dispute is not a failure, so `blocked`
- * would be the wrong word. But it is the one moment the product exists to produce, so it is
- * computed here and the list counts it.
+ * A holdout as anyone outside the gate runner may see it: that it exists, its role, how it
+ * concluded and what froze it. Never its hypothesis, prediction, command, test or runs (ADR-18,
+ * ws9-review M1): withholding at render time is not enough, so it never leaves the engine.
  */
-export interface Need {
-  kind: 'blocked' | 'dispute';
-  ref: string;
-  why: string;
+export type WithheldExperiment = Pick<Experiment, 'id' | 'missionId' | 'role' | 'conclusion' | 'harnessDigest' | 'lockedBy'> & { withheld: true };
+
+export function publicExperiment(x: Experiment): Experiment | WithheldExperiment {
+  if (x.role !== 'holdout') return x;
+  return {
+    id: x.id, missionId: x.missionId, role: x.role, conclusion: x.conclusion, harnessDigest: x.harnessDigest,
+    ...(x.lockedBy ? { lockedBy: x.lockedBy } : {}), withheld: true,
+  };
 }
 
-export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Comparison): Need[] {
-  if (mission.state === 'closed') return [];
-  if (mission.state === 'blocked') {
-    return [{ kind: 'blocked', ref: mission.id, why: mission.outcomeReason ?? 'blocked' }];
+/** A holdout's evaluation keeps its conclusion and digests; its run records stay in the row. */
+export function publicGateEvaluations(ctx: DaylightContext, rows: GateEvaluation[]): GateEvaluation[] {
+  const holdout = (id: string) => ctx.store.experiment(id)?.role === 'holdout';
+  return rows.map((g) => (holdout(g.experimentId) ? { ...g, executions: [] } : g));
+}
+
+/**
+ * Events with a holdout's content withheld: an event about a holdout keeps its name, ids and
+ * outcome, and loses every other payload field and every artifact it points at.
+ */
+export function publicEvents(ctx: DaylightContext, missionId: string, events: DaylightEvent[]): DaylightEvent[] {
+  return withholdHoldoutEvents(holdoutContent(ctx, [missionId]), events);
+}
+
+/**
+ * Every holdout of these missions (default: all of them), and every artifact that carries its
+ * content: the test, the expectation, each run record and the logs those records name.
+ */
+export function holdoutContent(ctx: DaylightContext, missionIds?: string[]): { ids: Set<string>; artifacts: Set<string> } {
+  const ids = new Set<string>();
+  const artifacts = new Set<string>();
+  const runs: ArtifactRef[] = [];
+  for (const missionId of missionIds ?? ctx.store.missions().map((m) => m.id)) {
+    const holdouts = ctx.store.experimentsFor(missionId, 'holdout');
+    if (!holdouts.length) continue;
+    for (const x of holdouts) {
+      ids.add(x.id);
+      artifacts.add(x.testArtifact.id);
+      artifacts.add(x.expectedArtifact.id);
+      runs.push(...x.executions);
+    }
+    for (const g of ctx.store.gateEvaluations({ missionId })) if (ids.has(g.experimentId)) runs.push(...g.executions);
   }
-  const tasks = ctx.store.tasks(mission.id);
-  if (!tasks.length || tasks.some((t) => t.state !== 'done')) return [];
-  const disputes = (comparison ?? compare(ctx.claims, mission.scope, missionClaims(mission.id))).disputes;
-  return disputes
-    .filter((d) => d.belief.status === 'CONTRADICTED')
-    .map((d) => ({ kind: 'dispute', ref: `${d.subject} ${d.predicate}`, why: 'the reviewers disagree; a person decides' }));
+  for (const r of runs) {
+    artifacts.add(r.id);
+    try {
+      const rec = JSON.parse(ctx.artifacts.text(r)) as { stdoutRef?: ArtifactRef; stderrRef?: ArtifactRef };
+      if (rec.stdoutRef) artifacts.add(rec.stdoutRef.id);
+      if (rec.stderrRef) artifacts.add(rec.stderrRef.id);
+    } catch {
+      // A record that cannot be read names no log; its own id is already withheld.
+    }
+  }
+  return { ids, artifacts };
+}
+
+/** Events with each holdout's content withheld: ids and outcome kept, every other field and artifact gone. */
+export function withholdHoldoutEvents(h: { ids: Set<string>; artifacts: Set<string> }, events: DaylightEvent[]): DaylightEvent[] {
+  const { ids, artifacts } = h;
+  if (!ids.size) return events;
+  return events.map((e) => {
+    const p = e.payload as Record<string, unknown>;
+    const about = typeof p.experimentId === 'string' && ids.has(p.experimentId);
+    const points = (e.artifactIds ?? []).some((a) => artifacts.has(a));
+    if (!about && !points && p.role !== 'holdout') return e;
+    const keep: Record<string, unknown> = { role: 'holdout', withheld: true };
+    for (const k of ['experimentId', 'gateEvaluationId', 'target', 'diffDigest', 'conclusion', 'runIndex', 'status', 'runs']) {
+      if (k in p) keep[k] = p[k];
+    }
+    return { ...e, payload: keep, artifactIds: [] };
+  });
 }
 
 export interface Inspection {
   mission: Mission;
   tasks: Task[];
   attempts: Attempt[];
-  experiments: Experiment[];
+  experiments: Array<Experiment | WithheldExperiment>;
   decisions: Decision[];
   disputes: InspectedDispute[];
   unverified: Belief[];
   settled: Belief[];
   events: DaylightEvent[];
   needs: Need[];
+  candidates: Candidate[];
+  gateEvaluations: GateEvaluation[];
+  applications: Application[];
 }
 
 interface ComparisonRecord {
@@ -710,13 +948,16 @@ export function inspectMission(ctx: DaylightContext, missionId: string, eventLim
     mission,
     tasks,
     attempts,
-    experiments: ctx.store.experiments(missionId),
+    experiments: ctx.store.experiments(missionId).map(publicExperiment),
     decisions,
     disputes: [...byKey.values()].sort((a, b) => a.subject.localeCompare(b.subject)),
     unverified: comparison.unverified,
     settled: comparison.settled,
-    events: all.slice(-eventLimit),
+    events: publicEvents(ctx, missionId, all.slice(-eventLimit)),
     needs: needsOf(ctx, mission, comparison),
+    candidates: ctx.store.candidates(missionId),
+    gateEvaluations: publicGateEvaluations(ctx, ctx.store.gateEvaluations({ missionId })),
+    applications: ctx.store.applications(missionId),
   };
 }
 
@@ -796,8 +1037,48 @@ export interface DecideOptions {
   predicate: string;
   value: unknown;
   rationale: string;
-  actor?: string;
+  /** `human:<name>`; the CLI supplies the OS user's. */
+  actor: string;
   experimentId?: string;
+  /** `--confirm <digest8>` of `adjudicateConfirm` for exactly this subject, predicate and value. */
+  confirm: string | undefined;
+  /** Read by the guard; `process.env` at the CLI. */
+  env: Readonly<Record<string, string | undefined>>;
+}
+
+/** A `--value` as the CLI reads it: true, false, a number, JSON, else the string itself. */
+export function parseDecisionValue(raw: string): unknown {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * What a person confirms for a P0 adjudication (R14 D-9: every decision goes through the one
+ * guard): the mission, its revision, and exactly the belief being settled and the experiment
+ * cited, so a code confirmed for one value does not record another.
+ */
+export function adjudicateConfirm(
+  mission: Pick<Mission, 'id' | 'projectId' | 'baseRevision'>,
+  o: { subject: string; predicate: string; value: unknown; experimentId?: string },
+): { digest: string; digest8: string; lines: string[] } {
+  const digest = digestOf(canonicalJson({
+    operation: 'adjudicate', missionId: mission.id, projectId: mission.projectId, revision: mission.baseRevision,
+    subject: o.subject, predicate: o.predicate, value: o.value ?? null, experimentId: o.experimentId ?? null,
+  }));
+  return {
+    digest, digest8: confirmCodeOf(digest),
+    lines: [
+      `decide on mission ${mission.id} at ${mission.baseRevision}`,
+      `${o.subject} ${o.predicate} = ${JSON.stringify(o.value ?? null)}`,
+      `experiment: ${o.experimentId ?? 'none'}`,
+    ],
+  };
 }
 
 /**
@@ -809,6 +1090,8 @@ export interface DecideOptions {
 export function decide(ctx: DaylightContext, opts: DecideOptions): { decision: Decision; belief: Belief } {
   const mission = ctx.store.mission(opts.missionId);
   if (!mission) throw new Error(`unknown mission ${opts.missionId}`);
+  assertHumanDecision(opts.env, opts.actor, opts.confirm,
+    adjudicateConfirm(mission, { subject: opts.subject, predicate: opts.predicate, value: opts.value, experimentId: opts.experimentId }).digest);
   if (mission.state === 'closed') throw new Error(`mission ${mission.id} is closed`);
   if (!opts.rationale.trim()) throw new Error('a decision needs a rationale');
 
@@ -835,7 +1118,7 @@ export function decide(ctx: DaylightContext, opts: DecideOptions): { decision: D
         : []),
     ],
   });
-  const actor = opts.actor ?? 'human';
+  const actor = opts.actor;
   const record = {
     missionId: mission.id,
     projectId: mission.projectId,

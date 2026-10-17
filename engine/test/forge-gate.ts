@@ -28,13 +28,20 @@ import {
   authorBrief, baseline, evaluate, GateRefused, listGates, lock, registerGate, verdictRows, type GateContext,
 } from '../forge/gate.ts';
 import { candidateVerdict, type VerdictRows } from '../forge/verdict.ts';
-import { createWorkspace, diffOf } from '../forge/_stubs/workspace.ts';
+import { DIFF_FLAGS } from '../forge/diff.ts';
+import { createWorkspace, siblingGit, type Workspace } from '../forge/workspace.ts';
 import { noTestsReported, runGate, sweepAbandoned } from '../experiment/runner.ts';
 import { detectSandbox } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
+
+/** The tree's changes against its commit, captured the way a candidate's are. */
+const diffOf = (ws: Workspace): Buffer => {
+  siblingGit(ws, ['add', '--all', '--force']);
+  return siblingGit(ws, ['diff', '--cached', ...DIFF_FLAGS, ws.commit, '--']);
+};
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-forge-gate-'));
 // Every scratch tree this file makes, and every one the code under test makes, lands here and
 // nowhere else, so the tamper cases below can only ever touch their own.
@@ -141,7 +148,7 @@ section('the verdict does not read the attempt (ADR-19)');
     lockDecision: () => null, experiment: () => null, gateEvaluations: () => [], candidate: () => c,
   }) as unknown as MissionStore;
   const base: Candidate = {
-    id: 'c_1', missionId: 'm_1', attemptId: 'a_1', projectId: 'git:p', baseCommit: BASE,
+    id: 'c_1', possibleSecretHits: 0, missionId: 'm_1', attemptId: 'a_1', projectId: 'git:p', baseCommit: BASE,
     diffArtifact: { id: D('d'), kind: 'diff', digest: D('d'), projectId: 'git:p' }, summaryArtifact: { id: D('s'), kind: 'summary', digest: D('s'), projectId: 'git:p' },
     files: [FILE], policyViolations: [], secretHits: 0, gateSetDigest: D('9'),
     profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed', verdict: 'pending', verdictReasons: [], createdAt: 1,
@@ -408,8 +415,11 @@ if (!live.available) {
     };
     const raced = await throws(() => lock({ ...ctx, store: racing }, { missionId: m2.id, actor: HUMAN, rationale: 'r', confirm: code([g2.id]), experimentIds: [g2.id] }));
     raw.close();
-    check('a gate set that moved between confirm and lock is reported, not passed off as confirmed',
+    check('a gate set that moved between confirm and lock is refused, not passed off as confirmed',
       raced instanceof GateRefused && /not the one confirmed/.test(raced.message), raced?.message);
+    check('and the refusal is inside the lock\'s transaction: no decision, no locked_by, no acceptance gates',
+      dctx.store.lockDecision(m2.id) === null && !dctx.store.experiment(g2.id)!.lockedBy
+      && dctx.store.mission(m2.id)!.acceptanceGateIds.length === 0);
     const d = lock(ctx, { missionId: m2.id, actor: HUMAN, rationale: 'accepted: smoke check', confirm: code([g2.id, v2.id]), experimentIds: [g2.id, v2.id], acceptVacuous: [v2.id] });
     check('named in --accept-vacuous, a vacuous gate locks and the override is recorded',
       (d.scope as unknown as LockGatesScope).vacuousOverrides.join() === v2.id);

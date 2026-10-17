@@ -316,7 +316,16 @@ export interface AttemptSandbox {
   write: boolean;
   exec: boolean;
   authorizeDecisionId: string | null;
+  /**
+   * Why a review that could have been sandboxed was not, when a person said so (profile `none`
+   * only): `unsandboxed-review` for real providers run as P0 did (Sec H5), `no-review-sandbox`
+   * for mock test doubles. Absent when no profile was available or none was declined.
+   */
+  reason?: SandboxReason;
 }
+
+export type SandboxReason = 'unsandboxed-review' | 'no-review-sandbox';
+export const SANDBOX_REASONS: readonly SandboxReason[] = ['unsandboxed-review', 'no-review-sandbox'];
 
 /**
  * The default for every attempt. `shared` network because that is what an unsandboxed P0
@@ -534,6 +543,11 @@ export interface Candidate {
   files: CandidateFile[];
   policyViolations: PolicyViolation[];
   secretHits: number;
+  /**
+   * Low-confidence secret matches in the diff (R16): a curable warning, never a violation.
+   * Approve and override need the person's explicit acknowledgement while it is non-zero.
+   */
+  possibleSecretHits: number;
   gateSetDigest: string;
   /** `name` uses the attempt's vocabulary (`Attempt.sandbox.profile`), so it is always `author`. */
   profile: { name: Extract<SandboxProfileName, 'author'>; network: NetworkMode; write: boolean; exec: boolean };
@@ -603,7 +617,7 @@ export interface IngestSource {
 
 export type NeedKind =
   | 'blocked' | 'dispute' | 'spec-ambiguity' | 'gate-lock' | 'gate-vacuous'
-  | 'candidate-decision' | 'apply';
+  | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {

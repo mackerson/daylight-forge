@@ -28,6 +28,12 @@ import type { ExecutionRecord } from '../experiment/types.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
+// The stray-directory count below reads the temp dir; another worktree's tests running at the
+// same time share /tmp, so this file and the runner under test get a temp dir of their own.
+const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-xtmp-'));
+fs.chmodSync(privateTmp, 0o700);
+process.env.TMPDIR = privateTmp;
+process.on('exit', () => fs.rmSync(privateTmp, { recursive: true, force: true }));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-experiment-'));
 
 // ---- fixtures ------------------------------------------------------------------

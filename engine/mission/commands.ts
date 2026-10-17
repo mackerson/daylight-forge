@@ -7,10 +7,13 @@ import { redact } from './redact.ts';
 import { openDaylight, type DaylightContext } from './context.ts';
 import { importMission, readExport, writeExport } from './export.ts';
 import {
-  closeMission, createMission, decide, inspectMission, needsOf, proposeExperiment, runMission,
-  runMissionExperiment,
+  adjudicateConfirm, closeMission, createMission, decide, holdoutContent, inspectMission, needsOf, parseDecisionValue,
+  proposeExperiment, runMission, runMissionExperiment, withholdHoldoutEvents,
 } from './orchestrate.ts';
+import { AGENT_SESSION_VARS } from '../forge/policy.ts';
 import { renderReport } from './report.ts';
+import { runProjectReport } from './commands-report.ts';
+import { missionAuthorizeCommand, missionCreateImplementCommand, osActor, Usage as ForgeUsage } from '../forge/commands.ts';
 import { mappedProject } from './context.ts';
 import type { MissionKind, MissionOutcome } from './types.ts';
 
@@ -70,16 +73,6 @@ const num = (s: string | undefined): number | undefined => {
   if (!Number.isFinite(n)) throw new Usage(`not a number: ${s}`);
   return n;
 };
-const parseValue = (raw: string): unknown => {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-};
 
 const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 const say = (line: string) => process.stdout.write(`${line}\n`);
@@ -115,6 +108,8 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       if (!repo) throw new Usage('mission create needs a <repo>');
       const kind = (last(p, 'kind') ?? 'explore') as MissionKind;
       if (!KINDS.includes(kind)) throw new Usage(`--kind must be one of ${KINDS.join(', ')}`);
+      // An implement mission has one way in: an approved work item, or a person's ad hoc decision.
+      if (kind === 'implement') return await missionCreateImplementCommand(p, out, asJson, process.env);
       const m = withContext(out, (ctx) => createMission(ctx, {
         repo: path.resolve(repo), kind, objective: need(p, 'objective'),
         scope: { paths: list(last(p, 'scope')) },
@@ -124,6 +119,8 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       else say(`created mission ${m.id} (${m.kind}, ${m.state}) at ${m.baseRevision}`);
       return 0;
     }
+    case 'authorize':
+      return await missionAuthorizeCommand(p, out, asJson, process.env);
     case 'list': {
       const data = withContext(out, (ctx) => {
         const missions = ctx.store.missions();
@@ -163,6 +160,9 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
     case 'run': {
       const [id, repo] = p.positionals;
       if (!id || !repo) throw new Usage('mission run needs <mission-id> <repo>');
+      if (last(p, 'unsandboxed-review') === 'true') {
+        console.error('warning: --unsandboxed-review: reviewers run with no sandbox and can read <out>, other missions\' claims included (Sec H5)');
+      }
       const report = await withContextAsync(out, (ctx) => runMission(ctx, {
         missionId: id,
         repo: path.resolve(repo),
@@ -170,6 +170,8 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
         model: last(p, 'model'),
         maxCost: num(last(p, 'max-cost')),
         raiseBudget: last(p, 'raise-budget') === 'true',
+        noReviewSandbox: last(p, 'no-review-sandbox') === 'true',
+        unsandboxedReview: last(p, 'unsandboxed-review') === 'true',
         dryRun: last(p, 'dry-run') === 'true',
         timeoutMs: num(last(p, 'timeout')) !== undefined ? num(last(p, 'timeout'))! * 1000 : undefined,
         concurrency: num(last(p, 'concurrency')),
@@ -198,14 +200,27 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
     case 'decide': {
       const id = p.positionals[0];
       if (!id) throw new Usage('mission decide needs a <mission-id>');
-      const result = withContext(out, (ctx) => decide(ctx, {
-        missionId: id,
-        subject: need(p, 'subject'),
-        predicate: need(p, 'predicate'),
-        value: parseValue(need(p, 'value')),
-        rationale: need(p, 'rationale'),
-        actor: last(p, 'actor'),
+      // The decision is the OS user's (S-8): another human name is ignored, an agent is refused.
+      const given = last(p, 'actor');
+      if (given?.startsWith('agent:')) throw new Usage(`--actor ${given}: a decision is a person's, never an agent's`);
+      const what = {
+        subject: need(p, 'subject'), predicate: need(p, 'predicate'), value: parseDecisionValue(need(p, 'value')),
         experimentId: last(p, 'experiment'),
+      };
+      const confirm = last(p, 'confirm');
+      if (confirm === undefined) {
+        const c = withContext(out, (ctx) => {
+          const m = ctx.store.mission(id);
+          if (!m) throw new Error(`unknown mission ${id}`);
+          return adjudicateConfirm(m, what);
+        });
+        if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
+        else for (const l of [...c.lines, `digest ${c.digest}`]) say(l);
+        console.error('usage: re-run with --confirm <the first eight hex characters of the digest>');
+        return 2;
+      }
+      const result = withContext(out, (ctx) => decide(ctx, {
+        missionId: id, ...what, rationale: need(p, 'rationale'), actor: osActor(), confirm, env: process.env,
       }));
       if (asJson) json(result);
       else say(`decision ${result.decision.id}: ${result.belief.subject} ${result.belief.predicate} is now ${result.belief.status}`);
@@ -255,7 +270,7 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       return 0;
     }
     default:
-      throw new Usage('mission needs one of: create, list, inspect, run, decide, close, replay, export, import');
+      throw new Usage('mission needs one of: create, authorize, list, inspect, run, decide, close, replay, export, import');
   }
 }
 
@@ -310,11 +325,26 @@ async function experiment(sub: string | undefined, p: Parsed, out: () => string,
 
 // ---- the rest ----------------------------------------------------------------------
 
+/**
+ * `--reveal-holdout`: a person at a terminal reading a holdout's content, which every other
+ * read withholds (ws9-review M1). Refused from inside an agent session; the shell never passes it.
+ */
+function revealHoldout(p: Parsed): boolean {
+  if (last(p, 'reveal-holdout') !== 'true') return false;
+  const agent = AGENT_SESSION_VARS.find((v) => process.env[v]);
+  if (agent) throw new Error(`refused: ${agent} is set; a holdout is revealed only to a person, never inside an agent session`);
+  return true;
+}
+
 function artifact(p: Parsed, out: () => string, asJson: boolean): number {
   const id = p.positionals[0];
   if (!id) throw new Usage('artifact needs a <digest>');
   const maxBytes = num(last(p, 'max-bytes')) ?? 256 * 1024;
+  const reveal = revealHoldout(p);
   const result = withContext(out, (ctx) => {
+    if (!reveal && holdoutContent(ctx).artifacts.has(id)) {
+      throw new Error(`refused: ${id} holds a holdout's content, which never leaves the gate runner (pass --reveal-holdout at a terminal to read it)`);
+    }
     if (!ctx.artifacts.has(id)) throw new Error(`no artifact ${id} in ${out()}`);
     const ref = ctx.store.artifact(id);
     const bytes = ctx.artifacts.get(id);
@@ -332,14 +362,18 @@ function artifact(p: Parsed, out: () => string, asJson: boolean): number {
 function events(p: Parsed, out: () => string, asJson: boolean): number {
   const since = num(last(p, 'since')) ?? 0;
   const limit = num(last(p, 'limit')) ?? 1000;
-  const rows = withContext(out, (ctx) =>
-    ctx.events.since(since, { missionId: last(p, 'mission'), attemptId: last(p, 'attempt') }, limit));
+  const reveal = revealHoldout(p);
+  const rows = withContext(out, (ctx) => {
+    const raw = ctx.events.since(since, { missionId: last(p, 'mission'), attemptId: last(p, 'attempt') }, limit);
+    return reveal ? raw : withholdHoldoutEvents(holdoutContent(ctx), raw);
+  });
   if (asJson) json(rows);
   else for (const e of rows) say(`${e.sequence} ${new Date(e.at).toISOString()} ${e.category} ${e.name} ${e.missionId ?? ''} ${e.attemptId ?? ''}`);
   return 0;
 }
 
-function report(p: Parsed, out: () => string): number {
+function report(p: Parsed, out: () => string, argv: string[]): number {
+  if (last(p, 'project') !== undefined) return runProjectReport(argv, out);
   const id = p.positionals[0];
   if (!id) throw new Usage('report needs a <mission-id>');
   const md = withContext(out, (ctx) => renderReport(ctx, inspectMission(ctx, id, Number.MAX_SAFE_INTEGER)));
@@ -414,12 +448,12 @@ export async function runDaylightCommand(argv: string[]): Promise<number> {
       case 'experiment': return await experiment(sub, p, out, asJson);
       case 'artifact': return artifact(p, out, asJson);
       case 'events': return events(p, out, asJson);
-      case 'report': return report(p, out);
+      case 'report': return report(p, out, rest);
       case 'demo': return demo(sub, p, explicitOut ?? '', asJson);
       default: throw new Usage(`unknown command ${command}`);
     }
   } catch (err) {
-    if (err instanceof Usage) {
+    if (err instanceof Usage || err instanceof ForgeUsage) {
       console.error(`usage: ${err.message}`);
       return 2;
     }

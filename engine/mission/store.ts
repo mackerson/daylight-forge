@@ -7,7 +7,7 @@ import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
 import {
   ATTEMPT_TRANSITIONS, canTransition, DECISION_OPERATIONS, ID_PREFIX, isEntityId, isHumanActor,
   MISSION_TRANSITIONS,
-  NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
+  NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, SANDBOX_REASONS, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
   ArtifactKind, ArtifactRef, Attempt, AttemptCredential, AttemptOrigin, AttemptSandbox, AttemptState, CostSource, Decision,
@@ -15,7 +15,7 @@ import type {
   MissionBudget, MissionKind, MissionOutcome, MissionPermissions, MissionScope, MissionState,
   NetworkMode, NewExperiment, ProjectIdentity, Task, TaskRole, TaskState, TokenUsage,
   UsageSource, Application, Candidate, CandidateFile, CandidateVerdict, GateEvaluation, GateTarget,
-  IngestSource, PolicyViolation, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
+  IngestSource, PolicyViolation, SandboxReason, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
 } from './types.ts';
 
 /**
@@ -29,6 +29,14 @@ import type {
  * effect: a finished attempt finishes its task, and that is all it does. An exit code is
  * an observation, an outcome is a judgement, and only `closeMission` records one.
  */
+
+/** `lockGates` found a different gate set inside its transaction than the one the human confirmed. */
+export class GateSetMoved extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GateSetMoved';
+  }
+}
 
 export class IllegalTransition extends Error {
   constructor(what: string, id: string, from: string, to: string) {
@@ -46,8 +54,8 @@ const NO_TOKENS: TokenUsage = { input: null, output: null, cacheRead: null, cach
 
 
 const sandboxColumns = (s: AttemptSandbox | null): Array<string | number | null> => (s === null
-  ? [null, null, null, null, null]
-  : [s.profile, s.network, s.write ? 1 : 0, s.exec ? 1 : 0, s.authorizeDecisionId ?? null]);
+  ? [null, null, null, null, null, null]
+  : [s.profile, s.network, s.write ? 1 : 0, s.exec ? 1 : 0, s.authorizeDecisionId ?? null, s.reason ?? null]);
 
 const tokenColumns = (t: TokenUsage): [number | null, number | null, number | null, number | null] =>
   [t.input, t.output, t.cacheRead, t.cacheWrite];
@@ -107,6 +115,9 @@ export function attemptRefusal(
   if (!NETWORK_MODES.includes(s.network)) return `attempt ${a.id} network must be one of ${NETWORK_MODES.join(', ')}, not ${String(s.network)}`;
   if (!SANDBOX_PROFILES.includes(s.profile)) return `attempt ${a.id} sandbox profile must be one of ${SANDBOX_PROFILES.join(', ')}, not ${String(s.profile)}`;
   if (s.exec && !s.write) return `attempt ${a.id} asks for exec without write; exec runs over the attempt's own writable tree`;
+  if (s.reason !== undefined && (s.profile !== 'none' || !SANDBOX_REASONS.includes(s.reason))) {
+    return `attempt ${a.id} records a declined-sandbox reason, which only a profile-none attempt can carry`;
+  }
   if (s.write) {
     // Write is to the author's detached workspace (R7); no other profile has a writable tree.
     if (s.profile !== 'author') return `attempt ${a.id} asks for write under the ${s.profile} profile; only the author profile writes`;
@@ -248,6 +259,11 @@ export type CreateExperimentInput = NewExperiment;
 
 export interface LockGatesInput {
   experimentIds: string[];
+  /**
+   * The gate-set digest the human confirmed (`confirmDigest`'s). Recomputed inside the lock's
+   * transaction; any other set is refused there, so nothing is recorded for a set that moved.
+   */
+  expectedGateSetDigest: string;
   actor: string;
   rationale: string;
   /** Gates already passing at base that the human accepts anyway. */
@@ -271,7 +287,8 @@ export type CreateWorkItemInput = Pick<
   | 'statement' | 'examples' | 'negativeExamples' | 'proposedBy'
 > & { id?: string; attemptId?: string; proposalArtifact?: ArtifactRef };
 
-export type CreateCandidateInput = Omit<Candidate, 'id' | 'verdict' | 'verdictReasons' | 'createdAt'>;
+export type CreateCandidateInput = Omit<Candidate, 'id' | 'verdict' | 'verdictReasons' | 'createdAt' | 'possibleSecretHits'>
+  & { possibleSecretHits?: number };
 
 export type CreateGateEvaluationInput = Omit<GateEvaluation, 'id' | 'createdAt'>;
 
@@ -695,8 +712,8 @@ export class MissionStore {
          (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state,
           started_at, cost_usd, timed_out, artifacts, parent_attempt_id, gate_set_digest, pid,
           heartbeat_at, origin, sandbox_profile, sandbox_network, sandbox_write, sandbox_exec,
-          authorize_decision_id, credential, mcp_token_digest)
-         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?)`,
+          authorize_decision_id, sandbox_reason, credential, mcp_token_digest)
+         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         a.id, a.missionId, a.taskId, a.projectId, a.runnerId, a.sessionId ?? null,
@@ -1017,15 +1034,25 @@ export class MissionStore {
 
   lockGates(missionId: string, input: LockGatesInput): { mission: Mission; decision: Decision; gateSetDigest: string } {
     const m = this.requireMission(missionId);
-    const { experiments, gateSetDigest } = this.gateSet(m.id, input.experimentIds);
-    const ids = experiments.map((x) => x.id);
-    const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
-    for (const id of vacuous) {
-      if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
+    if (typeof input.expectedGateSetDigest !== 'string' || !input.expectedGateSetDigest) {
+      throw new Error(`mission ${m.id}: a gate lock names the gate-set digest the human confirmed`);
     }
     const at = this.now();
-    this.db.exec('BEGIN');
+    // IMMEDIATE: the write lock is held before the set is read, so the set read is the set locked.
+    this.db.exec('BEGIN IMMEDIATE');
     try {
+      const { experiments, gateSetDigest } = this.gateSet(m.id, input.experimentIds);
+      if (gateSetDigest !== input.expectedGateSetDigest) {
+        throw new GateSetMoved(
+          `mission ${m.id}: the gate set is ${gateSetDigest}, not the one confirmed (${input.expectedGateSetDigest}); ` +
+            'a gate changed after it was shown — review it and lock again',
+        );
+      }
+      const ids = experiments.map((x) => x.id);
+      const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
+      for (const id of vacuous) {
+        if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
+      }
       const decision = this.recordDecision({
         missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: input.actor,
         kind: 'approve', rationale: input.rationale,
@@ -1369,8 +1396,13 @@ export class MissionStore {
         throw new Error(`artifact ${ref.id} belongs to ${ref.projectId}, not ${input.projectId}`);
       }
     }
+    const possibleSecretHits = input.possibleSecretHits ?? 0;
+    if (!Number.isInteger(possibleSecretHits) || possibleSecretHits < 0) {
+      throw new Error('possibleSecretHits is a count of low-confidence secret matches');
+    }
     const c: Candidate = {
       ...input,
+      possibleSecretHits,
       id: newId('candidate'),
       verdict: 'pending',
       verdictReasons: [],
@@ -1380,14 +1412,14 @@ export class MissionStore {
       .prepare(
         `INSERT INTO candidates
          (id, mission_id, attempt_id, project_id, base_commit, diff_artifact, summary_artifact,
-          narrative_artifact, files, policy_violations, secret_hits, gate_set_digest, profile,
+          narrative_artifact, files, policy_violations, secret_hits, possible_secret_hits, gate_set_digest, profile,
           attempt_state, attempt_failure, verdict, verdict_reasons, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         c.id, c.missionId, c.attemptId, c.projectId, c.baseCommit, JSON.stringify(c.diffArtifact),
         JSON.stringify(c.summaryArtifact), c.narrativeArtifact ? JSON.stringify(c.narrativeArtifact) : null,
-        JSON.stringify(c.files), JSON.stringify(c.policyViolations), c.secretHits, c.gateSetDigest,
+        JSON.stringify(c.files), JSON.stringify(c.policyViolations), c.secretHits, c.possibleSecretHits, c.gateSetDigest,
         JSON.stringify(c.profile), c.attemptState, c.attemptFailure ?? null, c.verdict,
         JSON.stringify(c.verdictReasons), c.createdAt,
       );
@@ -1613,8 +1645,9 @@ export class MissionStore {
   }
 
   decisions(missionId: string): Decision[] {
+    // Two decisions in one millisecond are in the order they were recorded, not by random id.
     return this.db
-      .prepare('SELECT * FROM decisions WHERE mission_id=? ORDER BY at, id')
+      .prepare('SELECT * FROM decisions WHERE mission_id=? ORDER BY at, rowid')
       .all(missionId)
       .map((r) => this.rowToDecision(r));
   }
@@ -1711,6 +1744,7 @@ export class MissionStore {
         write: !!(r.sandbox_write as number),
         exec: !!(r.sandbox_exec as number),
         authorizeDecisionId: (r.authorize_decision_id as string | null) ?? null,
+        ...(r.sandbox_reason ? { reason: r.sandbox_reason as SandboxReason } : {}),
       },
       credential: r.credential ? parseJson<AttemptCredential | undefined>(r.credential as string, undefined) : undefined,
       mcpTokenDigest: (r.mcp_token_digest as string | null) ?? undefined,
@@ -1851,6 +1885,7 @@ function rowToCandidate(row: unknown): Candidate {
     files: parseJson<CandidateFile[]>(r.files as string, []),
     policyViolations: parseJson<PolicyViolation[]>(r.policy_violations as string, []),
     secretHits: r.secret_hits as number,
+    possibleSecretHits: r.possible_secret_hits as number,
     gateSetDigest: r.gate_set_digest as string,
     profile: parseJson<Candidate['profile']>(r.profile as string, null as unknown as Candidate['profile']),
     attemptState: r.attempt_state as AttemptState,
