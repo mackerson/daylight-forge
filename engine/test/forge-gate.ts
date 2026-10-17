@@ -28,13 +28,20 @@ import {
   authorBrief, baseline, evaluate, GateRefused, listGates, lock, registerGate, verdictRows, type GateContext,
 } from '../forge/gate.ts';
 import { candidateVerdict, type VerdictRows } from '../forge/verdict.ts';
-import { createWorkspace, diffOf } from '../forge/_stubs/workspace.ts';
+import { DIFF_FLAGS } from '../forge/diff.ts';
+import { createWorkspace, siblingGit, type Workspace } from '../forge/workspace.ts';
 import { noTestsReported, runGate, sweepAbandoned } from '../experiment/runner.ts';
 import { detectSandbox } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
+
+/** The tree's changes against its commit, captured the way a candidate's are. */
+const diffOf = (ws: Workspace): Buffer => {
+  siblingGit(ws, ['add', '--all', '--force']);
+  return siblingGit(ws, ['diff', '--cached', ...DIFF_FLAGS, ws.commit, '--']);
+};
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-forge-gate-'));
 // Every scratch tree this file makes, and every one the code under test makes, lands here and
 // nowhere else, so the tamper cases below can only ever touch their own.

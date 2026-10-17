@@ -12,9 +12,7 @@ import type { SandboxLimits, SandboxProfile } from '../experiment/sandbox.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, GATE_DIR } from './policy.ts';
 import { candidateVerdict, type VerdictRows } from './verdict.ts';
-// STUB: WS2 owns engine/forge/workspace.ts. WS8 repoints this import at './workspace.ts' and
-// deletes engine/forge/_stubs/.
-import { applyDiff, createWorkspace } from './_stubs/workspace.ts';
+import { applyDiff, createWorkspace } from './workspace.ts';
 
 /**
  * Gates: the acceptance tests a human writes before an author runs, frozen by digest, and run
