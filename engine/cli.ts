@@ -30,6 +30,7 @@ import { exportKnowledge, importKnowledge, type SharedKnowledge } from './store/
 import { toArchitectureDoc } from './render/architecture.ts';
 import { defaultOut } from './paths.ts';
 import { runDaylightCommand } from './mission/commands.ts';
+import { runForgeCli } from './forge/commands.ts';
 
 interface Args {
   command: string;
@@ -1571,6 +1572,15 @@ switch (args.command) {
     // as a target path, so they parse the raw argv themselves. See mission/commands.ts.
     process.exitCode = await runDaylightCommand(process.argv.slice(2));
     break;
+  case 'confirm':
+  case 'forge':
+  case 'gate':
+  case 'work-item':
+  case 'spec':
+  case 'ingest':
+    // The Forge's commands, same contract as the mission ones. See forge/commands.ts.
+    process.exitCode = await runForgeCli(process.argv.slice(2));
+    break;
   default:
     console.log(`Daylight Software Forge — get all the data, then focus it down.
 
@@ -1598,6 +1608,21 @@ usage:
                                         --test <file> --test-path <rel> --expect-exit <n>
                                 run <experiment-id> [repo] [--runs 2] [--timeout <s>]
   node engine/cli.ts report     <mission-id> [--file out.md]
+                                --project [<id>] [--group runner|actor|model|mission|work-item]
+                                          [--origin daylight|ingested] [--since <iso>] [--file f]
+
+  forge (implement missions; every decision takes --confirm <digest8>, the actor is the OS user):
+  node engine/cli.ts spec       register <repo> --file <rel> | decompose <spec-mission> <repo> --tools mock:a,mock:b
+  node engine/cli.ts work-item  list | show <w> | approve <w> | reject <w> --rationale '<why>' --confirm <c>
+  node engine/cli.ts mission    create <repo> --kind implement (--work-item <w> | --no-work-item --objective '<o>' --rationale '<why>')
+                                authorize <m> --write [--max-usd N] --rationale '<why>' --confirm <c>
+  node engine/cli.ts gate       add <m> --role gate|holdout --test <file> --expect-exit 0 --expect-stdout '# fail 0'
+                                baseline <m> [repo] | lock <m> --rationale '<why>' --confirm <c> | list <m> | evaluate <c>
+  node engine/cli.ts forge      run <m> <repo> --tools mock[:model] [--max-cost <usd>] [--timeout s] [--keep-workspace]
+                                evaluate <c> | candidate <c> [--max-bytes N]
+                                approve|reject|override <c> --rationale '<why>' --confirm <c> | apply <c> <repo> --confirm <c>
+  node engine/cli.ts confirm    <operation> <subject> [--write] [--max-usd N] [--only x,…]   # what --confirm checks
+  node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
   node engine/cli.ts artifact   <digest> | events --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>
 

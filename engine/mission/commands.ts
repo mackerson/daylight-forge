@@ -11,6 +11,8 @@ import {
   runMissionExperiment,
 } from './orchestrate.ts';
 import { renderReport } from './report.ts';
+import { runProjectReport } from './commands-report.ts';
+import { missionAuthorizeCommand, missionCreateImplementCommand } from '../forge/commands.ts';
 import { mappedProject } from './context.ts';
 import type { MissionKind, MissionOutcome } from './types.ts';
 
@@ -115,6 +117,8 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       if (!repo) throw new Usage('mission create needs a <repo>');
       const kind = (last(p, 'kind') ?? 'explore') as MissionKind;
       if (!KINDS.includes(kind)) throw new Usage(`--kind must be one of ${KINDS.join(', ')}`);
+      // An implement mission has one way in: an approved work item, or a person's ad hoc decision.
+      if (kind === 'implement') return await missionCreateImplementCommand(p, out, asJson, process.env);
       const m = withContext(out, (ctx) => createMission(ctx, {
         repo: path.resolve(repo), kind, objective: need(p, 'objective'),
         scope: { paths: list(last(p, 'scope')) },
@@ -124,6 +128,8 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       else say(`created mission ${m.id} (${m.kind}, ${m.state}) at ${m.baseRevision}`);
       return 0;
     }
+    case 'authorize':
+      return await missionAuthorizeCommand(p, out, asJson, process.env);
     case 'list': {
       const data = withContext(out, (ctx) => {
         const missions = ctx.store.missions();
@@ -256,7 +262,7 @@ async function mission(sub: string | undefined, p: Parsed, out: () => string, as
       return 0;
     }
     default:
-      throw new Usage('mission needs one of: create, list, inspect, run, decide, close, replay, export, import');
+      throw new Usage('mission needs one of: create, authorize, list, inspect, run, decide, close, replay, export, import');
   }
 }
 
@@ -340,7 +346,8 @@ function events(p: Parsed, out: () => string, asJson: boolean): number {
   return 0;
 }
 
-function report(p: Parsed, out: () => string): number {
+function report(p: Parsed, out: () => string, argv: string[]): number {
+  if (last(p, 'project') !== undefined) return runProjectReport(argv, out);
   const id = p.positionals[0];
   if (!id) throw new Usage('report needs a <mission-id>');
   const md = withContext(out, (ctx) => renderReport(ctx, inspectMission(ctx, id, Number.MAX_SAFE_INTEGER)));
@@ -415,7 +422,7 @@ export async function runDaylightCommand(argv: string[]): Promise<number> {
       case 'experiment': return await experiment(sub, p, out, asJson);
       case 'artifact': return artifact(p, out, asJson);
       case 'events': return events(p, out, asJson);
-      case 'report': return report(p, out);
+      case 'report': return report(p, out, rest);
       case 'demo': return demo(sub, p, explicitOut ?? '', asJson);
       default: throw new Usage(`unknown command ${command}`);
     }
