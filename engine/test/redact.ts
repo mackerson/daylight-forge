@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArtifactStore } from '../mission/artifacts.ts';
-import { MAX_REDACT_CHARS, redact, MASK } from '../mission/redact.ts';
+import { MAX_REDACT_CHARS, redact, MASK, SHAPE_NAMES, type ShapeName } from '../mission/redact.ts';
 import { captureCandidate } from '../forge/diff.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { harness } from './harness.ts';
@@ -22,7 +22,7 @@ process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 const scrub = (s: string) => redact(s, [], {});
 
 interface Case {
-  shape: string;
+  shape: ShapeName;
   /** The secret-bearing text. */
   text: string;
   /** What must not survive. */
@@ -254,6 +254,36 @@ section('huge, binary and hostile input finishes and fails closed');
   check(`the default cap is ${MAX_REDACT_CHARS} chars, above a 5 MB diff part`, MAX_REDACT_CHARS > MB5);
   const notText = redact(Buffer.from('API_KEY=FAKEbuffer12') as unknown as string, [], {});
   check('a non-string fails closed rather than throwing', !notText.text.includes('FAKEbuffer') && notText.redactions >= 1, notText.text);
+}
+
+section('the shape table covers every shape TRACKED.md F2 names');
+{
+  // TRACKED.md "BEFORE ANY LIVE RUN (ws2-review F2)", and the shapes the redaction brief added.
+  const REQUIRED: Record<string, ShapeName> = {
+    'PEM private key': 'pem-private-key',
+    'JWT': 'jwt',
+    'glpat-': 'gitlab-token',
+    'AIza': 'google-api-key',
+    'user:pass@ URL': 'url-password',
+    'KEY=/TOKEN=/SECRET=/PASSWORD=/password: line': 'assignment',
+    'ghp_/gho_/ghu_/ghs_/ghr_/github_pat_': 'github-token',
+    'xox[abprs]-': 'slack-token',
+    'AKIA/ASIA': 'aws-access-key-id',
+    'aws_secret_access_key': 'aws-secret-access-key',
+    'Authorization header': 'authorization-header',
+    'Bearer': 'bearer',
+    '.npmrc _authToken': 'npmrc-auth-token',
+    '.netrc password': 'netrc-password',
+  };
+  const missing = Object.entries(REQUIRED).filter(([, n]) => !SHAPE_NAMES.includes(n));
+  check(`all ${Object.keys(REQUIRED).length} required shapes are in the table`, missing.length === 0, missing.map(([k]) => k).join(', '));
+  const untested = SHAPE_NAMES.filter((n) => !CASES.some((c) => c.shape === n));
+  check('every shape in the table has a case above', untested.length === 0, untested.join(', '));
+  const unknown = CASES.filter((c) => !SHAPE_NAMES.includes(c.shape as ShapeName));
+  check('every case names a shape the table has', unknown.length === 0, unknown.map((c) => c.shape).join(', '));
+  const code = fs.readFileSync(path.join(import.meta.dirname, '..', 'mission', 'redact.ts'), 'utf8')
+    .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+  check('no shape leans on \\b', !code.includes('\\b'));
 }
 
 section('the diff scanner flags every shape as secret-in-diff');
