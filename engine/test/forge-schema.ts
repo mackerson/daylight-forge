@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
+import { ArtifactStore, canonicalJson, digestOf } from '../mission/artifacts.ts';
 import { openDaylight } from '../mission/context.ts';
 import { IncompatibleDatabase, openDaylightDb, schemaVersion } from '../mission/db.ts';
 import { EventLog } from '../mission/events.ts';
@@ -555,14 +555,16 @@ let candidateId: string;
     missionId: mission.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'r',
     scope: { ...approveScope, diffDigest: digestOf('different bytes') }, artifactIds: [],
   });
-  const app = { candidateId: c.id, baseCommit: 'base1', commit: 'c0ffee', ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN };
+  const app = { candidateId: c.id, baseCommit: 'base1', commit: 'c0ffee', tree: 'a'.repeat(40), ref: 'refs/heads/daylight/x/y', appliedBy: HUMAN };
   check('apply with a decision on another diff is refused', !!throws(() => store.recordApplication({ ...app, decisionId: wrong.id })));
   const approve = store.recordDecision({
     missionId: mission.id, projectId: PROJECT.id, revision: 'base1', actor: HUMAN, kind: 'approve', rationale: 'good', scope: approveScope, artifactIds: [],
   });
   check('apply by a non-human is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id, appliedBy: 'agent:a:b' })));
   check('apply on another base is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id, baseCommit: 'base2' })));
+  check('apply without a tree sha is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id, tree: 'not-a-sha' })));
   const p = store.recordApplication({ ...app, decisionId: approve.id });
+  check('the application keeps its tree sha', store.application(c.id)?.tree === 'a'.repeat(40));
   check('an approved candidate is applied once', p.id.startsWith('p_') && store.application(c.id)?.id === p.id && p.missionId === mission.id);
   check('a second application is refused', !!throws(() => store.recordApplication({ ...app, decisionId: approve.id })));
   const closed = store.closeMission(mission.id, 'succeeded', 'applied');
@@ -683,8 +685,17 @@ section('confirm digests');
   const lock = confirmDigest(ctx, 'lock-gates', mission.id, { experimentIds: lockDecision.scope.experimentIds as string[] });
   check('lock-gates confirms the gate-set digest the lock records', lock.digest === lockDigest && lock.digest8 === lock.digest.slice(7, 15));
   check('and lists each gate', lock.lines.length === 3);
-  check('a candidate act confirms the diff digest', confirmDigest(ctx, 'approve-candidate', candidateId).digest
-    === store.candidate(candidateId)!.diffArtifact.digest && confirmDigest(ctx, 'apply', candidateId).digest8.length === 8);
+  {
+    const cand = store.candidate(candidateId)!;
+    const approve = confirmDigest(ctx, 'approve-candidate', candidateId).digest;
+    check('a candidate act confirms candidate, diff and gate set together, not the diff digest alone',
+      approve === digestOf(canonicalJson({
+        operation: 'approve-candidate', candidateId, missionId: cand.missionId, diffDigest: cand.diffArtifact.digest,
+        gateSetDigest: cand.gateSetDigest, baseCommit: cand.baseCommit,
+      })) && approve !== cand.diffArtifact.digest);
+    check('each candidate act has its own code', approve !== confirmDigest(ctx, 'reject-candidate', candidateId).digest
+      && confirmDigest(ctx, 'apply', candidateId).digest !== approve && confirmDigest(ctx, 'apply', candidateId).digest8.length === 8);
+  }
   check('a work-item act confirms the content digest', confirmDigest(ctx, 'approve-work-item', w.id).digest === w.contentDigest);
   const grant = { permissions: { write: true, execute: false }, maxUsd: 2 };
   const auth = confirmDigest(ctx, 'authorize-mission', mission.id, grant);

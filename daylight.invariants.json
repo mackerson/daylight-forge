@@ -174,5 +174,31 @@
         "name": "[Pp][Rr][Ii][Cc][Ee]|[Pp][Rr][Ii][Cc][Ii][Nn][Gg]|[Tt][Aa][Rr][Ii][Ff][Ff]|^[Rr][Aa][Tt][Ee][Ss]?$|[a-z_][Rr]ates?$|_RATES?$|[Pp][Ee][Rr]_?([Tt][Oo][Kk][Ee][Nn]|[Mm][Tt][Oo][Kk]|1[Kk]|1[Mm]|[Mm][Ii][Ll][Ll][Ii][Oo][Nn])|[Uu][Ss][Dd]_?[Pp][Ee][Rr]|[Cc][Oo][Ss][Tt]_?[Pp][Ee][Rr]"
       }
     }
+  },
+  {
+    "id": "candidate-decisions-are-guarded",
+    "prose": "engine/forge/decide.ts calls WS1's assertHumanDecision, the one R13 guard, for approve, reject and override.",
+    "rationale": "R10.4 and R14 D-9: every candidate act goes through one guard, never a reimplementation. engine/test/forge-apply.ts holds the behavioural half: CLAUDECODE, DAYLIGHT_SESSION, an agent actor and a wrong --confirm are each refused.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/decide\\.ts$"
+      },
+      "callee": "^assertHumanDecision$",
+      "min": 1
+    }
+  },
+  {
+    "id": "apply-is-guarded",
+    "prose": "engine/forge/apply.ts calls WS1's assertHumanDecision, the one R13 guard, before it writes anything to a repository.",
+    "rationale": "R10.4 and resolution 13 name apply as a guarded act. engine/test/forge-apply.ts holds the behavioural half: apply under CLAUDECODE or with another act's code is refused and makes no ref.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/apply\\.ts$"
+      },
+      "callee": "^assertHumanDecision$",
+      "min": 1
+    }
   }
 ]

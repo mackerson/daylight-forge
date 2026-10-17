@@ -574,6 +574,8 @@ export interface Application {
   projectId: string;
   baseCommit: string;
   commit: string;
+  /** The commit's tree, recorded at apply; re-derivable as `<commit>^{tree}`. */
+  tree: string;
   ref: string;
   appliedBy: string;
   at: number;

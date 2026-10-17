@@ -527,12 +527,12 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     }
     const application = db.prepare(
       `INSERT OR IGNORE INTO applications
-       (id, candidate_id, mission_id, decision_id, project_id, base_commit, commit_sha, ref, applied_by, at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       (id, candidate_id, mission_id, decision_id, project_id, base_commit, commit_sha, tree_sha, ref, applied_by, at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const p of file.applications) {
       const r = application.run(
-        p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.ref,
+        p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.tree, p.ref,
         p.appliedBy, p.at,
       );
       added.applications += Number(r.changes);
