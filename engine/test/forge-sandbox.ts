@@ -157,6 +157,19 @@ section('the review profile');
   check('the agent runs our node with its script', a.slice(a.lastIndexOf('--') + 1).join(' ') === `${nodeBinary()} ${mock} ${MCP_CONFIG} {}`);
   notMounted('review', l.mounts, [path.join(tmp, 'tree')]);
   check('a review root that contains <out> is refused', !!throws(() => profileLaunch(AVAILABLE, optsFor('review', { root: tmp }))));
+  const inRepoOut = path.join(repo, 'out');
+  fs.mkdirSync(inRepoOut, { recursive: true });
+  check('the default layout, <out> inside the repo, is refused for review',
+    /<out>/.test(throws(() => profileLaunch(AVAILABLE, optsFor('review', { out: inRepoOut }))) ?? ''));
+  fs.rmSync(inRepoOut, { recursive: true });
+  const noOut = (kind: 'review' | 'author') => ({ ...optsFor(kind), out: undefined }) as unknown as ProfileOptions;
+  check('a review launch without <out> is refused, not assumed safe', /<out>/.test(throws(() => profileLaunch(AVAILABLE, noOut('review'))) ?? ''));
+  check('an author launch without <out> is refused', /<out>/.test(throws(() => profileLaunch(AVAILABLE, noOut('author'))) ?? ''));
+  check('an exec launch without <out> is refused', /<out>/.test(throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }),
+    { tree: path.join(tmp, 'tree'), command: ['node', '-v'] } as never)) ?? ''));
+  check('the launchers refuse to be built without <out>',
+    /<out>/.test(throws(() => reviewLauncher({ attempt: attemptOf({ profile: 'review', write: false, exec: false, authorizeDecisionId: null }), repo, profile: AVAILABLE } as never)) ?? '')
+    && /<out>/.test(throws(() => authorLauncher({ attempt: attemptOf(), workspace: { tree: path.join(tmp, 'tree') }, profile: AVAILABLE } as never)) ?? ''));
   check('a review with exec is refused', !!throws(() => profileLaunch(AVAILABLE, optsFor('review', { exec: true }))));
   check('a review with a write authorization is refused', !!throws(() => profileLaunch(AVAILABLE, optsFor('review', { authorization }))));
   check('a second socket path that is not a socket is refused',
@@ -192,13 +205,13 @@ section('the launcher refuses rows that do not grant it');
 {
   const ws = { tree: path.join(tmp, 'tree') };
   check('authorLauncher needs an author row with write and its decision',
-    !!throws(() => authorLauncher({ attempt: attemptOf({ write: false, exec: false }), workspace: ws, profile: AVAILABLE }))
-    && !!throws(() => authorLauncher({ attempt: attemptOf({ authorizeDecisionId: null }), workspace: ws, profile: AVAILABLE }))
-    && !!throws(() => authorLauncher({ attempt: attemptOf({ profile: 'review' }), workspace: ws, profile: AVAILABLE })));
+    !!throws(() => authorLauncher({ attempt: attemptOf({ write: false, exec: false }), workspace: ws, profile: AVAILABLE, out }))
+    && !!throws(() => authorLauncher({ attempt: attemptOf({ authorizeDecisionId: null }), workspace: ws, profile: AVAILABLE, out }))
+    && !!throws(() => authorLauncher({ attempt: attemptOf({ profile: 'review' }), workspace: ws, profile: AVAILABLE, out })));
   const launch = authorLauncher({ attempt: attemptOf({ network: 'shared' }), workspace: ws, profile: AVAILABLE, out });
   check('it takes the network from the row', launch(nodeBinary(), []).argv.includes('--share-net'));
   check('reviewLauncher refuses a row with write or exec',
-    !!throws(() => reviewLauncher({ attempt: attemptOf({ profile: 'review' }), repo, profile: AVAILABLE })));
+    !!throws(() => reviewLauncher({ attempt: attemptOf({ profile: 'review' }), repo, profile: AVAILABLE, out })));
   check('reviewLauncher takes a read-only review row', !throws(() => reviewLauncher({
     attempt: attemptOf({ profile: 'review', write: false, exec: false, authorizeDecisionId: null, network: 'shared' }), repo, profile: AVAILABLE, out,
   })(nodeBinary(), [])));
@@ -213,33 +226,33 @@ section('exec is off by default and reachable only from the row');
   check('exec is refused for a row with exec but no write grant',
     execRefusal(attemptOf({ exec: true, write: false })) !== null && execRefusal(attemptOf({ exec: true, authorizeDecisionId: null })) !== null);
   check('registering run on a row without exec is refused',
-    !!throws(() => registerRunTool(new McpServer({ name: 't', version: '0' }), { attempt: attemptOf(), tree: path.join(tmp, 'tree') })));
+    !!throws(() => registerRunTool(new McpServer({ name: 't', version: '0' }), { attempt: attemptOf(), tree: path.join(tmp, 'tree'), out })));
   const tools = (s: McpServer) => Object.keys((s as unknown as { _registeredTools: Record<string, unknown> })._registeredTools ?? {});
-  check('the author MCP server has no run tool by default', tools(authorServer({ attempt: attemptOf(), tree: path.join(tmp, 'tree') })).length === 0);
-  check('and has it when the row holds exec', tools(authorServer({ attempt: attemptOf({ exec: true }), tree: path.join(tmp, 'tree') })).includes('run'));
+  check('the author MCP server has no run tool by default', tools(authorServer({ attempt: attemptOf(), tree: path.join(tmp, 'tree'), out })).length === 0);
+  check('and has it when the row holds exec', tools(authorServer({ attempt: attemptOf({ exec: true }), tree: path.join(tmp, 'tree'), out })).includes('run'));
   check('the exec launch is refused without exec on the row',
-    !!throws(() => execLaunch(AVAILABLE, attemptOf(), { tree: path.join(tmp, 'tree'), command: ['node', '-v'] })));
+    !!throws(() => execLaunch(AVAILABLE, attemptOf(), { tree: path.join(tmp, 'tree'), out, command: ['node', '-v'] })));
   const e = execLaunch(AVAILABLE, attemptOf({ exec: true, network: 'shared' }), { tree: path.join(tmp, 'tree'), command: ['node', 'x.js'], home, out } as never);
   check('the exec sandbox never shares the network, whatever the agent has', !e.argv.includes('--share-net') && e.argv.includes('--unshare-all'));
   check('the exec sandbox mounts the tree and nothing else from outside the system set',
     e.mounts.filter((m) => m.kind === 'rw').length === 1 && !e.mounts.some((m) => m.kind === 'data' || m.dest.startsWith('/run')));
   notMounted('exec', e.mounts, [repo]);
-  check('a shell string is not a command', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), command: ['sh -c id'] })));
-  check('a binary outside /usr/bin is refused', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), command: [mock] })));
+  check('a shell string is not a command', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: ['sh -c id'] })));
+  check('a binary outside /usr/bin is refused', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: [mock] })));
 }
 
 section('fail closed');
 {
   check('no bwrap: the review profile throws', throws(() => profileLaunch(UNAVAILABLE, optsFor('review')))?.includes('sandbox unavailable') === true);
   check('no bwrap: the author profile throws', throws(() => profileLaunch(UNAVAILABLE, optsFor('author')))?.includes('sandbox unavailable') === true);
-  check('no bwrap: exec throws', !!throws(() => execLaunch(UNAVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), command: ['node', '-v'] })));
+  check('no bwrap: exec throws', !!throws(() => execLaunch(UNAVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: ['node', '-v'] })));
   const mockAuthor = authorFor('mock', { DAYLIGHT_MOCK_ADAPTER: mock });
   let refused = 'ran';
   try {
     if (mockAuthor.status !== 'available') throw new Error(mockAuthor.why);
     await runAgent(mockAuthor.adapter, {
       prompt: '{}', cwd: '/', mcpConfigPath: MCP_CONFIG, session: 's',
-      launch: authorLauncher({ attempt: attemptOf(), workspace: { tree: path.join(tmp, 'tree') }, profile: UNAVAILABLE }),
+      launch: authorLauncher({ attempt: attemptOf(), workspace: { tree: path.join(tmp, 'tree') }, profile: UNAVAILABLE, out }),
     });
   } catch (err) {
     refused = err instanceof SandboxRefused ? 'refused' : `other: ${(err as Error).message}`;
@@ -272,7 +285,7 @@ section('the R7 invariant: one place emits a read-write mount');
 section('the system mounts are P0\'s');
 {
   const p0 = sandboxArgv(AVAILABLE, { worktree: path.join(tmp, 'tree'), command: ['node', 'x.js'] });
-  const mine = execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), command: ['node', 'x.js'] }).argv;
+  const mine = execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: ['node', 'x.js'] }).argv;
   const upToTmp = (a: string[]) => a.slice(0, a.indexOf('/tmp', a.indexOf('--tmpfs')) + 1);
   check('the exec sandbox shares P0\'s namespaces, limits and system mounts verbatim',
     JSON.stringify(upToTmp(p0)) === JSON.stringify(upToTmp(mine)), `${upToTmp(p0).join(' ')}\n${upToTmp(mine).join(' ')}`);
@@ -472,7 +485,7 @@ setTimeout(() => end('timeout'), 3000);
 `);
   const artifacts = new ArtifactStore(path.join(tmp, 'exec-out'));
   const execRow = attemptOf({ exec: true, network: 'shared' });
-  const r = await runExec(execRow, { tree: ws.tree, command: ['node', 'probe.js'], profile: live, artifacts, timeoutMs: 20_000 });
+  const r = await runExec(execRow, { tree: ws.tree, out, command: ['node', 'probe.js'], profile: live, artifacts, timeoutMs: 20_000 });
   check('the command ran', r.exitCode === 0, `${r.exitCode} ${r.stderr}`);
   check('even for an agent with network shared, exec cannot open a TCP connection to 127.0.0.1', /connect:(ECONNREFUSED|ENETUNREACH|EACCES|EPERM)/.test(r.stdout) && !r.stdout.includes('connected'), r.stdout);
   check('exec writes land in the tree, and so in the diff', (() => {
@@ -480,7 +493,7 @@ setTimeout(() => end('timeout'), 3000);
     return 'files' in d && d.files.some((f) => f.path === 'exec-wrote.txt');
   })());
   check('its output is captured as artifacts', r.artifacts.length === 2 && artifacts.get(r.artifacts[0]).toString().includes('connect:'));
-  const refused = await runExec(attemptOf(), { tree: ws.tree, command: ['node', 'probe.js'], profile: live }).then(() => 'ran', (e: Error) => e.message);
+  const refused = await runExec(attemptOf(), { tree: ws.tree, out, command: ['node', 'probe.js'], profile: live }).then(() => 'ran', (e: Error) => e.message);
   check('the same call for a row without exec is refused', /not granted exec/.test(refused), refused);
   ws.dispose();
 }
@@ -624,7 +637,7 @@ s.on('error', (e) => console.log('blocked:' + e.code));
   const ran: string[][] = [];
   const { replies, accepted } = await viaSocket({
     attempt: execAttempt, token: authorToken, tree: ws.tree,
-    serve: () => authorServer({ attempt: execAttempt, tree: ws.tree, profile: live, onRun: (_r, c) => ran.push(c) }),
+    serve: () => authorServer({ attempt: execAttempt, tree: ws.tree, out, profile: live, onRun: (_r, c) => ran.push(c) }),
     plan: { calls: [{ name: 'run', arguments: { argv: ['node', 'net.js'] } }] },
     launcher: (mcp) => authorLauncher({ attempt: execAttempt, workspace: ws, mounts: [mcpMock], mcp, out, profile: live }),
   });
@@ -641,7 +654,7 @@ section('a mock author presenting another attempt\'s token is refused by the ser
   const ws = createWorkspace(repo, commit);
   const { replies, accepted, refused } = await viaSocket({
     attempt: execAttempt, token: reviewToken, tree: ws.tree,
-    serve: () => authorServer({ attempt: execAttempt, tree: ws.tree, profile: live }),
+    serve: () => authorServer({ attempt: execAttempt, tree: ws.tree, out, profile: live }),
     plan: { calls: [{ name: 'run', arguments: { argv: ['node', '-v'] } }] },
     launcher: (mcp) => authorLauncher({ attempt: execAttempt, workspace: ws, mounts: [mcpMock], mcp, out, profile: live }),
   });

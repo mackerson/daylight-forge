@@ -89,8 +89,11 @@ export interface ProfileOptions {
   agent: AgentCommand;
   env?: Record<string, string>;
   mcp?: McpEndpoint;
-  /** The attempt's `<out>`. Never mounted; a review root containing it is refused. */
-  out?: string;
+  /**
+   * The attempt's `<out>`. Required: never mounted, and a root containing it is refused. There
+   * is no default; a launch that does not say where `<out>` is cannot be shown to avoid it.
+   */
+  out: string;
   /** Defaults to the real one; a test may name another. */
   home?: string;
   limits?: SandboxLimits;
@@ -123,20 +126,26 @@ const resolved = (p: string): string => {
  * directory or of `<out>` (which would bring them in), anything under `<out>`, and the home
  * directory's credential stores.
  */
-export function mountRefusal(src: string, o: { home: string; out?: string }): string | null {
+export function mountRefusal(src: string, o: { home: string; out: string }): string | null {
   const p = resolved(src);
   const home = resolved(o.home);
+  const out = resolved(requireOut(o.out));
   if (p === '/') return 'the root filesystem';
   if (within(home, p)) return `${p} contains the home directory`;
   for (const rel of SENSITIVE_HOME) {
     if (within(p, path.join(home, rel))) return `${p} is under ~/${rel}`;
   }
-  if (o.out) {
-    const out = resolved(o.out);
-    if (within(p, out)) return `${p} is under <out>`;
-    if (within(out, p)) return `${p} contains <out>`;
-  }
+  if (within(p, out)) return `${p} is under <out>`;
+  if (within(out, p)) return `${p} contains <out>`;
   return null;
+}
+
+/** `<out>`, or a refusal: every launch must say where it is so it can be kept out (F1). */
+export function requireOut(out: unknown): string {
+  if (typeof out !== 'string' || !out.trim() || !path.isAbsolute(out)) {
+    throw new SandboxRefused('every sandbox launch must name its <out> as an absolute path; without it <out> cannot be kept out of the mounts');
+  }
+  return out;
 }
 
 /** prlimit, under a systemd user scope when one was found, then `bwrap`. As P0's runner. */
@@ -251,6 +260,7 @@ export function profileLaunch(profile: SandboxProfile, o: ProfileOptions): Sandb
   if (!profile.available) throw new SandboxRefused(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
   if (o.kind !== 'review' && o.kind !== 'author') throw new SandboxRefused(`unknown profile ${String(o.kind)}`);
   if (o.network !== 'none' && o.network !== 'shared') throw new SandboxRefused(`unknown network ${String(o.network)}`);
+  requireOut(o.out);
   const home = o.home ?? os.homedir();
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
   const root = resolved(o.root);
@@ -393,7 +403,7 @@ export function checkExecCommand(command: unknown): { ok: true; argv: string[] }
 export function execLaunch(
   profile: SandboxProfile,
   attempt: Pick<Attempt, 'id' | 'sandbox'>,
-  o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out?: string },
+  o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
 ): SandboxLaunch {
   if (!profile.available) throw new SandboxRefused(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
   const why = execRefusal(attempt);
@@ -414,7 +424,7 @@ export function execLaunch(
 }
 
 export function execArgv(
-  profile: SandboxProfile, attempt: Pick<Attempt, 'id' | 'sandbox'>, o: { tree: string; command: string[]; limits?: SandboxLimits },
+  profile: SandboxProfile, attempt: Pick<Attempt, 'id' | 'sandbox'>, o: { tree: string; command: string[]; out: string; limits?: SandboxLimits },
 ): string[] {
   return execLaunch(profile, attempt, o).argv;
 }
@@ -487,7 +497,7 @@ export function spawnLaunch(
  */
 export async function runExec(
   attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>,
-  o: { tree: string; command: string[]; timeoutMs?: number; profile?: SandboxProfile; artifacts?: ArtifactStore; limits?: SandboxLimits },
+  o: { tree: string; command: string[]; out: string; timeoutMs?: number; profile?: SandboxProfile; artifacts?: ArtifactStore; limits?: SandboxLimits },
 ): Promise<ExecResult> {
   const launch = execLaunch(o.profile ?? detectSandbox(), attempt, o);
   const run = await spawnLaunch(launch, Math.min(o.timeoutMs ?? 60_000, 600_000));
@@ -512,12 +522,13 @@ export async function runExec(
 export function registerRunTool(
   server: McpServer,
   ctx: {
-    attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string;
+    attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; out: string;
     profile?: SandboxProfile; artifacts?: ArtifactStore; onRun?: (r: ExecResult, command: string[]) => void;
   },
 ): void {
   const why = execRefusal(ctx.attempt);
   if (why) throw new SandboxRefused(why);
+  requireOut(ctx.out);
   server.registerTool(
     'run',
     {
@@ -536,7 +547,7 @@ export function registerRunTool(
       if (!checked.ok) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: checked.why }) }], isError: true };
       try {
         const r = await runExec(ctx.attempt, {
-          tree: ctx.tree, command: argv, timeoutMs: (timeoutSeconds ?? 60) * 1000, profile: ctx.profile, artifacts: ctx.artifacts,
+          tree: ctx.tree, out: ctx.out, command: argv, timeoutMs: (timeoutSeconds ?? 60) * 1000, profile: ctx.profile, artifacts: ctx.artifacts,
         });
         ctx.onRun?.(r, argv);
         return {

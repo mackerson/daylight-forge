@@ -5,7 +5,7 @@ import type { ArtifactStore } from '../mission/artifacts.ts';
 import type { Attempt } from '../mission/types.ts';
 import type { Adapter, AgentRun, Launcher } from '../swarm/adapters.ts';
 import {
-  execRefusal, MCP_CONFIG, MCP_SERVER_KEY, profileLaunch, registerRunTool, SandboxRefused,
+  execRefusal, MCP_CONFIG, MCP_SERVER_KEY, profileLaunch, registerRunTool, requireOut, SandboxRefused,
   type ExecResult, type McpEndpoint,
 } from './sandbox.ts';
 import type { Workspace } from './workspace.ts';
@@ -73,7 +73,8 @@ export interface AuthorLaunchInput {
   mounts?: string[];
   mcp?: McpEndpoint;
   env?: Record<string, string>;
-  out?: string;
+  /** Required: the attempt's <out>, which every launch keeps out of its mounts. */
+  out: string;
   profile?: SandboxProfile;
 }
 
@@ -87,27 +88,29 @@ export function authorLauncher(input: AuthorLaunchInput): Launcher {
   if (!s || s.profile !== 'author' || !s.write || !s.authorizeDecisionId) {
     throw new SandboxRefused(`attempt ${input.attempt.id} is not an authorized author attempt`);
   }
+  const out = requireOut(input.out);
   const profile = input.profile ?? detectSandbox();
   const authorization = { decisionId: s.authorizeDecisionId, missionId: input.attempt.missionId };
   return (bin, argv) => profileLaunch(profile, {
     kind: 'author', root: input.workspace.tree, network: s.network, exec: s.exec, authorization,
-    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out: input.out,
+    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out,
   });
 }
 
 /** The hook for a review attempt: the repository read-only, network as the row says. */
 export function reviewLauncher(input: {
   attempt: Pick<Attempt, 'id' | 'sandbox'>; repo: string; mounts?: string[]; mcp?: McpEndpoint;
-  env?: Record<string, string>; out?: string; profile?: SandboxProfile;
+  env?: Record<string, string>; out: string; profile?: SandboxProfile;
 }): Launcher {
   const s = input.attempt.sandbox;
   if (!s || s.profile !== 'review' || s.write || s.exec) {
     throw new SandboxRefused(`attempt ${input.attempt.id} is not a read-only review attempt`);
   }
+  const out = requireOut(input.out);
   const profile = input.profile ?? detectSandbox();
   return (bin, argv) => profileLaunch(profile, {
     kind: 'review', root: input.repo, network: s.network,
-    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out: input.out,
+    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out,
   });
 }
 
@@ -116,7 +119,7 @@ export function reviewLauncher(input: {
  * attempt row holds exec; otherwise it has no tools at all yet.
  */
 export function authorServer(ctx: {
-  attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; profile?: SandboxProfile;
+  attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; out: string; profile?: SandboxProfile;
   artifacts?: ArtifactStore; onRun?: (r: ExecResult, command: string[]) => void;
 }): McpServer {
   const server = new McpServer({ name: MCP_SERVER_KEY, version: '0.1.0' });
