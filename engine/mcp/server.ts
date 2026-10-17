@@ -709,6 +709,8 @@ export interface AttemptSocketOptions {
   /** Told why a connection was dropped, without the token. */
   onRefused?: (why: string) => void;
   handshakeTimeoutMs?: number;
+  /** Defaults to `MAX_FRAME_BYTES`. */
+  maxFrameBytes?: number;
 }
 
 export interface AttemptSocket {
@@ -719,6 +721,8 @@ export interface AttemptSocket {
 }
 
 const MAX_HANDSHAKE_BYTES = 256;
+/** Largest JSON-RPC line accepted after the handshake. */
+export const MAX_FRAME_BYTES = 1024 * 1024;
 
 /**
  * The host side of a sandbox's one MCP socket. A connection must open with
@@ -767,6 +771,15 @@ export async function listenAttemptSocket(o: AttemptSocketOptions): Promise<Atte
       if (!owner) return refuse(sock, 'token matches no live attempt');
       if (owner.id !== o.attemptId) return refuse(sock, `token belongs to another attempt, not ${o.attemptId}`);
       accepted++;
+      // A valid token buys MCP, not unbounded memory: a line the transport would buffer past
+      // the cap ends the connection.
+      const maxFrame = o.maxFrameBytes ?? MAX_FRAME_BYTES;
+      let pending = 0;
+      sock.on('data', (chunk: Buffer) => {
+        const nl = chunk.lastIndexOf(0x0a);
+        pending = nl < 0 ? pending + chunk.length : chunk.length - nl - 1;
+        if (pending > maxFrame) refuse(sock, `frame over ${maxFrame} bytes`);
+      });
       if (rest.length) sock.unshift(rest);
       const mcp = o.serve();
       sock.on('close', () => { mcp.close().catch(() => {}); });

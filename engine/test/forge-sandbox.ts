@@ -399,6 +399,23 @@ section('the attempt socket refuses every token but its attempt\'s');
   check('a finished attempt\'s token finds nothing', late.closed);
   check('the store keeps only the token\'s digest',
     store.attempt(reviewAttempt.id)!.mcpTokenDigest?.startsWith('sha256:') === true && !JSON.stringify(store.attempt(reviewAttempt.id)).includes(reviewToken));
+  const before = refusals.length;
+  const flood = await new Promise<{ closed: boolean; reply: string }>((resolve) => {
+    const c = net.connect(rt.socket);
+    let reply = '';
+    c.on('connect', () => {
+      c.write(`${MCP_HANDSHAKE} ${reviewToken}\n`);
+      c.write(Buffer.alloc(1024 * 1024 + 64, 0x61));
+    });
+    c.on('data', (d) => { reply += String(d); });
+    c.on('close', () => resolve({ closed: true, reply }));
+    c.on('error', () => {});
+    setTimeout(() => { c.destroy(); resolve({ closed: false, reply }); }, 3000).unref();
+  });
+  check('after a good handshake, a frame over 1 MiB without a newline drops the connection',
+    flood.closed && refusals.length === before + 1 && /frame/.test(refusals.at(-1) ?? ''), JSON.stringify(refusals.slice(before)));
+  const afterFlood = await hostClient(rt.socket, `${MCP_HANDSHAKE} ${reviewToken}\n`);
+  check('and the socket still serves an ordinary connection', /"result"/.test(afterFlood.reply));
   await sock.close();
   check('closing removes the socket', !fs.existsSync(rt.socket));
   rt.dispose();
