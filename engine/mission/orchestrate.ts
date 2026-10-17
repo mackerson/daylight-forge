@@ -845,6 +845,8 @@ export function publicEvents(ctx: DaylightContext, missionId: string, events: Da
  * Every holdout of these missions (default: all of them), and every artifact that carries its
  * content: the test, the expectation, each run record and the logs those records name.
  */
+const EMPTY_ARTIFACT = digestOf('');
+
 export function holdoutContent(ctx: DaylightContext, missionIds?: string[]): { ids: Set<string>; artifacts: Set<string> } {
   const ids = new Set<string>();
   const artifacts = new Set<string>();
@@ -861,11 +863,13 @@ export function holdoutContent(ctx: DaylightContext, missionIds?: string[]): { i
     for (const g of ctx.store.gateEvaluations({ missionId })) if (ids.has(g.experimentId)) runs.push(...g.executions);
   }
   for (const r of runs) {
+    // Content-addressed: an empty log is every empty log, and withholding it would hide others' (an exec run's) too.
+    if (r.id === EMPTY_ARTIFACT) continue;
     artifacts.add(r.id);
     try {
       const rec = JSON.parse(ctx.artifacts.text(r)) as { stdoutRef?: ArtifactRef; stderrRef?: ArtifactRef };
-      if (rec.stdoutRef) artifacts.add(rec.stdoutRef.id);
-      if (rec.stderrRef) artifacts.add(rec.stderrRef.id);
+      if (rec.stdoutRef && rec.stdoutRef.id !== EMPTY_ARTIFACT) artifacts.add(rec.stdoutRef.id);
+      if (rec.stderrRef && rec.stderrRef.id !== EMPTY_ARTIFACT) artifacts.add(rec.stderrRef.id);
     } catch {
       // A record that cannot be read names no log; its own id is already withheld.
     }

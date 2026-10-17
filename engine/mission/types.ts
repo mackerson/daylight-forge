@@ -367,6 +367,12 @@ export interface Attempt {
   /** Short reason when the state is `failed` or `cancelled`. */
   failure?: string;
   artifacts: ArtifactRef[];
+  /**
+   * How many times an exec attempt's author called its `run` tool (R17.1): its `attempt.exec`
+   * events, present only on an attempt stamped exec. Derived, so the schema (which never
+   * migrates) is unchanged and an export carries it with the events.
+   */
+  execRuns?: number;
   /** Totals over the attempt's `attempt_usage` rows. The ledger of record, never a sum of events. */
   tokens: TokenUsage;
   usageSource: UsageSource;

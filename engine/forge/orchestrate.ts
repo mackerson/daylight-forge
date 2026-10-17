@@ -16,7 +16,7 @@ import { missionSpend, spendRefusal } from '../swarm/usage.ts';
 import { authorFor, authorLauncher, authorServer, authorTools } from './authors.ts';
 import { captureCandidate } from './diff.ts';
 import { authorBrief, evaluate, resolveCommit, type GateContext } from './gate.ts';
-import { MCP_CONFIG, newMcpToken } from './sandbox.ts';
+import { MCP_CONFIG, newMcpToken, type ExecResult } from './sandbox.ts';
 import { createWorkspace, sweepWorkspaces, type Workspace } from './workspace.ts';
 
 /**
@@ -75,6 +75,8 @@ const DEFAULT_TIMEOUT_MS = 600_000;
 const AUTHOR_MAX_TURNS = 60;
 /** The narrative an author printed, at most; it is a claim, not evidence. */
 const MAX_NARRATIVE_BYTES = 16 * 1024;
+/** Of a `run` command, at most this much is kept (redacted) on its event; the digest covers all of it. */
+const MAX_EXEC_COMMAND = 2048;
 
 const sha12 = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 12);
 
@@ -274,7 +276,20 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
     const spend = missionSpend(ctx, mission.id);
     const ceiling = o.maxCost ?? mission.budget.maxUsd;
     const workspace = ws;
-    await withAttemptSocket(ctx, row, token, () => authorServer({ attempt: row, tree: workspace.tree, out: ctx.out, profile, artifacts: ctx.artifacts }),
+    // Every `run` call goes on the ledger (review R1): its logs onto the attempt, one event each.
+    const onRun = (r: ExecResult, argv: string[]) => {
+      ctx.store.attachAttemptArtifacts(row.id, r.artifacts);
+      const [stdoutRef, stderrRef] = r.artifacts;
+      emit(ctx, mission, 'process', 'attempt.exec', {
+        state: mission.state,
+        commandDigest: `sha256:${createHash('sha256').update(JSON.stringify(argv)).digest('hex')}`,
+        // A person reads what ran; a secret-shaped argument is masked before it is stored.
+        command: redact(argv.join(' ').slice(0, MAX_EXEC_COMMAND)).text,
+        exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, truncated: r.truncated, durationMs: r.durationMs,
+        stdoutArtifactId: stdoutRef?.id ?? null, stderrArtifactId: stderrRef?.id ?? null,
+      }, { taskId: task.id, attemptId: row.id, artifactIds: r.artifacts.map((a) => a.id) });
+    };
+    await withAttemptSocket(ctx, row, token, () => authorServer({ attempt: row, tree: workspace.tree, out: ctx.out, profile, artifacts: ctx.artifacts, onRun }),
       (mcp) => captureRun(author.adapter, {
         prompt, cwd: workspace.tree, mcpConfigPath: MCP_CONFIG, session: row.sessionId!, model: spec.model,
         timeoutMs: o.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTurns: AUTHOR_MAX_TURNS,

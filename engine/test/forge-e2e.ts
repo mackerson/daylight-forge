@@ -480,7 +480,11 @@ section('exec (R17.1): the author\'s run tool, only on an exec grant, in a neste
       `const s = net.connect(${port}, '127.0.0.1');`,
       "s.on('connect', () => report('connected')); s.on('error', (e) => report(e.code)); setTimeout(() => report('timeout'), 3000);",
     ].join('\n');
-    return mcpMock([{ name: 'run', arguments: { argv: ['node', '-e', probe], timeoutSeconds: 30 } }]).replace("'use strict';\n",
+    // The second call carries a secret-shaped argument: what the ledger records of it must be masked.
+    return mcpMock([
+      { name: 'run', arguments: { argv: ['node', '-e', probe], timeoutSeconds: 30 } },
+      { name: 'run', arguments: { argv: ['node', '-e', 'process.exit(3)', EXEC_SECRET] } },
+    ]).replace("'use strict';\n",
       `'use strict';\nrequire('node:fs').writeFileSync('/work/src/add.js', ${JSON.stringify('module.exports = (a, b) => a + b;\n')});\n`);
   };
   type Reply = { result?: { isError?: boolean; tools?: Array<{ name: string }>; content?: Array<{ text: string }> }; error?: unknown };
@@ -494,6 +498,7 @@ section('exec (R17.1): the author\'s run tool, only on an exec grant, in a neste
       d.close();
     }
   };
+  const EXEC_SECRET = `sk-ant-api03-${'EXECARGSECRET'.repeat(6)}`;
   const grantOf = (id: string) => inspect(id).decisions.find((d) => d.scope.operation === 'authorize-mission');
 
   try {
@@ -523,6 +528,39 @@ section('exec (R17.1): the author\'s run tool, only on an exec grant, in a neste
     const stored = reply.artifacts?.[0] ? run(['artifact', reply.artifacts[0], '--out', out, '--format', 'json']) : null;
     check('its output is captured as an artifact in <out>', !!stored && stored.code === 0 && json<{ text: string }>(stored).text.includes('"connect"'), stored?.err.slice(-200));
 
+    // Review R1: every run call is on the ledger, not only on disk.
+    type ExecEvent = { name: string; attemptId?: string; artifactIds?: string[]; payload: Record<string, unknown> };
+    const ledgerOf = (dir: string) => {
+      const v = json<{ attempts: Array<Attempt & { execRuns?: number }>; events: ExecEvent[] }>(run(['mission', 'inspect', granted.mission.id, '--out', dir, '--format', 'json']));
+      const a = v.attempts.find((x) => x.id === res.attempt.id);
+      return { a, runs: v.events.filter((e) => e.name === 'attempt.exec' && e.attemptId === res.attempt.id), raw: JSON.stringify(v) };
+    };
+    const here = ledgerOf(out);
+    check('each run call emits attempt.exec with a command digest, exit code, duration and both artifact ids',
+      here.runs.length === 2 && here.runs.every((e) => /^sha256:[0-9a-f]{64}$/.test(String(e.payload.commandDigest)) && typeof e.payload.durationMs === 'number'
+        && typeof e.payload.stdoutArtifactId === 'string' && typeof e.payload.stderrArtifactId === 'string')
+      && here.runs[0].payload.exitCode === 0 && here.runs[1].payload.exitCode === 3, JSON.stringify(here.runs.map((e) => e.payload)).slice(0, 600));
+    check('the first event names the artifacts the run tool returned', reply.artifacts?.[0] === here.runs[0]?.payload.stdoutArtifactId
+      && JSON.stringify(here.runs[0]?.artifactIds) === JSON.stringify([here.runs[0]?.payload.stdoutArtifactId, here.runs[0]?.payload.stderrArtifactId]));
+    check('the exec artifacts are recorded rows on the attempt, and it counts its runs',
+      here.a?.execRuns === 2 && here.runs.every((e) => (e.artifactIds ?? []).every((id) => here.a!.artifacts.some((r) => r.id === id)))
+      && json<{ ref: unknown }>(run(['artifact', String(here.runs[0].payload.stdoutArtifactId), '--out', out, '--format', 'json'])).ref !== null,
+      `${here.a?.execRuns} ${JSON.stringify(here.a?.artifacts.map((r) => r.label))}`);
+    check('a secret in a run command never reaches the ledger: the event carries it masked', !here.raw.includes(EXEC_SECRET)
+      && /REDACTED/.test(String(here.runs[1]?.payload.command)), String(here.runs[1]?.payload.command));
+    const execExport = path.join(tmp, 'exec-mission.json');
+    const out3 = path.join(tmp, 'out-exec');
+    run(['mission', 'export', granted.mission.id, '--file', execExport, '--out', out]);
+    run(['map', repo, '--out', out3, '--top', '0']);
+    const imported = run(['mission', 'import', '--file', execExport, '--out', out3]);
+    const there = ledgerOf(out3);
+    check('export → import carries the exec runs: events, count, and readable artifact rows',
+      imported.code === 0 && there.a?.execRuns === 2 && there.runs.length === 2
+      && JSON.stringify(there.runs.map((e) => e.payload)) === JSON.stringify(here.runs.map((e) => e.payload))
+      && json<{ ref: unknown; text: string }>(run(['artifact', String(there.runs[0].payload.stdoutArtifactId), '--out', out3, '--format', 'json'])).text.includes('"connect"'),
+      imported.err.slice(-300) + ` ${there.a?.execRuns} ${there.runs.length}`);
+    check('and the export file never holds the secret argument', !fs.readFileSync(execExport, 'utf8').includes(EXEC_SECRET));
+
     const plain = lockedMission('make add return the sum (no exec)', ['--write']);
     const noExec = path.join(tmp, 'mock-author-run-refused.cjs');
     fs.writeFileSync(noExec, runner(plain.testPaths));
@@ -536,6 +574,9 @@ section('exec (R17.1): the author\'s run tool, only on an exec grant, in a neste
       JSON.stringify(replies2['2']).slice(0, 300));
     check('and the run call is refused, nothing executed', (!!replies2['3']?.error || replies2['3']?.result?.isError === true)
       && !JSON.stringify(replies2['3']).includes('connect'), JSON.stringify(replies2['3']).slice(0, 300));
+    const plainView = json<{ attempts: Array<Attempt & { execRuns?: number }>; events: Array<{ name: string }> }>(
+      run(['mission', 'inspect', plain.mission.id, '--out', out, '--format', 'json']));
+    check('and the ledger shows no exec run for it', plainView.attempts.every((a) => (a.execRuns ?? 0) === 0) && !plainView.events.some((e) => e.name === 'attempt.exec'));
   } finally {
     listener.close();
   }
