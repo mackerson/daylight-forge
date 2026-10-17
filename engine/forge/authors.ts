@@ -71,6 +71,8 @@ export interface AuthorLaunchInput {
   workspace: Pick<Workspace, 'tree'>;
   /** Host paths the agent must read, bound read-only at their own paths. */
   mounts?: string[];
+  /** Of `mounts`, those under $HOME the caller allows (deny by default; credential stores never). */
+  homeAllow?: string[];
   mcp?: McpEndpoint;
   env?: Record<string, string>;
   /** Required: the attempt's <out>, which every launch keeps out of its mounts. */
@@ -93,13 +95,13 @@ export function authorLauncher(input: AuthorLaunchInput): Launcher {
   const authorization = { decisionId: s.authorizeDecisionId, missionId: input.attempt.missionId };
   return (bin, argv) => profileLaunch(profile, {
     kind: 'author', root: input.workspace.tree, network: s.network, exec: s.exec, authorization,
-    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out,
+    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out, homeAllow: input.homeAllow,
   });
 }
 
 /** The hook for a review attempt: the repository read-only, network as the row says. */
 export function reviewLauncher(input: {
-  attempt: Pick<Attempt, 'id' | 'sandbox'>; repo: string; mounts?: string[]; mcp?: McpEndpoint;
+  attempt: Pick<Attempt, 'id' | 'sandbox'>; repo: string; mounts?: string[]; homeAllow?: string[]; mcp?: McpEndpoint;
   env?: Record<string, string>; out: string; profile?: SandboxProfile;
 }): Launcher {
   const s = input.attempt.sandbox;
@@ -110,7 +112,7 @@ export function reviewLauncher(input: {
   const profile = input.profile ?? detectSandbox();
   return (bin, argv) => profileLaunch(profile, {
     kind: 'review', root: input.repo, network: s.network,
-    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out,
+    agent: { bin, argv, mounts: input.mounts }, env: input.env, mcp: input.mcp, out, homeAllow: input.homeAllow,
   });
 }
 

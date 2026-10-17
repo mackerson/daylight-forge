@@ -198,6 +198,25 @@ section('the author profile');
     !!throws(() => profileLaunch(AVAILABLE, optsFor('author', { agent: { bin: nodeBinary(), argv: [], mounts: [path.dirname(home)] } }))));
   check('an agent mount under <out> is refused',
     !!throws(() => profileLaunch(AVAILABLE, optsFor('author', { agent: { bin: nodeBinary(), argv: [], mounts: [path.join(out, 'daylight.db')] } }))));
+  const notes = path.join(home, 'notes.txt');
+  fs.writeFileSync(notes, 'x');
+  const withMount = (p: string, homeAllow?: string[]) => throws(() => profileLaunch(AVAILABLE, optsFor('author', {
+    agent: { bin: nodeBinary(), argv: [], mounts: [p] }, ...(homeAllow ? { homeAllow } : {}),
+  })));
+  check('any path under $HOME is refused by default', /home directory/.test(withMount(notes) ?? ''), String(withMount(notes)));
+  check('and admitted only when allowlisted', withMount(notes, [notes]) === null, String(withMount(notes, [notes])));
+  for (const rel of ['.netrc', '.npmrc', '.git-credentials', '.config/gh', '.ssh', '.aws', '.config/daylight']) {
+    const p = path.join(home, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    if (!fs.existsSync(p)) fs.writeFileSync(p, 'secret');
+    check(`~/${rel} is refused even when allowlisted`, /is under ~\//.test(withMount(p, [p]) ?? ''), String(withMount(p, [p])));
+  }
+  const homeRepo = path.join(home, 'proj');
+  fs.mkdirSync(homeRepo, { recursive: true });
+  check('a review root under $HOME is the explicitly named root, so admitted',
+    !throws(() => profileLaunch(AVAILABLE, optsFor('review', { root: homeRepo }))));
+  check('but a root that is a credential store is not',
+    !!throws(() => profileLaunch(AVAILABLE, optsFor('review', { root: path.join(home, '.config', 'gh') }))));
   check('a bad environment name is refused', !!throws(() => profileLaunch(AVAILABLE, optsFor('author', { env: { 'A=B': 'x' } }))));
 }
 

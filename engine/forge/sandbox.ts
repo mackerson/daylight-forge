@@ -45,7 +45,10 @@ export const MCP_HANDSHAKE = 'DAYLIGHT-MCP';
 export const NET_FILES = ['/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf', '/etc/ssl', '/etc/ca-certificates'];
 
 /** Under the home directory, never bound however a caller names them. */
-const SENSITIVE_HOME = ['.ssh', '.gnupg', '.aws', '.claude', '.config/daylight', '.local/share/daylight'];
+const SENSITIVE_HOME = [
+  '.ssh', '.gnupg', '.aws', '.claude', '.netrc', '.npmrc', '.git-credentials', '.config/gh',
+  '.config/daylight', '.local/share/daylight',
+];
 
 export class SandboxRefused extends Error {
   constructor(message: string) {
@@ -96,6 +99,11 @@ export interface ProfileOptions {
   out: string;
   /** Defaults to the real one; a test may name another. */
   home?: string;
+  /**
+   * Agent mounts under `$HOME` that may be bound (a provider's install tree). Anything else
+   * under `$HOME` is refused, and the credential stores are refused even when listed here.
+   */
+  homeAllow?: string[];
   limits?: SandboxLimits;
 }
 
@@ -124,9 +132,10 @@ const resolved = (p: string): string => {
 /**
  * Why `src` may not be bound, or null. Refused: the root itself, any ancestor of the home
  * directory or of `<out>` (which would bring them in), anything under `<out>`, and the home
- * directory's credential stores.
+ * directory's credential stores (always), and anything else under the home directory that
+ * `allow` does not name.
  */
-export function mountRefusal(src: string, o: { home: string; out: string }): string | null {
+export function mountRefusal(src: string, o: { home: string; out: string; allow?: string[] }): string | null {
   const p = resolved(src);
   const home = resolved(o.home);
   const out = resolved(requireOut(o.out));
@@ -137,6 +146,10 @@ export function mountRefusal(src: string, o: { home: string; out: string }): str
   }
   if (within(p, out)) return `${p} is under <out>`;
   if (within(out, p)) return `${p} contains <out>`;
+  // Deny by default under $HOME: dotfiles there hold credentials nobody listed in advance.
+  if (within(p, home) && !(o.allow ?? []).some((a) => within(p, resolved(a)))) {
+    return `${p} is under the home directory and not allowlisted`;
+  }
   return null;
 }
 
@@ -265,7 +278,8 @@ export function profileLaunch(profile: SandboxProfile, o: ProfileOptions): Sandb
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
   const root = resolved(o.root);
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new SandboxRefused(`${root} is not a directory`);
-  const rootWhy = mountRefusal(root, { home, out: o.out });
+  // The root is named explicitly by the caller, so it is its own allowlist entry.
+  const rootWhy = mountRefusal(root, { home, out: o.out, allow: [root] });
   if (rootWhy) throw new SandboxRefused(`refusing to mount ${o.kind} root: ${rootWhy}`);
 
   if (o.kind === 'review') {
@@ -305,7 +319,7 @@ export function profileLaunch(profile: SandboxProfile, o: ProfileOptions): Sandb
   });
   for (const p of [...new Set(agentPaths)]) {
     if (!path.isAbsolute(p)) throw new SandboxRefused(`agent path ${p} is not absolute`);
-    const why = mountRefusal(p, { home, out: o.out });
+    const why = mountRefusal(p, { home, out: o.out, allow: o.homeAllow });
     if (why) throw new SandboxRefused(`refusing to mount agent path: ${why}`);
     if (within(resolved(p), root)) continue;
     b.ro(p, p);
@@ -413,7 +427,7 @@ export function execLaunch(
   const tree = resolved(o.tree);
   if (!fs.statSync(tree, { throwIfNoEntry: false })?.isDirectory()) throw new SandboxRefused(`${tree} is not a directory`);
   if (fs.existsSync(path.join(tree, '.git'))) throw new SandboxRefused(`${tree} has a .git; exec runs over a detached workspace only`);
-  const treeWhy = mountRefusal(tree, { home: o.home ?? os.homedir(), out: o.out });
+  const treeWhy = mountRefusal(tree, { home: o.home ?? os.homedir(), out: o.out, allow: [tree] });
   if (treeWhy) throw new SandboxRefused(`refusing to mount the exec tree: ${treeWhy}`);
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
   const b = baseSandbox(profile, limits, {});
