@@ -12,7 +12,8 @@ import { decompose } from './decompose.ts';
 import { evaluate, GateRefused, listGates, type GateContext } from './gate.ts';
 import { runGateCommand } from './commands-gate.ts';
 import { runWorkItemCommand } from './commands-work-item.ts';
-import { candidateView, ImplementRefused, runImplement } from './orchestrate.ts';
+import { runDecideCommand } from './commands-decide.ts';
+import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
 import { createImplementMission } from './work-items.ts';
@@ -177,8 +178,13 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
       opts = { projectId: project.id };
     }
     const c = confirmDigest(ctx, operation, subjectId, opts);
+    const candidate = operation === 'approve-candidate' || operation === 'override-candidate' ? ctx.store.candidate(subjectId) : null;
+    const possible = candidate ? possibleSecrets(ctx, candidate) : [];
+    const lines = possible.length
+      ? [...c.lines, ...possible.map((p) => `possible secret in ${p}: acknowledge it (--acknowledge-possible-secret) to ${operation === 'approve-candidate' ? 'approve' : 'override'}`)]
+      : c.lines;
     const refusal = guardCheck(env, actor, c.digest8, c.digest) ?? (operation === 'authorize-mission' && execute ? EXEC_REFUSED : null);
-    return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal };
+    return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines, refusal, possibleSecrets: possible };
   });
 }
 
@@ -340,6 +346,7 @@ async function forge(sub: string | undefined, p: Parsed, out: () => string, asJs
         const v = candidateView(ctx, candidateId, maxBytes);
         return {
           candidate: v.candidate,
+          possibleSecrets: v.possibleSecrets,
           diff: { text: v.diff.text, truncated: v.diff.truncated },
           gateEvaluations: publicGateEvaluations(ctx, ctx.store.gateEvaluations({ candidateId })),
         };
@@ -446,6 +453,8 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
         return 0;
       }
       case 'forge':
+        // approve, reject, override and apply are WS4's, behind the same actor rule.
+        if (sub && GUARDED.forge.includes(sub)) return await runDecideCommand(args);
         return await forge(sub, p, outOf(p, sub === 'run' || sub === 'evaluate' ? p.positionals[1] : undefined), asJson, env);
       case 'spec':
         return await spec(sub, p, outOf(p, p.positionals[sub === 'decompose' ? 1 : 0]), asJson);

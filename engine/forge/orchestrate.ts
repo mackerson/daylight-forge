@@ -300,6 +300,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
         missionId: mission.id, attemptId: row.id, projectId: mission.projectId, baseCommit: captured.baseCommit,
         diffArtifact: captured.diffArtifact!, summaryArtifact, ...(narrativeArtifact ? { narrativeArtifact } : {}),
         files: captured.files, policyViolations: captured.policyViolations, secretHits: captured.secretHits,
+        possibleSecretHits: captured.possibleSecretHits,
         gateSetDigest: lockDigest, profile: { name: 'author', network, write: true, exec: false },
         attemptState: finished.state, ...(finished.failure ? { attemptFailure: finished.failure } : {}),
       });
@@ -353,6 +354,28 @@ function narrativeOf(ctx: DaylightContext, m: Mission, a: Attempt, base: string)
   });
 }
 
+/** The flag a low-confidence secret shape raises in a diff (R16): curable, but a person must see it. */
+export const POSSIBLE_SECRET = 'possible-secret';
+
+/**
+ * Paths whose part of the diff matched a low-confidence secret shape (R16), for the person to
+ * read before acknowledging them: from the summary's per-file flags, or the whole diff when
+ * the row counts hits the flags cannot place. WS4's approve refuses without the acknowledgement.
+ */
+export function possibleSecrets(ctx: DaylightContext, c: Candidate): string[] {
+  const out = new Set<string>();
+  try {
+    const summary = JSON.parse(ctx.artifacts.text(c.summaryArtifact)) as { flags?: Array<{ path?: unknown; possibleSecretHits?: unknown }> };
+    for (const f of summary.flags ?? []) {
+      if (typeof f.possibleSecretHits === 'number' && f.possibleSecretHits > 0) out.add(typeof f.path === 'string' ? f.path : '(unknown path)');
+    }
+  } catch {
+    // An unreadable summary cannot place the hits; the count below still says they exist.
+  }
+  if (c.possibleSecretHits > 0 && !out.size) out.add('(the whole diff)');
+  return [...out].sort();
+}
+
 /** The candidate's diff as a person reads it: already redacted at capture, bounded here. */
 export function candidateView(ctx: DaylightContext, candidateId: string, maxBytes: number) {
   const candidate = ctx.store.candidate(candidateId);
@@ -360,6 +383,7 @@ export function candidateView(ctx: DaylightContext, candidateId: string, maxByte
   const bytes = ctx.artifacts.get(candidate.diffArtifact);
   return {
     candidate,
+    possibleSecrets: possibleSecrets(ctx, candidate),
     // Masked at capture when a secret was found; masked again here for whatever this environment knows.
     diff: { text: redact(bytes.subarray(0, maxBytes).toString('utf8')).text, truncated: bytes.length > maxBytes, bytes: bytes.length },
   };
