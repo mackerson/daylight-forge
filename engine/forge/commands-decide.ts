@@ -14,8 +14,8 @@ import { DecisionRefused } from './policy.ts';
  * recorded, 2 for bad arguments or a missing `--confirm` (the digest is printed so a person
  * can read it and type the code), 1 for a refusal or failure.
  *
- *   forge approve  <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>']
- *   forge override <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>']
+ *   forge approve  <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>'] [--acknowledge-possible-secret]
+ *   forge override <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>'] [--acknowledge-possible-secret]
  *   forge reject   <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8>
  *   forge apply    <candidate> [repo] --actor human:<name> --confirm <digest8>
  */
@@ -101,6 +101,7 @@ function forge(sub: string | undefined, p: Parsed, d: DaylightContext, asJson: b
   }
   const decision = decideCandidate(ctx, {
     candidateId, operation, actor, rationale: need(p, 'rationale'), confirm, subject: p.flags.get('subject'),
+    acknowledgePossibleSecret: p.flags.get('acknowledge-possible-secret') === 'true',
   });
   if (asJson) json(decision);
   else say(`${decision.kind} ${candidateId} by ${decision.actor} (${decision.id})${decision.kind === 'override' ? ' — OVERRIDE of the gates' : ''}`);

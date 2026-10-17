@@ -255,6 +255,29 @@ const main = newMission('make add add');
   const err = throws(() => decide(c, 'override-candidate', { rationale: 'I know' }));
   check('overriding a protected-path edit is refused', err instanceof CandidateRefused && /uncurable: protected-path: package.json/.test(err.message), err?.message);
 }
+{
+  // RULINGS R15.4: every policy violation is uncurable. Listed here independently of the code,
+  // so a rule dropped from UNCURABLE_RULES goes red.
+  const ALL_RULES: PolicyViolation['rule'][] = [
+    'protected-path', 'gate-path', 'spec-path', 'outside-scope', 'path-escape', 'symlink', 'gitlink',
+    'exec-mode', 'empty-diff', 'too-many-files', 'too-large', 'secret-in-diff',
+  ];
+  for (const rule of ALL_RULES) {
+    const whole = rule === 'empty-diff' || rule === 'too-many-files' || rule === 'too-large';
+    const c = evaluated(main, candidate(main, { violations: [{ rule, path: whole ? null : 'src/add.js' }] }), 'falsified');
+    const err = throws(() => decide(c, 'override-candidate', { rationale: 'I know' }));
+    check(`overriding a ${rule} violation is refused`, err instanceof CandidateRefused && err.message.includes(`uncurable: ${rule}`), err?.message);
+  }
+  // A real exec-mode candidate, captured by WS2: a new 100755 file.
+  const RUN: CandidateFile = { path: 'src/run.sh', change: 'added', insertions: 1, deletions: 0, mode: 'executable' };
+  const c = evaluated(main, candidate(main, {
+    edit: (t) => fs.writeFileSync(path.join(t, 'src', 'run.sh'), '#!/bin/sh\necho hi\n', { mode: 0o755 }),
+  }), 'falsified');
+  check('capture records the new executable as exec-mode', c.policyViolations.some((v) => v.rule === 'exec-mode' && v.path === RUN.path), JSON.stringify(c.policyViolations));
+  const err = throws(() => decide(c, 'override-candidate', { rationale: 'it is a script' }));
+  check('overriding a real exec-mode candidate is refused', err instanceof CandidateRefused && /uncurable: exec-mode: src\/run.sh/.test(err.message), err?.message);
+  check('so it can never be applied', throws(() => apply(c)) instanceof CandidateRefused && d.store.application(c.id) === null);
+}
 const good = evaluated(main, candidate(main));
 {
   check('the fixture candidate is accepted by gates', good.verdict === 'accepted-by-gates', good.verdictReasons.join());
@@ -283,6 +306,32 @@ const good = evaluated(main, candidate(main));
   check('approval.decided carries ids and digests', named('approval.decided').some((e) => e.payload.decisionId === approved.id
     && e.payload.candidateId === good.id && e.payload.diffDigest === good.diffArtifact.digest));
   check('a second approve is refused', throws(() => decide(good, 'approve-candidate')) instanceof CandidateRefused);
+}
+
+section('a possible secret is curable, but only once a human acknowledges it (R16)');
+{
+  const f = newMission('possible secret');
+  const c = evaluated(f, candidate(f, { edit: (t) => fs.writeFileSync(path.join(t, 'src', 'add.js'), `// password: hunter\n${FIXED}`) }));
+  // No capture records the low tier yet (TRACKED: WS2's diff.ts maps tier → flag). Until then the
+  // count is read from the field WS4 expects, so this test hands the store a row that has it.
+  const flagged = new Proxy(d.store, {
+    get(target, prop, recv) {
+      if (prop === 'candidate') return (id: string) => {
+        const row = target.candidate(id);
+        return row && row.id === c.id ? { ...row, possibleSecretHits: 2 } : row;
+      };
+      const v = Reflect.get(target, prop, recv);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const fctx = { ...ctx, store: flagged };
+  const input = { candidateId: c.id, operation: 'approve-candidate' as const, actor: HUMAN, rationale: 'looked', confirm: code('approve-candidate', c) };
+  check('the candidate is accepted by gates', c.verdict === 'accepted-by-gates');
+  const err = throws(() => decideCandidate(fctx, input));
+  check('approve with a possible secret and no acknowledgement is refused', err instanceof CandidateRefused && /acknowledge-possible-secret/.test(err.message), err?.message);
+  const ok = decideCandidate(fctx, { ...input, acknowledgePossibleSecret: true });
+  check('with the acknowledgement it is approved, and the decision says so', ok.kind === 'approve' && ok.scope.acknowledgedPossibleSecrets === 2);
+  check('an unflagged candidate needs no acknowledgement', decisionsOn(good).length === 1);
 }
 
 section('reject and override');

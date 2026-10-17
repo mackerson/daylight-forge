@@ -26,13 +26,16 @@ export type DecideContext = Pick<GateContext, 'store' | 'artifacts' | 'events' |
 export type CandidateOperation = CandidateDecisionScope['operation'];
 
 /**
- * Rules no decision can override. A secret in the diff, an edit to a protected path, a gate
- * test or the spec, a path that escapes, and a symlink or gitlink each defeat the gates or the
- * host rather than fail them, so passing or overriding gates says nothing about them.
+ * Rules no decision can override: all of them (RULINGS R15.4). A violation is cured by a new
+ * candidate from the author, never by a human waving it through or by patching in place. The
+ * record type makes a rule added to `PolicyRule` without a line here a type error.
  */
-export const UNCURABLE_RULES: readonly PolicyRule[] = [
-  'secret-in-diff', 'protected-path', 'gate-path', 'spec-path', 'path-escape', 'symlink', 'gitlink',
-];
+const EVERY_RULE: Record<PolicyRule, true> = {
+  'protected-path': true, 'gate-path': true, 'spec-path': true, 'outside-scope': true, 'path-escape': true,
+  symlink: true, gitlink: true, 'exec-mode': true, 'empty-diff': true, 'too-many-files': true, 'too-large': true,
+  'secret-in-diff': true,
+};
+export const UNCURABLE_RULES: readonly PolicyRule[] = Object.keys(EVERY_RULE) as PolicyRule[];
 
 export function uncurable(c: Pick<Candidate, 'policyViolations' | 'secretHits'>): string[] {
   const out = c.policyViolations
@@ -82,6 +85,18 @@ export interface DecideInput {
   confirm: string | undefined;
   /** Commit subject to use instead of the work item title (approve and override only). */
   subject?: string;
+  /** `--acknowledge-possible-secret`: required to approve or override a candidate with a possible secret (R16). */
+  acknowledgePossibleSecret?: boolean;
+}
+
+/**
+ * Low-tier secret hits (RULINGS R16): a curable warning, not a violation. Read from the
+ * candidate's `possibleSecretHits`, the field WS4 expects capture to record; until capture
+ * records the low tier the count is 0 for every stored row (TRACKED for WS2/WS1).
+ */
+export function possibleSecretsOf(c: Candidate): number {
+  const n = (c as Candidate & { possibleSecretHits?: unknown }).possibleSecretHits;
+  return typeof n === 'number' && n > 0 ? n : 0;
 }
 
 const KIND = { 'approve-candidate': 'approve', 'reject-candidate': 'reject', 'override-candidate': 'override' } as const;
@@ -111,11 +126,16 @@ export function decideCandidate(ctx: DecideContext, input: DecideInput): Decisio
       throw new CandidateRefused(`candidate ${c.id} is accepted by gates; approve it instead of overriding`);
     }
   }
+  const possible = input.operation === 'reject-candidate' ? 0 : possibleSecretsOf(c);
+  if (possible && !input.acknowledgePossibleSecret) {
+    throw new CandidateRefused(`candidate ${c.id} has ${possible} possible secret(s); read the diff, then re-run with --acknowledge-possible-secret`);
+  }
 
-  const scope: CandidateDecisionScope & { commitSubject?: string } = {
+  const scope: CandidateDecisionScope & { commitSubject?: string; acknowledgedPossibleSecrets?: number } = {
     operation: input.operation, candidateId: c.id, diffDigest: c.diffArtifact.digest,
     gateSetDigest: c.gateSetDigest, baseCommit: c.baseCommit,
     ...(input.subject !== undefined && input.operation !== 'reject-candidate' ? { commitSubject: input.subject } : {}),
+    ...(possible ? { acknowledgedPossibleSecrets: possible } : {}),
   };
   const d = ctx.store.recordDecision({
     missionId: m.id, projectId: m.projectId, revision: c.baseCommit, actor: input.actor, kind: KIND[input.operation],
