@@ -56,4 +56,59 @@ function openEventsReadOnly(file) {
   return { db, refused: null };
 }
 
-module.exports = { openEventsReadOnly, sqliteAvailable: () => sqlite !== null };
+/** One events row as the engine's `DaylightEvent`. */
+function rowToEvent(r) {
+  const json = (v, fallback) => {
+    if (v === null || v === undefined || v === '') return fallback;
+    try { return JSON.parse(v); } catch { return fallback; }
+  };
+  return {
+    schemaVersion: r.schema_version,
+    id: r.id,
+    sequence: Number(r.sequence),
+    at: Number(r.at),
+    projectId: r.project_id,
+    missionId: r.mission_id ?? undefined,
+    taskId: r.task_id ?? undefined,
+    attemptId: r.attempt_id ?? undefined,
+    actorId: r.actor_id ?? undefined,
+    category: r.category,
+    name: r.name,
+    artifactIds: json(r.artifact_ids, undefined),
+    payload: json(r.payload, {}),
+  };
+}
+
+const KEPT = ['experimentId', 'gateEvaluationId', 'target', 'diffDigest', 'conclusion', 'runIndex', 'status', 'runs'];
+
+/**
+ * The engine's `withholdHoldoutEvents`, for the shell's direct read: an event about a holdout,
+ * or pointing at one of its artifacts, keeps its ids and outcome and loses everything else, so
+ * holdout content never reaches the renderer (ws9-review M1). The engine's set also covers the
+ * logs a run record names; an event pointing at those also names the run record, caught here.
+ */
+function withholdHoldouts(db, events) {
+  const parse = (v) => { try { return JSON.parse(v); } catch { return null; } };
+  const ids = new Set();
+  const artifacts = new Set();
+  for (const x of db.prepare("SELECT id, test_artifact, expected_artifact, executions FROM experiments WHERE role='holdout'").all()) {
+    ids.add(x.id);
+    for (const ref of [parse(x.test_artifact), parse(x.expected_artifact), ...(parse(x.executions) ?? [])]) if (ref && ref.id) artifacts.add(ref.id);
+  }
+  if (!ids.size) return events;
+  for (const g of db.prepare('SELECT experiment_id, executions FROM gate_evaluations').all()) {
+    if (!ids.has(g.experiment_id)) continue;
+    for (const ref of parse(g.executions) ?? []) if (ref && ref.id) artifacts.add(ref.id);
+  }
+  return events.map((e) => {
+    const p = e.payload || {};
+    const about = typeof p.experimentId === 'string' && ids.has(p.experimentId);
+    const points = (e.artifactIds || []).some((a) => artifacts.has(a));
+    if (!about && !points && p.role !== 'holdout') return e;
+    const keep = { role: 'holdout', withheld: true };
+    for (const k of KEPT) if (k in p) keep[k] = p[k];
+    return { ...e, payload: keep, artifactIds: [] };
+  });
+}
+
+module.exports = { openEventsReadOnly, rowToEvent, withholdHoldouts, sqliteAvailable: () => sqlite !== null };

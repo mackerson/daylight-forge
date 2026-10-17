@@ -7,9 +7,10 @@ import { redact } from './redact.ts';
 import { openDaylight, type DaylightContext } from './context.ts';
 import { importMission, readExport, writeExport } from './export.ts';
 import {
-  closeMission, createMission, decide, inspectMission, needsOf, proposeExperiment, runMission,
-  runMissionExperiment,
+  closeMission, createMission, decide, holdoutContent, inspectMission, needsOf, proposeExperiment, runMission,
+  runMissionExperiment, withholdHoldoutEvents,
 } from './orchestrate.ts';
+import { AGENT_SESSION_VARS } from '../forge/policy.ts';
 import { renderReport } from './report.ts';
 import { runProjectReport } from './commands-report.ts';
 import { missionAuthorizeCommand, missionCreateImplementCommand } from '../forge/commands.ts';
@@ -321,11 +322,26 @@ async function experiment(sub: string | undefined, p: Parsed, out: () => string,
 
 // ---- the rest ----------------------------------------------------------------------
 
+/**
+ * `--reveal-holdout`: a person at a terminal reading a holdout's content, which every other
+ * read withholds (ws9-review M1). Refused from inside an agent session; the shell never passes it.
+ */
+function revealHoldout(p: Parsed): boolean {
+  if (last(p, 'reveal-holdout') !== 'true') return false;
+  const agent = AGENT_SESSION_VARS.find((v) => process.env[v]);
+  if (agent) throw new Error(`refused: ${agent} is set; a holdout is revealed only to a person, never inside an agent session`);
+  return true;
+}
+
 function artifact(p: Parsed, out: () => string, asJson: boolean): number {
   const id = p.positionals[0];
   if (!id) throw new Usage('artifact needs a <digest>');
   const maxBytes = num(last(p, 'max-bytes')) ?? 256 * 1024;
+  const reveal = revealHoldout(p);
   const result = withContext(out, (ctx) => {
+    if (!reveal && holdoutContent(ctx).artifacts.has(id)) {
+      throw new Error(`refused: ${id} holds a holdout's content, which never leaves the gate runner (pass --reveal-holdout at a terminal to read it)`);
+    }
     if (!ctx.artifacts.has(id)) throw new Error(`no artifact ${id} in ${out()}`);
     const ref = ctx.store.artifact(id);
     const bytes = ctx.artifacts.get(id);
@@ -343,8 +359,11 @@ function artifact(p: Parsed, out: () => string, asJson: boolean): number {
 function events(p: Parsed, out: () => string, asJson: boolean): number {
   const since = num(last(p, 'since')) ?? 0;
   const limit = num(last(p, 'limit')) ?? 1000;
-  const rows = withContext(out, (ctx) =>
-    ctx.events.since(since, { missionId: last(p, 'mission'), attemptId: last(p, 'attempt') }, limit));
+  const reveal = revealHoldout(p);
+  const rows = withContext(out, (ctx) => {
+    const raw = ctx.events.since(since, { missionId: last(p, 'mission'), attemptId: last(p, 'attempt') }, limit);
+    return reveal ? raw : withholdHoldoutEvents(holdoutContent(ctx), raw);
+  });
   if (asJson) json(rows);
   else for (const e of rows) say(`${e.sequence} ${new Date(e.at).toISOString()} ${e.category} ${e.name} ${e.missionId ?? ''} ${e.attemptId ?? ''}`);
   return 0;

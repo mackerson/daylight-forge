@@ -1302,33 +1302,11 @@ ipcMain.handle('daylight:demo-replay', async () => {
  * mission is open — the renderer tells main which one.
  */
 // Older Electron without node:sqlite: the CLI path below does the same read more slowly.
-const { openEventsReadOnly, sqliteAvailable } = require('./daylight-db.cjs');
+const { openEventsReadOnly, rowToEvent, withholdHoldouts, sqliteAvailable } = require('./daylight-db.cjs');
 /** The refused file last reported, so a stale db in <out> costs one log line, not one per poll. */
 let refusedDb = null;
 
 const dlWatch = { missionId: null, since: 0, dir: null, timer: null, busy: false };
-
-function rowToEvent(r) {
-  const json = (v, fallback) => {
-    if (v === null || v === undefined || v === '') return fallback;
-    try { return JSON.parse(v); } catch { return fallback; }
-  };
-  return {
-    schemaVersion: r.schema_version,
-    id: r.id,
-    sequence: Number(r.sequence),
-    at: Number(r.at),
-    projectId: r.project_id,
-    missionId: r.mission_id ?? undefined,
-    taskId: r.task_id ?? undefined,
-    attemptId: r.attempt_id ?? undefined,
-    actorId: r.actor_id ?? undefined,
-    category: r.category,
-    name: r.name,
-    artifactIds: json(r.artifact_ids, undefined),
-    payload: json(r.payload, {}),
-  };
-}
 
 async function readDaylightEvents(since, missionId, limit) {
   const file = path.join(state.dir, 'daylight.db');
@@ -1351,7 +1329,8 @@ async function readDaylightEvents(since, missionId, limit) {
             'SELECT * FROM events WHERE sequence > ? AND mission_id = ? ORDER BY sequence LIMIT ?',
           ).all(since, missionId, limit)
         : db.prepare('SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?').all(since, limit);
-      return { events: rows.map(rowToEvent) };
+      // Holdout content never reaches the renderer; the CLI fallback below withholds the same.
+      return { events: withholdHoldouts(db, rows.map(rowToEvent)) };
     } catch (err) {
       // A locked or half-migrated file: fall through to the CLI, which waits its turn.
       console.error(`daylight.db read failed, using the CLI: ${err.message}`);

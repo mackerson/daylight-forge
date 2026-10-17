@@ -827,11 +827,45 @@ export function publicGateEvaluations(ctx: DaylightContext, rows: GateEvaluation
  * outcome, and loses every other payload field and every artifact it points at.
  */
 export function publicEvents(ctx: DaylightContext, missionId: string, events: DaylightEvent[]): DaylightEvent[] {
-  const holdouts = ctx.store.experimentsFor(missionId, 'holdout');
-  if (!holdouts.length) return events;
-  const ids = new Set(holdouts.map((x) => x.id));
-  const artifacts = new Set(holdouts.flatMap((x) => [x.testArtifact.id, x.expectedArtifact.id, ...x.executions.map((r) => r.id)]));
-  for (const g of ctx.store.gateEvaluations({ missionId })) if (ids.has(g.experimentId)) for (const r of g.executions) artifacts.add(r.id);
+  return withholdHoldoutEvents(holdoutContent(ctx, [missionId]), events);
+}
+
+/**
+ * Every holdout of these missions (default: all of them), and every artifact that carries its
+ * content: the test, the expectation, each run record and the logs those records name.
+ */
+export function holdoutContent(ctx: DaylightContext, missionIds?: string[]): { ids: Set<string>; artifacts: Set<string> } {
+  const ids = new Set<string>();
+  const artifacts = new Set<string>();
+  const runs: ArtifactRef[] = [];
+  for (const missionId of missionIds ?? ctx.store.missions().map((m) => m.id)) {
+    const holdouts = ctx.store.experimentsFor(missionId, 'holdout');
+    if (!holdouts.length) continue;
+    for (const x of holdouts) {
+      ids.add(x.id);
+      artifacts.add(x.testArtifact.id);
+      artifacts.add(x.expectedArtifact.id);
+      runs.push(...x.executions);
+    }
+    for (const g of ctx.store.gateEvaluations({ missionId })) if (ids.has(g.experimentId)) runs.push(...g.executions);
+  }
+  for (const r of runs) {
+    artifacts.add(r.id);
+    try {
+      const rec = JSON.parse(ctx.artifacts.text(r)) as { stdoutRef?: ArtifactRef; stderrRef?: ArtifactRef };
+      if (rec.stdoutRef) artifacts.add(rec.stdoutRef.id);
+      if (rec.stderrRef) artifacts.add(rec.stderrRef.id);
+    } catch {
+      // A record that cannot be read names no log; its own id is already withheld.
+    }
+  }
+  return { ids, artifacts };
+}
+
+/** Events with each holdout's content withheld: ids and outcome kept, every other field and artifact gone. */
+export function withholdHoldoutEvents(h: { ids: Set<string>; artifacts: Set<string> }, events: DaylightEvent[]): DaylightEvent[] {
+  const { ids, artifacts } = h;
+  if (!ids.size) return events;
   return events.map((e) => {
     const p = e.payload as Record<string, unknown>;
     const about = typeof p.experimentId === 'string' && ids.has(p.experimentId);

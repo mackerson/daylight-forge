@@ -13,6 +13,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { detectSandbox } from '../experiment/sandbox.ts';
@@ -299,6 +300,50 @@ section('inspect and candidate: Forge rows and needs, holdout content withheld')
   const cv = JSON.parse(craw) as { candidate: Candidate; diff: { text: string; truncated: boolean }; gateEvaluations: Array<{ executions: unknown[] }> };
   check('forge candidate shows the diff, the candidate and its evaluations', cv.diff.text.includes('a + b') && !cv.diff.truncated && cv.candidate.id === candidate.id && cv.gateEvaluations.length === 2);
   check('the holdout sentinel is absent from forge candidate', !craw.includes(SENTINEL));
+}
+
+section('holdout content reaches no renderer-facing read: events, artifact, the shell\'s direct read');
+{
+  const d = openDaylight(out);
+  let holdout!: { id: string; path: string; test: string; expected: string; runs: string[] };
+  try {
+    const x = d.store.experimentsFor(implement.id, 'holdout')[0];
+    const runs = d.store.gateEvaluations({ missionId: implement.id }).filter((g) => g.experimentId === x.id).flatMap((g) => g.executions.map((r) => r.id));
+    holdout = { id: x.id, path: x.testArtifact.path!, test: x.testArtifact.id, expected: x.expectedArtifact.id, runs };
+  } finally {
+    d.close();
+  }
+  const leaks = (text: string) => [SENTINEL, holdout.path, holdout.test, holdout.expected, ...holdout.runs].filter((s) => text.includes(s));
+  check('the holdout was evaluated, so it has runs to leak', holdout.runs.length >= 2, String(holdout.runs.length));
+  const all = run(['events', '--out', out, '--limit', '100000', '--format', 'json']).out;
+  check('events --format json (the shell\'s fallback read) carries no holdout path, body or digest', all.length > 1000 && leaks(all).length === 0, leaks(all).join(' '));
+  const mine = run(['events', '--mission', implement.id, '--out', out, '--limit', '100000', '--format', 'json']).out;
+  check('nor does events --mission', leaks(mine).length === 0, leaks(mine).join(' '));
+  const inspected = run(['mission', 'inspect', implement.id, '--out', out, '--format', 'json']).out;
+  check('nor does mission inspect', leaks(inspected).length === 0, leaks(inspected).join(' '));
+  for (const [what, digest] of [['test', holdout.test], ['expectation', holdout.expected], ['run record', holdout.runs[0]]] as const) {
+    const r = run(['artifact', digest, '--out', out, '--format', 'json']);
+    check(`artifact <the holdout's ${what} digest> is refused`, r.code === 1 && !r.out.includes(SENTINEL) && /holdout/.test(r.err), `${r.code} ${r.err.slice(-200)}`);
+  }
+  const reveal = run(['artifact', holdout.test, '--out', out, '--reveal-holdout', '--format', 'json']);
+  check('a person at the CLI can still read it with --reveal-holdout', reveal.code === 0 && reveal.out.includes(SENTINEL), reveal.err.slice(-200));
+  const agent = run(['artifact', holdout.test, '--out', out, '--reveal-holdout', '--format', 'json'], { CLAUDECODE: '1' });
+  check('but not from inside an agent session', agent.code !== 0 && !agent.out.includes(SENTINEL), agent.err.slice(-200));
+
+  // The shell reads daylight.db directly for its live event view; that read withholds too.
+  const shell = createRequire(import.meta.url)(path.join(ENGINE, '..', 'app', 'main', 'daylight-db.cjs')) as {
+    openEventsReadOnly(file: string): { db: { prepare(sql: string): { all(...a: unknown[]): unknown[] }; close(): void } | null; refused: string | null };
+    withholdHoldouts(db: unknown, events: unknown[]): unknown[];
+    rowToEvent(row: unknown): unknown;
+  };
+  const opened = shell.openEventsReadOnly(path.join(out, 'daylight.db'));
+  try {
+    const rows = opened.db!.prepare('SELECT * FROM events ORDER BY sequence').all();
+    const direct = JSON.stringify(shell.withholdHoldouts(opened.db, rows.map(shell.rowToEvent)));
+    check('the shell\'s direct read of daylight.db withholds the same', direct.length > 1000 && leaks(direct).length === 0, leaks(direct).join(' '));
+  } finally {
+    opened.db?.close();
+  }
 }
 
 section('close before apply is refused; approve, apply, close');
