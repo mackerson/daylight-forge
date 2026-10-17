@@ -6,7 +6,8 @@ acceptance (logs in `acc/`). The UI halves of acceptance wait for an unlocked de
 decisions of the same day (R17: author exec allowed as option (a), trailer attribution kept) are
 recorded here. The exec flip and the acceptance fixes merged as **28b6835**, the final P1 commit
 on `daylight`, on 2026-10-17. The GitHub repository is being renamed from its pre-rename name to
-`mackerson/daylight-forge` on 2026-10-16. The local directory name is unchanged.
+`mackerson/daylight-forge` (per `git remote -v`) on 2026-10-16. The local directory keeps its
+name.
 
 This is the completion record for the P1 case study. Every number in it comes from a named
 source: git on `daylight`, the decision record `docs/daylight/FORGE_PLAN.md` (ADR-8 to ADR-35),
@@ -96,7 +97,7 @@ Two cross-cutting changes underpin all of this:
 
 ## 2. Changed files, by workstream
 
-Source: `git log --first-parent -m --shortstat 13a5775..15efdfc`. Each row is the merge commit's
+Source: `git log --first-parent -m --shortstat 13a5775..28b6835`. Each row is the merge commit's
 change against the previous `daylight` tip. Every workstream merge has exactly its merged head's
 tree (checked with `git log --format=%T`), so the counts measured at those heads (§3) hold for
 the merge. The exception is 4bfdbe5, the plan, whose branch started from an older tip.
@@ -150,7 +151,7 @@ runs ended with 0 failed.
 | Redaction, 8b625a1 | 2,794 | 51 | +125 | redact-review fix verification at 59d74f6 |
 | WS8, 594f163 | 2,898 | 52 | +104 | ws8-review fix verification at e4c571f |
 | WS9, 15efdfc | 3,032 | 54 | +134 | ws9-review delta verification at ce04b81 |
-| Exec flip + acceptance fixes, 28b6835 | **3,104** | **55** | +72 | coordinator's post-merge report (typecheck, build, check clean); not re-run here |
+| Exec flip + acceptance fixes, 28b6835 | **3,104** | **55** | +72 | exec-flip-review fix verification at 7ae976e (tree equal to 28b6835); a fact-check re-run at 28b6835 also gave 3,104/55 |
 
 From P0 to 28b6835: **+1,907 assertions, +20 files**. The count was at or above the WS-R
 baseline (1,407) at every step after WS-R, which is the FORGE_PLAN §9 requirement.
@@ -164,7 +165,7 @@ At the WS9 merge, the ws9-review delta section reports:
   11 engine runtime markers (for example `node:sqlite`, `child_process`, `assertHumanDecision`)
   appears 0 times, and so does the holdout sentinel.
 
-The invariant count in `check` grew from 6 green at P0 to 17 at WS8, one or two per workstream.
+`check` grew from 6 green invariants at P0 to 17 at WS8.
 
 Flakes:
 
@@ -193,14 +194,15 @@ counted the tests that went red.
 | WS3 | 0/0/5/6 | L-1, L-2; L-3 as an interim (the store-side refusal landed in WS8) | L-4, L-5 documented | 8 mutations, all red; rerun after fixes, all red |
 | WS7 | 0/2/6/1 | F1 (raw secret in outbox), F2 (DDL changed under v2, now a schema digest), F5, F7 | F3, F4, F6, F8 accepted as Low | 14 mutations, 13 red (M7 green, which was F5). Fix round N1–N6 red; N2/N3 alone green, as redundant layers |
 | WS2 | 0/2/2/0 | F1 (`<out>` required everywhere), F3 (deny-by-default under `$HOME`), F4 (1 MiB frame cap) | F2 (redaction shapes) went to the redaction workstream and closed there. F3b residual: the writer reports fixing it in 65a472e; not re-reviewed | Authorization refusal removed: 1 red. `protected-path` removed: 16 + 3 red. R7 invariant red in three forms; misses `--bind` in a bare array literal (disclosed) |
-| WS5 | 0/3/5/1 | F1 (glued keys; reopened for WS6's shapes, closed at 366480f), F2, F3, F7, F8 | F4 (no count of malformed usage lines), F5 (id-less turns) open Low; F6 ownership | 12 mutations, 11 red; M11 (unused price table) 0 red, which was F3. After the fix, the invariant goes red on named tables; a bare literal stays silent (accepted) |
-| WS4 | 0/1/7/9 | M-1 (every policy rule uncurable), L-1 (no objects left on a failed apply), L-3 (three missing tests), I-6 | L-2, L-4, L-5, L-6, L-7 (director or WS8 hand-offs) | 17 mutations, 13 red. Round two: m07, m11, m15, m18, m20 red; m19, m21, m22 green (explained as redundant or Info) |
+| WS5 | 0/3/5/1 | F1 (glued keys; reopened for WS6's shapes, closed at 366480f, pre-rebase; merged as f7ed74d), F2, F3, F7, F8 | F4 (no count of malformed usage lines), F5 (id-less turns) open Low; F6 ownership | 12 mutations, 11 red; M11 (unused price table) 0 red, which was F3. After the fix, the invariant goes red on named tables; a bare literal stays silent (accepted) |
+| WS4 | 0/1/7/9 | M-1 (every policy rule uncurable), L-1 (no objects left on a failed apply), L-3 (three missing tests), I-6 | L-2, L-4, L-5, L-6, L-7 (director or WS8 hand-offs) | 17 mutations, 12 red, 5 green (m07, m09, m11, m13, m15). Round two: m07, m11, m15, m18, m20 red; m19, m21, m22 green (explained as redundant or Info) |
 | Redaction | 1/2/8/4 | H1 (`redis://:pass@`), M1 (colon-form generic names), L1, L6 | M2 moved to TRACKED and closed downstream (WS8 ba49d9c records `possibleSecretHits`; WS9 D6 checkbox). L2–L5, L7, L8 open | 8 mutations, all red. Each fix reverted in scratch, red |
 | WS8 | 2/2/6/0 | H1 (holdout content via `events` and `artifact`), H2 (review sandbox failed open), M1 (P0 `mission decide` unguarded), L1–L4 | M2 (delta list) went to WS9 and closed there. L5 (`/work/.git` writes vanish unflagged) open, WS2's. L6 partly | 3 mutants (H1, H2, M1 checks), all detected |
 | WS9 | 0/2/6/4, plus L7 in the delta pass | M1 (closed upstream by WS8), M2, L1, L3, L5; L6 satisfied by WS8's full-set default | L2 (`$0.00 today` P0 strip), L4 (two "need you" counts; did not reproduce on e2e data), L7 cosmetic. Pixels not checked in the delta pass (desktop locked; DOM only) | Not run by the reviewer. The writer's mutation (4 checks failed) is reported unverified |
+| Exec flip | 0/1/3/6 | R1 (exec runs left no ledger record; fixed in 2c71a88, re-verified at 7ae976e), R2 (DEMO replay claim), R3, R5, R8, R9 | R4 (bare P0 commands act on the cwd, pre-existing), R6, R7, R10 | 10/10 and 3/3 red |
 
 Totals across the P1 workstreams, excluding WS0 whose audit findings came from the P0 reviews:
-**6 High, 23 Medium, 73 Low** found. Every High was fixed and re-verified before its merge.
+**6 High, 24 Medium, 76 Low** found, 77 Low counting WS9's delta-pass L7. Every High was fixed and re-verified before its merge.
 
 BUILD-LEDGER.md first said "every High/Medium finding was fixed and re-verified before merge".
 It has since been corrected (§11). The claim is true for every High. Four Mediums instead closed
@@ -255,57 +257,43 @@ Repository-wide checks, all PASS:
 - the R7 invariant: 4 write attempts, each with an authorize decision, 0 exec;
 - the WS-R identifier invariant and the MCP-names consistency test.
 
-The remaining rows are hard constraints and testable rulings, all PASS except R15.3, which passed
-by inspection: `detectSandbox` does not consult PATH, so bwrap could not be hidden.
+The hard constraints and testable rulings all PASS. The exception is R15.3, which passed by
+inspection only.
 
 Security spot checks (acceptance §4):
 
 - 0 stub spawns across every Forge path, apart from one deliberate `--unsandboxed-review` spawn.
 - The planted key had 0 raw hits in `<out>`, the DB, events, inspect, candidate, report, replay
   and exports.
-- The holdout body appears only in the artifact store and in export files, which a byte-equal
-  replay needs.
 
-Findings from acceptance F1–F3 are in §9. The doc deviations are in §5.
+Acceptance findings are in §9, and the doc deviations in §5.
 
 ---
 
 ## 5. Demo launch instructions
 
-**Acceptance found six deviations between DEMO.md and the code** (ACCEPTANCE-P1 §2). All six are
-**fixed in 28b6835** (8d24fb5, 08d29fa), where DEMO.md was rewritten to run as written and its
-replay claim corrected. They are recorded here as found:
+The operator guide is `docs/daylight/DEMO.md`. **The live run is not authorised**: real providers
+are `unavailable` for implement (R4 Q4/Q5, R9.4), and nothing below spends money.
 
-- **D1.** `daylight` is not on PATH: `bin` is declared but not linked. Use `pnpm daylight` or
-  `node engine/cli.ts`.
-- **D2.** `--out /tmp/forge-out` is refused when `<out>` lies inside the temp dir and
-  `XDG_RUNTIME_DIR` is unset or not private (ssh, CI, `env -i`). The message gives no remedy, and
-  `spec decompose` exits 0 with the mission `blocked`.
-- **D3.** "Run once without `--confirm`" previews for authorize, gate lock and the forge decisions,
-  but `work-item approve` and `reject` refuse instead. Use `daylight confirm` there.
-- **D5.** A vacuous gate needs `--only <ids>` or `--accept-vacuous <id>` at lock. DEMO.md names
-  neither.
-- **D6.** The Forge section has no export, import or replay commands, and P0's `demo replay
-  --recording` refuses a Forge recording. The working path is `mission export`, then `map` the
-  same repo into the fresh dir, then `mission import`, then `mission replay`.
-- **D8.** "~1,440 assertions" is stale: 2,898 were measured at 594f163.
+Acceptance found six deviations between DEMO.md and the code (ACCEPTANCE-P1 §2):
 
-The operator guide is `docs/daylight/DEMO.md`. Its Forge section is the P1 mock walkthrough, and
-WS8's reviewer exercised it command by command (ws8-review §8).
+- **D1.** `daylight` was not on PATH.
+- **D2.** An `<out>` under `/tmp` is refused off-desktop.
+- **D3.** `work-item approve` gave no preview.
+- **D5.** The `--only` and `--accept-vacuous` flags were undocumented.
+- **D6.** There was no Forge export, import or replay path.
+- **D8.** The assertion count was stale.
 
-**The live run is not authorised.** Real providers are `unavailable` for implement until the owner
-authorises one live run with a dedicated, spend-capped credential (R4 Q4/Q5, R9.4). Nothing below
-spends money.
+All six are fixed in the doc in 28b6835: 8d24fb5 rewrote the walkthrough and 08d29fa added the
+preview. The replay claim was corrected in 7ae976e. D2's code half is still open (§9).
 
-Prerequisites: Node 24+, pnpm, git, `bwrap` and `prlimit`. The author, decomposer and gate
-sandboxes are not optional: `forge run`, `spec decompose` and the e2e fail without bwrap (R15.3,
-fail closed).
+Prerequisites: Node 24+, pnpm, git, `bwrap` and `prlimit`. Without bwrap, `forge run`, `spec
+decompose` and the e2e fail closed (R15.3). Run `test:all` with a short TMPDIR, because the MCP
+socket path must fit in 108 bytes. The walkthrough as shipped in DEMO.md at 28b6835:
 
 ```bash
-pnpm install && pnpm ui:build
-pnpm typecheck && pnpm test:all        # use a short TMPDIR: the MCP socket path must fit 108 bytes
-
-O='--out /tmp/forge-out'
+daylight() { node <daylight-checkout>/engine/cli.ts "$@"; }
+O="--out $HOME/daylight-forge-out"
 daylight map <repo> $O
 daylight spec register <repo> --file docs/spec.md $O
 DAYLIGHT_MOCK_ADAPTER=<decomposer.cjs> daylight spec decompose m_S <repo> --tools mock $O
@@ -316,26 +304,24 @@ daylight mission authorize m_I --write --rationale '…' --confirm <c> $O
 daylight gate add m_I --role gate    --test add.test.js  --expect-exit 0 --expect-stdout '# fail 0' $O
 daylight gate add m_I --role holdout --test hold.test.js --expect-exit 0 --expect-stdout '# fail 0' $O
 daylight gate baseline m_I <repo> $O
-daylight gate lock m_I --rationale '…' --confirm <c> $O
+daylight gate lock m_I --rationale '…' --confirm <c> $O             # <c> from the `gate set` digest
+# a vacuous gate refuses the lock: fix it, --accept-vacuous x_…, or lock a subset with --only x_…,x_…
 DAYLIGHT_MOCK_ADAPTER=<author.cjs> daylight forge run m_I <repo> --tools mock $O
 daylight forge candidate c_… $O
 daylight forge approve c_… --rationale '…' --confirm <c> $O
 daylight forge apply c_… <repo> --confirm <c> $O
 daylight mission close m_I --outcome succeeded --reason '…' $O
 daylight report --project --group model $O
+daylight mission export m_I --file implement.json $O
+F="--out $HOME/daylight-forge-fresh"
+daylight map <repo> $F && daylight mission import --file implement.json $F
+daylight mission replay m_I $F --format json                        # equal to $O's except each event's sequence
 ```
 
-Every decision needs `--confirm <digest8>`. Run the command once without it (or `daylight confirm
-<operation> <subject>`) to see what is being confirmed. Decisions are refused under `CLAUDECODE`
-or `DAYLIGHT_SESSION` and recorded as `human:<OS user>`; naming another actor is refused.
-
-To view it, run `DAYLIGHT_DIR=/tmp/forge-out pnpm view`. `DAYLIGHT_MISSION_SAMPLE=1` shows the
-synthetic sample screens, which are labelled SAMPLE DATA. Refusals worth showing are listed in
-DEMO.md:
-
-- an author that edits `package.json`;
-- a low-tier possible secret, which needs `--acknowledge-possible-secret`;
-- `--unsandboxed-review` and `--no-review-sandbox`.
+`mission authorize --write --execute` grants exec. The author then gets the `run` tool, and each
+call becomes an `attempt.exec` event. Every decision needs `--confirm <digest8>`; run it once
+without, or use `daylight confirm`, to preview. Decisions are refused under `CLAUDECODE` or
+`DAYLIGHT_SESSION`, and are recorded as `human:<OS user>`. An export discloses its holdouts.
 
 ---
 
@@ -358,17 +344,18 @@ exist. The P0 statement in DEMO.md ("There is no recorded two-reviewer run yet")
 - **Synthetic transcript fixtures (WS6).** There are nine files under
   `fixtures/claude-code-transcripts/`, with placeholder session ids (`11111111-…`, `22222222-…`,
   `33333333-…`) and two subagent files with `meta.json`. They were written by hand to the Claude
-  Code JSONL shape. WS6's reviewer states that all transcript content it used was synthetic and
-  that no real transcript was opened. Its hostile probe was also synthetic, with planted
-  `sk-ant`, `AKIA`, PEM, JWT and 17 MB lines. The parser has not been run against a real
-  transcript.
+  Code JSONL shape. The WS6 writer did read real transcripts, but only through a scratchpad
+  script that printed key names and value types, with no values. It did not open the current
+  session's transcript, and no real text reached fixtures, tests or commits (ws6-report "Format
+  findings and transcript access"). The reviewer's hostile probe (`rv-6/probe.ts`) was synthetic.
+  The parser itself has not been run against a real transcript.
 - **Renderer sample fixtures (WS9).** `app/renderer/lib/fixtures/forge-{implement,ledger,work-items}.sample.ts`
   are each headed "SAMPLE DATA … SYNTHETIC" and export `_sample: 'SYNTHETIC'`, which a test
   checks. Credentials appear as `{present, envName, label}` only.
 - **Mock adapters.** The author, reviewer and decomposer are scripts named by
   `DAYLIGHT_MOCK_ADAPTER`. Each is labelled `mock` in its artifacts, and an applied commit
-  credits `Daylight mock adapter (test double) <mock@daylight.invalid>`. A mock's $0.05 cost
-  is a test constant, not a price (R10.3).
+  credits `Daylight mock adapter (test double) <mock@daylight.invalid>`. A mock's declared
+  cost is a fixed test constant, not a price (R10.3).
 - **Stub provider binaries.** The stand-in `claude`, `codex`, `grok` and `opencode` used by the
   e2e, probes and acceptance write a marker and exit 99. They prove that the real binaries are
   refused.
@@ -440,8 +427,7 @@ Source: `ACCEPTANCE-P1.md` §5 (`acc/step5.out`), run on 15efdfc. It ran the sam
 | `pnpm test:all` | 1,197 assertions | 2,898 assertions; 138.0 / 138.3 / 139.0 s over three runs, 0 flakes |
 | `pnpm typecheck` | — | 3.8 s |
 
-The acceptance file does not explain the slower `map`. The repo grew from 152 to 207 files, and
-this is a single sample, so the regression stays unexplained until re-measured. Renderer frame rows were not measured, since that is the UI phase. The P0 renderer
+The slower `map` (152 to 207 files, one sample) is unexplained until re-measured. Renderer frame rows were not measured, since that is the UI phase. The P0 renderer
 figures (MEASURED.md) remain the latest.
 
 Nobody in the build read the private 10k map directory (R8.4).
@@ -456,8 +442,12 @@ Nobody in the build read the private 10k map directory (R8.4).
     real binaries would have spent money.
   - `export --help` overwrote the tracked `.codemap/knowledge.json` and `ARCHITECTURE.md`.
   - Eleven more subcommands did their real work on `--help`.
-- **Found by acceptance, Medium (F2): DEMO.md's out path failed on non-desktop sessions. Fixed in
-  28b6835**, with the doc rewrite (§5, D2).
+- **Found by acceptance, Medium (F2): out path on non-desktop sessions. Doc half fixed in
+  28b6835.** DEMO.md now uses `$HOME/daylight-forge-out` and documents the rule. The code half is
+  **still open**: the refusal message gives no remedy, and `spec decompose` exits 0 on a blocked
+  mission (exec-flip-report "not done").
+- **Found by the exec-flip review, Low (R4), pre-existing and open.** Bare P0 commands default to
+  the cwd and act. In a clone, a bare `agent` spawned the `claude` stub 3 times.
 - **Found by acceptance, Low (F3): holdout test path in `mission replay` and `gate list`. Fixed in
   28b6835** (f35c7b0). Export files still carry holdout bodies by design, for byte-equal replay,
   so a recording discloses its holdouts.
@@ -621,7 +611,7 @@ its own harness total, so that row reads "not recorded" and is left out of the s
 | reviewer | Fable 5.1 | WS8 review + verification | 334,368 | 2H/2M/6L → fixed |
 | reviewer | Fable 5.1 | P1 acceptance, engine and CLI phase | 302,583 | ACCEPTANCE-P1.md: 29 PASS, 2 PARTIAL, 0 FAIL; F1 High |
 | writer | Opus 5.5 | exec flip (R17) + acceptance fixes | 297,617 | merged 28b6835 |
-| reviewer | Fable 5.1 | exec flip review | 296,784 | merged 28b6835 |
+| reviewer | Fable 5.1 | exec flip review | 296,784 | 0H/1M/3L → fixed |
 | writer | Opus 5.5 | this completion report | not recorded | docs/daylight/FORGE_REPORT.md |
 
 Subtotals through 28b6835, re-summed from the table by this writer, excluding the unrecorded
