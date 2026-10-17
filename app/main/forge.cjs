@@ -32,7 +32,9 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const CODE = /^[0-9a-f]{8}$/;
 /** One roster entry: `tool` or `tool:model`. A forge run takes one author, not a roster. */
 const TOOL = /^[a-z][a-z0-9-]{0,31}(?::[A-Za-z0-9._-]{1,64})?$/;
-const LEDGER_GROUPS = ['actor', 'model', 'mission', 'work-item'];
+const LEDGER_GROUPS = ['runner', 'model', 'origin', 'mission', 'work-item', 'actor'];
+/** `report --since` takes an ISO 8601 date; only the plain date or UTC timestamp forms pass. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)?$/;
 
 const idOf = (kind, v) => (typeof v === 'string' && ID[kind].test(v) ? v : null);
 /** Renderer text: a bounded single line, or nothing. */
@@ -70,7 +72,9 @@ function previewOf(p) {
   if (typeof p.digest8 !== 'string' || !CODE.test(p.digest8) || p.digest.slice(7, 15) !== p.digest8) return null;
   const lines = Array.isArray(p.lines) ? p.lines.filter((l) => typeof l === 'string').slice(0, 40) : [];
   const refusal = typeof p.refusal === 'string' && p.refusal ? p.refusal : null;
-  return { digest: p.digest, digest8: p.digest8, lines, refusal };
+  const possibleSecrets = Array.isArray(p.possibleSecrets)
+    ? p.possibleSecrets.filter((x) => typeof x === 'string').slice(0, 40) : [];
+  return { digest: p.digest, digest8: p.digest8, lines, refusal, possibleSecrets };
 }
 
 /**
@@ -92,27 +96,41 @@ function handlersFor(deps) {
    * Preview, refusal or dialog, then the act. Cancel is the default button, so Enter on a
    * dialog that appeared unexpectedly does nothing.
    */
-  async function guarded({ operation, subject, verb, confirmArgs = [], act }) {
+  async function guarded({ operation, subject, verb, confirmArgs = [], act, secrets = false }) {
     const who = actor();
     const raw = await deps.cliJson([...ARGV.confirm(dir(), operation, subject, who), ...confirmArgs], { timeout: 30_000 });
-    if (raw && raw.error) return { refused: raw.error, operation };
+    // The CLI failing is not the guard refusing; say which it was (review L3).
+    if (raw && raw.error) return { error: raw.error, operation };
     const preview = previewOf(raw);
     if (!preview) return { refused: 'the engine gave no usable confirm digest, so nothing was done', operation };
     const shown = { operation, digest8: preview.digest8, lines: preview.lines };
     if (preview.refusal) return { refused: preview.refusal, ...shown };
+    // Approve and override of a candidate with low-confidence secret matches need the person
+    // to tick a box in this dialog (R16). The renderer cannot tick it.
+    const ask = secrets && preview.possibleSecrets.length > 0;
+    if (ask) shown.possibleSecrets = preview.possibleSecrets;
     const answer = await deps.showMessageBox({
       type: 'question',
       title: `Daylight — ${verb}`,
       message: `${verb}: confirm ${preview.digest8}`,
-      detail: [...preview.lines, '', `recorded as ${who}`, `digest ${preview.digest}`].join('\n'),
+      detail: [
+        ...preview.lines,
+        ...(ask ? ['', 'possible secrets in the diff:', ...preview.possibleSecrets.map((x) => `  ${x}`)] : []),
+        '', `recorded as ${who}`, `digest ${preview.digest}`,
+      ].join('\n'),
       buttons: ['Cancel', verb],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
+      ...(ask ? { checkboxLabel: 'I have read these paths; none holds a real secret', checkboxChecked: false } : {}),
     });
     if (!answer || answer.response !== 1) return { canceled: true, ...shown };
+    if (ask && answer.checkboxChecked !== true) {
+      return { canceled: true, note: 'the possible secret was not acknowledged, so nothing was recorded', ...shown };
+    }
     const out = await deps.cliJson(
-      [...act, ...confirmArgs, '--actor', who, '--confirm', preview.digest8, '--format', 'json'],
+      [...act, ...confirmArgs, ...(ask ? ['--acknowledge-possible-secret'] : []),
+        '--actor', who, '--confirm', preview.digest8, '--format', 'json'],
       { timeout: 120_000 },
     );
     if (out && out.error) return { error: out.error, ...shown };
@@ -136,9 +154,10 @@ function handlersFor(deps) {
         argv.push('--group', p.group);
       }
       if (p.since !== undefined && p.since !== null) {
-        const since = num(p.since, 0, Number.MAX_SAFE_INTEGER);
-        if (since === null) return { error: 'since is a time in milliseconds' };
-        argv.push('--since', String(Math.floor(since)));
+        if (typeof p.since !== 'string' || !ISO_DATE.test(p.since) || !Number.isFinite(Date.parse(p.since))) {
+          return { error: 'since is an ISO 8601 date' };
+        }
+        argv.push('--since', p.since);
       }
       return deps.cliJson(argv);
     },
@@ -200,6 +219,7 @@ function handlersFor(deps) {
       return guarded({
         operation, subject: id, verb: `${p.kind[0].toUpperCase()}${p.kind.slice(1)} candidate`,
         act: [...ARGV.decide(dir(), p.kind, id), '--rationale', rationale],
+        secrets: p.kind === 'approve' || p.kind === 'override',
       });
     },
 

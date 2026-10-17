@@ -34,7 +34,7 @@ const OUT = '/data/out';
 const REPO = '/data/repo';
 
 /** A world: the CLI answers from `answers` by command, and every call is recorded. */
-function world({ preview = { digest: DIGEST, digest8: 'abcdef12', lines: ['approve-candidate candidate'], refusal: null }, press = 1, sample = false, repo = REPO, act = { ok: 1 } } = {}) {
+function world({ preview = { digest: DIGEST, digest8: 'abcdef12', lines: ['approve-candidate candidate'], refusal: null }, press = 1, checked = false, sample = false, repo = REPO, act = { ok: 1 } } = {}) {
   const calls = { cli: [], jobs: [], boxes: [], opens: [] };
   const deps = {
     cliJson: async (argv) => {
@@ -50,7 +50,7 @@ function world({ preview = { digest: DIGEST, digest8: 'abcdef12', lines: ['appro
     username: () => 'miz',
     showMessageBox: async (opts) => {
       calls.boxes.push(opts);
-      return { response: press };
+      return { response: press, checkboxChecked: checked };
     },
     showOpenDialog: async (opts) => {
       calls.opens.push(opts);
@@ -75,8 +75,9 @@ const flag = (argv, name) => {
     check('work-items lists from the output directory', JSON.stringify(calls.cli[0]) === JSON.stringify(['work-item', 'list', '--out', OUT, '--format', 'json']));
     await h['forge-candidate']({ id: C });
     check('forge-candidate asks for one candidate, bounded', calls.cli[1][2] === C && flag(calls.cli[1], '--max-bytes') === String(1024 * 1024));
-    await h.ledger({ group: 'model', since: 1700000000000 });
-    check('ledger passes a known group and a since', flag(calls.cli[2], '--group') === 'model' && flag(calls.cli[2], '--since') === '1700000000000' && calls.cli[2].includes('--project'));
+    await h.ledger({ group: 'model', since: '2026-10-01T00:00:00.000Z' });
+    check('ledger passes a known group and an ISO since, as report --since parses it',
+      flag(calls.cli[2], '--group') === 'model' && flag(calls.cli[2], '--since') === '2026-10-01T00:00:00.000Z' && calls.cli[2].includes('--project'));
     await h['ingest-sources']({});
     check('ingest-sources reads the listing', calls.cli[3][0] === 'ingest' && calls.cli[3][1] === 'list');
     const n = calls.cli.length;
@@ -85,6 +86,8 @@ const flag = (argv, name) => {
       await h['forge-candidate']({ id: M }),
       await h.ledger({ group: 'actor; rm -rf /' }),
       await h.ledger({ since: 'yesterday' }),
+      await h.ledger({ since: 1700000000000 }),
+      await h.ledger({ since: '2026-10-01 --file /etc/passwd' }),
     ];
     check('a bad id, a mission id as a candidate, a strange group and a non-number since are refused', bad.every((r) => r.error), JSON.stringify(bad));
     check('and none of them reached the CLI', calls.cli.length === n);
@@ -127,7 +130,8 @@ const flag = (argv, name) => {
 
     const { h: he, calls: ce } = world({ preview: { error: 'unknown command confirm' } });
     const re = await he['gate-lock']({ id: M, rationale: 'these gates' });
-    check('a CLI without confirm fails closed', !!re.refused && mutations(ce).length === 0 && ce.boxes.length === 0);
+    check('a CLI error on confirm fails closed', mutations(ce).length === 0 && ce.boxes.length === 0);
+    check('and reads as a failure with the CLI\'s words, not as the guard refusing', !re.refused && re.error === 'unknown command confirm');
 
     const forged = [
       { digest: DIGEST, digest8: '00000000', lines: [] },
@@ -142,6 +146,28 @@ const flag = (argv, name) => {
       none = none && !!rf.refused && mutations(cf).length === 0 && cf.boxes.length === 0;
     }
     check('a preview whose code is not its digest\'s head, or malformed, fails closed', none);
+  }
+
+  section('possible secrets: approve and override need the dialog\'s checkbox (R16)');
+  {
+    const withSecret = { digest: DIGEST, digest8: 'abcdef12', lines: ['approve-candidate'], refusal: null, possibleSecrets: ['config/a.env'] };
+    const { h, calls } = world({ preview: withSecret, checked: true });
+    const r = await h['forge-decide']({ id: C, kind: 'approve', rationale: 'r', acknowledgePossibleSecret: true });
+    check('the dialog names the path and carries an unchecked checkbox',
+      calls.boxes[0].detail.includes('config/a.env') && typeof calls.boxes[0].checkboxLabel === 'string' && calls.boxes[0].checkboxChecked === false);
+    check('ticked, the act carries --acknowledge-possible-secret', r.ok === true && mutations(calls)[0].includes('--acknowledge-possible-secret'));
+
+    const { h: hu, calls: cu } = world({ preview: withSecret, checked: false });
+    const ru = await hu['forge-decide']({ id: C, kind: 'override', rationale: 'r', acknowledgePossibleSecret: true });
+    check('unticked, nothing is recorded even if the renderer says it acknowledged', mutations(cu).length === 0 && ru.canceled === true && /possible secret/.test(ru.note ?? ''));
+
+    const { h: hr, calls: cr } = world({ preview: withSecret, checked: true });
+    await hr['forge-decide']({ id: C, kind: 'reject', rationale: 'r' });
+    check('a reject shows no checkbox and sends no acknowledgement', cr.boxes[0].checkboxLabel === undefined && !mutations(cr)[0].includes('--acknowledge-possible-secret'));
+
+    const { h: hn, calls: cn } = world({ checked: true });
+    await hn['forge-decide']({ id: C, kind: 'approve', rationale: 'r' });
+    check('with no possible secret there is no checkbox and no flag', cn.boxes[0].checkboxLabel === undefined && !mutations(cn)[0].includes('--acknowledge-possible-secret'));
   }
 
   section('every Forge decision is guarded, rejects included (R-26, D-9)');

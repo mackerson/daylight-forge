@@ -1211,6 +1211,8 @@ ipcMain.handle('daylight:mission-run', (_e, opts = {}) => {
   const maxCost = num(opts.maxCost, 0, 10_000);
   if (maxCost) argv.push('--max-cost', String(maxCost));
   if (opts.dryRun) argv.push('--dry-run');
+  // A person's explicit choice in the window, default off: real reviewers run unsandboxed and can read <out> (Sec H5).
+  if (opts.unsandboxedReview === true) argv.push('--unsandboxed-review');
   return { id: runJob(`mission:${mid.slice(0, 10)}${opts.dryRun ? ':dry' : ''}`, argv) };
 });
 
