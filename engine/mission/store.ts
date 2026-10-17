@@ -1636,8 +1636,9 @@ export class MissionStore {
   }
 
   decisions(missionId: string): Decision[] {
+    // Two decisions in one millisecond are in the order they were recorded, not by random id.
     return this.db
-      .prepare('SELECT * FROM decisions WHERE mission_id=? ORDER BY at, id')
+      .prepare('SELECT * FROM decisions WHERE mission_id=? ORDER BY at, rowid')
       .all(missionId)
       .map((r) => this.rowToDecision(r));
   }
