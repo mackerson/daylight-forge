@@ -28,12 +28,12 @@ const SHAPES: RegExp[] = [
   /(?<![A-Za-z0-9])xox[bap]-[A-Za-z0-9-]{8,}/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   // Credentials in a URL's userinfo: `scheme://user:password@host`.
   /(?<=:\/\/)[^\s:/@]+:[^\s/@]{3,}@/g,
   /\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*=[^\s'"]{8,}/g,
-  /\bglpat-[A-Za-z0-9_-]{20,}/g,
-  /\bAIza[0-9A-Za-z_-]{35}/g,
+  /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}/g,
+  /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}/g,
 ];
 
 export const MASK = '[REDACTED]';

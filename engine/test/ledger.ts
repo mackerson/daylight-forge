@@ -19,7 +19,8 @@ import { dollarsOf, ledger, missionSpend, spendRefusal, totalOf, trailersFor } f
 import { newId } from '../mission/store.ts';
 import { costKnown, type ArtifactRef, type ProjectIdentity, type TokenUsage } from '../mission/types.ts';
 import type { Adapter } from '../swarm/adapters.ts';
-import { captureRun, type AttemptFinisher, type CaptureContext } from '../swarm/capture.ts';
+import { captureRun, isSafeLabel, type AttemptFinisher, type CaptureContext } from '../swarm/capture.ts';
+import { redact } from '../mission/redact.ts';
 import { normalize, type Provider } from '../swarm/normalize.ts';
 import { credentialFor, LineSplitter, missionSpend as usageMissionSpend, UsageAccumulator } from '../swarm/usage.ts';
 import { harness } from './harness.ts';
@@ -624,6 +625,42 @@ await (async () => {
     rows.every((r) => r.requestId === null || /^[A-Za-z0-9._:\/@+-]{1,128}$/.test(r.requestId))
       && rows.every((r) => r.model === null || /^[A-Za-z0-9._:\/@+-]{1,128}$/.test(r.model)), JSON.stringify(rows.map((r) => [r.requestId, r.model])));
   check('the turns are still counted once each', rows.length === 3 && a.tokens.input === 4 && a.costUsd === 0.01, JSON.stringify(a.tokens));
+})();
+
+section('gitlab, google and JWT keys glued to a word persist nowhere either');
+await (async () => {
+  // The reviewer's WS6 sentinels (rv-5/probe-ws6): the shapes WS6 added used `\b` too.
+  const GLPAT = 'glpat-FAKEWS6GLPATzzzz0123456789abcdefghij';
+  const AIZA = 'AIzaFAKEWS6AIZAzzzz0123456789abcdefghijk';
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.FAKEWS6JWTpayloadzz.FAKEWS6sigzzz';
+  const glued = [`msg_${GLPAT}`, `model_${AIZA}`, `id_${AIZA}`, `x_${JWT}`];
+  check('redaction masks each glued key', glued.every((g) => !/FAKEWS6/.test(redact(g, [], {}).text)),
+    glued.map((g) => redact(g, [], {}).text).join(' | '));
+  const ctx = fresh('glued-ws6');
+  const m = ctx.store.createMission({ projectId: PROJECT.id, kind: 'explore', objective: 'glued', baseRevision: 'base1' });
+  const lines = [
+    `glued: msg_${GLPAT} id_${AIZA} x_${JWT}`,
+    assistant(`msg_${GLPAT}`, { input_tokens: 3 }, `model_${AIZA}`),
+    assistant(`id_${AIZA}`, { input_tokens: 1 }, `x_${JWT}`),
+    JSON.stringify({ type: 'result', total_cost_usd: 0.01, num_turns: 1, subtype: `x_${JWT}` }),
+  ];
+  const a = await captured(ctx, m.id, printer(lines, { streamShape: 'claude' }), 'agent:mock:glued6');
+  const rows = ctx.store.usageRows(a.id);
+  ctx.close();
+  const bytes: Buffer[] = [];
+  const walk = (dir: string) => {
+    for (const n of fs.readdirSync(dir)) {
+      const p = path.join(dir, n);
+      if (fs.statSync(p).isDirectory()) walk(p);
+      else bytes.push(fs.readFileSync(p));
+    }
+  };
+  walk(path.join(tmp, 'glued-ws6'));
+  check('no glued gitlab, google or JWT key in any file, row or the attempt', !Buffer.concat(bytes).includes('FAKEWS6')
+    && !JSON.stringify(rows).includes('FAKEWS6') && !(a.model ?? '').includes('FAKEWS6'), JSON.stringify(rows.map((r) => [r.requestId, r.model])));
+  check('and the id/model whitelist rejects every key shape on its own, whatever redaction does',
+    [...glued, 'msg_sk-ant-api03-abcdefghij', 'm_ghp_abcdefghijkl', 'AKIAABCDEFGHIJKLMNOP'].every((s) => !isSafeLabel(s))
+      && ['msg_01ABCdef', 'claude-sonnet-4-5-20250929', 'gpt-5', 'turn:3', 'result'].every((s) => isSafeLabel(s)));
 })();
 
 done();

@@ -75,6 +75,9 @@ export interface CaptureContext {
 
 const DEFAULT_MEMORY = 2 * 1024 * 1024;
 const SAFE_LABEL = /^[A-Za-z0-9._:/@+-]{1,128}$/;
+/** Provider key prefixes. A real id or model name never contains one, so the whitelist refuses it without asking redaction. */
+const KEY_PREFIX = /(?<![A-Za-z0-9])(sk-|ghp_|github_pat_|AKIA[0-9A-Z]{4}|xox[bap]-|glpat-|AIza|eyJ)/;
+export const isSafeLabel = (s: string): boolean => SAFE_LABEL.test(s) && !KEY_PREFIX.test(s);
 
 /** One stream's bytes: in memory until they are not, then on disk with a tail in memory. */
 class StreamCapture {
@@ -206,7 +209,7 @@ export async function captureRun(
   // id has. Anything else — including anything redaction would touch — is kept only as a
   // digest, which still dedupes the same turn and carries nothing of the string.
   const safeLabel = (s: string): string =>
-    SAFE_LABEL.test(s) && scrub(s) === s ? s : `unsafe:${digestOf(s).slice(7, 23)}`;
+    isSafeLabel(s) && scrub(s) === s ? s : `unsafe:${digestOf(s).slice(7, 23)}`;
   // A label redaction would alter is shaped like a secret, so it is refused before anything
   // runs rather than recorded masked: the ledger names a credential, never carries one.
   if (ctx.credential) {
