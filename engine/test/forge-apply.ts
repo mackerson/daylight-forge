@@ -460,6 +460,50 @@ section('a tampered diff never becomes a commit on the base branch');
   check('no hook ran', fs.readdirSync(markers).length === 0);
 }
 
+section('three more refusals: stale stamp on override, a verdict that moved, a base off HEAD');
+{
+  const f = newMission('stale stamp override');
+  const c = evaluated(f, candidate(f, { gateSetDigest: digestOf('a gate set from before the lock') }), 'falsified');
+  const err = throws(() => decide(c, 'override-candidate', { rationale: 'gates are wrong' }));
+  check('override of a candidate built against another gate set is refused', err instanceof CandidateRefused && /built against gate set/.test(err.message), err?.message);
+  check('and records nothing', decisionsOn(c).length === 0);
+}
+{
+  const f = newMission('verdict moves after approve');
+  const c = evaluated(f, candidate(f, { edit: (t) => fs.writeFileSync(path.join(t, 'src', 'add.js'), 'module.exports = (u, v) => u + v;\n') }));
+  decide(c, 'approve-candidate');
+  // A later run of the gate on the same diff fails: the latest evaluation is what counts.
+  d.store.recordGateEvaluation({
+    missionId: f.mission.id, projectId: PROJECT.id, revision: base, experimentId: f.gates[0].id, target: 'candidate',
+    candidateId: c.id, diffDigest: c.diffArtifact.digest, harnessDigest: f.gates[0].harnessDigest, executions: [], conclusion: 'falsified',
+  });
+  const err = throws(() => apply(c));
+  check('apply of an approved candidate whose verdict is no longer accepted is refused', err instanceof CandidateRefused && /verdict is now rejected-by-gates/.test(err.message), err?.message);
+  check('and makes no ref', !refExists(refFor(f.mission.id)) && d.store.application(c.id) === null);
+}
+{
+  const f = newMission('base off HEAD');
+  const c = evaluated(f, candidate(f, { edit: (t) => fs.writeFileSync(path.join(t, 'src', 'add.js'), 'module.exports = (s, t) => s + t;\n') }));
+  decide(c, 'approve-candidate');
+  const emptyTree = raw(['hash-object', '-t', 'tree', '--stdin', '-w']);
+  const orphan = execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', repo, 'commit-tree', '--no-gpg-sign', emptyTree, '-m', 'orphan'], {
+    encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  raw(['update-ref', 'refs/heads/orphan', orphan]);
+  raw(['symbolic-ref', 'HEAD', 'refs/heads/orphan']);
+  let err: Error | null;
+  try {
+    err = throws(() => apply(c));
+  } finally {
+    raw(['symbolic-ref', 'HEAD', 'refs/heads/main']);
+    raw(['update-ref', '-d', 'refs/heads/orphan']);
+  }
+  check('apply when the base is not an ancestor of HEAD is refused', err instanceof CandidateRefused && /not an ancestor of HEAD/.test(err.message), err?.message);
+  check('and makes no ref', !refExists(refFor(f.mission.id)));
+  check('with HEAD back on the base\'s line it applies', !!apply(c).commit && refExists(refFor(f.mission.id)));
+  check('the checkout is as it was', JSON.stringify(snapshot()) === JSON.stringify(before) && fs.readdirSync(markers).length === 0);
+}
+
 section('the post-verify on the real commit deletes its ref on a mismatch');
 {
   // The scratch pre-verify catches every mismatch the test can construct, so the second check
