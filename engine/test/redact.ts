@@ -74,6 +74,8 @@ const CASES: Case[] = [
 
   { shape: 'url-password', text: 'https://deploy:FAKEurlPass@example.invalid/repo.git', sentinel: 'FAKEurlPass', kept: 'https://deploy:', glue: ['_', 'abc', 'git+'] },
   { shape: 'url-password', text: 'postgres://app:FAKE%40url:pw@db.invalid:5432/x', sentinel: 'FAKE%40url', kept: '@db.invalid:5432/x', glue: ['_', 'abc'] },
+  // Redis, Heroku and Upstash URLs carry a password with no user.
+  { shape: 'url-password', text: 'redis://:FAKEredisPass1@cache.invalid:6379/0', sentinel: 'FAKEredisPass', kept: 'redis://:', glue: ['_', 'abc', 'REDIS_URL='] },
 
   { shape: 'assignment', text: 'API_KEY=FAKEapikey1', sentinel: 'FAKEapikey', kept: 'API_KEY=', glue: ['_', 'abc', 'export ', '--'] },
   { shape: 'assignment', text: 'GITHUB_TOKEN="FAKEtoken12"', sentinel: 'FAKEtoken', kept: 'GITHUB_TOKEN="', glue: ['_', 'abc'] },

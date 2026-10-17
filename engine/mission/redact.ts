@@ -220,8 +220,8 @@ const SHAPES: Shape[] = [
     /sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}/g,
     /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}/g,
   ])),
-  // `scheme://user:password@host`: only the password goes.
-  high(pattern('url-password', [/(?<=:\/\/)(?<keep>[^\s:/@]{1,256}:)(?<val>[^\s/@]{1,512})(?=@)/g])),
+  // `scheme://user:password@host`, or `redis://:password@host` with no user: only the password goes.
+  high(pattern('url-password', [/(?<=:\/\/)(?<keep>[^\s:/@]{0,256}:)(?<val>[^\s/@]{1,512})(?=@)/g])),
   // A credential of token length; a shorter one is the low `-short` shape below.
   high(pattern('authorization-header', [new RegExp(`${AUTH_HEADER}(?<val>${AUTH_VALUE}{20,})`, 'gi')])),
   high(pattern('bearer', [new RegExp(`${BEARER}(?<val>${BEARER_VALUE}{20,})`, 'g')])),
