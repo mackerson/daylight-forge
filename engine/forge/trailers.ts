@@ -1,7 +1,5 @@
+import { trailersFor } from '../mission/ledger.ts';
 import type { CandidateFile } from '../mission/types.ts';
-// STUB: WS5 owns `trailersFor` in engine/mission/ledger.ts. WS8 repoints this import at
-// '../mission/ledger.ts' and deletes engine/forge/_stubs/ledger-trailers.ts.
-import { trailersFor } from './_stubs/ledger-trailers.ts';
 
 /**
  * The commit message `apply` writes (PLAN F-5 as narrowed by RULINGS R4 Q3a).
