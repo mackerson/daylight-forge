@@ -5,9 +5,12 @@ import { processAlive } from '../experiment/runner.ts';
 import { digestOf, type ArtifactStore } from '../mission/artifacts.ts';
 import type { EventLog } from '../mission/events.ts';
 import { redact } from '../mission/redact.ts';
-import type { ArtifactRef, AttemptState } from '../mission/types.ts';
+import type {
+  ArtifactRef, AttemptCredential, AttemptState, CostSource, TokenUsage, UsageRecordResult, UsageSource,
+} from '../mission/types.ts';
 import { run, type Adapter, type AgentResult, type AgentRun } from './adapters.ts';
-import { normalize, providerOf } from './normalize.ts';
+import { normalize, streamProviderOf } from './normalize.ts';
+import { LineSplitter, UsageAccumulator, type UsageRow } from './usage.ts';
 
 /**
  * Run an adapter as a mission attempt: every byte it prints is kept, every recognisable
@@ -34,11 +37,19 @@ export interface AttemptFinisher {
       signal?: string | null;
       timedOut?: boolean;
       costUsd: number | null;
-      costSource?: 'provider' | 'stdout-scan' | 'none';
+      costSource?: CostSource;
       failure?: string;
       artifacts?: ArtifactRef[];
+      tokens?: TokenUsage;
+      usageSource?: UsageSource;
+      model?: string;
     },
   ): unknown;
+  /**
+   * Record one turn's usage in `attempt_usage`. The mission store has it; a finisher without
+   * it still gets the attempt's totals, only not the per-turn rows.
+   */
+  recordUsage?(attemptId: string, row: UsageRow): { result: UsageRecordResult; seq: number };
 }
 
 export interface CaptureContext {
@@ -58,9 +69,15 @@ export interface CaptureContext {
   memoryBytes?: number;
   /** Called with each chunk, after redaction, for a live console. */
   onChunk?: (stream: 'stdout' | 'stderr', text: string) => void;
+  /** Which credential the agent was given, by name and label only (Q4a). Goes on `process.start`. */
+  credential?: AttemptCredential;
 }
 
 const DEFAULT_MEMORY = 2 * 1024 * 1024;
+const SAFE_LABEL = /^[A-Za-z0-9._:/@+-]{1,128}$/;
+/** Provider key prefixes. A real id or model name never contains one, so the whitelist refuses it without asking redaction. */
+const KEY_PREFIX = /(?<![A-Za-z0-9])(sk-|ghp_|github_pat_|AKIA[0-9A-Z]{4}|xox[bap]-|glpat-|AIza|eyJ)/;
+export const isSafeLabel = (s: string): boolean => SAFE_LABEL.test(s) && !KEY_PREFIX.test(s);
 
 /** One stream's bytes: in memory until they are not, then on disk with a tail in memory. */
 class StreamCapture {
@@ -188,7 +205,24 @@ export async function captureRun(
     actorId: ctx.runnerId,
   };
   const scrub = (text: string) => redact(text, ctx.secrets).text;
-  const provider = providerOf(adapter.name);
+  // A request id or model name is stored in columns of its own, so it is held to the shape an
+  // id has. Anything else — including anything redaction would touch — is kept only as a
+  // digest, which still dedupes the same turn and carries nothing of the string.
+  const safeLabel = (s: string): string =>
+    isSafeLabel(s) && scrub(s) === s ? s : `unsafe:${digestOf(s).slice(7, 23)}`;
+  // A label redaction would alter is shaped like a secret, so it is refused before anything
+  // runs rather than recorded masked: the ledger names a credential, never carries one.
+  if (ctx.credential) {
+    const said = JSON.stringify(ctx.credential);
+    if (scrub(said) !== said) throw new Error('the credential record looks like it holds a secret; name the variable and give it a plain label');
+    // The store's own shape rule (checkCredential), so process.start never carries what the attempt row would refuse.
+    const { envName, label } = ctx.credential;
+    if ((envName !== null && !/^[A-Z_][A-Z0-9_]{0,63}$/.test(envName)) || (label !== null && !/^[\w .:@/-]{1,64}$/.test(label))) {
+      throw new Error('a credential is a variable name and a short plain label');
+    }
+  }
+  const provider = streamProviderOf(adapter);
+  const usage = new UsageAccumulator(provider);
   sweepSpills({ repoRoot: options.cwd, projectId: ctx.projectId });
   const spillDir = fs.mkdtempSync(path.join(os.tmpdir(), SPILL_PREFIX));
   const owner: SpillOwner = { pid: process.pid, repoRoot: path.resolve(options.cwd), projectId: ctx.projectId, startedAt: Date.now() };
@@ -218,6 +252,7 @@ export async function captureRun(
       cwd: options.cwd,
       model: options.model ?? null,
       provider,
+      ...(ctx.credential ? { credential: ctx.credential } : {}),
     },
   });
 
@@ -225,11 +260,44 @@ export async function captureRun(
   let reportedCost: number | null = null;
   let reportedTurns: number | null = null;
   let toolCalls = 0;
-  let partial = '';
+  const lines = new LineSplitter();
+
+  // A turn's event says what the row now holds. `merged` means it replaces the earlier event
+  // with the same `seq`; the ledger reads the rows, never a sum over these.
+  const recordUsage = (ev: Parameters<UsageAccumulator['observe']>[0]) => {
+    for (const change of usage.observe(ev)) {
+      if (change.kind === 'mismatch') {
+        events.append({ ...base, category: 'cost', name: 'cost.usage.mismatch', payload: {
+          requestId: safeLabel(change.requestId), field: change.field, turns: change.turns, summary: change.summary,
+        } });
+        continue;
+      }
+      const row: UsageRow = {
+        ...change.row,
+        requestId: change.row.requestId === null ? null : safeLabel(change.row.requestId),
+        model: change.row.model === null ? null : safeLabel(change.row.model),
+      };
+      const stored = store.recordUsage?.(ctx.attemptId, row);
+      if (stored?.result === 'duplicate') continue;
+      events.append({ ...base, category: 'cost', name: 'cost.usage', payload: {
+        seq: stored?.seq ?? null, requestId: row.requestId, model: row.model,
+        inputTokens: row.tokens.input, outputTokens: row.tokens.output,
+        cacheReadTokens: row.tokens.cacheRead, cacheWriteTokens: row.tokens.cacheWrite,
+        costUsd: row.costUsd, costSource: row.costSource, source: row.source,
+        merged: (stored?.result ?? change.result) === 'merged',
+      } });
+    }
+  };
 
   const onLine = (line: string) => {
     for (const ev of normalize(provider, line)) {
-      if (ev.name === 'cost.reported') {
+      if (ev.name === 'cost.usage') {
+        recordUsage(ev);
+        continue;
+      }
+      // The provider's figure arrives as `provider.cost`; the attempt's own `cost.reported` is
+      // appended once, below, so a reader summing that name counts each attempt once.
+      if (ev.name === 'provider.cost') {
         const c = ev.payload.costUsd;
         if (typeof c === 'number') reportedCost = c;
         const t = ev.payload.turns;
@@ -239,10 +307,6 @@ export async function captureRun(
       events.append({
         ...base,
         ...ev,
-        // The attempt's own `cost.reported` is appended once, below. The provider's figure is
-        // kept beside it under another name, so a reader summing cost.reported over the log
-        // counts each attempt once rather than twice.
-        name: ev.name === 'cost.reported' ? 'provider.cost' : ev.name,
         payload: Object.fromEntries(
           Object.entries(ev.payload).map(([k, v]) => [k, typeof v === 'string' ? scrub(v) : v]),
         ),
@@ -254,12 +318,7 @@ export async function captureRun(
     streams[stream].push(chunk);
     ctx.onChunk?.(stream, scrub(chunk));
     if (stream !== 'stdout') return;
-    // Provider JSON is line-delimited; a chunk boundary mid-line is normal.
-    partial += chunk;
-    const at = partial.lastIndexOf('\n');
-    if (at < 0) return;
-    for (const line of partial.slice(0, at).split('\n')) if (line.trim()) onLine(line);
-    partial = partial.slice(at + 1);
+    for (const line of lines.push(chunk)) onLine(line);
   };
 
   const started = Date.now();
@@ -270,7 +329,7 @@ export async function captureRun(
       onOutput(stream, chunk);
     },
   });
-  if (partial.trim()) onLine(partial);
+  for (const line of lines.end()) onLine(line);
 
   const logs: ArtifactRef[] = [];
   for (const stream of ['stdout', 'stderr'] as const) {
@@ -296,12 +355,18 @@ export async function captureRun(
   const costUsd: number | null = reportedCost ?? (result.cost > 0 ? result.cost : null);
   const turns = reportedTurns ?? (result.turns > 0 ? result.turns : null);
   const costSource = reportedCost !== null ? 'provider' : costUsd !== null ? 'stdout-scan' : 'none';
+  // Token totals are the sum of the rows; the scan never supplies tokens.
+  const totals = usage.totals();
+  const model = totals.model === null ? undefined : safeLabel(totals.model);
 
   events.append({
     ...base,
     category: 'cost',
     name: 'cost.reported',
-    payload: { costUsd, turns, known: costSource === 'provider', costSource, source: ctx.runnerId },
+    payload: {
+      costUsd, turns, known: costSource === 'provider', costSource, source: ctx.runnerId,
+      tokens: totals.tokens, usageSource: totals.usageSource, dupes: totals.dupes,
+    },
   });
 
   const failure = result.ok
@@ -340,6 +405,9 @@ export async function captureRun(
     timedOut: result.timedOut,
     costUsd,
     costSource,
+    tokens: totals.tokens,
+    usageSource: totals.usageSource,
+    model,
     failure,
     artifacts: [promptRef, ...logs],
   });

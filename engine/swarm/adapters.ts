@@ -1,7 +1,7 @@
 import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-import { normalize, providerOf } from './normalize.ts';
+import { normalize, streamProviderOf, type Provider } from './normalize.ts';
 import type { AdapterStatus, AgentSpec, Probe } from './types.ts';
 
 export type { AdapterStatus, AgentSpec, Probe } from './types.ts';
@@ -109,6 +109,11 @@ export interface Adapter {
    * than filling the gap in.
    */
   probe?(): Probe;
+  /**
+   * The stream shape to read this adapter's output as, when its name does not say. Only a
+   * test double sets it, and only so its cost travels the provider path (R10.3).
+   */
+  streamShape?: Provider;
 }
 
 /**
@@ -453,7 +458,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
     // a regex over raw stdout also matches repository text an agent echoes, which could kill a
     // run over a number nobody charged. Only for a provider whose shape is unknown is the
     // regex used, folded one complete line at a time so the scan stays linear.
-    const provider = providerOf(adapter.name);
+    const provider = streamProviderOf(adapter);
     const structured = provider === 'claude' || provider === 'grok' || provider === 'codex';
     const fromProvider = { cost: 0, turns: 0 };
     const scanned: SpendParts = { total: 0, generic: 0, summed: 0, turns: 0 };
@@ -462,7 +467,7 @@ export function run(adapter: Adapter, options: AgentRun): Promise<AgentResult> {
       if (!line.trim()) return;
       if (structured) {
         for (const ev of normalize(provider, line)) {
-          if (ev.name !== 'cost.reported') continue;
+          if (ev.name !== 'provider.cost') continue;
           if (typeof ev.payload.costUsd === 'number') fromProvider.cost = ev.payload.costUsd;
           if (typeof ev.payload.turns === 'number') fromProvider.turns = ev.payload.turns;
         }

@@ -150,5 +150,29 @@
       "maxFiles": 1,
       "minSites": 1
     }
+  },
+  {
+    "id": "ledger-reads-attempt-rows-not-events",
+    "prose": "The project ledger and its report take every dollar and token figure from attempt rows; neither reads the event log.",
+    "rationale": "Events narrate spend more than once: a merged usage line, provider.cost and the capture's cost.reported all describe the same dollars, so a sum over them double-counts. The attempt row is the ledger of record (PLAN F-9). The runtime half (null never summed as zero, scanned never known, no cost on a none row) is engine/test/ledger.ts and the attempt_usage CHECKs.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^engine/mission/(ledger|commands-report)\\.ts$"
+      },
+      "callee": "(^|\\.)events\\.|^EventLog$|\\.forAttempt$|\\.forMission$"
+    }
+  },
+  {
+    "id": "money-code-has-no-price-table",
+    "prose": "No symbol in the ledger, report, usage, capture or normalize modules is a price, rate or per-token table, used or not. Dollars come only from what a provider reported; tokens never become dollars.",
+    "rationale": "An estimated figure printed beside reported ones is the fabrication the ledger exists to prevent, and an unused table is one call away from being used. This matches any symbol by name, reachable or not; engine/test/ledger.ts scans the same files' source for the shape of a rate whatever it is called.",
+    "predicate": {
+      "type": "absent",
+      "select": {
+        "file": "^engine/(mission/(ledger|commands-report)|swarm/(usage|capture|normalize))\\.ts$",
+        "name": "[Pp][Rr][Ii][Cc][Ee]|[Pp][Rr][Ii][Cc][Ii][Nn][Gg]|[Tt][Aa][Rr][Ii][Ff][Ff]|^[Rr][Aa][Tt][Ee][Ss]?$|[a-z_][Rr]ates?$|_RATES?$|[Pp][Ee][Rr]_?([Tt][Oo][Kk][Ee][Nn]|[Mm][Tt][Oo][Kk]|1[Kk]|1[Mm]|[Mm][Ii][Ll][Ll][Ii][Oo][Nn])|[Uu][Ss][Dd]_?[Pp][Ee][Rr]|[Cc][Oo][Ss][Tt]_?[Pp][Ee][Rr]"
+      }
+    }
   }
 ]

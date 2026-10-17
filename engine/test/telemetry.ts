@@ -104,13 +104,13 @@ section('normalising provider output');
 
   const result = JSON.stringify({ type: 'result', subtype: 'success', total_cost_usd: 1.25, num_turns: 7, duration_ms: 900, is_error: false });
   const rs = normalize('claude', result);
-  const cost = rs.find((e) => e.name === 'cost.reported');
+  const cost = rs.find((e) => e.name === 'provider.cost');
   check('a claude result reports cost and turns', cost?.payload.costUsd === 1.25 && cost?.payload.turns === 7 && cost?.payload.known === true);
   check('and a process.result', rs.some((e) => e.name === 'process.result' && e.payload.subtype === 'success'));
 
   const noCost = normalize('claude', JSON.stringify({ type: 'result', num_turns: 3 }));
   check('a result without a price reports cost as null, not zero',
-    noCost.find((e) => e.name === 'cost.reported')?.payload.costUsd === null);
+    noCost.find((e) => e.name === 'provider.cost')?.payload.costUsd === null);
 
   check('garbage is dropped, not thrown', normalize('claude', 'not json {').length === 0);
   check('an unrelated JSON line is not an event', normalize('claude', '{"type":"system","subtype":"init"}').length === 0);
@@ -125,7 +125,7 @@ section('normalising provider output');
   check('a codex updated item is not a second call',
     !normalize('codex', JSON.stringify({ type: 'item.updated', item: { id: 'i1', type: 'mcp_tool_call', tool: 'x', status: 'in_progress' } }))
       .some((e) => e.name === 'tool.call'));
-  check('codex never reports a cost', !normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5 } })).some((e) => e.name === 'cost.reported'));
+  check('codex never reports a cost', !normalize('codex', JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5 } })).some((e) => e.name === 'provider.cost'));
 
   check('the prompt is replaced in a described argv',
     describeArgv(['-p', 'the prompt', '--x'], 'the prompt').join(' ').match(/<prompt 10 chars sha256:/) !== null);
