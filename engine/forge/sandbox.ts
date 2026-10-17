@@ -153,6 +153,26 @@ export function mountRefusal(src: string, o: { home: string; out: string; allow?
   return null;
 }
 
+/**
+ * Every `homeAllow` entry must name one thing strictly inside `$HOME`: an absolute path with
+ * no glob characters whose resolved form is a descendant of `$HOME`. `$HOME` itself, a parent,
+ * `/`, an outside path or a glob would be a blanket allow, so each is refused as input.
+ */
+export function checkHomeAllow(entries: unknown, home: string): void {
+  if (entries === undefined) return;
+  if (!Array.isArray(entries)) throw new SandboxRefused('homeAllow must be an array of paths');
+  const h = resolved(home);
+  for (const e of entries) {
+    if (typeof e !== 'string' || !path.isAbsolute(e) || /[*?[\]{}]/.test(e)) {
+      throw new SandboxRefused(`homeAllow entry ${String(e)} must be an absolute path without glob characters`);
+    }
+    const r = resolved(e);
+    if (r === h || !r.startsWith(`${h}${path.sep}`)) {
+      throw new SandboxRefused(`homeAllow entry ${e} must be strictly inside the home directory`);
+    }
+  }
+}
+
 /** `<out>`, or a refusal: every launch must say where it is so it can be kept out (F1). */
 export function requireOut(out: unknown): string {
   if (typeof out !== 'string' || !out.trim() || !path.isAbsolute(out)) {
@@ -275,6 +295,7 @@ export function profileLaunch(profile: SandboxProfile, o: ProfileOptions): Sandb
   if (o.network !== 'none' && o.network !== 'shared') throw new SandboxRefused(`unknown network ${String(o.network)}`);
   requireOut(o.out);
   const home = o.home ?? os.homedir();
+  checkHomeAllow(o.homeAllow, home);
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
   const root = resolved(o.root);
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new SandboxRefused(`${root} is not a directory`);

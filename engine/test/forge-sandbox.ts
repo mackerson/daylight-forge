@@ -211,6 +211,13 @@ section('the author profile');
     if (!fs.existsSync(p)) fs.writeFileSync(p, 'secret');
     check(`~/${rel} is refused even when allowlisted`, /is under ~\//.test(withMount(p, [p]) ?? ''), String(withMount(p, [p])));
   }
+  for (const [label, entry] of [
+    ['$HOME itself', home], ['a parent of $HOME', path.dirname(home)], ['/', '/'], ['a path outside $HOME', tmp + '/elsewhere'],
+    ['a glob', path.join(home, '*')], ['a relative path', 'notes.txt'], ['$HOME spelled with ..', path.join(home, 'proj', '..')],
+  ] as const) {
+    check(`a homeAllow entry that is ${label} is refused as input`,
+      /homeAllow/.test(withMount(notes, [entry]) ?? ''), String(withMount(notes, [entry])));
+  }
   const homeRepo = path.join(home, 'proj');
   fs.mkdirSync(homeRepo, { recursive: true });
   check('a review root under $HOME is the explicitly named root, so admitted',
