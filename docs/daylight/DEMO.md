@@ -28,7 +28,7 @@ nothing runs in the open.
 ```bash
 pnpm install
 pnpm ui:build
-pnpm typecheck && pnpm test:all        # ~1,440 assertions; includes the acceptance checklist
+pnpm typecheck && pnpm test:all        # ~3,090 assertions in 55 files; includes the acceptance checklist
 ```
 
 ## The guided demo, in order
@@ -154,14 +154,27 @@ kept as artifacts. Without `--execute` the default stays no exec and there is no
 Needs `bwrap` and `prlimit`: the author, decomposer and gate sandboxes are not optional, and
 `forge run`, `spec decompose` and the e2e fail when they are missing.
 
+`daylight` is not on PATH (the package declares the bin but nothing links it), and `pnpm
+daylight` runs from the Daylight checkout, which breaks the relative `--test` paths below. Define
+a shell function first, so every line runs as written from the fixture repository.
+
+Where `<out>` lives matters. Each agent attempt gets its MCP socket in a private directory
+under `$XDG_RUNTIME_DIR` when that is a 0700 directory of yours, else under the system temp dir,
+and never in a directory that contains `<out>` or sits inside it. So an `<out>` under `/tmp` works on
+a desktop session but is refused over ssh, in CI or under `env -i`, with "no private runtime
+directory outside the home directory and <out> for the MCP socket"; `spec decompose` then
+leaves the spec mission `blocked` and still exits 0. An `<out>` under your home directory, as
+below, works everywhere.
+
 Every decision below needs `--confirm <digest8>`: run the command once without it (or
-`daylight confirm <operation> <subject>`) to see what you are confirming, then again with the
-first eight hex characters of the digest. Decisions are refused under `CLAUDECODE` or
-`DAYLIGHT_SESSION` (an agent approving its own work), and are recorded as `human:<your OS
-user>`; naming another actor is refused.
+`daylight confirm <operation> <subject>`) to see what you are confirming (exit 2, nothing
+decided), then again with the first eight hex characters of the digest. Decisions are refused
+under `CLAUDECODE` or `DAYLIGHT_SESSION` (an agent approving its own work), and are recorded as
+`human:<your OS user>`; naming another actor is refused.
 
 ```bash
-O='--out /tmp/forge-out'
+daylight() { node <daylight-checkout>/engine/cli.ts "$@"; }
+O="--out $HOME/daylight-forge-out"
 daylight map <repo> $O
 daylight spec register <repo> --file docs/spec.md $O               # → spec mission m_S
 DAYLIGHT_MOCK_ADAPTER=<decomposer.cjs> daylight spec decompose m_S <repo> --tools mock $O
@@ -173,13 +186,24 @@ daylight gate add m_I --role gate    --test add.test.js  --expect-exit 0 --expec
 daylight gate add m_I --role holdout --test hold.test.js --expect-exit 0 --expect-stdout '# fail 0' $O
 daylight gate baseline m_I <repo> $O                                # both must be falsified
 daylight gate lock m_I --rationale '…' --confirm <c> $O             # the full gate+holdout set
+# a gate that already passes on the base is vacuous and refuses the lock: fix the test, accept it
+# by name with --accept-vacuous x_…, or lock a subset with --only x_…,x_… (the preview's digest changes)
 DAYLIGHT_MOCK_ADAPTER=<author.cjs> daylight forge run m_I <repo> --tools mock $O
 daylight forge candidate c_… $O                                     # redacted diff, holdouts withheld
 daylight forge approve c_… --rationale '…' --confirm <c> $O         # only if accepted-by-gates
 daylight forge apply c_… <repo> --confirm <c> $O                    # a new ref; HEAD and tree untouched
 daylight mission close m_I --outcome succeeded --reason '…' $O      # refused before an apply
 daylight report --project --group model $O                          # cost: unknown, never $0
+daylight mission export m_I --file implement.json $O
+F="--out $HOME/daylight-forge-fresh"
+daylight map <repo> $F && daylight mission import --file implement.json $F   # map first: it pins the project
+daylight mission replay m_I $F --format json                        # byte-equal to the same with $O
 ```
+
+An export carries each holdout's test and runs, because a byte-equal replay needs them: treat
+the file as disclosing the holdouts. P0's `demo replay --recording` is for the P0 demo fixture
+and refuses a Forge export (wrong project); use `mission import` as above. Importing into a
+directory that holds no map has no project to check against, so map the same repository first.
 
 What to point at:
 - `mission inspect m_I --format json` carries `needs` (derived, never stored:
@@ -188,8 +212,9 @@ What to point at:
   `gateEvaluations` and `applications`. A holdout appears only as its id, role, conclusion and
   digests; its test, prediction and runs never leave the engine.
 - The author ran in a detached workspace under the `author` profile (network none, write, and
-  exec only if the authorize decision carried `--execute`; the attempt row records which), reaching its MCP server only through its own socket; the workspace is removed after
-  capture unless `--keep-workspace`. The narrative it printed is labelled *author-claimed,
+  exec only if the authorize decision carried `--execute`; the attempt row records which),
+  reaching its MCP server only through its own socket; the workspace is removed after capture
+  unless `--keep-workspace`. The narrative it printed is labelled *author-claimed,
   unverified* and never feeds the verdict.
 - Refusals worth showing: an author that edits `package.json` gets `policy-violation`, no gate
   runs, and approve, override and apply are all refused (every violation is uncurable, R15.4);
