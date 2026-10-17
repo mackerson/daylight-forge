@@ -10,6 +10,14 @@
  *
  * The secret itself is never logged, counted, or returned: the result says how many
  * replacements were made, not what they were.
+ *
+ * Shapes catch accidents, not an author hiding a secret on purpose. Known misses, by design:
+ * obfuscation (a zero-width character inside a header or name, a lower-case or headerless
+ * PEM, a base64-wrapped value); `user:pass@host` with no `scheme://`; an unencoded `/` in a
+ * URL password, one over 512 characters or a user over 256; `NAME = value` spaced and
+ * unquoted; `--password value` and `-pvalue`; Go's `:=`; a k8s `value:` line under its
+ * `name:`; a generic value under 8 characters; and the glue residue in the table's comment
+ * (a 76-character `ghr_` or a classic `sk-` glued to a letter or digit).
  */
 
 const SUSPICIOUS_NAME = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
