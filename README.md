@@ -209,8 +209,9 @@ granted beyond what the law allows by default.
 
 <p align="center">
   <sub>
-    <b>Full disclosure:</b> a human directed this project, set the goals, made the decisions and
-    checked the results. AI agents wrote the code, and other AI agents reviewed it adversarially.
+    <b>Full disclosure:</b> a human directed this project, set the goals, made the calls that
+    mattered and checked the results; an AI director ran the agent swarm and issued the working
+    rulings under those calls. AI agents wrote the code, and other AI agents reviewed it adversarially.
     No human has reviewed the code line by line. The tests, the digests on every verdict, the
     sandbox boundaries and the ledger are how we keep each other honest. Read accordingly.
   </sub>
