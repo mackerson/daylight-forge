@@ -104,6 +104,9 @@ pnpm gui                     # build the UI and open the app
 pnpm view                    # open the app against an already-built UI
 ```
 
+`main` is the only branch. The P1 work branches were merged into it and deleted, so clone
+and build from `main`.
+
 `daylight` is not linked onto your PATH. From the checkout, `pnpm daylight <command>` works; from
 another directory, define `daylight() { node <checkout>/engine/cli.ts "$@"; }`. Every subcommand
 honours `--help`, and `node engine/cli.ts help` lists them all.
