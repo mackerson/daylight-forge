@@ -94,6 +94,8 @@ field; DEMO.md asks for Node 24, which acceptance ran on), pnpm, git, and `bwrap
 nothing runs in the open.
 
 ```bash
+git clone git@github.com:mackerson/daylight-forge.git daylight
+cd daylight
 pnpm install
 pnpm ui:build
 TMPDIR=/tmp pnpm typecheck && TMPDIR=/tmp pnpm test:all   # a short TMPDIR: socket paths must fit in 108 bytes
