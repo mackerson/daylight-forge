@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { GateHarness } from '../mission/types.ts';
 
 /**
  * Per-project policy (RULINGS P2-R6): `<repo>/daylight.policy.json`, read by the host from the
@@ -29,8 +30,7 @@ const MAX_GATE_ARG_CHARS = 256;
 
 export const LANGUAGES = ['node', 'rust'] as const;
 export type Language = (typeof LANGUAGES)[number];
-export const GATE_HARNESSES = ['cargo', 'node'] as const;
-export type GateHarness = (typeof GATE_HARNESSES)[number];
+export const GATE_HARNESSES = ['cargo', 'node'] as const satisfies readonly GateHarness[];
 
 /**
  * One protected rule, matched against a repo-relative path split on `/`:
