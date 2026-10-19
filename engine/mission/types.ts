@@ -40,6 +40,9 @@ export const ID_PREFIX = {
   candidate: 'c',
   gateEvaluation: 'g',
   application: 'p',
+  assumption: 'u',
+  integration: 'i',
+  finding: 'f',
 } as const;
 export type EntityKind = keyof typeof ID_PREFIX;
 
@@ -90,7 +93,7 @@ export interface Revision {
  * writes or executes.
  */
 export type MissionKind =
-  | 'explore' | 'verify' | 'implement' | 'remediate' | 'audit' | 'work' | 'spec';
+  | 'explore' | 'verify' | 'implement' | 'remediate' | 'audit' | 'work' | 'spec' | 'campaign';
 export type MissionState = 'draft' | 'ready' | 'running' | 'blocked' | 'closed';
 /**
  * Recorded separately from state, and only ever set by `close`. A process exiting 0 is not an
@@ -383,6 +386,8 @@ export interface Attempt {
   parentAttemptId?: string;
   /** The locked gate set an author attempt ran against. */
   gateSetDigest?: string;
+  /** The spend ceiling handed to the runner (`maxCost`), USD: a campaign's reservation (P2-R18). */
+  maxCostUsd?: number;
   /** The runner process, for liveness. Recorded beside WS0's per-mission claim file (R5). */
   pid?: number;
   heartbeatAt?: number;
@@ -634,7 +639,8 @@ export interface IngestSource {
 export type NeedKind =
   | 'blocked' | 'dispute' | 'spec-ambiguity' | 'gate-lock' | 'gate-vacuous'
   | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize'
-  | 'request-dependency';
+  | 'request-dependency'
+  | 'plan-approval' | 'campaign-authorize' | 'campaign-halted' | 'assumption-pending' | 'owner-decision';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {
@@ -656,12 +662,18 @@ export type DecisionKind =
 export type DecisionOperation =
   | 'authorize-mission' | 'lock-gates' | 'approve-work-item' | 'reject-work-item'
   | 'approve-candidate' | 'reject-candidate' | 'override-candidate' | 'adhoc-mission'
-  | 'resolve-dependency-request';
+  | 'resolve-dependency-request'
+  | 'approve-plan' | 'lock-campaign-gates' | 'authorize-campaign' | 'halt-campaign' | 'resume-campaign'
+  | 'adopt-integration-tip' | 'integrate-candidate' | 'admit-work-item' | 'confirm-assumption' | 'decide-assumption'
+  | 'overturn-assumption' | 'retry-ticket';
 
 export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'authorize-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
   'approve-candidate', 'reject-candidate', 'override-candidate', 'adhoc-mission',
   'resolve-dependency-request',
+  'approve-plan', 'lock-campaign-gates', 'authorize-campaign', 'halt-campaign', 'resume-campaign',
+  'adopt-integration-tip', 'integrate-candidate', 'admit-work-item', 'confirm-assumption', 'decide-assumption',
+  'overturn-assumption', 'retry-ticket',
 ];
 
 /** `mission authorize`: the only act that turns `write` on (ADR-9, ADR-34). */
@@ -705,7 +717,9 @@ export interface AdhocMissionScope {
 
 export type ForgeDecisionScope =
   | AuthorizeScope | LockGatesScope | CandidateDecisionScope | WorkItemDecisionScope
-  | AdhocMissionScope;
+  | AdhocMissionScope
+  | ApprovePlanScope | CampaignLockScope | AuthorizeCampaignScope | IntegrateCandidateScope | AdmitWorkItemScope
+  | HaltCampaignScope | ResumeCampaignScope | AdoptTipScope | AssumptionDecisionScope | RetryTicketScope;
 
 export interface Decision {
   id: string;
@@ -830,3 +844,155 @@ export interface MissionAuthorizedPayload {
 export type DaylightEventInput = Omit<DaylightEvent, 'schemaVersion' | 'id' | 'sequence' | 'at'> & {
   at?: number;
 };
+
+// ---- campaigns (WS-R5) -------------------------------------------------------
+//
+// A campaign is a mission of kind `campaign` whose children are ticket missions
+// (`Mission.parentId`). Its plan is data a person approves once; the director process then acts
+// under one human `authorize-campaign` decision, recording derived decisions as `campaign:<m_id>`.
+// docs/daylight/CAMPAIGN.md; ADR-36, ADR-37.
+
+export const PLAN_KIND = 'daylight-plan' as const;
+export const PLAN_VERSION = 1 as const;
+
+export interface PlanFileV1 {
+  kind: typeof PLAN_KIND; version: typeof PLAN_VERSION; title: string;
+  derivedStatus?: boolean; statusPath?: string;     // STATUS is derived; statusPath is protected for authors
+  defaults?: { budget?: TicketBudget; acceptance?: TicketAcceptance };
+  campaignGates: PlanCampaignGateV1[];              // project-wide regression gates
+  lanes: PlanLaneV1[]; ownerDecisions?: PlanOwnerDecisionV1[]; tickets: PlanTicketV1[];
+}
+export interface PlanCampaignGateV1 {   // an ordinary R2 gate (P2-R16)
+  id: string;                    // /^[a-z][a-z0-9-]{0,31}$/
+  role: 'regression';            // must pass at base and on every integrated tree
+  harness?: GateHarness; path: string; crate?: string;  // test file at the plan commit; harness defaults to policy.gate?.harness ?? 'node'
+  expect: ExpectedObservation; timeoutSeconds?: number;
+}
+export interface PlanGateTestV1 { path: string; harness?: GateHarness; crate?: string; expect: ExpectedObservation }
+export interface PlanLaneV1 {
+  id: string;                    // /^[A-Z][A-Z0-9]{0,7}$/; 'FIX' reserved
+  title: string; owns: string[]; // owns: repo-relative prefixes
+  maxParallel?: number;          // default 1: one writer per lane, as kitkraft
+  shared?: string[];             // prefixes this lane may share with another lane
+}
+export interface PlanOwnerDecisionV1 {
+  id: string;                    // /^O[A-Z0-9.]{1,31}$/
+  question: string; options?: string[]; blocking: boolean; rationale?: string;
+  default?: string;              // required when blocking is false
+}
+export interface PlanTicketV1 {
+  id: string;                    // /^[A-Z][A-Z0-9]*(\.[A-Z0-9]+)*$/, <= 32 chars, e.g. "M2.A1"
+  lane: string; title: string;   // title <= MAX_TITLE_CHARS (proposal.ts), one line
+  statement: string | string[];  // <= MAX_STATEMENT_BYTES joined (proposal.ts)
+  examples?: string[]; negativeExamples?: string[];   // <= MAX_EXAMPLES each (proposal.ts)
+  dependsOn?: string[]; blocksOn?: string[];          // ticket ids; owner-decision ids
+  scope: string[];               // repo-relative prefixes; becomes MissionScope.paths
+  acceptance?: TicketAcceptance; // default plan.defaults.acceptance, else { kind: 'ci-only' }
+  budget?: TicketBudget;
+}
+export type TicketAcceptance =
+  | { kind: 'gate'; tests: PlanGateTestV1[] }                                   // public tests at the plan commit, bound to the ticket
+  | { kind: 'ci-only' }
+  | { kind: 'writer-authored'; harness?: GateHarness; crate?: string; testPaths: string[]; expect: ExpectedObservation }; // author writes them
+/** Each field lowers, never raises, the envelope's matching cap. */
+export interface TicketBudget { maxUsd?: number; maxTurns?: number; timeoutSeconds?: number; maxAttempts?: number }
+export interface PlanRefusal { path: string; rule: PlanRule; detail: string }
+export type PlanRule = 'shape' | 'version' | 'duplicate-id' | 'unknown-lane' | 'unknown-dependency' | 'self-dependency' | 'cycle'
+  | 'scope-path' | 'scope-protected' | 'scope-outside-lane' | 'lane-overlap' | 'unknown-owner-decision' | 'owner-default-missing'
+  | 'acceptance-path' | 'acceptance-harness' | 'policy' | 'text' | 'too-many' | 'too-large';
+
+/** Where a campaign ticket came from: the approved plan, a wave-review finding, or an overturned assumption. */
+export type TicketOrigin = 'plan' | 'fix' | 'follow-up';
+
+export interface CampaignTicket { campaignId: string; ticketId: string; projectId: string; workItemId: string; origin: TicketOrigin;
+  lane: string; dependsOn: string[]; scope: string[]; acceptance: TicketAcceptance; budget: TicketBudget; blocksOn: string[];
+  ticketDigest: string; sourceRef?: string; createdAt: number }
+
+/**
+ * A ticket's state, derived from rows on every pass and never stored (§4.2). `waiting-dependency`:
+ * its mission has an open `request-dependency` need; the loop parks it and continues (P2-R21).
+ */
+export type TicketStatus =
+  | 'superseded' | 'waiting-owner'   // work item superseded/rejected | blocksOn names an open owner decision
+  | 'waiting' | 'ready'              // a dependency not landed | deps landed, no open mission, not exhausted
+  | 'running' | 'integrating'        // live attempt | integration row pending/evaluating
+  | 'waiting-dependency'             // its mission has an open request-dependency need: parked, the loop continues (P2-R21)
+  | 'landed' | 'blocked';            // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
+
+export interface ApprovePlanScope { operation: 'approve-plan'; planDigest: string; planRevision: string;
+  workItems: Record<string, string>;   // workItemId → contentDigest for every plan ticket: what setWorkItemStatus/assertImplementable check
+  supersedes: string[] }
+
+export const FINDING_SEVERITIES = ['low', 'medium', 'high'] as const;   // rank = index
+export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
+
+export interface CampaignEnvelope {
+  planDigest: string; gateSetDigest: string;     // the plan and campaign lock this grant runs against
+  policyDigest: string | null;                   // `ProjectPolicy.digest` at the plan commit, or null
+  ticketIds: string[];                           // explicit; "all" is expanded at confirm time
+  roster: string[]; reviewRoster: string[];      // author tools / wave reviewers ([] disables review)
+  maxUsdTotal: number; maxUsdPerMission: number; // campaign cap; per ticket mission incl. its repairs
+  maxTurns: number; timeoutSeconds: number;      // ≤ authorLimits(policyAtPlanCommit, defaults).maxTurns / timeoutMs (P2-R20)
+  maxAttemptsPerTicket: number; concurrency: number; waveSize: number;  // 1 + repairs (default 3); --concurrency ceiling; default 2×concurrency
+  execute: boolean;                              // nested `run` tool (ADR-35) for every ticket mission
+  autoApply: 'integration-ref' | 'none';
+  fixLane: { enabled: boolean; maxTicketsPerWave: number; maxUsdPerTicket: number };  // High only, maxTicketsPerWave ≤ 5 (P2-R10)
+  identity: { name: string; email: string };     // committer of integrated commits, labelled asserted
+  notAfter: number;                              // epoch ms; default now + 72h
+}
+export interface AuthorizeCampaignScope extends CampaignEnvelope { operation: 'authorize-campaign' }
+
+/** Declared here for both writers; `campaign lock` (WS-R6) records it. */
+export interface CampaignLockScope {
+  operation: 'lock-campaign-gates'; experimentIds: string[]; harnessDigests: Record<string, string>; vacuousOverrides: string[];
+  bindings: Record<string, string | null>;                       // experimentId → ticket id; null = regression / unbound holdout
+  roles: Record<string, 'regression' | 'gate' | 'holdout'>; ratchet: boolean;
+  gateSetDigest: string;      // sha256 over sorted "<x_id>:<harnessDigest>:<role>:<ticket|*>" lines plus "ratchet:<bool>"
+}
+
+/** `campaign:<m_id>`: the director process acting under a human authorize-campaign decision. Never a person. */
+export const isCampaignActor = (actor: string): boolean => /^campaign:m_[0-9a-f]{32}$/.test(actor);
+export const campaignActorOf = (campaignId: string): string => `campaign:${campaignId}`;
+export const DERIVED_OPERATIONS: readonly DecisionOperation[] = ['authorize-mission', 'integrate-candidate', 'admit-work-item', 'halt-campaign'];
+export interface DerivedScope { derivedFrom: string /* d_ of a human authorize-campaign */ }
+export type DerivedAuthorizeScope = AuthorizeScope & DerivedScope;
+export interface IntegrateCandidateScope extends DerivedScope { operation: 'integrate-candidate'; candidateId: string; diffDigest: string;
+  gateSetDigest: string; baseCommit: string; integrationId: string; onto: string; integratedCommit: string; integratedDiffDigest: string }
+export interface AdmitWorkItemScope extends DerivedScope { operation: 'admit-work-item'; workItemId: string; contentDigest: string;
+  ticketId: string; findingId?: string }
+export interface HaltCampaignScope { operation: 'halt-campaign'; reason: CampaignHaltReason; derivedFrom?: string }
+export interface ResumeCampaignScope { operation: 'resume-campaign'; haltDecisionId: string; reason: CampaignHaltReason }
+export interface AdoptTipScope { operation: 'adopt-integration-tip'; ref: string; from: string; to: string; haltDecisionId: string }
+export type CampaignHaltReason = 'operator' | 'spend-unknown' | 'spend-cap' | 'spend-breach' | 'integration-moved' | 'invariant'
+  | 'authorization-expired';
+
+/** `campaign retry`: a human releases a preflight-closed ticket's work item (P2-R25, P2-R27). */
+export interface RetryTicketScope { operation: 'retry-ticket'; ticketId: string; workItemId: string; contentDigest: string;
+  closedMissionId: string; reason: string }
+
+export type AssumptionStatus = 'open' | 'pending' | 'confirmed' | 'overturned';
+export type AssumptionSource = 'plan-default' | 'operator';
+export interface Assumption {
+  id: string; projectId: string; campaignId: string;                 // id: u_…
+  missionId?: string; ticketId?: string; ownerDecisionId?: string;   // what it was taken for; plan ownerDecisions[].id
+  question: string; default: string; rationale: string;              // default: what the director proceeds on ('' while open)
+  status: AssumptionStatus; blocking: boolean; source: AssumptionSource;
+  recordedBy: string;                                                // 'daylight' (import) | human:<n>
+  decisionId?: string; followUpWorkItemId?: string;                  // the human decision; overturn's follow-up
+  createdAt: number; updatedAt: number;
+}
+export interface AssumptionDecisionScope { operation: 'confirm-assumption' | 'decide-assumption' | 'overturn-assumption';
+  assumptionId: string; value: string; followUpWorkItemId?: string }
+
+/** `campaign.authorized`: ids, digests and caps, never prose. */
+export interface CampaignAuthorizedPayload {
+  decisionId: string; planDigest: string; gateSetDigest: string;
+  maxUsdTotal: number; maxUsdPerMission: number; concurrency: number; execute: boolean;
+  autoApply: CampaignEnvelope['autoApply'];
+}
+
+/** What a derived decision asks of its campaign's envelope (`envelopeRefusal`). */
+export interface EnvelopeRequest {
+  missionId: string; operation: DecisionOperation; ticketId: string; permissions?: MissionPermissions; maxUsd?: number | null;
+  at: number;
+}

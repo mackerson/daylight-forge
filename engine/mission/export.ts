@@ -435,9 +435,9 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
        (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state, started_at,
         finished_at, cost_usd, exit_code, signal, timed_out, failure, artifacts, input_tokens,
         output_tokens, cache_read_tokens, cache_write_tokens, usage_source, cost_source, model,
-        parent_attempt_id, gate_set_digest, pid, heartbeat_at, origin, sandbox_profile, sandbox_network,
+        parent_attempt_id, gate_set_digest, max_cost_usd, pid, heartbeat_at, origin, sandbox_profile, sandbox_network,
         sandbox_write, sandbox_exec, authorize_decision_id, sandbox_reason, credential, mcp_token_digest)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const a of file.attempts) {
       const r = attempt.run(
@@ -446,7 +446,7 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
         a.timedOut ? 1 : 0, a.failure ?? null, JSON.stringify(a.artifacts),
         a.tokens.input, a.tokens.output, a.tokens.cacheRead, a.tokens.cacheWrite, a.usageSource,
         a.costSource, a.model ?? null, a.parentAttemptId ?? null, a.gateSetDigest ?? null,
-        a.pid ?? null, a.heartbeatAt ?? null, a.origin, a.sandbox?.profile ?? null, a.sandbox?.network ?? null,
+        a.maxCostUsd ?? null, a.pid ?? null, a.heartbeatAt ?? null, a.origin, a.sandbox?.profile ?? null, a.sandbox?.network ?? null,
         a.sandbox ? (a.sandbox.write ? 1 : 0) : null, a.sandbox ? (a.sandbox.exec ? 1 : 0) : null,
         a.sandbox?.authorizeDecisionId ?? null, a.sandbox?.reason ?? null,
         json(a.credential), a.mcpTokenDigest ?? null,

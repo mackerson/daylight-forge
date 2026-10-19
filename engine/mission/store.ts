@@ -38,6 +38,14 @@ export class GateSetMoved extends Error {
   }
 }
 
+/** A WS-R5 interface whose body has not landed yet (merge step 0, P2-R26). */
+export class NotImplemented extends Error {
+  constructor(what: string) {
+    super(`${what}: not implemented`);
+    this.name = 'NotImplemented';
+  }
+}
+
 export class IllegalTransition extends Error {
   constructor(what: string, id: string, from: string, to: string) {
     super(`${what} ${id} cannot go from ${from} to ${to}`);
@@ -237,6 +245,8 @@ export interface StartAttemptInput {
   at?: number;
   parentAttemptId?: string;
   gateSetDigest?: string;
+  /** The spend ceiling handed to the runner, USD; a campaign reserves it while the attempt runs (P2-R18). */
+  maxCostUsd?: number;
   pid?: number;
   credential?: AttemptCredential;
   /** The per-attempt MCP token. Hashed on the way in; only the digest is stored. */
@@ -681,6 +691,9 @@ export class MissionStore {
       throw new Error('an MCP token must be at least 32 characters of randomness');
     }
     if (input.credential) checkCredential(input.credential);
+    if (input.maxCostUsd !== undefined && !(Number.isFinite(input.maxCostUsd) && input.maxCostUsd >= 0)) {
+      throw new Error('maxCostUsd must be a finite number of dollars, zero or more');
+    }
     if (input.parentAttemptId !== undefined) {
       const parent = this.attempt(input.parentAttemptId);
       if (!parent || parent.missionId !== t.missionId) {
@@ -710,6 +723,7 @@ export class MissionStore {
       costSource: 'none',
       parentAttemptId: input.parentAttemptId,
       gateSetDigest: input.gateSetDigest,
+      maxCostUsd: input.maxCostUsd,
       pid: input.pid,
       heartbeatAt: input.pid !== undefined ? at : undefined,
       origin,
@@ -721,15 +735,15 @@ export class MissionStore {
       .prepare(
         `INSERT INTO attempts
          (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state,
-          started_at, cost_usd, timed_out, artifacts, parent_attempt_id, gate_set_digest, pid,
+          started_at, cost_usd, timed_out, artifacts, parent_attempt_id, gate_set_digest, max_cost_usd, pid,
           heartbeat_at, origin, sandbox_profile, sandbox_network, sandbox_write, sandbox_exec,
           authorize_decision_id, sandbox_reason, credential, mcp_token_digest)
-         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,NULL,0,'[]',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         a.id, a.missionId, a.taskId, a.projectId, a.runnerId, a.sessionId ?? null,
         a.worktree ?? null, a.state, a.startedAt, a.parentAttemptId ?? null,
-        a.gateSetDigest ?? null, a.pid ?? null, a.heartbeatAt ?? null, origin,
+        a.gateSetDigest ?? null, a.maxCostUsd ?? null, a.pid ?? null, a.heartbeatAt ?? null, origin,
         ...sandboxColumns(sandbox), a.credential ? JSON.stringify(a.credential) : null,
         a.mcpTokenDigest ?? null,
       );
@@ -1671,6 +1685,16 @@ export class MissionStore {
     return d;
   }
 
+  /**
+   * The one writer of a `campaign:` actor's decision (P2-R19): re-checks the parent
+   * `authorize-campaign` envelope against rows, then inserts. Opens no transaction; its callers
+   * hold one. Called only from the files the `derived-writer-callers` invariant names.
+   */
+  recordDerivedDecision(parentDecisionId: string, input: CreateDecisionInput): Decision {
+    void parentDecisionId; void input;
+    throw new NotImplemented('MissionStore.recordDerivedDecision');
+  }
+
   decision(decisionId: string): Decision | null {
     const r = this.db.prepare('SELECT * FROM decisions WHERE id=?').get(decisionId);
     return r ? this.rowToDecision(r) : null;
@@ -1774,6 +1798,7 @@ export class MissionStore {
       model: (r.model as string | null) ?? undefined,
       parentAttemptId: (r.parent_attempt_id as string | null) ?? undefined,
       gateSetDigest: (r.gate_set_digest as string | null) ?? undefined,
+      maxCostUsd: (r.max_cost_usd as number | null) ?? undefined,
       pid: (r.pid as number | null) ?? undefined,
       heartbeatAt: (r.heartbeat_at as number | null) ?? undefined,
       origin: r.origin as AttemptOrigin,
