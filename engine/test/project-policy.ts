@@ -76,6 +76,18 @@ section('no policy file: today\'s behaviour exactly');
   check('without a policy a violation carries no why, as before', JSON.stringify(v) === '[{"rule":"protected-path","path":"package.json"}]', JSON.stringify(v));
 }
 
+section('the always set additions (P2-R32): protected with or without a policy');
+{
+  const rust = policy({ languages: ['rust'] });
+  for (const p of ['.npmrc', 'packages/x/.npmrc', '.pnpmfile.cjs', 'pnpm-workspace.yaml', '.yarnrc.yml', '.husky/pre-commit',
+    'sub/.husky/_/husky.sh', '.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', '.daylight/invariants.json',
+    '.codemap/invariants.def.json', 'sub/.daylight/invariants.json']) {
+    check(`${p} is protected with no policy and under a rust-only one`, isProtected(p) && isProtected(p, rust));
+  }
+  check('their neighbours are not', ['.daylight/notes.md', '.codemap/knowledge.json', 'src/npmrc.ts', 'docs/husky.md', 'x.invariants.json']
+    .every((p) => !isProtected(p)));
+}
+
 section('the rust set (P2-R4)');
 {
   const rust = policy({ languages: ['rust'] });

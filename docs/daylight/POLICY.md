@@ -56,7 +56,16 @@ project nothing it uses.
 - any path with a component starting `.git` (`.git/`, `.github/`, `.gitignore`,
   `.gitattributes`, `.gitmodules`);
 - `scripts` at the root;
-- `daylight.invariants.json` and `daylight.policy.json`, at any depth.
+- `daylight.invariants.json` and `daylight.policy.json`, at any depth, and the invariants
+  loader's other two locations, `.daylight/invariants.json` and `.codemap/invariants.def.json`;
+- package-manager configuration and install-time code at any depth: `.npmrc`, `.pnpmfile.cjs`,
+  `pnpm-workspace.yaml`, `.yarnrc.yml`;
+- hook code a person's next commit would run: anything under `.husky`, and
+  `.pre-commit-config.yaml`, `lefthook.yml` and `.lefthook.yml` at any depth.
+
+The last three groups were added by P2-R32. They change behaviour for a repository without a
+policy, by tightening only: an author that edits one of them now produces an uncurable
+`protected-path` violation where it did not before.
 
 **node**:
 

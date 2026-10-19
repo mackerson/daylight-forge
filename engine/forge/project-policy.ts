@@ -37,10 +37,11 @@ export type GateHarness = (typeof GATE_HARNESSES)[number];
  * - `basename`: the last component is one of `values`, at any depth;
  * - `segment`: any component is one of `values` (the directory and everything under it);
  * - `segment-prefix`: any component starts with one of `values`;
- * - `root-dir`: the first component is one of `values`.
+ * - `root-dir`: the first component is one of `values`;
+ * - `suffix`: the path ends with one of `values`, a multi-component path, at any depth.
  */
 export interface ProtectedRule {
-  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir';
+  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir' | 'suffix';
   values: readonly string[];
   /** How the author prompt and POLICY.md name it. */
   label: string;
@@ -73,6 +74,19 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     { kind: 'root-dir', values: ['scripts'], label: 'scripts/ at the root' },
     { kind: 'basename', values: [INVARIANTS_FILE], label: INVARIANTS_FILE },
     { kind: 'basename', values: [POLICY_FILE], label: POLICY_FILE },
+    // The invariants loader's alternate locations (invariants/load.ts).
+    { kind: 'suffix', values: ['.daylight/invariants.json', '.codemap/invariants.def.json'], label: '.daylight/invariants.json and .codemap/invariants.def.json' },
+    // Install-time configuration and code (P2-R32).
+    {
+      kind: 'basename', values: ['.npmrc', '.pnpmfile.cjs', 'pnpm-workspace.yaml', '.yarnrc.yml'],
+      label: 'package-manager configuration (.npmrc, .pnpmfile.cjs, pnpm-workspace.yaml, .yarnrc.yml) at any depth',
+    },
+    // Hook code a person's next commit would run (P2-R32).
+    { kind: 'segment', values: ['.husky'], label: 'anything under .husky/' },
+    {
+      kind: 'basename', values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml'],
+      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml) at any depth',
+    },
   ] satisfies ProtectedRule[]),
   node: Object.freeze([
     { kind: 'basename', values: ['package.json'], label: 'package.json at any depth' },
@@ -118,6 +132,10 @@ function ruleMatches(rule: ProtectedRule, parts: readonly string[]): boolean {
     case 'segment': return parts.some((s) => rule.values.includes(s));
     case 'segment-prefix': return parts.some((s) => rule.values.some((v) => s.startsWith(v)));
     case 'root-dir': return rule.values.includes(parts[0] ?? '');
+    case 'suffix': {
+      const p = parts.join('/');
+      return rule.values.some((v) => p === v || p.endsWith(`/${v}`));
+    }
   }
 }
 
