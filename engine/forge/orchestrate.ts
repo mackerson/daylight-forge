@@ -226,7 +226,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
   const key = specKey(spec);
   const runnerId = `agent:${spec.tool}:${spec.model ?? 'default'}`;
   const work = workOf(ctx, mission);
-  const gctx: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, runs: o.runs, sandbox: o.sandbox };
+  const gctx: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out: ctx.out, runs: o.runs, sandbox: o.sandbox };
   const prompt = buildAuthorPrompt(work, authorBrief(gctx, mission.id));
   const holdouts = (pre.lock!.scope.experimentIds as string[])
     .map((id) => ctx.store.experiment(id))

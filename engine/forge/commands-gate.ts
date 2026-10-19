@@ -18,7 +18,7 @@ import {
  * baseline or a rejected candidate is data), 2 for bad arguments, 1 for a refusal or failure.
  *
  *   gate add <mission> --role gate|holdout --test <file> --expect-exit <n> --expect-stdout <s>…
- *            [--name <basename>] [--command node,--test,{test}]
+ *            [--name <basename>] [--command node,--test,{test}] [--harness node|cargo] [--crate <dir>]
  *   gate baseline <mission> [repo] [--only x_…,x_…] [--runs n] [--timeout s]
  *   gate lock <mission> --actor human:<name> --rationale '<why>' --confirm <digest8>
  *            [--accept-vacuous x_…,…] [--only x_…,…]
@@ -81,7 +81,7 @@ function repoFor(d: DaylightContext, named: string | undefined): string {
 function gateContext(d: DaylightContext, repoRoot: string, p: Parsed): GateContext {
   const timeout = num(last(p, 'timeout'));
   return {
-    store: d.store, artifacts: d.artifacts, events: d.events, repoRoot,
+    store: d.store, artifacts: d.artifacts, events: d.events, repoRoot, out: d.out,
     runs: num(last(p, 'runs')), timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
   };
 }
@@ -102,6 +102,8 @@ async function gate(sub: string | undefined, p: Parsed, out: () => string, asJso
       const role = last(p, 'role');
       if (role !== 'gate' && role !== 'holdout') throw new Usage('--role gate|holdout is required and has no default');
       const testFile = need(p, 'test');
+      const harness = last(p, 'harness') ?? 'node';
+      if (harness !== 'node' && harness !== 'cargo') throw new Usage(`--harness is node or cargo, not ${harness}`);
       const exit = num(last(p, 'expect-exit'));
       const prediction: ExpectedObservation = {
         ...(exit !== undefined ? { exitCode: exit } : {}),
@@ -111,9 +113,10 @@ async function gate(sub: string | undefined, p: Parsed, out: () => string, asJso
         missionId, role, prediction, testSource: fs.readFileSync(testFile, 'utf8'),
         basename: last(p, 'name') ?? path.basename(testFile),
         ...(last(p, 'command') ? { command: list(last(p, 'command')) } : {}),
+        harness, ...(last(p, 'crate') !== undefined ? { crate: last(p, 'crate') } : {}),
       }));
       if (asJson) json(x);
-      else say(`registered ${x.role} ${x.id} at ${x.testArtifact.path} (${x.harnessDigest})`);
+      else say(`registered ${x.role} ${x.id} (${x.harness ?? 'node'}) at ${x.testArtifact.path} (${x.harnessDigest})`);
       return 0;
     }
     case 'baseline': {

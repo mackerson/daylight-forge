@@ -343,7 +343,7 @@ async function forge(sub: string | undefined, p: Parsed, out: () => string, asJs
       if (!candidateId) throw new Usage('forge evaluate needs a <candidate-id> [repo]');
       const c = await withContext(out, (ctx) => {
         const gctx: GateContext = {
-          store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: repoFor(ctx, repo),
+          store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: repoFor(ctx, repo), out: ctx.out,
           runs: num(last(p, 'runs')), timeoutMs: seconds(last(p, 'timeout')),
         };
         return evaluate(gctx, candidateId);
