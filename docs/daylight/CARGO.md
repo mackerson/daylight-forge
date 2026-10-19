@@ -1,61 +1,114 @@
 # Cargo in the Forge sandbox
 
-How a Rust repository's gates and author builds run inside bubblewrap with no network
-(rulings P2-R2, P2-R3, P2-R5). Code: `engine/forge/cargo.ts`, the cargo branch of
-`engine/experiment/sandbox.ts` `checkAllowlist`, `engine/forge/gate.ts`. Test:
+This page covers how a Rust repository's gates and author builds run inside bubblewrap with no
+network. It implements rulings P2-R2, P2-R3, P2-R5, P2-R28, P2-R29 and P2-R30. The code is in
+`engine/forge/cargo.ts`, the cargo branch of `checkAllowlist` in `engine/experiment/sandbox.ts`,
+`engine/experiment/runner.ts` (`noCargoTestsReported`) and `engine/forge/gate.ts`. The test is
 `engine/test/forge-cargo.ts`.
 
 ## The crate snapshot
 
 ```
 daylight deps snapshot <repo> [--out <dir>]   # on the host, with network; a person runs it
-daylight deps status   <repo> [--out <dir>]   # recorded digest, Cargo.lock match, cache sizes
+daylight deps status   <repo> [--out <dir>]   # recorded digest, verified; Cargo.lock match; cache sizes
 ```
 
-`deps snapshot` runs `/usr/bin/cargo fetch --locked` in `<repo>` with `CARGO_HOME` set to a fresh
-directory, then moves it to `<out>/cargo/snapshot/` and writes `<out>/cargo/snapshot.json`:
+`deps snapshot` checks the repository first. It refuses the repository, before anything is
+fetched, when any of these holds:
 
-- `digest`: sha256 over a sorted listing of every file under `registry/` and `git/` (relative
-  path, size, sha256; a symlink by its target). Cargo's own lock files and last-use database
-  beside those two are not part of it.
-- `lockDigest`: sha256 of `<repo>/Cargo.lock` at the time of the fetch.
+- `<repo>/.cargo/config.toml` (or the legacy `.cargo/config`) sets a key outside the tolerated set
+  (below), is a symlink, or cannot be read;
+- a `.cargo/credentials*` file exists;
+- a manifest has a `[patch]`;
+- a workspace member or a path dependency is outside the repository;
+- any dependency comes from git.
+
+`cargo metadata --no-deps --offline` from `/` reads the manifests for these checks.
+
+If the checks pass, it runs `/usr/bin/cargo fetch --locked --manifest-path <repo>/Cargo.toml`
+with `cwd: '/'`. Cargo finds its configuration by walking up from the working directory, so
+neither the repository's `.cargo/config.toml` nor any ancestor's (for example
+`~/.cargo/config.toml` for a repository under `$HOME`) is read. The fetch gets a minimal
+environment:
+
+- `PATH=/usr/bin:/bin`;
+- `HOME` and `CARGO_HOME` pointed at a fresh staging directory;
+- any proxy or CA-bundle variables.
+
+No registry tokens and no SSH agent are passed.
+
+When the fetch finishes, the staging directory becomes `<out>/cargo/snapshot/`, and the command
+writes `<out>/cargo/snapshot.json` (record version 2) with these fields:
+
+- `digest`: sha256 over a sorted listing of every entry under the snapshot root (relative path,
+  size and sha256 for a file, the target for a symlink). Only cargo's two lock files,
+  `.package-cache` and `.package-cache-mutate`, are left out. Anything cargo could read from
+  `CARGO_HOME`, configuration included, is covered.
+- `lockDigest`: sha256 of `<repo>/Cargo.lock`.
 - `createdAt`, `files`, `bytes`, `repo`.
 
-The fetch gets a minimal environment: `PATH=/usr/bin:/bin`, `HOME` and `CARGO_HOME` pointed at
-the new snapshot, and any proxy or CA-bundle variables. No registry tokens, no SSH agent, nothing
-under the real home directory. The repository's own `.cargo/config.toml` is honoured (source
-replacement, vendoring). Refresh means re-running the command; the old snapshot is replaced only
-once the new one is complete. A repository with no committed `Cargo.lock` is refused.
+A refresh replaces the snapshot only once the new one is complete. It also removes every gate
+build cache, because those were built against the old crates. A repository with no committed
+`Cargo.lock` is refused. Build scripts (`build.rs`) are tolerated: they run only inside the
+sandbox.
 
-Inside the sandbox the snapshot is bound read-only at `/cargo-home` with `CARGO_HOME=/cargo-home`
-and `CARGO_NET_OFFLINE=true`. `HOME` stays `/tmp`. The toolchain is the system `/usr/bin/cargo`,
-already inside the read-only `/usr` bind; rustup is not used.
+### Tolerated cargo configuration keys
+
+| Tolerated | Example |
+| --- | --- |
+| `build.rustflags`, `build.rustdocflags`, `build.jobs`, `build.incremental`, `build.target` | `[build] rustflags = [...]` |
+| `target.<triple or cfg>.rustflags`, `target.<…>.rustdocflags` | `[target.'cfg(unix)'] rustflags = [...]` |
+| `[profile.*]`, `[alias]`, `[term]`, `[cargo-new]`, `[doc]`, `[future-incompat-report]` | |
+
+Every other key is refused. That includes `[registries]`, `[registry]`, `[source]`, `[net]`,
+`[http]`, `[credential-alias]`, `build.rustc`, `build.rustc-wrapper`,
+`build.rustc-workspace-wrapper`, `build.target-dir`, `target.*.runner`, `target.*.linker`,
+`[env]`, `[unstable]` and `[patch]`, and anything cargo adds later. The reader understands
+tables, dotted keys and one level of inline table. A file it cannot read is refused.
+
+### Using the snapshot
+
+Inside the sandbox the snapshot is bound read-only at `/cargo-home`, with
+`CARGO_HOME=/cargo-home` and `CARGO_NET_OFFLINE=true`. `HOME` stays `/tmp`. The toolchain is the
+system `/usr/bin/cargo`, already inside the read-only `/usr` bind; rustup is not used.
+
+**Verified before every use.** Before every gate run and every launch of the author's `run`
+tool, `cargoMounts` checks three things and refuses with one line naming the command when any
+fails:
+
+- no `config*` or `credentials*` entry exists at the snapshot root;
+- the whole snapshot still hashes to the recorded digest;
+- `<out>` is not inside the repository.
+
+`deps status` makes the same check.
 
 A run over a tree whose `Cargo.lock` is not the recorded one is refused with one line naming the
-command, for example:
+command. This applies to:
 
-```
-Cargo.lock (sha256:0b1c…) does not match the crate snapshot (sha256:9f2e…): run `daylight deps snapshot /src/app --out /…/out`
-```
+- gate runs (the tree under test);
+- the author's `run` tool (the workspace);
+- `forge run` itself on a cargo repository, when a snapshot is recorded or the mission grants
+  exec.
 
-This applies to gate runs (the tree under test), to the author's `run` tool (the workspace), and
-to `forge run` itself on a cargo repository when a snapshot is recorded or the mission grants exec.
+What the `run` tool tells the author names no host path: `<out>`, `<repo>` and `/work` stand in
+for them.
 
 ## Build caches
 
-`<out>/cargo/target/author/` and `<out>/cargo/target/gate/`, created on demand, each bound
-read-write at `/cargo-target` (`CARGO_TARGET_DIR`) into its own profile only. A gate never sees the
-author cache, and the author's `run` tool never sees the gate cache. Gate runs also set
-`CARGO_INCREMENTAL=0`. Both live outside the repository and outside the sandbox's size-capped
-`/tmp`. Only these two directories and the snapshot are bound, never `<out>` itself; each bind
-passes `mountRefusal` with exactly that directory in `outAllow`.
+Each cache is bound read-write at `/cargo-target` (`CARGO_TARGET_DIR`) into its own runs only.
 
-`forge run` calls `wipeAuthorCache(out)` whenever the candidate it records has any policy
-violation, and records a `forge.cargo.author-cache.wiped` event.
+| Cache | Path | Written by | Lifetime |
+| --- | --- | --- | --- |
+| Author | `<out>/cargo/target/author/` | the author's `run` tool | wiped by `forge run` whenever the candidate it records has a policy violation (`forge.cargo.author-cache.wiped` event) |
+| Gate base | `<out>/cargo/target/gate/base/` | baseline runs only | removed on snapshot refresh |
+| Gate candidate | `<out>/cargo/target/gate/<diffDigest16>/` | one candidate's gate runs | created at the start of `evaluate` as a copy of `gate/base/` (`cp -a --reflink=auto`: metadata-only on btrfs/XFS, a plain copy elsewhere); removed when `evaluate` ends |
 
-The author's `run` tool adds the cargo binds whenever its tree has a `Cargo.toml` at the root.
-`/usr/bin/cargo` already passes `checkExecCommand`; the exec sandbox keeps `--unshare-all` with no
-network.
+Nothing one candidate's build writes is visible to another candidate or to the next baseline.
+Gate runs also set `CARGO_INCREMENTAL=0`. A gate never sees the author cache, and the author never
+sees a gate cache. Every bind passes `mountRefusal` with exactly that directory in `outAllow`.
+`outAllow` passes over only Daylight's own home directories (`~/.local/share/daylight`,
+`~/.config/daylight`), never an `<out>` under `~/.ssh` or another credential store, and never an
+`<out>` that is `$HOME` itself.
 
 ## Cargo gates
 
@@ -65,62 +118,100 @@ daylight gate add <mission> --role gate|holdout --harness cargo --crate <dir> --
 ```
 
 `--harness` defaults to `node`. It is stored on the experiment row and in the gate's expectation,
-so it is covered by the harness digest: changing it is a new harness.
+so it is covered by the harness digest: changing it makes a new harness.
 
-**Where the test goes.** The registered file is one Rust integration test. As for any gate, it is
-placed at `.daylight-gates/<x_id>/<basename>`. It is also placed, from the same registered bytes
-and under the same rules (no symlink on the path, nothing already there), at
-`<crate>/tests/daylight_<x_id>.rs`, where cargo finds it as the integration-test target
-`daylight_<x_id>`. `--crate` is the repo-relative directory of the crate that owns it (default `.`,
-the root package). Both copies are bound into the sandbox from the runner's memory with
-`--ro-bind-data`, and the tree-drift check ignores exactly those two paths. Neither copy is ever
-in an author's tree: gates are placed only in fresh gate trees, never in the author workspace.
+### Where the test goes
 
-**Command.** The default is
+The registered file is one Rust integration test. It is placed in two places, from the same
+registered bytes and under the same rules (no symlink on the path, nothing already there):
+
+- at `.daylight-gates/<x_id>/<basename>`, as for any gate;
+- at `<crate>/tests/daylight_<x_id>.rs`, where cargo finds it as the integration-test target
+  `daylight_<x_id>`. `--crate` is the repo-relative directory of the crate that owns the test
+  (default `.`, the root package).
+
+Both copies are bound into the sandbox from the runner's memory with `--ro-bind-data`, and the
+tree-drift check ignores exactly those two paths. Neither copy is ever in an author's tree. The
+author brief shows the command with the target replaced by `<the gate's registered test>`.
+
+### Command
+
+The default command is:
 
 ```
 cargo test --offline --workspace --test {test} -- --test-threads=1
 ```
 
-where `{test}` is the target name `daylight_<x_id>`. A cargo gate's command must keep
-`--test {test}`: it runs its own target and nothing else, so the result line counts the gate's
-tests only and a failing test elsewhere in the workspace cannot decide it.
+`{test}` is the target name `daylight_<x_id>`. The command must carry exactly one `--test`, and it
+must be `--test {test}`.
 
-**Allowlist.** `cargo test` only, with `--offline`, `--workspace`, `-p`/`--package <name>`,
-`--test <name>`, `--lib`, `--locked`, `--frozen`, `--release`, and `--manifest-path` naming a
-`Cargo.toml` inside `/work`. After `--`, only `--test-threads=N`. Refused by name: `--config`,
-`-Z…`, `--target-dir`, `--artifact-dir`. Anything else, including a bare test-name filter, is
-refused.
+**What a gate covers.** `cargo test --workspace --test <target>` compiles and runs only the package
+that owns the target, its dependencies and that one test binary. So a cargo gate judges whether
+its crate builds and its test passes. It does not judge whether the rest of the workspace builds:
+a candidate that breaks a crate the gate's crate does not depend on can still pass the gate. A
+workspace-wide build is not a gate property; write a gate in that crate if it matters.
 
-**Reading the result.** The prediction is the exit code plus the `test result: ok.` marker. Cargo
-prints `test result: ok|FAILED. N passed; M failed; …`; N + M is how many tests ran.
+### Allowlist
 
-| What cargo printed | Run status |
+`cargo test` only, with these flags:
+
+- `--offline`, `--workspace`, `--lib`, `--locked`, `--frozen`, `--release`;
+- `-p`/`--package <name>` and at most one `--test <name>`, where a name matches
+  `^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$` and is never option-shaped;
+- `--manifest-path`, naming a `Cargo.toml` inside `/work`;
+- after `--`, only `--test-threads=N`.
+
+Refused by name: `--config`, `-Z…`, `--target-dir`, `--artifact-dir`. Anything else is refused,
+including a bare test-name filter.
+
+**Preflight on the tree under test.** Before cargo runs, the tree's `.cargo/config*` must pass the
+same tolerated-key check as the snapshot, because cargo reads it inside the sandbox (cwd `/work`).
+Its `Cargo.lock` must also match the snapshot. Either failure is `invalid`, and nothing runs.
+
+### Limits
+
+Unless the caller names its own, a cargo gate gets these defaults:
+
+| Limit | Default |
 | --- | --- |
-| a result line with N + M > 0 | `ran`, matched against the prediction |
-| a result line with 0 passed and 0 failed | `invalid`: an empty gate is not evidence |
-| no result line, and `error: could not compile … (test "daylight_<x_id>")` | `ran`, a failing gate |
-| no result line otherwise (workspace does not build, snapshot incomplete, launch failure) | `invalid` |
+| CPU per process | 900 s |
+| File size | 2 GiB |
+| Memory (cgroup) | 4 GiB |
+| Tasks | 512 |
+| Wall clock | 600 s |
 
-The third row is what "the base lacks the function" looks like in Rust: the gate's own test does
-not compile against the base. A base that fails to build anywhere else says nothing about the
-gate and is `invalid`.
+`--timeout` reaches gate evaluation from `gate baseline|evaluate`, `forge evaluate` and
+`forge run`.
+
+### Reading the result
+
+The prediction is the exit code plus the `test result: ok.` marker.
+
+| What the run showed | Run status |
+| --- | --- |
+| cargo killed by a signal, or stderr shows a resource kill (`SIGXCPU`, `SIGXFSZ`, `SIGKILL`, `signal: 9/24/25`, `File size limit exceeded`, a failed allocation) | `invalid`: a limit is not a failing gate |
+| no binary ran, `error: could not compile … (test "daylight_<x_id>")`, a rustc `error[…]:` diagnostic and a `--> …tests/daylight_<x_id>.rs:L:C` location | `ran`: the gate's own test does not compile against this tree, a failing gate |
+| no binary ran, anything else (workspace does not build, snapshot incomplete, linker failure, launch failure) | `invalid` |
+| stderr does not show exactly one `Running tests/daylight_<x_id>.rs (` line (two binaries, a `[[test]]` entry giving the name to another file) | `invalid` |
+| the placed test ran and printed exactly one `test result: … N passed; M failed` line with N + M > 0 | `ran`, matched against the prediction |
+| that line says 0 passed and 0 failed, or no result line at all | `invalid`: an empty or unfinished gate is not evidence |
+
+The second row is what "the base lacks the function" looks like in Rust.
 
 ## Limitations
 
-- The gate build cache is shared by every gate run of the project, on the base and on every
-  candidate. Cargo's fingerprints, not a fresh build, decide what is reused; a candidate's build
-  script runs with that directory writable. The author cache is wiped on a policy violation, the
-  gate cache is not.
-- The snapshot's digest is checked by `deps status`, not before every run; the snapshot is read-only
-  inside the sandbox but a same-uid process on the host can still rewrite it.
-- The fetch honours the repository's `.cargo/config.toml` on the host, which can name registries
-  and, for a registry that needs one, a credential provider that cargo runs. Read that file before
-  snapshotting a repository you do not trust. Private registries and git dependencies that need
-  credentials are not supported: none are passed to the fetch.
-- A candidate that changes `Cargo.lock` is already a policy violation; one that needs a new crate
+- A gate's test calls the candidate's code in its own process. That code can write to the real
+  stdout and exit 0 before the harness prints its result, which a node gate is equally exposed
+  to. Policy keeps the candidate from changing manifests and cargo configuration (WS-R4); the
+  harness checks above do not depend on it.
+- Build scripts run inside the sandbox with the candidate's own gate cache writable. They can
+  shape that candidate's build, and nothing beyond it.
+- The gate sandbox's root tmpfs (`/etc`, `/`) is writable inside the sandbox. This predates
+  cargo: the exec sandbox remounts `/` read-only and the gate sandbox does not. It is in-sandbox
+  only, but a build script can fill it outside the `/tmp` size cap.
+- Private registries and git dependencies are not supported: no credentials are passed to the
+  fetch, and git dependencies are refused.
+- A candidate that changes `Cargo.lock` is already a policy violation. One that needs a new crate
   cannot pass its gates until a person applies the change and re-snapshots.
-- The sandbox limits are the node ones (60 CPU-seconds per process, 64 MiB per file, 60 s wall
-  clock by default). A large workspace needs `--timeout` and possibly higher limits.
-- The author brief shows a cargo gate's command with its `--test daylight_<x_id>` target, which does
-  not exist in the author's tree.
+- `forge-cargo.ts` fetches `itoa 1.0.11` from crates.io once per run. Set `DAYLIGHT_OFFLINE=1`
+  where that is not allowed.
