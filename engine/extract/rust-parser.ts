@@ -20,8 +20,8 @@ export const GRAMMAR_FILES = {
 
 export const GRAMMAR_DIR = path.join(import.meta.dirname, 'grammars');
 
-function readVerified(name: keyof typeof GRAMMAR_FILES): Uint8Array {
-  const bytes = fs.readFileSync(path.join(GRAMMAR_DIR, name));
+function readVerified(dir: string, name: keyof typeof GRAMMAR_FILES): Uint8Array {
+  const bytes = fs.readFileSync(path.join(dir, name));
   const actual = createHash('sha256').update(bytes).digest('hex');
   if (actual !== GRAMMAR_FILES[name]) {
     throw new Error(`${name} sha256 ${actual} does not match the recorded ${GRAMMAR_FILES[name]}`);
@@ -29,14 +29,22 @@ function readVerified(name: keyof typeof GRAMMAR_FILES): Uint8Array {
   return bytes;
 }
 
-/** One parser for the process: compiling the grammar is the expensive part, parsing is not. */
-let loading: Promise<TreeSitter> | null = null;
-let shared: TreeSitter | null = null;
+/**
+ * One parser per grammar directory for the process: compiling the grammar is the expensive
+ * part, parsing is not. Module-level because `builtinParsers()` builds fresh provider objects
+ * on every call, and each must find the grammar its first sibling already loaded.
+ */
+const loading = new Map<string, Promise<TreeSitter>>();
+const ready = new Map<string, TreeSitter>();
+const failed = new Map<string, Error>();
+/** The runtime is an Emscripten module: initialised once per process, whatever the directory. */
+let runtimeReady: Promise<void> | null = null;
 
-async function load(): Promise<TreeSitter> {
-  const runtime = readVerified('web-tree-sitter.wasm');
-  await TreeSitter.init({ wasmBinary: runtime });
-  const language = await Language.load(readVerified('tree-sitter-rust.wasm'));
+async function load(dir: string): Promise<TreeSitter> {
+  const runtime = readVerified(dir, 'web-tree-sitter.wasm');
+  runtimeReady ??= TreeSitter.init({ wasmBinary: runtime });
+  await runtimeReady;
+  const language = await Language.load(readVerified(dir, 'tree-sitter-rust.wasm'));
   const parser = new TreeSitter();
   parser.setLanguage(language);
   return parser;
@@ -147,21 +155,36 @@ function syntaxErrors(root: Node, limit = 5): string[] {
 export class RustParser implements Parser {
   name = 'rust';
   extensions = ['.rs'];
+  private readonly grammarDir: string;
+
+  /** `grammarDir` exists so a test can hand it tampered bytes; nothing else should pass it. */
+  constructor(grammarDir: string = GRAMMAR_DIR) {
+    this.grammarDir = grammarDir;
+  }
 
   async init(): Promise<void> {
-    if (shared) return;
-    loading ??= load();
+    const dir = this.grammarDir;
+    if (ready.has(dir)) return;
+    let pending = loading.get(dir);
+    if (!pending) loading.set(dir, (pending = load(dir)));
     try {
-      shared = await loading;
+      ready.set(dir, await pending);
+      failed.delete(dir);
     } catch (err) {
-      loading = null; // Let a later call retry rather than caching the failure forever.
+      loading.delete(dir); // Let a later call retry rather than caching the failure forever.
+      failed.set(dir, err as Error);
       throw err;
     }
   }
 
   parse(relPath: string, source: string, contentHash: string): ParsedFile {
-    if (!shared) throw new Error('rust provider used before init() — call loadParsers() or initParsers() first');
-    const tree = shared.parse(source);
+    const parser = ready.get(this.grammarDir);
+    if (!parser) {
+      // Each file's diagnostic then says why, e.g. which digest did not match.
+      const why = failed.get(this.grammarDir)?.message ?? 'init() was never awaited — call loadParsers() or initParsers() first';
+      throw new Error(`rust provider not initialised: ${why}`);
+    }
+    const tree = parser.parse(source);
     if (!tree) throw new Error('tree-sitter returned no tree');
     try {
       return this.walk(tree.rootNode, relPath, contentHash);

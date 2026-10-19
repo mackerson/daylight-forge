@@ -51,6 +51,34 @@ console.log('\nvendored grammar');
       l.startsWith('| `web-tree-sitter.wasm`') && l.includes(`| ${pkg.dependencies['web-tree-sitter']} |`)));
 }
 
+console.log('\na tampered grammar is refused at load, not only in CI');
+{
+  // Before anything else initialises the real grammar, so this exercises a cold load.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-rust-tamper-'));
+  for (const name of Object.keys(GRAMMAR_FILES)) fs.copyFileSync(path.join(GRAMMAR_DIR, name), path.join(dir, name));
+  const grammar = path.join(dir, 'tree-sitter-rust.wasm');
+  const bytes = fs.readFileSync(grammar);
+  bytes[bytes.length - 1] ^= 0xff;
+  fs.writeFileSync(grammar, bytes);
+
+  const tampered = new RustParser(dir);
+  const failures = await initParsers([tampered]);
+  check('init reports the digest mismatch', /tree-sitter-rust\.wasm sha256 [0-9a-f]{64} does not match/.test(failures[0]?.reason ?? ''),
+    JSON.stringify(failures));
+
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-rust-tamper-repo-'));
+  fs.mkdirSync(path.join(repo, 'src'));
+  fs.writeFileSync(path.join(repo, 'src/lib.rs'), 'pub fn kept() {}\n');
+  const g = extract({ root: repo, parsers: [builtinParsers()[0], tampered] });
+  check('the file stays in the map, unparsed',
+    g.nodes.some((n) => n.id === 'src/lib.rs') && !g.nodes.some((n) => n.name === 'kept'));
+  check('with a diagnostic naming the digest mismatch',
+    g.diagnostics.some((d) => d.file === 'src/lib.rs' && /sha256 [0-9a-f]{64} does not match/.test(d.message)),
+    JSON.stringify(g.diagnostics));
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(repo, { recursive: true, force: true });
+}
+
 console.log('\nregistration');
 {
   check('.rs goes to the rust provider by default', parserFor(builtinParsers(), 'src/lib.rs')?.name === 'rust');
