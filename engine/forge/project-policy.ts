@@ -314,6 +314,8 @@ export interface AuthorLimits {
   timeoutMs: number;
   /** Where each came from. */
   source: { maxTurns: 'policy' | 'default'; timeoutMs: 'flag' | 'policy' | 'default' };
+  /** What was lowered to its maximum: the policy's own `clamped`, plus `--timeout` for the flag. */
+  clamped: string[];
 }
 
 /**
@@ -332,5 +334,6 @@ export function authorLimits(
       maxTurns: policy?.author.maxTurns !== undefined ? 'policy' : 'default',
       timeoutMs: flagTimeoutMs !== undefined ? 'flag' : fromPolicy !== undefined ? 'policy' : 'default',
     },
+    clamped: [...(policy?.clamped ?? []), ...(flagTimeoutMs !== undefined && flagTimeoutMs > MAX_AUTHOR_TIMEOUT_SECONDS * 1000 ? ['--timeout'] : [])],
   };
 }

@@ -201,7 +201,11 @@ section('author caps clamp');
   check('a policy sets the defaults', set.maxTurns === 300 && set.timeoutMs === 3_600_000 && set.source.timeoutMs === 'policy');
   const flag = authorLimits(policy({ author: { timeoutSeconds: 3600 } }), defaults, 30_000);
   check('a --timeout flag beats the policy', flag.timeoutMs === 30_000 && flag.source.timeoutMs === 'flag');
-  check('a flag above six hours is clamped too', authorLimits(null, defaults, 10 * 24 * 3600 * 1000).timeoutMs === MAX_AUTHOR_TIMEOUT_SECONDS * 1000);
+  const big = authorLimits(null, defaults, 10 * 24 * 3600 * 1000);
+  check('a flag above six hours is clamped too, and recorded as clamped',
+    big.timeoutMs === MAX_AUTHOR_TIMEOUT_SECONDS * 1000 && big.clamped.join() === '--timeout', JSON.stringify(big));
+  check('policy clamps are carried into the limits', authorLimits(high, defaults).clamped.join() === 'author.maxTurns,author.timeoutSeconds');
+  check('nothing clamped, nothing recorded', authorLimits(null, defaults, 30_000).clamped.length === 0 && set.clamped.length === 0);
 }
 
 section('the author prompt is rendered from the policy');

@@ -744,7 +744,8 @@ section('a project policy (P2-R6): the rust set and the author limits come from 
     const flagged = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json', '--timeout', '120'], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
     const again = json<{ attempt: Attempt }>(flagged);
     const second = inspect(m.id).events.find((e) => e.name === 'attempt.started' && e.attemptId === again.attempt.id);
-    check('a --timeout flag overrides the policy', second?.payload.timeoutMs === 120_000 && second?.payload.maxTurns === 300, JSON.stringify(second?.payload));
+    check('a --timeout flag overrides the policy, and nothing is recorded as clamped',
+      second?.payload.timeoutMs === 120_000 && second?.payload.maxTurns === 300 && JSON.stringify(second?.payload.clamped) === '[]', JSON.stringify(second?.payload));
   } finally {
     fs.rmSync(policyFile, { force: true });
   }

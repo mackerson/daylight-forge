@@ -280,7 +280,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
     if (exec !== pre.exec) throw new ImplementRefused(`attempt ${row.id}'s exec stamp does not match its authorize decision`);
     emit(ctx, mission, 'lifecycle', 'attempt.started', {
       state: mission.state, runnerId, profile: 'author', network, write: true, exec, authorizeDecisionId: authorize.id, gateSetDigest: lockDigest,
-      maxTurns: limits.maxTurns, timeoutMs: limits.timeoutMs, limitSources: limits.source,
+      maxTurns: limits.maxTurns, timeoutMs: limits.timeoutMs, limitSources: limits.source, clamped: limits.clamped,
       policy: policy ? { digest: policy.digest, languages: policy.languages, protectedPaths: policy.protectedPaths.length, clamped: policy.clamped } : null,
     }, { taskId: task.id, attemptId: row.id });
 

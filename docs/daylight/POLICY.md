@@ -36,7 +36,8 @@ The file is refused, with one line naming it, when it is over 64 KB, is not JSON
 or has any key this version does not know, at any level. A refused policy refuses the run: a
 policy that was half-read would protect less than its author meant. The `attempt.started`
 event records the effective `maxTurns` and `timeoutMs`, where each came from (`flag`, `policy`
-or `default`), and the policy's digest.
+or `default`), what was lowered to its maximum (`clamped`: the policy's fields, or
+`--timeout` for the flag), and the policy's digest.
 
 ## The built-in sets
 
