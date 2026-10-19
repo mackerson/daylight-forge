@@ -558,6 +558,40 @@ section('a candidate cannot forge a cargo gate\'s result (P2-R30)');
   check('reading none is invalid', noCargoTestsReported(`${OK_LINE}\n`, '', t) !== null);
 }
 
+section('the snapshot is verified in full before every gate run and exec launch (P2-R29)');
+{
+  const planted = path.join(snapshotDir(out), 'config.toml');
+  fs.writeFileSync(planted, '[build]\nrustc = "/usr/bin/false"\n');
+  try {
+    const m = newMission('planted snapshot config');
+    registerGate(ctx, { missionId: m.id, role: 'gate', testSource: PADDED_GATE, basename: 'padded.rs', prediction: PASS, harness: 'cargo', crate: 'crates/core' });
+    const [b] = await baseline(ctx, m.id);
+    const why = recordsOf(b)[0]?.why ?? '';
+    check('a config.toml planted in the snapshot refuses the next gate run before cargo runs',
+      b.conclusion === 'invalid' && recordsOf(b).length === 1 && !recordsOf(b)[0].observed && /config\.toml/.test(why) && why.includes('daylight deps snapshot'), `${b.conclusion} ${why}`);
+    const ws = createWorkspace(repo, commit);
+    try {
+      const e = await throws(() => execLaunch(live, execAttempt, { tree: ws.tree, out, command: ['/usr/bin/cargo', 'build', '--offline'] }));
+      check('and the next exec launch', e instanceof SandboxRefused && /config\.toml/.test(e.message), e?.message);
+    } finally {
+      ws.dispose();
+    }
+    const st = json<{ intact: boolean; refusal: string | null }>(run(['deps', 'status', repo, '--out', out, '--format', 'json']));
+    check('deps status reports the mismatch', st.intact === false && /config\.toml/.test(st.refusal ?? ''), JSON.stringify(st));
+  } finally {
+    fs.rmSync(planted, { force: true });
+  }
+  const crate = fs.readdirSync(path.join(snapshotDir(out), 'registry', 'cache'), { recursive: true }).map(String).find((f) => f.endsWith('.crate'))!;
+  const crateFile = path.join(snapshotDir(out), 'registry', 'cache', crate);
+  const bytes = fs.readFileSync(crateFile);
+  fs.appendFileSync(crateFile, 'x');
+  const e = await throws(() => cargoMounts('gate', out));
+  check('a rewritten crate in the snapshot refuses the mount, naming the command', e instanceof CargoRefused && /no longer hashes/.test(e.message)
+    && e.message.includes('daylight deps snapshot'), e?.message);
+  fs.writeFileSync(crateFile, bytes);
+  check('restored, the snapshot mounts again', (await throws(() => cargoMounts('gate', out))) === null);
+}
+
 section('a resource limit hit while building the gate is invalid, never falsified (P2-R30)');
 {
   check('cargo gates default to 900 CPU-s, 2 GiB files, 4 GiB memory and a 600 s wall clock',

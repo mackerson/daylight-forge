@@ -40,10 +40,11 @@ export class CargoRefused extends Error {
 }
 
 export interface SnapshotRecord {
-  version: 1;
+  /** 2: the digest covers the whole snapshot root (P2-R29). A version-1 record reads as none. */
+  version: 2;
   /** The repository the snapshot was fetched for, as given to `deps snapshot`. */
   repo: string;
-  /** `sha256:` over the sorted listing of every file under `registry/` and `git/`. */
+  /** `sha256:` over the sorted listing of every entry under the snapshot root but cargo's lock files. */
   digest: string;
   files: number;
   bytes: number;
@@ -74,10 +75,13 @@ export function lockDigestOf(tree: string): string | null {
   return st?.isFile() ? sha256(fs.readFileSync(path.join(tree, 'Cargo.lock'))) : null;
 }
 
+/** Cargo's own lock files at the snapshot root: rewritten by any cargo that opens it, never read as data. */
+const SNAPSHOT_LOCKS = new Set(['.package-cache', '.package-cache-mutate']);
+
 /**
- * The digest of a snapshot: one line per entry under `registry/` and `git/` — relative path,
- * size and sha256 for a file, the target for a symlink — sorted by path, hashed. Cargo's own
- * lock files and last-use database sit beside those two and are not part of what was fetched.
+ * The digest of a snapshot: one line per entry under its root — relative path, size and sha256
+ * for a file, the target for a symlink — sorted by path, hashed. Everything cargo could read
+ * from `CARGO_HOME` is in it, configuration included; only cargo's two lock files are not.
  */
 export function snapshotDigest(dir: string): { digest: string; files: number; bytes: number } {
   const lines: string[] = [];
@@ -86,6 +90,7 @@ export function snapshotDigest(dir: string): { digest: string; files: number; by
   const walk = (rel: string) => {
     const abs = path.join(dir, rel);
     for (const name of fs.readdirSync(abs)) {
+      if (!rel && SNAPSHOT_LOCKS.has(name)) continue;
       const r = path.posix.join(rel, name);
       const st = fs.lstatSync(path.join(dir, r));
       if (st.isDirectory()) walk(r);
@@ -97,9 +102,7 @@ export function snapshotDigest(dir: string): { digest: string; files: number; by
       }
     }
   };
-  for (const top of ['registry', 'git']) {
-    if (fs.lstatSync(path.join(dir, top), { throwIfNoEntry: false })?.isDirectory()) walk(top);
-  }
+  walk('');
   lines.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return { digest: sha256(lines.join('\n')), files, bytes };
 }
@@ -232,11 +235,20 @@ export function cargoConfigRefusal(dir: string): string | null {
   return null;
 }
 
+/**
+ * Why the snapshot root may not be used as `CARGO_HOME`, or null: a `config*` or `credentials*`
+ * entry there is configuration cargo would read inside the sandbox, which no fetch puts there.
+ */
+export function snapshotRootRefusal(dir: string): string | null {
+  const found = fs.readdirSync(dir).filter((n) => /^(config|credentials)/.test(n));
+  return found.length ? `the crate snapshot holds ${found.join(', ')}, configuration cargo would read; it is never used` : null;
+}
+
 /** The recorded snapshot, or null when none was made or the record cannot be read. */
 export function readSnapshot(out: string): SnapshotRecord | null {
   try {
     const r = JSON.parse(fs.readFileSync(snapshotFile(out), 'utf8')) as SnapshotRecord;
-    if (r.version !== 1 || typeof r.digest !== 'string' || typeof r.lockDigest !== 'string') return null;
+    if (r.version !== 2 || typeof r.digest !== 'string' || typeof r.lockDigest !== 'string') return null;
     return r;
   } catch {
     return null;
@@ -319,9 +331,11 @@ export function createSnapshot(
     // The lock cargo fetched against must still be the one recorded: a concurrent edit would
     // otherwise pair a snapshot with a Cargo.lock it was not made from.
     if (lockDigestOf(root) !== lockDigest) throw new CargoRefused(`${root}/Cargo.lock changed during the fetch; run it again`);
+    const planted = snapshotRootRefusal(staging);
+    if (planted) throw new CargoRefused(planted);
     const d = snapshotDigest(staging);
     const record: SnapshotRecord = {
-      version: 1, repo: root, digest: d.digest, files: d.files, bytes: d.bytes, lockDigest,
+      version: 2, repo: root, digest: d.digest, files: d.files, bytes: d.bytes, lockDigest,
       createdAt: (o.now ?? (() => new Date()))().toISOString(),
     };
     const dir = snapshotDir(out);
@@ -385,10 +399,13 @@ export function snapshotStatus(repo: string, out: string, o: { verify?: boolean 
   const recorded = readSnapshot(out);
   const lockDigest = lockDigestOf(root);
   let intact: boolean | null = null;
+  let planted: string | null = null;
   if (o.verify && recorded && fs.lstatSync(snapshotDir(out), { throwIfNoEntry: false })?.isDirectory()) {
     intact = snapshotDigest(snapshotDir(out)).digest === recorded.digest;
+    planted = snapshotRootRefusal(snapshotDir(out));
   }
   let refusal = snapshotRefusal(root, out, root);
+  if (!refusal && planted) refusal = `${planted}: run \`${snapshotCommand(root, out)}\``;
   if (!refusal && intact === false) {
     refusal = `the crate snapshot no longer hashes to its recorded digest: run \`${snapshotCommand(root, out)}\``;
   }
@@ -410,8 +427,15 @@ export function cargoMounts(kind: CargoProfile, outIn: string): { binds: Sandbox
   if (!fs.lstatSync(out, { throwIfNoEntry: false })?.isDirectory()) throw new CargoRefused(`${out} is not a directory`);
   const home = snapshotDir(out);
   const missing = realDirUnder(out, home, false);
-  if (missing || !readSnapshot(out)) {
+  const recorded = readSnapshot(out);
+  if (missing || !recorded) {
     throw new CargoRefused(`no crate snapshot in ${out}${missing ? ` (${missing})` : ''}: run \`${snapshotCommand('<repo>', out)}\``);
+  }
+  // Verified in full on every launch (P2-R29): the directory is writable by this uid on the host.
+  const planted = snapshotRootRefusal(home);
+  if (planted) throw new CargoRefused(`${planted}: run \`${snapshotCommand(recorded.repo, out)}\``);
+  if (snapshotDigest(home).digest !== recorded.digest) {
+    throw new CargoRefused(`the crate snapshot no longer hashes to its recorded digest: run \`${snapshotCommand(recorded.repo, out)}\``);
   }
   const target = targetDir(out, kind);
   const bad = realDirUnder(out, target, true);
