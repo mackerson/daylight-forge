@@ -331,9 +331,18 @@ section('request_dependency: the author asks, a person decides');
   const preview = cli(['resolve', other.id, '--declined', '--out', out], clean);
   const digest = /digest (sha256:[0-9a-f]{64})/.exec(preview.stdout)?.[1] ?? '';
   check('resolve without --confirm prints the digest and exits 2', preview.status === 2 && !!digest, preview.stdout + preview.stderr);
+  const confirmCli = (args: string[], env: NodeJS.ProcessEnv) => spawnSync(process.execPath,
+    [path.join(import.meta.dirname, '..', 'cli.ts'), 'confirm', 'resolve-dependency-request', ...args, '--out', out, '--format', 'json'], { encoding: 'utf8', env });
+  const viaConfirm = confirmCli([other.id, '--declined'], clean);
+  const shown = JSON.parse(viaConfirm.stdout || '{}') as { digest?: string; digest8?: string; refusal?: string | null };
+  check('daylight confirm resolve-dependency-request shows the digest deps resolve checks',
+    viaConfirm.status === 0 && shown.digest === digest && shown.refusal === null, viaConfirm.stdout + viaConfirm.stderr);
+  check('and without --declined a different one', JSON.parse(confirmCli([other.id], clean).stdout || '{}').digest !== digest);
+  const underAgent = JSON.parse(confirmCli([other.id, '--declined'], { ...clean, CLAUDECODE: '1' }).stdout || '{}') as { refusal?: string | null };
+  check('confirm reports the refusal under CLAUDECODE', /CLAUDECODE/.test(underAgent.refusal ?? ''), JSON.stringify(underAgent));
   const agent = cli(['resolve', other.id, '--declined', '--rationale', 'ok', '--confirm', digest.slice(7, 15), '--out', out], { ...clean, CLAUDECODE: '1' });
   check('resolve under CLAUDECODE exits 1 and records nothing', agent.status === 1 && /CLAUDECODE/.test(agent.stderr), agent.stderr);
-  const human = cli(['resolve', other.id, '--declined', '--rationale', 'not worth a dependency', '--confirm', digest.slice(7, 15), '--out', out], clean);
+  const human = cli(['resolve', other.id, '--declined', '--rationale', 'not worth a dependency', '--confirm', shown.digest8 ?? '', '--out', out], clean);
   check('resolve --declined from a person\'s shell exits 0 and says what to run next',
     human.status === 0 && /^declined /.test(human.stdout) && /no manifest was changed/.test(human.stdout) && /next: /.test(human.stdout), human.stdout + human.stderr);
   const after = openDaylight(out);
