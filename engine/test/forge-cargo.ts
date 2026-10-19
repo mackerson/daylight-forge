@@ -24,7 +24,7 @@ import { noCargoTestsReported } from '../experiment/runner.ts';
 import { checkAllowlist, DEFAULT_LIMITS, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import {
-  cargoMounts, CargoRefused, lockDigestOf, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
+  cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, lockDigestOf, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
   snapshotStatus, targetDir, wipeAuthorCache,
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
@@ -186,6 +186,64 @@ section('the snapshot digest and the author cache wipe, on a synthetic <out>');
   wipeAuthorCache(out);
   check('an author cache that is a symlink is removed as a link; what it pointed at is kept',
     !fs.existsSync(targetDir(out, 'author')) && fs.readFileSync(path.join(victim, 'keep'), 'utf8') === 'keep');
+}
+
+section('deps snapshot reads no ancestor config and refuses what would leave the repository (P2-R29); no network');
+{
+  const crate = (dir: string, name: string, deps = '', lockExtra = '') => {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'Cargo.toml'), `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n${deps}`);
+    fs.writeFileSync(path.join(dir, 'src', 'lib.rs'), 'pub fn one() -> u8 { 1 }\n');
+    fs.writeFileSync(path.join(dir, 'Cargo.lock'), `version = 4\n\n[[package]]\nname = "${name}"\nversion = "0.1.0"\n${lockExtra}`);
+  };
+  const anc = path.join(tmp, 'ancestor');
+  const nested = path.join(anc, 'sub', 'repo');
+  crate(nested, 'nodeps');
+  fs.mkdirSync(path.join(anc, '.cargo'));
+  fs.writeFileSync(path.join(anc, '.cargo', 'config.toml'), '[build]\nrustc = "/usr/bin/false"\n[source.crates-io]\nreplace-with = "nowhere"\n[source.nowhere]\ndirectory = "/nonexistent"\n');
+  const control = spawnSync('/usr/bin/cargo', ['fetch', '--locked', '--manifest-path', path.join(nested, 'Cargo.toml')], {
+    cwd: nested, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: path.join(tmp, 'anc-home'), CARGO_HOME: path.join(tmp, 'anc-home') },
+  });
+  check('control: from inside the repository, cargo does read that ancestor config', control.status !== 0 && /\/usr\/bin\/false/.test(control.stderr), control.stderr.slice(-300));
+  const r1 = await throws(() => createSnapshot(nested, path.join(tmp, 'anc-out')));
+  check('an ancestor .cargo/config.toml naming build.rustc=/usr/bin/false is not read by the fetch', r1 === null, r1?.message);
+  check('and the snapshot was recorded', readSnapshot(path.join(tmp, 'anc-out'))?.lockDigest === lockDigestOf(nested));
+
+  const withRustc = path.join(tmp, 'repo-rustc');
+  crate(withRustc, 'nodeps');
+  fs.mkdirSync(path.join(withRustc, '.cargo'));
+  fs.writeFileSync(path.join(withRustc, '.cargo', 'config.toml'), '[build]\nrustflags = ["-Cdebuginfo=0"]\nrustc = "/usr/bin/false"\n');
+  const r2 = await throws(() => createSnapshot(withRustc, path.join(tmp, 'rustc-out')));
+  check('a repository .cargo/config.toml setting build.rustc is refused, naming the key',
+    r2 instanceof CargoRefused && /sets build\.rustc\b/.test(r2.message) && !fs.existsSync(snapshotFile(path.join(tmp, 'rustc-out'))), r2?.message);
+  fs.writeFileSync(path.join(withRustc, '.cargo', 'config.toml'), '[build]\nrustflags = ["-Cdebuginfo=0"]\n[profile.dev]\nopt-level = 1\n[alias]\nb = "build"\n');
+  check('the tolerated keys pass', (await throws(() => createSnapshot(withRustc, path.join(tmp, 'rustc-out')))) === null);
+  fs.writeFileSync(path.join(withRustc, '.cargo', 'config.toml'), 'net = { offline = false }\n');
+  check('an inline table is read too', /sets net\.offline|sets net\b/.test((await throws(() => createSnapshot(withRustc, path.join(tmp, 'rustc-out'))))?.message ?? ''));
+
+  const outside = path.join(tmp, 'outside-crate');
+  crate(outside, 'outside');
+  const withPath = path.join(tmp, 'repo-path-dep');
+  crate(withPath, 'pathdep', `outside = { path = "${outside}" }\n`, `dependencies = [\n "outside",\n]\n\n[[package]]\nname = "outside"\nversion = "0.1.0"\n`);
+  const r3 = await throws(() => createSnapshot(withPath, path.join(tmp, 'path-out')));
+  check('a path dependency outside the repository is refused, naming it', r3 instanceof CargoRefused && /outside/.test(r3.message) && r3.message.includes(outside), r3?.message);
+
+  const withPatch = path.join(tmp, 'repo-patch');
+  crate(withPatch, 'patched');
+  fs.appendFileSync(path.join(withPatch, 'Cargo.toml'), '\n[patch.crates-io]\nitoa = { path = "vendor/itoa" }\n');
+  const r4 = await throws(() => createSnapshot(withPatch, path.join(tmp, 'patch-out')));
+  check('a [patch] is refused', r4 instanceof CargoRefused && /\[patch\]/.test(r4.message), r4?.message);
+
+  const withGit = path.join(tmp, 'repo-git');
+  crate(withGit, 'gitdep', '', 'dependencies = [\n "x",\n]\n\n[[package]]\nname = "x"\nversion = "0.1.0"\nsource = "git+https://example.invalid/x#0000"\n');
+  const r5 = await throws(() => createSnapshot(withGit, path.join(tmp, 'git-out')));
+  check('a git dependency in the lock is refused', r5 instanceof CargoRefused && /git dependenc/.test(r5.message), r5?.message);
+  check('cargoConfigRefusal refuses a .cargo that is a symlink', (() => {
+    const d = path.join(tmp, 'linked-cargo');
+    fs.mkdirSync(d);
+    fs.symlinkSync(path.join(anc, '.cargo'), path.join(d, '.cargo'));
+    return /link/.test(cargoConfigRefusal(d) ?? '');
+  })());
 }
 
 // ---- the fixture repository -----------------------------------------------------------------

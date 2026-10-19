@@ -285,13 +285,57 @@ function realDirUnder(out: string, p: string, create: boolean): string | null {
 }
 
 /**
+ * Refuse a workspace whose crates do not all come from inside it or from the registry: a member
+ * or path dependency outside the repository, a git dependency anywhere in the lock, a `[patch]`.
+ * None of those could build in `/work` anyway; this names them before anything is fetched.
+ * `cargo metadata --no-deps` runs from `/`, offline, reading manifests only.
+ */
+function workspaceRefusal(root: string, realRoot: string, cargo: string): void {
+  let meta: { packages: Array<{ name: string; manifest_path: string; dependencies: Array<{ name: string; source: string | null; path?: string }> }> };
+  try {
+    meta = JSON.parse(execFileSync(cargo, ['metadata', '--no-deps', '--offline', '--format-version', '1', '--manifest-path', path.join(root, 'Cargo.toml')], {
+      cwd: '/', env: { PATH: SYSTEM_PATH, HOME: '/nonexistent', CARGO_HOME: '/nonexistent' }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
+      maxBuffer: 64 * 1024 * 1024,
+    }).toString('utf8'));
+  } catch (err) {
+    const e = err as { stderr?: Buffer; message: string };
+    const why = (e.stderr?.toString('utf8') || e.message).trim().split('\n').filter(Boolean).at(-1) ?? 'cargo metadata failed';
+    throw new CargoRefused(`cargo metadata could not read ${root}: ${why.slice(0, 400)}`);
+  }
+  const inside = (p: string) => {
+    let real = path.resolve(p);
+    try {
+      real = fs.realpathSync(real);
+    } catch {
+      // Not there: judged by its spelling.
+    }
+    return within(real, realRoot);
+  };
+  for (const pkg of meta.packages) {
+    if (!inside(pkg.manifest_path)) throw new CargoRefused(`workspace member ${pkg.name} is outside ${root} (${pkg.manifest_path}); a snapshot covers one repository`);
+    if (/^\s*\[\s*patch[\s.\]]|^\s*patch\s*[.=]/m.test(fs.readFileSync(pkg.manifest_path, 'utf8'))) {
+      throw new CargoRefused(`${path.relative(root, pkg.manifest_path)} has a [patch]; patched crates are not snapshotted`);
+    }
+    for (const d of pkg.dependencies) {
+      if (d.path && !inside(d.path)) throw new CargoRefused(`${pkg.name} depends on ${d.name} at ${d.path}, outside ${root}; path dependencies must be inside the repository`);
+      if (d.source?.startsWith('git+')) throw new CargoRefused(`${pkg.name} depends on ${d.name} from git (${d.source}); git dependencies are not snapshotted`);
+    }
+  }
+  const git = /^source = "(git\+[^"]*)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8'));
+  if (git) throw new CargoRefused(`Cargo.lock has a git dependency (${git[1].slice(0, 120)}); git dependencies are not snapshotted`);
+}
+
+/**
  * `deps snapshot`: `cargo fetch --locked` on the host into a fresh `CARGO_HOME`, then the digest.
  *
- * This is the one place cargo touches the network, and it is a person's command. The fetch runs
- * in the repository (so its `.cargo/config.toml` source replacements apply) with a minimal
- * environment: no registry tokens, no SSH agent, `HOME` pointed at the new snapshot so nothing
- * under the real home directory is read. The previous snapshot is replaced only once the new
- * one is complete.
+ * This is the one place cargo touches the network, and it is a person's command (P2-R29). It
+ * runs from `/` with `--manifest-path`, so neither the repository's `.cargo/config.toml` nor any
+ * ancestor's is read, with a minimal environment: no registry tokens, no SSH agent, `HOME` and
+ * `CARGO_HOME` pointed at the new snapshot. Before anything is fetched the repository is refused
+ * if its own cargo config sets anything outside the tolerated keys (it would apply inside the
+ * sandbox), if a manifest has a `[patch]`, or if a workspace member or a path dependency lives
+ * outside it or any dependency comes from git. Build scripts are not refused. The previous
+ * snapshot is replaced only once the new one is complete.
  */
 export function createSnapshot(
   repo: string, outIn: string, o: { cargo?: string; now?: () => Date; env?: NodeJS.ProcessEnv } = {},
@@ -309,10 +353,13 @@ export function createSnapshot(
   if (within(path.resolve(cargoDir), realRoot) || within(fs.realpathSync(out), realRoot)) {
     throw new CargoRefused(`${cargoDir} is inside ${root}; the crate snapshot and build caches live outside the repository (use another --out)`);
   }
+  const config = cargoConfigRefusal(root);
+  if (config) throw new CargoRefused(`${root}/${config}`);
+  const env = o.env ?? process.env;
+  workspaceRefusal(root, realRoot, o.cargo ?? CARGO);
   const bad = realDirUnder(out, cargoDir, true);
   if (bad) throw new CargoRefused(`refusing ${cargoDir}: ${bad}`);
   const staging = fs.mkdtempSync(path.join(cargoDir, 'snapshot.new-'));
-  const env = o.env ?? process.env;
   const fetchEnv: Record<string, string> = { PATH: SYSTEM_PATH, HOME: staging, CARGO_HOME: staging };
   // A proxy or a CA bundle is how this machine reaches the registry at all; neither is a credential.
   for (const k of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR']) {
@@ -321,7 +368,7 @@ export function createSnapshot(
   try {
     try {
       execFileSync(o.cargo ?? CARGO, ['fetch', '--locked', '--manifest-path', path.join(root, 'Cargo.toml')], {
-        cwd: root, env: fetchEnv, stdio: ['ignore', 'pipe', 'pipe'], timeout: FETCH_TIMEOUT_MS,
+        cwd: '/', env: fetchEnv, stdio: ['ignore', 'pipe', 'pipe'], timeout: FETCH_TIMEOUT_MS,
       });
     } catch (err) {
       const e = err as { stderr?: Buffer; message: string };
