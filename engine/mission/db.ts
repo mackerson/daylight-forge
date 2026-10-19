@@ -171,6 +171,7 @@ CREATE TABLE experiments (
   harness_digest    TEXT NOT NULL,
   command           TEXT NOT NULL,
   sandbox_profile   TEXT NOT NULL,
+  harness           TEXT NOT NULL DEFAULT 'node' CHECK (harness IN ('node','cargo')),
   executions        TEXT NOT NULL,
   conclusion        TEXT NOT NULL,
   limitations       TEXT NOT NULL,

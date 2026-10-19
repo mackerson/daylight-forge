@@ -938,6 +938,7 @@ export class MissionStore {
     const x: Experiment = {
       ...input,
       role,
+      harness: input.harness ?? 'node',
       id: input.id ?? newId('experiment'),
       executions: [],
       conclusion: 'pending',
@@ -949,14 +950,14 @@ export class MissionStore {
         `INSERT INTO experiments
          (id, mission_id, project_id, claim_ids, subject, predicate, hypothesis, prediction,
           base_revision, test_artifact, expected_artifact, harness_digest, command,
-          sandbox_profile, executions, conclusion, limitations, role, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          sandbox_profile, harness, executions, conclusion, limitations, role, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         x.id, x.missionId, x.projectId, JSON.stringify(x.claimIds), x.subject, x.predicate,
         x.hypothesis, JSON.stringify(x.prediction), x.baseRevision,
         JSON.stringify(x.testArtifact), JSON.stringify(x.expectedArtifact), x.harnessDigest,
-        JSON.stringify(x.command), x.sandboxProfile, '[]', x.conclusion,
+        JSON.stringify(x.command), x.sandboxProfile, x.harness ?? 'node', '[]', x.conclusion,
         JSON.stringify(x.limitations), x.role, x.createdAt, x.updatedAt,
       );
     this.recordArtifact(x.testArtifact);
@@ -1806,6 +1807,7 @@ export class MissionStore {
       harnessDigest: r.harness_digest as string,
       command: parseJson<string[]>(r.command as string, []),
       sandboxProfile: r.sandbox_profile as string,
+      harness: r.harness === 'cargo' ? 'cargo' : 'node',
       executions: parseJson<ArtifactRef[]>(r.executions as string, []),
       conclusion: r.conclusion as ExperimentConclusion,
       limitations: parseJson<string[]>(r.limitations as string, []),

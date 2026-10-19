@@ -456,16 +456,16 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     const experiment = db.prepare(
       `INSERT OR IGNORE INTO experiments
        (id, mission_id, project_id, claim_ids, subject, predicate, hypothesis, prediction, base_revision,
-        test_artifact, expected_artifact, harness_digest, command, sandbox_profile, executions, conclusion,
+        test_artifact, expected_artifact, harness_digest, command, sandbox_profile, harness, executions, conclusion,
         limitations, role, locked_by, started_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const x of local.experiments) {
       const r = experiment.run(
         x.id, x.missionId, x.projectId, JSON.stringify(x.claimIds), x.subject, x.predicate, x.hypothesis,
         JSON.stringify(x.prediction), x.baseRevision, JSON.stringify(x.testArtifact),
         JSON.stringify(x.expectedArtifact), x.harnessDigest, JSON.stringify(x.command), x.sandboxProfile,
-        JSON.stringify(x.executions), x.conclusion, JSON.stringify(x.limitations), x.role,
+        x.harness === 'cargo' ? 'cargo' : 'node', JSON.stringify(x.executions), x.conclusion, JSON.stringify(x.limitations), x.role,
         x.lockedBy ?? null, x.startedAt ?? null, x.createdAt, x.updatedAt,
       );
       added.experiments += Number(r.changes);
