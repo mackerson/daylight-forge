@@ -152,8 +152,10 @@ export function detectStructure(graph: Graph): StructureReport {
   // ---- reachability ----------------------------------------------------------
   const outgoing = new Map<string, Set<string>>();
   const incoming = new Map<string, Set<string>>();
+  // Containment counts here: a file→symbol edge folds to its own file and drops out, while a
+  // Rust `mod x;` (file→file) is how a module file is reached at all.
   for (const e of graph.edges) {
-    if (e.external || e.kind === 'contains') continue;
+    if (e.external) continue;
     const from = fileOf(e.from);
     const to = fileOf(e.to);
     if (!files.has(from) || !files.has(to) || from === to) continue;
@@ -254,6 +256,24 @@ export function detectStructure(graph: Graph): StructureReport {
   }
 
   // ---- cycles (Tarjan over the file graph) -----------------------------------
+  /**
+   * Dependencies only. A Rust `mod x;` is containment, and a child's `use super::…` back to
+   * the file that declared it is the module tree's parent link; counting either would report
+   * every crate's module tree as a cycle. Every other edge counts.
+   */
+  const declares = new Set(
+    graph.edges.filter((e) => e.kind === 'contains' && files.has(e.to)).map((e) => `${e.from}\n${e.to}`),
+  );
+  const dependsOn = new Map<string, Set<string>>();
+  for (const e of graph.edges) {
+    if (e.external || e.kind === 'contains') continue;
+    if (e.spec?.startsWith('super::') && declares.has(`${e.to}\n${e.from}`)) continue;
+    const from = fileOf(e.from);
+    const to = fileOf(e.to);
+    if (!files.has(from) || !files.has(to) || from === to) continue;
+    (dependsOn.get(from) ?? dependsOn.set(from, new Set()).get(from)!).add(to);
+  }
+
   const cycles: Cycle[] = [];
   {
     const index = new Map<string, number>();
@@ -269,7 +289,7 @@ export function detectStructure(graph: Graph): StructureReport {
       stack.push(v);
       onStack.add(v);
 
-      for (const w of outgoing.get(v) ?? []) {
+      for (const w of dependsOn.get(v) ?? []) {
         if (!index.has(w)) {
           strongconnect(w);
           low.set(v, Math.min(low.get(v)!, low.get(w)!));
@@ -289,7 +309,7 @@ export function detectStructure(graph: Graph): StructureReport {
         if (component.length > 1) {
           const members = new Set(component);
           let internal = 0;
-          for (const m of component) for (const t of outgoing.get(m) ?? []) if (members.has(t)) internal++;
+          for (const m of component) for (const t of dependsOn.get(m) ?? []) if (members.has(t)) internal++;
           cycles.push({ members: component.sort(), internalEdges: internal });
         }
       }

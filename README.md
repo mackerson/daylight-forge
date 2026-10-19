@@ -92,7 +92,9 @@ tree-sitter compiled to WebAssembly: the runtime and grammar `.wasm` files are v
 there is no native addon and no Rust toolchain to install. Module paths resolve syntactically
 from the file layout and each `Cargo.toml`'s package name (`mod`, `crate::`, `super::`,
 `self::`, other workspace crates); cargo is never run, and a path that cannot be found stays
-unresolved. Further languages plug in through `DAYLIGHT_PARSERS` (see `engine/extract/registry.ts`).
+unresolved. `mod x;` is recorded as a contains edge in the module tree, not an import, and a
+module's `use super::…` back to the file that declares it is its parent link. Neither counts
+toward cycle detection; every other `use` does. Further languages plug in through `DAYLIGHT_PARSERS` (see `engine/extract/registry.ts`).
 
 ![The same repository as a dependency graph](docs/map-graph.png)
 

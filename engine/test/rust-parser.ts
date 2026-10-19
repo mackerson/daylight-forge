@@ -223,10 +223,14 @@ const graph = extract({ root: FIXTURE });
 
   const imports = (from: string, to: string) =>
     graph.edges.some((e) => e.kind === 'imports' && e.from === from && e.to === to && !e.external);
-  check('mod in lib.rs → a sibling foo.rs', imports(`${G}/lib.rs`, `${G}/units.rs`));
-  check('mod in lib.rs → foo/mod.rs', imports(`${G}/lib.rs`, `${G}/shapes/mod.rs`));
-  check('mod in mod.rs → its sibling', imports(`${G}/shapes/mod.rs`, `${G}/shapes/circle.rs`));
-  check('mod in a non-root file → its own directory', imports(`${A}/report.rs`, `${A}/report/format.rs`));
+  // `mod x;` is containment in the module tree, so it is a contains edge, never an import.
+  const declares = (from: string, to: string) =>
+    graph.edges.some((e) => e.kind === 'contains' && e.from === from && e.to === to && e.spec?.startsWith('mod ')) &&
+    !graph.edges.some((e) => e.kind === 'imports' && e.from === from && e.to === to && e.spec?.startsWith('mod '));
+  check('mod in lib.rs → a sibling foo.rs', declares(`${G}/lib.rs`, `${G}/units.rs`));
+  check('mod in lib.rs → foo/mod.rs', declares(`${G}/lib.rs`, `${G}/shapes/mod.rs`));
+  check('mod in mod.rs → its sibling', declares(`${G}/shapes/mod.rs`, `${G}/shapes/circle.rs`));
+  check('mod in a non-root file → its own directory', declares(`${A}/report.rs`, `${A}/report/format.rs`));
   check('super:: → the declaring module', imports(`${G}/shapes/circle.rs`, `${G}/shapes/mod.rs`));
   check('crate:: → through the crate root to the item\'s file', imports(`${G}/shapes/circle.rs`, `${G}/units.rs`));
   check('another workspace crate, hyphenated name and all', imports(`${A}/main.rs`, `${G}/shapes/circle.rs`));
@@ -285,6 +289,46 @@ console.log('\ndetectors run over Rust unchanged');
     JSON.stringify(dup.d4));
   check('D3 groups them by signature',
     dup.d3.some((g) => g.members.some((m) => m.endsWith('#filter_values')) && g.members.some((m) => m.endsWith('#keep_above'))));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\nmodule trees are not cycles; real cycles still are');
+{
+  const circle = 'crates/geometry/src/shapes/circle.rs';
+  const parent = 'crates/geometry/src/shapes/mod.rs';
+  const cycles = detectStructure(graph).cycles;
+  check('mod circle; plus use super::… is not reported as a cycle',
+    !cycles.some((c) => c.members.includes(circle) && c.members.includes(parent)), JSON.stringify(cycles));
+  check('the fixture has no cycles at all', cycles.length === 0, JSON.stringify(cycles));
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-rust-cycle-'));
+  fs.cpSync(FIXTURE, tmp, { recursive: true });
+  const main = path.join(tmp, 'crates/app/src/main.rs');
+  fs.writeFileSync(main, `mod a;\nmod b;\n${fs.readFileSync(main, 'utf8')}`);
+  fs.writeFileSync(path.join(tmp, 'crates/app/src/a.rs'), 'use crate::b::y;\npub fn x() -> u8 { y() }\n');
+  fs.writeFileSync(path.join(tmp, 'crates/app/src/b.rs'), 'use crate::a::x;\npub fn y() -> u8 { 1 }\npub fn z() -> u8 { x() }\n');
+  const looped = detectStructure(extract({ root: tmp })).cycles;
+  check('use a::x / use b::y between sibling modules is a cycle',
+    looped.some((c) => c.members.join() === 'crates/app/src/a.rs,crates/app/src/b.rs'), JSON.stringify(looped));
+  check('and it is the only one', looped.length === 1, JSON.stringify(looped));
+
+  // The parent link is exempt even when the parent really uses the child (a re-export):
+  // fam/mod.rs → kid.rs is a use edge, kid.rs → fam/mod.rs only `use super::`.
+  fs.mkdirSync(path.join(tmp, 'crates/app/src/fam'));
+  fs.writeFileSync(path.join(tmp, 'crates/app/src/fam/mod.rs'), 'mod kid;\npub use self::kid::Kid;\npub struct Parent;\n');
+  fs.writeFileSync(path.join(tmp, 'crates/app/src/fam/kid.rs'), 'use super::Parent;\npub struct Kid(pub Parent);\n');
+  fs.writeFileSync(main, `mod fam;\n${fs.readFileSync(main, 'utf8')}`);
+  const family = detectStructure(extract({ root: tmp })).cycles;
+  check('a use super:: back to the declaring file is exempt, even against a re-export',
+    !family.some((c) => c.members.includes('crates/app/src/fam/kid.rs')), JSON.stringify(family));
+
+  // Any other edge back still counts: implementing the parent's trait is a real dependency.
+  const shapes = path.join(tmp, 'crates/geometry/src/shapes/mod.rs');
+  fs.writeFileSync(shapes, `pub use self::circle::Circle;\n${fs.readFileSync(shapes, 'utf8')}`);
+  const withReexport = detectStructure(extract({ root: tmp })).cycles;
+  check('a re-export plus an impl of the parent\'s trait is still a cycle',
+    withReexport.some((c) => c.members.join() === 'crates/geometry/src/shapes/circle.rs,crates/geometry/src/shapes/mod.rs'),
+    JSON.stringify(withReexport));
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

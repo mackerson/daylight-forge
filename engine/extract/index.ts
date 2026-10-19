@@ -272,7 +272,9 @@ export function extract(options: ExtractOptions): Graph {
 
       const target = resolver.resolve(spec, rel);
       if (target) {
-        graph.edges.push({ from: rel, to: target, kind: 'imports', spec });
+        // A Rust `mod x;` declares a child module: containment in the module tree, not a use.
+        const kind = spec.startsWith('mod ') ? 'contains' : 'imports';
+        graph.edges.push({ from: rel, to: target, kind, spec });
       } else if (spec.startsWith('.') || isLocalRustSpec(spec)) {
         // A relative specifier we failed to resolve is our bug, not an external package.
         graph.stats.unresolvedImports++;
