@@ -88,6 +88,24 @@ section('the always set additions (P2-R32): protected with or without a policy')
     .every((p) => !isProtected(p)));
 }
 
+section('install and hook paths outside P2-R32\'s list (r4 I2): each protected, its look-alike not');
+{
+  const rust = policy({ languages: ['rust'] });
+  const table: Array<[string, string]> = [
+    ['.yarnrc', 'src/yarnrc.ts'],
+    ['.yarn/releases/yarn-4.5.0.cjs', '.yarn/cache/left-pad-npm-1.3.0.zip'],
+    ['sub/.yarn/plugins/@yarnpkg/plugin-x.cjs', 'yarn/plugins/x.cjs'],
+    ['lefthook.yaml', 'lefthook.yaml.bak'],
+    ['packages/x/lefthook-local.yml', 'docs/lefthook-local.md'],
+    ['bunfig.toml', 'bunfig.toml.example'],
+    ['.pnpmfile.mjs', 'src/pnpmfile.mjs'],
+  ];
+  for (const [p, alike] of table) {
+    check(`${p} is protected with no policy and under a rust-only one; ${alike} is not`, isProtected(p) && isProtected(p, rust) && !isProtected(alike));
+  }
+  check('the .yarn/releases directory itself, as a path, is not a file under it', !isProtected('.yarn/releases') && !isProtected('.yarn/releasesx/a.cjs'));
+}
+
 section('the rust set (P2-R4)');
 {
   const rust = policy({ languages: ['rust'] });

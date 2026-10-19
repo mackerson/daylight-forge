@@ -38,10 +38,11 @@ export const GATE_HARNESSES = ['cargo', 'node'] as const satisfies readonly Gate
  * - `segment`: any component is one of `values` (the directory and everything under it);
  * - `segment-prefix`: any component starts with one of `values`;
  * - `root-dir`: the first component is one of `values`;
- * - `suffix`: the path ends with one of `values`, a multi-component path, at any depth.
+ * - `suffix`: the path ends with one of `values`, a multi-component path, at any depth;
+ * - `subtree`: anything under one of `values`, a multi-component directory, at any depth.
  */
 export interface ProtectedRule {
-  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir' | 'suffix';
+  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir' | 'suffix' | 'subtree';
   values: readonly string[];
   /** How the author prompt and POLICY.md name it. */
   label: string;
@@ -78,14 +79,16 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     { kind: 'suffix', values: ['.daylight/invariants.json', '.codemap/invariants.def.json'], label: '.daylight/invariants.json and .codemap/invariants.def.json' },
     // Install-time configuration and code (P2-R32).
     {
-      kind: 'basename', values: ['.npmrc', '.pnpmfile.cjs', 'pnpm-workspace.yaml', '.yarnrc.yml'],
-      label: 'package-manager configuration (.npmrc, .pnpmfile.cjs, pnpm-workspace.yaml, .yarnrc.yml) at any depth',
+      kind: 'basename', values: ['.npmrc', '.pnpmfile.cjs', '.pnpmfile.mjs', 'pnpm-workspace.yaml', '.yarnrc.yml', '.yarnrc', 'bunfig.toml'],
+      label: 'package-manager configuration (.npmrc, .pnpmfile.cjs, .pnpmfile.mjs, pnpm-workspace.yaml, .yarnrc.yml, .yarnrc, bunfig.toml) at any depth',
     },
+    // The code a yarnPath / yarn-path setting runs, and yarn berry's plugins.
+    { kind: 'subtree', values: ['.yarn/releases', '.yarn/plugins'], label: 'anything under .yarn/releases/ or .yarn/plugins/' },
     // Hook code a person's next commit would run (P2-R32).
     { kind: 'segment', values: ['.husky'], label: 'anything under .husky/' },
     {
-      kind: 'basename', values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml'],
-      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml) at any depth',
+      kind: 'basename', values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', 'lefthook.yaml', 'lefthook-local.yml'],
+      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml, lefthook.yaml, lefthook-local.yml) at any depth',
     },
   ] satisfies ProtectedRule[]),
   node: Object.freeze([
@@ -136,6 +139,13 @@ function ruleMatches(rule: ProtectedRule, parts: readonly string[]): boolean {
       const p = parts.join('/');
       return rule.values.some((v) => p === v || p.endsWith(`/${v}`));
     }
+    case 'subtree': return rule.values.some((v) => {
+      const dir = v.split('/');
+      for (let i = 0; i + dir.length < parts.length; i++) {
+        if (dir.every((d, j) => parts[i + j] === d)) return true;
+      }
+      return false;
+    });
   }
 }
 

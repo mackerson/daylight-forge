@@ -61,11 +61,13 @@ project nothing it uses.
 - `daylight.invariants.json` and `daylight.policy.json`, at any depth, and the invariants
   loader's other two locations, `.daylight/invariants.json` and `.codemap/invariants.def.json`;
 - package-manager configuration and install-time code at any depth: `.npmrc`, `.pnpmfile.cjs`,
-  `pnpm-workspace.yaml`, `.yarnrc.yml`;
+  `.pnpmfile.mjs`, `pnpm-workspace.yaml`, `.yarnrc.yml`, `.yarnrc`, `bunfig.toml`, and anything
+  under `.yarn/releases` or `.yarn/plugins` (the code `yarnPath` and yarn's plugins run);
 - hook code a person's next commit would run: anything under `.husky`, and
-  `.pre-commit-config.yaml`, `lefthook.yml` and `.lefthook.yml` at any depth.
+  `.pre-commit-config.yaml`, `lefthook.yml`, `.lefthook.yml`, `lefthook.yaml` and
+  `lefthook-local.yml` at any depth.
 
-The last three groups were added by P2-R32. They change behaviour for a repository without a
+The last three groups were added by P2-R32 and widened at the P2 merge. They change behaviour for a repository without a
 policy, by tightening only: an author that edits one of them now produces an uncurable
 `protected-path` violation where it did not before.
 
