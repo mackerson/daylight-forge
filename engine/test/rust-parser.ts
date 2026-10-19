@@ -248,6 +248,9 @@ const graph = extract({ root: FIXTURE });
   check('a method call is recorded', graph.calls.some((c) => c.callee === 'self.label.clone' && c.member === 'clone'));
   check('a macro call is recorded', graph.calls.some((c) => c.callee === 'crate::square!'));
   check('base stays out of graph.json', graph.calls.every((c) => !('base' in c)));
+  check('use super::* in an inline test module resolves without a self-loop edge',
+    graph.nodes.some((n) => n.id === 'crates/geometry/src/units.rs#tests::doubles') &&
+      !graph.edges.some((e) => e.from === e.to), JSON.stringify(graph.edges.filter((e) => e.from === e.to)));
 }
 
 console.log('\ndetectors run over Rust unchanged');

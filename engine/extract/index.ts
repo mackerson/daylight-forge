@@ -271,6 +271,8 @@ export function extract(options: ExtractOptions): Graph {
       graph.stats.imports++;
 
       const target = resolver.resolve(spec, rel);
+      // `use super::*` inside an inline `mod tests` names this very file: resolved, but no edge.
+      if (target === rel && rel.endsWith('.rs')) continue;
       if (target) {
         // A Rust `mod x;` declares a child module: containment in the module tree, not a use.
         const kind = spec.startsWith('mod ') ? 'contains' : 'imports';

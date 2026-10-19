@@ -12,3 +12,13 @@ pub enum Unit {
 pub fn scale(value: Length) -> Length {
     value * SCALE
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doubles() {
+        assert_eq!(scale(1.5), 3.0);
+    }
+}
