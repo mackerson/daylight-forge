@@ -12,7 +12,7 @@ export const COMMANDS = [
   'extract', 'invariants', 'focus', 'map', 'export', 'import', 'adopt', 'check', 'plan', 'derive', 'query',
   'save-invariant', 'try-invariant', 'arbitrate', 'agent', 'run', 'adapters', 'quality',
   'mission', 'experiment', 'artifact', 'events', 'report', 'demo',
-  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest',
+  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest', 'deps',
 ] as const;
 
 export const USAGE = `Daylight Software Forge — get all the data, then focus it down.
@@ -57,12 +57,15 @@ usage:
   node engine/cli.ts mission    create <repo> --kind implement (--work-item <w> | --no-work-item --objective '<o>' --rationale '<why>')
                                 authorize <m> --write [--execute] [--max-usd N] --rationale '<why>' --confirm <c>
   node engine/cli.ts gate       add <m> --role gate|holdout --test <file> --expect-exit 0 --expect-stdout '# fail 0'
+                                [--harness node|cargo] [--crate <dir>]   # cargo: --expect-stdout 'test result: ok.'
                                 baseline <m> [repo] | lock <m> --rationale '<why>' --confirm <c> | list <m> | evaluate <c>
   node engine/cli.ts forge      run <m> <repo> --tools mock[:model] [--max-cost <usd>] [--timeout s] [--keep-workspace]
                                 evaluate <c> | candidate <c> [--max-bytes N]
                                 approve|reject|override <c> --rationale '<why>' --confirm <c> | apply <c> <repo> --confirm <c>
   node engine/cli.ts confirm    <operation> <subject> [--write] [--execute] [--max-usd N] [--only x,…]   # what --confirm checks
   node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
+  node engine/cli.ts deps       snapshot <repo> [--out <dir>]   # cargo fetch --locked on the host, with network
+                                status <repo> [--out <dir>]     # recorded digest, Cargo.lock match, cache sizes
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>

@@ -14,6 +14,7 @@ import { evaluate, GateRefused, listGates, type GateContext } from './gate.ts';
 import { runGateCommand } from './commands-gate.ts';
 import { runWorkItemCommand } from './commands-work-item.ts';
 import { runDecideCommand } from './commands-decide.ts';
+import { runDepsCommand } from './commands-deps.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -349,7 +350,7 @@ async function forge(sub: string | undefined, p: Parsed, out: () => string, asJs
       if (!candidateId) throw new Usage('forge evaluate needs a <candidate-id> [repo]');
       const c = await withContext(out, (ctx) => {
         const gctx: GateContext = {
-          store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: repoFor(ctx, repo),
+          store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: repoFor(ctx, repo), out: ctx.out,
           runs: num(last(p, 'runs')), timeoutMs: seconds(last(p, 'timeout')),
         };
         return evaluate(gctx, candidateId);
@@ -440,7 +441,7 @@ const GUARDED: Record<string, readonly string[]> = {
 };
 
 /**
- * Entry from cli.ts for `confirm`, `forge`, `gate`, `work-item`, `spec` and `ingest`; `argv`
+ * Entry from cli.ts for `confirm`, `forge`, `gate`, `work-item`, `spec`, `ingest` and `deps`; `argv`
  * is `process.argv.slice(2)`. Returns the exit code.
  */
 export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
@@ -464,6 +465,8 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
       }
       case 'ingest':
         return runIngestCommand(rest);
+      case 'deps':
+        return await runDepsCommand(rest, env);
       case 'confirm': {
         const cp = parse(rest);
         asJson = last(cp, 'format') === 'json';

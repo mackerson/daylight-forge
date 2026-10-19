@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { detectSandbox, type SandboxProfile } from '../experiment/sandbox.ts';
+import { detectSandbox, type SandboxLimits, type SandboxProfile } from '../experiment/sandbox.ts';
 import { requireMappedRepo, type DaylightContext } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import {
@@ -14,6 +14,7 @@ import { parseSpec, specKey } from '../swarm/adapters.ts';
 import { captureRun } from '../swarm/capture.ts';
 import { missionSpend, spendRefusal } from '../swarm/usage.ts';
 import { authorFor, authorLauncher, authorServer, authorTools } from './authors.ts';
+import { isCargoTree, readSnapshot, snapshotRefusal, wipeAuthorCache } from './cargo.ts';
 import { REQUEST_DEPENDENCY_TOOL } from './dependency-requests.ts';
 import { captureCandidate } from './diff.ts';
 import { authorBrief, evaluate, resolveCommit, type GateContext } from './gate.ts';
@@ -56,6 +57,8 @@ export interface ImplementOptions {
   keepWorkspace?: boolean;
   /** Gate runs per gate at evaluate. */
   runs?: number;
+  /** Sandbox ceilings for the gate runs at evaluate; a cargo gate otherwise gets its own defaults. */
+  gateLimits?: SandboxLimits;
   /** Injected in tests; defaults to `detectSandbox()`. */
   sandbox?: SandboxProfile;
   env?: NodeJS.ProcessEnv;
@@ -194,6 +197,12 @@ function preflight(
   }
   const spend = spendRefusal(missionSpend(ctx, m.id), o.maxCost ?? budget);
   if (spend) why.push(spend);
+  // A cargo repository: an author with exec builds against the crate snapshot, so it needs
+  // one; and any recorded snapshot must still be the one this Cargo.lock was fetched for.
+  if (isCargoTree(root) && (granted?.execute === true || readSnapshot(ctx.out))) {
+    const cargo = snapshotRefusal(root, ctx.out, root);
+    if (cargo) why.push(cargo);
+  }
   return { why, authorize, exec: granted?.execute === true, lock, base };
 }
 
@@ -244,7 +253,8 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
   const key = specKey(spec);
   const runnerId = `agent:${spec.tool}:${spec.model ?? 'default'}`;
   const work = workOf(ctx, mission);
-  const gctx: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, runs: o.runs, sandbox: o.sandbox };
+  const gctx: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out: ctx.out, runs: o.runs, sandbox: o.sandbox,
+    timeoutMs: o.timeoutMs, limits: o.gateLimits };
   const prompt = buildAuthorPrompt(work, authorBrief(gctx, mission.id), policy);
   const holdouts = (pre.lock!.scope.experimentIds as string[])
     .map((id) => ctx.store.experiment(id))
@@ -347,6 +357,11 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
       }, { taskId: task.id, attemptId: row.id, artifactIds: [candidate.diffArtifact.id, summaryArtifact.id] });
       for (const v of candidate.policyViolations) {
         emit(ctx, mission, 'process', 'forge.policy.violation', { state: mission.state, candidateId: candidate.id, rule: v.rule, path: v.path },
+          { taskId: task.id, attemptId: row.id });
+      }
+      // What an author that broke policy built is not left for the next author to link against.
+      if (candidate.policyViolations.length && wipeAuthorCache(ctx.out)) {
+        emit(ctx, mission, 'process', 'forge.cargo.author-cache.wiped', { state: mission.state, candidateId: candidate.id },
           { taskId: task.id, attemptId: row.id });
       }
     }

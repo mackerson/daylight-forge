@@ -422,6 +422,12 @@ export type ExperimentConclusion =
  */
 export type ExperimentRole = 'probe' | 'gate' | 'holdout';
 
+/**
+ * The test runner a gate runs under: `node --test`, or `cargo test` against a per-project crate
+ * snapshot (docs/daylight/CARGO.md). A probe is always `node`; a row without one reads as `node`.
+ */
+export type GateHarness = 'node' | 'cargo';
+
 export interface Experiment {
   id: string;
   missionId: string;
@@ -442,6 +448,8 @@ export interface Experiment {
   harnessDigest: string;
   command: string[];
   sandboxProfile: string;
+  /** Recorded on the row and in the expectation, so it is covered by the harness digest. */
+  harness?: GateHarness;
   executions: ArtifactRef[];
   conclusion: ExperimentConclusion;
   limitations: string[];

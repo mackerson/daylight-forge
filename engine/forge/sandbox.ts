@@ -12,6 +12,7 @@ import {
 import type { ArtifactStore } from '../mission/artifacts.ts';
 import { redact } from '../mission/redact.ts';
 import type { ArtifactRef, Attempt, NetworkMode } from '../mission/types.ts';
+import { cargoMounts, CargoRefused, isCargoTree, readSnapshot, snapshotRefusal } from './cargo.ts';
 
 /**
  * The Forge's bubblewrap profiles (F-1 as amended by R9.1, R11.1, R11.2).
@@ -49,6 +50,9 @@ const SENSITIVE_HOME = [
   '.ssh', '.gnupg', '.aws', '.claude', '.netrc', '.npmrc', '.git-credentials', '.config/gh',
   '.config/daylight', '.local/share/daylight',
 ];
+
+/** Where Daylight keeps its own data under `$HOME`: the default `<out>` lives in the first. */
+const DAYLIGHT_HOME_DIRS = ['.local/share/daylight', '.config/daylight'];
 
 export class SandboxRefused extends Error {
   constructor(message: string) {
@@ -134,17 +138,27 @@ const resolved = (p: string): string => {
  * directory or of `<out>` (which would bring them in), anything under `<out>`, and the home
  * directory's credential stores (always), and anything else under the home directory that
  * `allow` does not name.
+ *
+ * `outAllow` names exact directories strictly inside `<out>` that may be bound anyway: the
+ * crate snapshot and one build cache (forge/cargo.ts). Only those paths themselves, never
+ * `<out>` or a parent; and the Daylight data directory that holds `<out>` is passed over only
+ * for them, every other credential store still refuses.
  */
-export function mountRefusal(src: string, o: { home: string; out: string; allow?: string[] }): string | null {
+export function mountRefusal(src: string, o: { home: string; out: string; allow?: string[]; outAllow?: string[] }): string | null {
   const p = resolved(src);
   const home = resolved(o.home);
   const out = resolved(requireOut(o.out));
+  const outAllowed = p !== out && within(p, out) && (o.outAllow ?? []).some((a) => resolved(a) === p);
   if (p === '/') return 'the root filesystem';
   if (within(home, p)) return `${p} contains the home directory`;
+  if (outAllowed && within(home, out)) return `${p} is under an <out> that is the home directory or contains it`;
   for (const rel of SENSITIVE_HOME) {
-    if (within(p, path.join(home, rel))) return `${p} is under ~/${rel}`;
+    const dir = path.join(home, rel);
+    // Only Daylight's own directories are passed over for an <out> inside them; an <out> under
+    // ~/.ssh or any other credential store never makes a bind there acceptable.
+    if (within(p, dir) && !(outAllowed && DAYLIGHT_HOME_DIRS.includes(rel) && within(out, dir))) return `${p} is under ~/${rel}`;
   }
-  if (within(p, out)) return `${p} is under <out>`;
+  if (within(p, out) && !outAllowed) return `${p} is under <out>`;
   if (within(out, p)) return `${p} contains <out>`;
   // Deny by default under $HOME: dotfiles there hold credentials nobody listed in advance.
   if (within(p, home) && !(o.allow ?? []).some((a) => within(p, resolved(a)))) {
@@ -433,7 +447,9 @@ export function checkExecCommand(command: unknown): { ok: true; argv: string[] }
 /**
  * The exec sandbox: the same tree read-write at `/work`, `--unshare-all` with no
  * `--share-net` under any option, prlimit, no MCP socket, nothing fed in. Gate tests are
- * never in the tree (the workspace refuses a holdout at base) and nothing else is mounted.
+ * never in the tree (the workspace refuses a holdout at base). A tree with a `Cargo.toml` at
+ * its root also gets the author's cargo binds (forge/cargo.ts): the crate snapshot read-only
+ * and the author build cache, never the gates'. Nothing else is mounted.
  */
 export function execLaunch(
   profile: SandboxProfile,
@@ -451,11 +467,45 @@ export function execLaunch(
   const treeWhy = mountRefusal(tree, { home: o.home ?? os.homedir(), out: o.out, allow: [tree] });
   if (treeWhy) throw new SandboxRefused(`refusing to mount the exec tree: ${treeWhy}`);
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
-  const b = baseSandbox(profile, limits, {});
+  const cargo = isCargoTree(tree) ? authorCargo(tree, o.out, o.home ?? os.homedir()) : null;
+  const b = baseSandbox(profile, limits, cargo?.env ?? {});
   b.rw(tree, WORK);
+  for (const m of cargo?.binds ?? []) {
+    if (m.kind === 'rw') b.rw(m.src, m.dest);
+    else b.ro(m.src, m.dest);
+  }
   b.argv.push('--remount-ro', '/', '--chdir', WORK, '--', ...cmd.argv);
   const bins = sandboxBinaries(profile);
   return { bin: bins.scope ?? bins.prlimit, argv: b.argv, env: { PATH: SYSTEM_PATH, ...scopeEnv() }, feeds: [], mounts: b.mounts };
+}
+
+/**
+ * The author profile's cargo binds for `tree`, each through `mountRefusal`, or a refusal: no
+ * snapshot, or a `Cargo.lock` that is not the one the snapshot was fetched for.
+ */
+function authorCargo(tree: string, out: string, home: string): ReturnType<typeof cargoMounts> {
+  // What the author's `run` tool is told never names a host path (review L2): <out>, the
+  // repository and the tree are said as placeholders; the operator reads the same command.
+  const repo = readSnapshot(out)?.repo;
+  const spelled = [
+    [out, '<out>'], [resolved(out), '<out>'], [tree, '/work'], [resolved(tree), '/work'],
+    ...(repo ? [[repo, '<repo>'], [resolved(repo), '<repo>']] : []), [home, '~'], [resolved(home), '~'],
+  ].filter(([p]) => p.length > 1).sort((a, b) => b[0].length - a[0].length);
+  const hostless = (msg: string) => spelled.reduce((m, [p, to]) => m.split(p).join(to), msg);
+  const why = snapshotRefusal(tree, out, repo ?? '<repo>');
+  if (why) throw new SandboxRefused(hostless(why));
+  let m: ReturnType<typeof cargoMounts>;
+  try {
+    m = cargoMounts('author', out);
+  } catch (err) {
+    if (err instanceof CargoRefused) throw new SandboxRefused(hostless(err.message));
+    throw err;
+  }
+  for (const bind of m.binds) {
+    const refused = mountRefusal(bind.src, { home, out, allow: [bind.src], outAllow: [bind.src] });
+    if (refused) throw new SandboxRefused(hostless(`refusing to mount the cargo ${bind.dest}: ${refused}`));
+  }
+  return m;
 }
 
 export function execArgv(
