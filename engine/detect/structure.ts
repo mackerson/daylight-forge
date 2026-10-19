@@ -111,6 +111,8 @@ export function findEntrypoints(graph: Graph, files: Set<string>): string[] {
       found.add(f);
     }
     if (/\.config\.[cm]?[jt]s$/.test(base)) found.add(f);
+    // Cargo fixes a crate's roots by layout rather than declaring them, at any depth.
+    if (/(^|\/)(src\/(main|lib)|src\/bin\/[^/]+|build)\.rs$/.test(f)) found.add(f);
   }
 
   return [...found].sort();
