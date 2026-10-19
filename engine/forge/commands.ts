@@ -460,7 +460,7 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
       case 'ingest':
         return runIngestCommand(rest);
       case 'deps':
-        return runDepsCommand(rest);
+        return await runDepsCommand(rest, env);
       case 'confirm': {
         const cp = parse(rest);
         asJson = last(cp, 'format') === 'json';

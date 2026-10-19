@@ -39,8 +39,9 @@ function parse(argv: string[]): { positionals: string[]; flags: Map<string, stri
 const mib = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 
 /** `argv` is everything after `deps`: the subcommand, then its arguments. */
-export function runDepsCommand(argv: string[]): number {
+export async function runDepsCommand(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const sub = argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
+  // TODO(merge with WS-R4): if (sub === 'requests' || sub === 'resolve') return runDepsRequestsCommand(argv, env); from ./commands-deps-requests.ts
   const p = parse(argv.slice(sub ? 1 : 0));
   const asJson = p.flags.get('format') === 'json';
   try {
