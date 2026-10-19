@@ -15,7 +15,7 @@ import { authorServer, authorTools, REQUEST_DEPENDENCY } from '../forge/authors.
 import { ROLE_MCP_TOOLS } from '../forge/decompose.ts';
 import {
   dependencyRequestId, dependencyRequests, DependencyRequestRefused, MAX_DEPENDENCY_REASON_BYTES,
-  MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT, registerRequestDependencyTool, requestOutboxFile, resolveConfirm, resolveDependencyRequest, validateDependencyRequest,
+  MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT, readRequestOutbox, registerRequestDependencyTool, requestOutboxFile, resolveConfirm, resolveDependencyRequest, validateDependencyRequest,
 } from '../forge/dependency-requests.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
 import { checkPolicy, DecisionRefused, pathViolations } from '../forge/policy.ts';
@@ -333,6 +333,15 @@ section('request_dependency: the author asks, a person decides');
       !!linked.isError && /could not be recorded/.test(linked.content[0].text ?? '') && fs.readFileSync(target, 'utf8') === 'untouched\n',
       `${linked.content[0].text} / ${fs.readFileSync(target, 'utf8')}`);
     await c.close();
+    // The read side: a link at the outbox path to a file of valid lines is not followed (O_NOFOLLOW).
+    const planted = '{"v":1,"at":0,"request":{"ecosystem":"cargo","name":"serde_json","version":"1","reason":"planted"}}\n';
+    fs.writeFileSync(target, planted);
+    const viaLink = readRequestOutbox(linkOut, linkAttempt.id);
+    fs.rmSync(requestOutboxFile(linkOut, linkAttempt.id));
+    fs.writeFileSync(requestOutboxFile(linkOut, linkAttempt.id), planted);
+    const asFile = readRequestOutbox(linkOut, linkAttempt.id);
+    check('reading an outbox that is a symlink yields nothing, though the same lines in a plain file are read',
+      viaLink.requests.length === 0 && viaLink.skipped === 0 && asFile.requests.length === 1, `${JSON.stringify(viaLink)} / ${asFile.requests.length}`);
   }
   // Back to two requests for the rest; a forged line beside them is skipped, not trusted.
   fs.writeFileSync(box, [lines()[0], lines()[1], '{"v":1,"at":0,"request":{"ecosystem":"cargo","name":"evil;sh","reason":"x"}}',
