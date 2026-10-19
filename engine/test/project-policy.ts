@@ -17,13 +17,14 @@ import {
   dependencyRequestId, dependencyRequests, DependencyRequestRefused, MAX_DEPENDENCY_REASON_BYTES,
   MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT, requestOutboxFile, resolveConfirm, resolveDependencyRequest, validateDependencyRequest,
 } from '../forge/dependency-requests.ts';
+import { buildAuthorPrompt } from '../forge/orchestrate.ts';
 import { checkPolicy, DecisionRefused, pathViolations } from '../forge/policy.ts';
 import { createDecomposeServer } from '../mcp/server.ts';
 import { openDaylight } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import {
   authorLimits, loadProjectPolicy, MAX_AUTHOR_TIMEOUT_SECONDS, MAX_AUTHOR_TURNS, MAX_POLICY_BYTES, parseProjectPolicy,
-  POLICY_FILE, PROTECTED_SETS, protectedBy, ProjectPolicyError, type ProjectPolicy,
+  POLICY_FILE, PROTECTED_SETS, protectedBy, protectedLabels, ProjectPolicyError, type ProjectPolicy,
 } from '../forge/project-policy.ts';
 import type { CandidateFile } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -180,6 +181,20 @@ section('author caps clamp');
   const flag = authorLimits(policy({ author: { timeoutSeconds: 3600 } }), defaults, 30_000);
   check('a --timeout flag beats the policy', flag.timeoutMs === 30_000 && flag.source.timeoutMs === 'flag');
   check('a flag above six hours is clamped too', authorLimits(null, defaults, 10 * 24 * 3600 * 1000).timeoutMs === MAX_AUTHOR_TIMEOUT_SECONDS * 1000);
+}
+
+section('the author prompt is rendered from the policy');
+{
+  const brief = { gateSetDigest: 'sha256:' + '0'.repeat(64), gates: [] } as unknown as Parameters<typeof buildAuthorPrompt>[1];
+  const work = { title: 't', statement: 's', examples: [], negativeExamples: [] };
+  const plain = buildAuthorPrompt(work, brief);
+  const rust = buildAuthorPrompt(work, brief, policy({ languages: ['rust'], protectedPaths: ['custom/glob/**'] }));
+  check('with no policy it names the node set', plain.includes('package.json') && plain.includes('node_modules') && !plain.includes('Cargo.toml'));
+  check('with the rust policy it names Cargo.toml, build.rs and the custom glob',
+    rust.includes('Cargo.toml') && rust.includes('build.rs') && rust.includes('custom/glob/**') && !rust.includes('package.json at any depth'));
+  check('every label of the selected sets is in the prompt', protectedLabels(policy({ languages: ['rust', 'node'] })).every((l) => buildAuthorPrompt(work, brief, policy({ languages: ['rust', 'node'] })).includes(l)));
+  check('it tells the author how to ask for a dependency', rust.includes('request_dependency'));
+  check('the work is still fenced as data', /<<<WORK-[0-9a-f]{12}\n/.test(rust));
 }
 
 section('request_dependency: the author asks, a person decides');
