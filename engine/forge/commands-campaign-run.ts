@@ -39,7 +39,8 @@ export const CAMPAIGN_RUN_SUBCOMMANDS = ['gate', 'baseline', 'lock', 'run', 'sta
 
 /** WS-R5's guarded halt and resume, and the director's host; tests and the merge supply them. */
 export interface CampaignRunDeps {
-  host?: StatusHost;
+  /** The director's host over the command's own context; WS-R5's by default. */
+  host?: (ctx: DaylightContext) => StatusHost;
   halt?: (ctx: DaylightContext, campaignId: string, actor: string, reason: CampaignHaltReason) => Decision;
   resume?: (ctx: DaylightContext, input: { campaignId: string; actor: string; rationale: string; confirm: string | undefined; env: NodeJS.ProcessEnv; haltDecisionId: string }) => Decision;
   sandbox?: SandboxProfile;
@@ -71,7 +72,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
   const asJson = last(p, 'format') === 'json';
   const json = (d: unknown) => stdout(`${JSON.stringify(d, null, 2)}\n`);
   const say = (l: string) => stdout(`${l}\n`);
-  const host: StatusHost = deps.host ?? r5Host();
+  const hostOf = (ctx: DaylightContext): StatusHost => (deps.host ?? r5Host)(ctx);
   const repoArg = sub === 'baseline' || sub === 'run' || sub === 'adopt-tip' ? p.positionals[1] : sub === 'status' ? p.positionals[1] : undefined;
   const explicit = last(p, 'out');
   const out = explicit && explicit !== 'true' ? path.resolve(explicit) : defaultOut(repoArg ?? process.cwd());
@@ -132,7 +133,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
       case 'baseline': {
         const rows = await withCtx(async (ctx) => {
           const repo = repoOf(ctx, p.positionals[1]);
-          registerPlanGates(gctx(ctx, repo), campaignId, host.plan(campaignId));
+          registerPlanGates(gctx(ctx, repo), campaignId, hostOf(ctx).plan(campaignId));
           return baselineCampaign(gctx(ctx, repo), campaignId);
         });
         if (asJson) json(rows);
@@ -167,7 +168,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
       case 'run': {
         const r = await withCtx((ctx) => runCampaign(ctx, {
           campaignId, repo: repoOf(ctx, p.positionals[1]), concurrency: num(last(p, 'concurrency')), maxWaves: num(last(p, 'max-waves')),
-          dryRun: last(p, 'dry-run') === 'true', host, env, ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
+          dryRun: last(p, 'dry-run') === 'true', host: hostOf(ctx), env, ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
         }));
         if (asJson) json(r);
         else {
@@ -181,7 +182,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
       }
       case 'status': {
         const r = await withCtx((ctx) => {
-          const report = campaignStatus(ctx, campaignId, repoOf(ctx, p.positionals[1]), host);
+          const report = campaignStatus(ctx, campaignId, repoOf(ctx, p.positionals[1]), hostOf(ctx));
           if (last(p, 'write') === 'true') {
             const dir = path.join(ctx.out, 'campaigns', campaignId);
             fs.mkdirSync(dir, { recursive: true });

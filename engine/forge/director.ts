@@ -76,8 +76,9 @@ const notYet = (what: string) => (): never => {
   throw new NotImplemented(what);
 };
 
-/** WS-R5's functions. The merge wires each to its body (see the R6 hand-off). */
-export function r5Host(): CampaignHost {
+/** WS-R5's functions over `ctx`. The merge wires each to its body (see the R6 hand-off). */
+export function r5Host(ctx: DaylightContext): CampaignHost {
+  void ctx;
   return {
     tickets: notYet('campaignTickets'),
     plan: notYet('readPlanBlob/parsePlan'),
@@ -355,7 +356,7 @@ function captureRefusedBrief(attempt: number, why: string): RepairBrief {
 // ---- needs --------------------------------------------------------------------------------------
 
 /** The director's needs on a campaign: tickets closed before an author ran, which nothing else lists (P2-R23). */
-export function campaignRunNeeds(ctx: Pick<DaylightContext, 'store' | 'out'>, campaign: Mission, host: CampaignHost = r5Host()): Need[] {
+export function campaignRunNeeds(ctx: DaylightContext, campaign: Mission, host: CampaignHost = r5Host(ctx)): Need[] {
   const out: Need[] = [];
   let tickets: CampaignTicket[];
   try {
@@ -407,7 +408,7 @@ const counts = (states: Map<string, TicketState>) => {
  * ref, and returns the schedule the first pass would dispatch with each reservation.
  */
 export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Promise<CampaignRunResult> {
-  const host = o.host ?? r5Host();
+  const host = o.host ?? r5Host(ctx);
   const campaign = ctx.store.mission(o.campaignId);
   if (!campaign || campaign.kind !== 'campaign') throw new DirectorRefused(`${o.campaignId} is not a campaign`);
   const { root, project } = requireMappedRepo(ctx.out, o.repo);

@@ -54,7 +54,7 @@ const host = testHost(ctx, campaign, plan, tickets);
 async function cli(argv: string[], env: NodeJS.ProcessEnv = human): Promise<{ code: number; out: string; err: string }> {
   let o = '';
   let e = '';
-  const code = await runCampaignRunCommand([...argv, '--out', out], env, { host, stdout: (s) => { o += s; }, stderr: (s) => { e += s; } });
+  const code = await runCampaignRunCommand([...argv, '--out', out], env, { host: () => host, stdout: (s) => { o += s; }, stderr: (s) => { e += s; } });
   return { code, out: o, err: e };
 }
 const rows = () => {
