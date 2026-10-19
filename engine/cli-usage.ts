@@ -12,7 +12,7 @@ export const COMMANDS = [
   'extract', 'invariants', 'focus', 'map', 'export', 'import', 'adopt', 'check', 'plan', 'derive', 'query',
   'save-invariant', 'try-invariant', 'arbitrate', 'agent', 'run', 'adapters', 'quality',
   'mission', 'experiment', 'artifact', 'events', 'report', 'demo',
-  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest', 'deps',
+  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest', 'deps', 'campaign', 'assumption',
 ] as const;
 
 export const USAGE = `Daylight Software Forge — get all the data, then focus it down.
@@ -68,6 +68,16 @@ usage:
                                 status <repo> [--out <dir>]     # recorded digest, Cargo.lock match, cache sizes
                                 requests [--mission <m>]        # dependencies authors asked for
                                 resolve <request-id> [--declined] --rationale '<why>' --confirm <c>
+  node engine/cli.ts campaign   validate <plan> <repo> [--rev HEAD] | import <repo> --file <plan> [--rev HEAD] [--campaign <c>] | show <c>
+                                approve-plan <c> --rationale '<why>' --confirm <c8> | retry <c> <ticket> --rationale '<why>' --confirm <c8>
+                                authorize <c> --expected-gate-set <digest> --roster mock --max-usd-total N --max-usd-per-mission N
+                                  --max-turns N --timeout s --max-attempts N --concurrency N --auto-apply integration-ref|none
+                                  [--execute] [--wave-size N] [--review-roster a,b] [--fix-lane 5:1.5|off] [--tickets A,B]
+                                  [--not-after 72h] [--identity 'Name <email>'] --rationale '<why>' --confirm <c8>
+  node engine/cli.ts assumption list <c> [--status open|pending|confirmed|overturned]
+                                record <c> --question '<q>' --default '<d>' [--ticket T] --rationale '<why>' --confirm <c8>
+                                confirm <u> | decide <u> --value '<v>' | overturn <u> --value '<v>' --follow-up '<s>' [--lane L] [--scope a,b]
+                                  (each --rationale '<why>' --confirm <c8>)
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>

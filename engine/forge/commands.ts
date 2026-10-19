@@ -15,6 +15,7 @@ import { runGateCommand } from './commands-gate.ts';
 import { runWorkItemCommand } from './commands-work-item.ts';
 import { runDecideCommand } from './commands-decide.ts';
 import { runDepsCommand } from './commands-deps.ts';
+import { runAssumptionCommand, runCampaignCommand } from './commands-campaign.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -438,10 +439,12 @@ const GUARDED: Record<string, readonly string[]> = {
   gate: ['lock'],
   forge: ['approve', 'reject', 'override', 'apply'],
   'work-item': ['approve', 'reject'],
+  campaign: ['approve-plan', 'lock', 'authorize', 'resume', 'adopt-tip', 'retry'],
+  assumption: ['confirm', 'decide', 'overturn', 'record'],
 };
 
 /**
- * Entry from cli.ts for `confirm`, `forge`, `gate`, `work-item`, `spec`, `ingest` and `deps`; `argv`
+ * Entry from cli.ts for `confirm`, `forge`, `gate`, `work-item`, `spec`, `ingest`, `deps`, `campaign` and `assumption`; `argv`
  * is `process.argv.slice(2)`. Returns the exit code.
  */
 export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
@@ -467,6 +470,10 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
         return runIngestCommand(rest);
       case 'deps':
         return await runDepsCommand(rest, env);
+      case 'campaign':
+        return await runCampaignCommand(args, env);
+      case 'assumption':
+        return await runAssumptionCommand(args, env);
       case 'confirm': {
         const cp = parse(rest);
         asJson = last(cp, 'format') === 'json';
