@@ -84,6 +84,16 @@ Everything lives on your machine, in SQLite files outside the repository.
 - **Mission Control.** The Electron app: the 3D map, plus screens for work items, implement
   detail, gate sets, candidate review, the ledger and ingest, with a derived "needs you" strip.
 
+### Languages the map reads
+
+TypeScript and JavaScript go through the TypeScript compiler API. Rust (`.rs`) goes through
+tree-sitter compiled to WebAssembly: the runtime and grammar `.wasm` files are vendored in
+`engine/extract/grammars/` with pinned versions and sha256 hashes checked on every load, so
+there is no native addon and no Rust toolchain to install. Module paths resolve syntactically
+from the file layout and each `Cargo.toml`'s package name (`mod`, `crate::`, `super::`,
+`self::`, other workspace crates); cargo is never run, and a path that cannot be found stays
+unresolved. Further languages plug in through `DAYLIGHT_PARSERS` (see `engine/extract/registry.ts`).
+
 ![The same repository as a dependency graph](docs/map-graph.png)
 
 ## Get started
