@@ -15,7 +15,7 @@ import { authorServer, authorTools, REQUEST_DEPENDENCY } from '../forge/authors.
 import { ROLE_MCP_TOOLS } from '../forge/decompose.ts';
 import {
   dependencyRequestId, dependencyRequests, DependencyRequestRefused, MAX_DEPENDENCY_REASON_BYTES,
-  MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT, requestOutboxFile, resolveConfirm, resolveDependencyRequest, validateDependencyRequest,
+  MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT, registerRequestDependencyTool, requestOutboxFile, resolveConfirm, resolveDependencyRequest, validateDependencyRequest,
 } from '../forge/dependency-requests.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
 import { checkPolicy, DecisionRefused, pathViolations } from '../forge/policy.ts';
@@ -274,6 +274,26 @@ section('request_dependency: the author asks, a person decides');
   const over = await call({ ...good, name: 'one_too_many' });
   check(`the ${MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT + 1}st request in a session is refused`, !!over.isError && lines().length === MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT);
   await client.close();
+  {
+    // A link planted where the outbox goes is refused, and nothing is written through it.
+    const linkOut = path.join(tmp, 'link-out');
+    const linkAttempt = { id: `a_${'f'.repeat(32)}` };
+    const target = path.join(tmp, 'link-target.txt');
+    fs.writeFileSync(target, 'untouched\n');
+    fs.mkdirSync(path.join(linkOut, 'dependency-requests'), { recursive: true });
+    fs.symlinkSync(target, requestOutboxFile(linkOut, linkAttempt.id));
+    const s = new McpServer({ name: 't', version: '0' });
+    registerRequestDependencyTool(s, { attempt: linkAttempt, out: linkOut });
+    const [cs, ss] = InMemoryTransport.createLinkedPair();
+    await s.connect(ss);
+    const c = new Client({ name: 'mock-author', version: '0' });
+    await c.connect(cs);
+    const linked = (await c.callTool({ name: 'request_dependency', arguments: good })) as ToolResult;
+    check('a symlink at the outbox path is refused and nothing is written through it',
+      !!linked.isError && /could not be recorded/.test(linked.content[0].text ?? '') && fs.readFileSync(target, 'utf8') === 'untouched\n',
+      `${linked.content[0].text} / ${fs.readFileSync(target, 'utf8')}`);
+    await c.close();
+  }
   // Back to two requests for the rest; a forged line beside them is skipped, not trusted.
   fs.writeFileSync(box, [lines()[0], lines()[1], '{"v":1,"at":0,"request":{"ecosystem":"cargo","name":"evil;sh","reason":"x"}}',
     '{"v":1,"at":0,"request":{"ecosystem":"cargo","name":"serde_json","version":"1","reason":"again"},"missionId":"m_forged"}', 'not json'].join('\n') + '\n');
