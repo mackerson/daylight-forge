@@ -241,6 +241,7 @@ export function extract(options: ExtractOptions): Graph {
       graph.edges.push({ from: rel, to: node.id, kind: 'contains' });
     }
 
+    for (const message of parsed.diagnostics ?? []) graph.diagnostics.push({ file: rel, message });
     graph.shapes.push(...parsed.shapes);
     graph.functions.push(...parsed.functions);
     graph.literals.push(...parsed.literals);

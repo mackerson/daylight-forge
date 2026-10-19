@@ -32,6 +32,26 @@ export function builtinParsers(): Parser[] {
 }
 
 /**
+ * Run every provider's one-time async setup.
+ *
+ * `extract()` is synchronous and `parse()` is too, so a provider that needs async work up
+ * front — compiling a WebAssembly grammar — gets it here, before extraction starts. A provider
+ * whose setup fails is not dropped: its files then fail to parse one by one, each reported as
+ * a diagnostic, which says more than a provider that silently vanished.
+ */
+export async function initParsers(parsers: Parser[]): Promise<RegistryResult['failures']> {
+  const failures: RegistryResult['failures'] = [];
+  for (const p of parsers) {
+    try {
+      await p.init?.();
+    } catch (err) {
+      failures.push({ spec: p.name, reason: `init failed: ${(err as Error).message}` });
+    }
+  }
+  return failures;
+}
+
+/**
  * Providers opted into for this process.
  *
  * Process-wide rather than threaded through every call, because that is what it is: a
@@ -76,7 +96,8 @@ function isParser(value: unknown): value is Parser {
     typeof p.name === 'string' &&
     Array.isArray(p.extensions) &&
     p.extensions.every((e) => typeof e === 'string' && e.startsWith('.')) &&
-    typeof p.parse === 'function'
+    typeof p.parse === 'function' &&
+    (p.init === undefined || typeof p.init === 'function')
   );
 }
 
@@ -127,5 +148,6 @@ export async function loadParsers(
   }
 
   registerParsers(loaded);
+  failures.push(...(await initParsers(parsers)));
   return { parsers, failures };
 }
