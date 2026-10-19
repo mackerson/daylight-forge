@@ -10,7 +10,7 @@ import type { GateHarness } from '../mission/types.ts';
  *
  * It can only tighten what an author may touch (P2-R32): every built-in set applies whatever
  * the file says, and `protectedPaths` only adds. `languages` only chooses which sets the author
- * prompt spells out (and, later, the default gate harness); it never unprotects anything.
+ * prompt lists first (and, later, the default gate harness); it never unprotects anything.
  *
  * The protected sets are data (`PROTECTED_SETS`) so that the matcher, the author prompt and
  * docs/daylight/POLICY.md are all read off one list.
@@ -166,11 +166,11 @@ export function protectedBy(p: string, policy?: ProjectPolicy | null): string[] 
 
 /**
  * The protected list as the author prompt says it, one entry per rule, from the data above:
- * `always` and the project's languages (no policy: `node`). Wording only; `protectedBy`
- * enforces every set.
+ * every set, since `protectedBy` enforces every set; `always` and the project's languages
+ * (no policy: `node`) come first.
  */
 export function protectedLabels(policy?: ProjectPolicy | null): string[] {
-  const sets: ProtectedSetName[] = ['always', ...languagesOf(policy)];
+  const sets = [...new Set<ProtectedSetName>(['always', ...languagesOf(policy), ...Object.keys(PROTECTED_SETS) as ProtectedSetName[]])];
   const labels = [...new Set(sets.flatMap((s) => PROTECTED_SETS[s].map((r) => r.label)))];
   return [...labels, ...(policy?.protectedPaths ?? [])];
 }

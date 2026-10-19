@@ -25,7 +25,7 @@ without a policy.
 | Key | Meaning |
 | --- | --- |
 | `schema` | Required, exactly `daylight.policy/v1`. |
-| `languages` | `node`, `rust` or both. Default `["node"]`; an empty list is refused. It only chooses which sets the author's prompt spells out (and, later, the default gate harness). It never unprotects anything: a `["rust"]` project still has `package.json` and `node_modules` protected. |
+| `languages` | `node`, `rust` or both. Default `["node"]`; an empty list is refused. It only chooses which sets the author's prompt lists first (the prompt lists every set, since every set is enforced) and, later, the default gate harness. It never unprotects anything: a `["rust"]` project still has `package.json` and `node_modules` protected. |
 | `protectedPaths` | Repo-relative globs the project adds. `**` is any number of whole components, `*` any run inside one. No leading slash, no `.` or `..` component, no other glob syntax, at most 64 entries. Globs only add: there is no way to unprotect anything. A path is matched exactly, so write `dir/**` to protect a directory. |
 | `gate.harness` | `cargo` or `node`. The harness `daylight gate add` registers when `--harness` is not given; the flag wins, and with neither it is `node`. |
 | `gate.command` | Optional argv template, `{test}` standing for the test path. Not a shell string. |

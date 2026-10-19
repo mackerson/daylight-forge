@@ -24,7 +24,7 @@ import { openDaylight } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import {
   authorLimits, loadProjectPolicy, MAX_AUTHOR_TIMEOUT_SECONDS, MAX_AUTHOR_TURNS, MAX_POLICY_BYTES, parseProjectPolicy,
-  POLICY_FILE, PROTECTED_SETS, protectedBy, protectedLabels, ProjectPolicyError, type ProjectPolicy,
+  POLICY_FILE, PROTECTED_SETS, protectedBy, ProjectPolicyError, type ProjectPolicy,
 } from '../forge/project-policy.ts';
 import type { CandidateFile } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -214,10 +214,14 @@ section('the author prompt is rendered from the policy');
   const work = { title: 't', statement: 's', examples: [], negativeExamples: [] };
   const plain = buildAuthorPrompt(work, brief);
   const rust = buildAuthorPrompt(work, brief, policy({ languages: ['rust'], protectedPaths: ['custom/glob/**'] }));
-  check('with no policy it names the node set', plain.includes('package.json') && plain.includes('node_modules') && !plain.includes('Cargo.toml'));
-  check('with the rust policy it names Cargo.toml, build.rs and the custom glob',
-    rust.includes('Cargo.toml') && rust.includes('build.rs') && rust.includes('custom/glob/**') && !rust.includes('package.json at any depth'));
-  check('every label of the selected sets is in the prompt', protectedLabels(policy({ languages: ['rust', 'node'] })).every((l) => buildAuthorPrompt(work, brief, policy({ languages: ['rust', 'node'] })).includes(l)));
+  check('with no policy it names the node set and, since every set is enforced, the rust one too',
+    plain.includes('package.json') && plain.includes('node_modules') && plain.includes('every Cargo.toml') && plain.includes('.cargo/') && plain.includes('build.rs'));
+  check('with the rust policy it names Cargo.toml, build.rs, the custom glob and still package.json',
+    rust.includes('Cargo.toml') && rust.includes('build.rs') && rust.includes('custom/glob/**') && rust.includes('package.json at any depth'));
+  check('the project\'s languages come first', rust.indexOf('every Cargo.toml') < rust.indexOf('package.json at any depth')
+    && plain.indexOf('package.json at any depth') < plain.indexOf('every Cargo.toml'));
+  check('every label of every set is in the prompt, whatever the policy', [null, policy({ languages: ['rust'] }), policy({ languages: ['node'] })]
+    .every((pol) => Object.values(PROTECTED_SETS).flat().every((r) => buildAuthorPrompt(work, brief, pol).includes(r.label))));
   check('it tells the author how to ask for a dependency', rust.includes('request_dependency'));
   check('the work is still fenced as data', /<<<WORK-[0-9a-f]{12}\n/.test(rust));
 }
