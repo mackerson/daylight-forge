@@ -6,9 +6,10 @@ import { missionSpend } from '../mission/ledger.ts';
 import { takeRunClaim } from '../mission/orchestrate.ts';
 import { redact } from '../mission/redact.ts';
 import { NotImplemented, type MissionStore } from '../mission/store.ts';
+import { isHumanActor } from '../mission/types.ts';
 import type {
   CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
-  Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
+  FindingSeverity, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { campaignLockRefusal, concludeVerdict, evaluateIntegrated } from './campaign-gates.ts';
@@ -60,14 +61,14 @@ export interface CampaignHost {
   openOwnerDecisions(campaignId: string): Set<string>;
   /** Plan, policy and authorization currency the director does not recompute itself (R5 `campaignAuthorizationRefusal`). */
   authorizationRefusal(campaignId: string, at: number): string | null;
-  /** The ticket's implement mission with its derived grant (R5 `startTicketMission`). */
+  /** The ticket's implement mission with its derived grant; emits `campaign.mission.authorized` (R5 `startTicketMission`). */
   startTicketMission(campaignId: string, ticketId: string, base: string): Mission;
-  /** A derived `halt-campaign` (R5 `haltCampaign`, derived branch). */
+  /** A derived `halt-campaign`; emits `campaign.halted` (R5 `haltCampaign`, derived branch). */
   halt(campaignId: string, reason: CampaignHaltReason): Decision;
   /** A wave finding's fix ticket, filed proposed (R5 `insertCampaignTickets` + a proposed work item). */
   fileFixTicket(campaignId: string, ticket: Omit<CampaignTicket, 'campaignId' | 'projectId' | 'workItemId' | 'ticketDigest' | 'createdAt'> & { title: string; statement: string }): CampaignTicket;
-  /** A derived `admit-work-item` when the envelope allows (R5 `admitIfWithinEnvelope`, P2-R10). */
-  admitIfWithinEnvelope(campaignId: string, workItemId: string, wave: { seq: number; admitted: number }): boolean;
+  /** A derived `admit-work-item` when the envelope allows (R5 `admitIfWithinEnvelope`, P2-R10): High only, a per-wave cap. */
+  admitIfWithinEnvelope(campaignId: string, workItemId: string, wave: { seq: number; admitted: number; severity: FindingSeverity; findingId?: string }): boolean;
   /** R5's envelope check and derived writer, called inside `landIntegration` (P2-R22). */
   integrate: IntegrateDeps;
 }
@@ -93,13 +94,16 @@ export function r5Host(): CampaignHost {
 
 // ---- rows → status ---------------------------------------------------------------------------
 
-/** The campaign's halt that no resume answers, or null. */
+/**
+ * The campaign's latest halt that no person answered, or null. A person answers a halt by a
+ * `resume-campaign` or an `adopt-integration-tip` naming it (as WS-R5's `campaignHalts` reads).
+ */
 export function haltOf(store: Pick<MissionStore, 'decisions'>, campaignId: string): { decision: Decision; reason: CampaignHaltReason } | null {
   const ds = store.decisions(campaignId);
-  const halt = ds.filter((d) => d.scope.operation === 'halt-campaign').at(-1);
-  if (!halt) return null;
-  const resumed = ds.some((d) => d.at >= halt.at && d.scope.operation === 'resume-campaign' && d.scope.haltDecisionId === halt.id);
-  return resumed ? null : { decision: halt, reason: halt.scope.reason as CampaignHaltReason };
+  const answered = new Set(ds.filter((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip')
+    && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+  const halt = ds.filter((d) => d.scope.operation === 'halt-campaign' && !answered.has(d.id)).at(-1);
+  return halt ? { decision: halt, reason: halt.scope.reason as CampaignHaltReason } : null;
 }
 
 /** The ticket's implement missions under this campaign, oldest first. */
@@ -492,11 +496,11 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
   const queue: Array<{ candidateId: string; ticketId: string }> = [];
   const parked = new Set<string>();
 
-  const halt = (reason: CampaignHaltReason, extra: Record<string, unknown> = {}) => {
+  /** Fail closed: a derived halt, which WS-R5 records and announces (`campaign.halted`). */
+  const halt = (reason: CampaignHaltReason) => {
     if (halted) return;
     halted = reason;
-    const d = host.halt(campaign.id, reason);
-    emit(campaign, 'lifecycle', 'campaign.halted', { decisionId: d.id, reason, ...extra });
+    host.halt(campaign.id, reason);
   };
   const ticketOf = (missionId: string): string => {
     const m = ctx.store.mission(missionId);
@@ -510,7 +514,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       ctx.store.cancelRunningAttempts(m.id, 'orphaned: the director running it is gone');
     }
     const rec = reconcileIntegrations(ictx, campaign.id, { ticketOf, deps: host.integrate });
-    if (rec.moved) halt('integration-moved', { expected: rec.moved.expected, actual: rec.moved.actual });
+    if (rec.moved) halt('integration-moved');
     emit(campaign, 'lifecycle', resumed ? 'campaign.resumed' : 'campaign.started', {
       integrationRef: ref, tip, statuses: counts(ticketStates(ctx, campaign.id, root, host)), reconciled: { requeued: rec.requeue.length, landed: rec.landed.length, refsDeleted: rec.deletedRefs.length },
     });
@@ -520,15 +524,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const t = s.ticket;
       let m = s.mission;
       const tipNow = integrationTip(root, campaign.id)!;
-      if (!m) {
-        m = host.startTicketMission(campaign.id, t.ticketId, tipNow);
-        const grant = ctx.store.authorizeDecision(m.id);
-        if (grant) {
-          emit(m, 'approval', 'campaign.mission.authorized', {
-            decisionId: grant.id, derivedFrom: grant.scope.derivedFrom ?? null, permissions: grant.scope.permissions, maxUsd: grant.scope.maxUsd ?? null,
-          });
-        }
-      }
+      if (!m) m = host.startTicketMission(campaign.id, t.ticketId, tipNow);
       const attempt = s.attempts + 1;
       const tool = envelope.roster[(attempt - 1) % envelope.roster.length];
       const prior = latestCandidate(ctx.store, m);

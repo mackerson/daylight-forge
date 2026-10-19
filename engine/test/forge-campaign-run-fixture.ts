@@ -222,15 +222,23 @@ export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFile
         projectId: campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: base, parentId: campaign.id,
         workItemId: t.workItemId, scope: { paths: t.scope },
       });
-      return ctx.store.authorizeMission({
+      const { mission, decision } = ctx.store.authorizeMission({
         missionId: m.id, actor: ACTOR, rationale: 'stand-in for the derived grant', permissions: { write: true, execute: env.execute },
         maxUsd: Math.min(t.budget.maxUsd ?? Infinity, env.maxUsdPerMission),
-      }).mission;
+      });
+      ctx.events.append({ projectId: m.projectId, missionId: m.id, actorId: 'daylight', category: 'approval', name: 'campaign.mission.authorized',
+        payload: { decisionId: decision.id, derivedFrom: auth().id, ticketId, permissions: mission.permissions, maxUsd: mission.budget.maxUsd ?? null } });
+      return mission;
     },
-    halt: (_c, reason) => rawDecision(ctx.store, {
-      missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: `campaign:${campaign.id}`, kind: 'approve',
-      rationale: `halted: ${reason}`, scope: { operation: 'halt-campaign', reason, derivedFrom: auth().id }, artifactIds: [],
-    }),
+    halt: (_c, reason) => {
+      const d = rawDecision(ctx.store, {
+        missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: `campaign:${campaign.id}`, kind: 'defer',
+        rationale: `halted by the director: ${reason}`, scope: { operation: 'halt-campaign', reason, derivedFrom: auth().id }, artifactIds: [],
+      });
+      ctx.events.append({ projectId: campaign.projectId, missionId: campaign.id, actorId: `campaign:${campaign.id}`, category: 'lifecycle', name: 'campaign.halted',
+        payload: { decisionId: d.id, reason } });
+      return d;
+    },
     fileFixTicket: (_c, t) => {
       const workItemId = makeWorkItem(ctx, campaign, t.ticketId, { approve: false, title: t.title, statement: t.statement });
       const row = ticketRow(campaign, workItemId, { id: t.ticketId, lane: t.lane, scope: t.scope, acceptance: t.acceptance, budget: t.budget, origin: 'fix' });
@@ -239,7 +247,7 @@ export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFile
     },
     admitIfWithinEnvelope: (_c, workItemId, wave) => {
       const env = auth().scope as unknown as CampaignEnvelope;
-      if (!env.fixLane.enabled || wave.admitted >= Math.min(5, env.fixLane.maxTicketsPerWave)) return false;
+      if (wave.severity !== 'high' || !env.fixLane.enabled || wave.admitted >= Math.min(5, env.fixLane.maxTicketsPerWave)) return false;
       approveWorkItem(ctx, campaign, workItemId);
       return true;
     },

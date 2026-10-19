@@ -224,7 +224,8 @@ export function fixTicketsFrom(ctx: Pick<DaylightContext, 'store'>, campaignId: 
     });
     ctx.store.updateFinding(f.id, { fixTicketId: t.ticketId });
     filed.push(t);
-    if (f.severity === 'high' && host.admitIfWithinEnvelope(campaignId, t.workItemId, { seq, admitted: admitted.length })) admitted.push(t.ticketId);
+    // Every finding is offered; the envelope admits a High one only, at most its per-wave cap (P2-R10).
+    if (host.admitIfWithinEnvelope(campaignId, t.workItemId, { seq, admitted: admitted.length, severity: f.severity, findingId: f.id })) admitted.push(t.ticketId);
   }
   return { filed, admitted };
 }
