@@ -4,6 +4,7 @@
  * The no-policy rows are the oracle: every path forge-policy.ts checks gets the same answer
  * with no policy, with a null one and with `languages: ["node"]`.
  */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -291,6 +292,27 @@ section('request_dependency: the author asks, a person decides');
   check('a second resolve is refused', attemptResolve({}, code) instanceof DependencyRequestRefused);
   d.close();
 
+  section('deps requests | resolve from the command line');
+  const cli = (args: string[], env: NodeJS.ProcessEnv) => spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import { runDepsRequestsCommand } from ${JSON.stringify(path.join(import.meta.dirname, '..', 'forge', 'commands-deps-requests.ts'))};`
+    + 'process.exitCode = await runDepsRequestsCommand(process.argv.slice(1));', ...args], { encoding: 'utf8', env });
+  const clean: NodeJS.ProcessEnv = { ...process.env };
+  delete clean.CLAUDECODE;
+  delete clean.DAYLIGHT_SESSION;
+  const list = cli(['requests', '--mission', mission.id, '--format', 'json', '--out', out], clean);
+  const listed = JSON.parse(list.stdout || '[]') as Array<{ id: string; status: string }>;
+  check('deps requests --format json lists them with their status', list.status === 0 && listed.length === 2
+    && listed.find((x) => x.id === serde.id)?.status === 'resolved', list.stderr);
+  const other = listed.find((x) => x.status === 'open')!;
+  const preview = cli(['resolve', other.id, '--out', out], clean);
+  const digest = /digest (sha256:[0-9a-f]{64})/.exec(preview.stdout)?.[1] ?? '';
+  check('resolve without --confirm prints the digest and exits 2', preview.status === 2 && !!digest, preview.stdout + preview.stderr);
+  const agent = cli(['resolve', other.id, '--rationale', 'ok', '--confirm', digest.slice(7, 15), '--out', out], { ...clean, CLAUDECODE: '1' });
+  check('resolve under CLAUDECODE exits 1 and records nothing', agent.status === 1 && /CLAUDECODE/.test(agent.stderr), agent.stderr);
+  const human = cli(['resolve', other.id, '--rationale', 'added it', '--confirm', digest.slice(7, 15), '--out', out], clean);
+  check('resolve from a person\'s shell exits 0 and says what to run next',
+    human.status === 0 && /no manifest was changed/.test(human.stdout) && /next: /.test(human.stdout), human.stdout + human.stderr);
+  check('an unknown subcommand is a usage error', cli(['install', 'serde', '--out', out], clean).status === 2);
 }
 
 done();
