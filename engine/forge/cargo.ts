@@ -58,6 +58,44 @@ export const snapshotDir = (out: string): string => path.join(out, 'cargo', 'sna
 export const snapshotFile = (out: string): string => path.join(out, 'cargo', 'snapshot.json');
 export const targetDir = (out: string, kind: CargoProfile): string => path.join(out, 'cargo', 'target', kind);
 
+/**
+ * One gate build cache (P2-R28): `base`, written only by baseline runs, or one candidate's,
+ * named by the first 16 hex characters of its diff digest and seeded from `base`.
+ */
+export const gateCacheDir = (out: string, key: string): string => path.join(targetDir(out, 'gate'), key);
+const GATE_CACHE_KEY = /^(base|[0-9a-f]{16})$/;
+
+/** The cache key of a candidate's gate runs: its diff digest, shortened. */
+export const gateCacheKey = (diffDigest: string): string => diffDigest.replace(/^sha256:/, '').slice(0, 16);
+
+/**
+ * A candidate's gate cache, created as a copy of `base` (reflinked where the filesystem can, a
+ * plain copy otherwise) so it starts from the base's dependency builds and nothing any other
+ * candidate built. `base` itself is never handed to a candidate.
+ */
+function seedGateCache(out: string, key: string): void {
+  const dst = gateCacheDir(out, key);
+  if (fs.lstatSync(dst, { throwIfNoEntry: false })) return;
+  const base = gateCacheDir(out, 'base');
+  const bst = fs.lstatSync(base, { throwIfNoEntry: false });
+  const parentBad = realDirUnder(out, targetDir(out, 'gate'), true);
+  if (parentBad) throw new CargoRefused(`refusing the gate build cache: ${parentBad}`);
+  if (!bst?.isDirectory() || bst.isSymbolicLink()) return;
+  try {
+    execFileSync('/usr/bin/cp', ['-a', '--reflink=auto', '--', base, dst], { stdio: 'ignore', timeout: 600_000, env: { PATH: SYSTEM_PATH } });
+  } catch {
+    fs.rmSync(dst, { recursive: true, force: true });
+    fs.cpSync(base, dst, { recursive: true, verbatimSymlinks: true, preserveTimestamps: true });
+  }
+}
+
+/** Remove one candidate's gate cache; `base` is never removed this way. */
+export function removeGateCache(outIn: string, key: string): void {
+  const out = requireAbsoluteOut(outIn);
+  if (key === 'base' || !GATE_CACHE_KEY.test(key)) return;
+  fs.rmSync(gateCacheDir(out, key), { recursive: true, force: true });
+}
+
 const sha256 = (b: Buffer | string): string => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const within = (p: string, dir: string) => p === dir || p.startsWith(`${dir}${path.sep}`);
 
@@ -389,6 +427,8 @@ export function createSnapshot(
     fs.rmSync(snapshotFile(out), { force: true });
     fs.rmSync(dir, { recursive: true, force: true });
     fs.renameSync(staging, dir);
+    // Every gate cache was built against the old snapshot; the next baseline starts clean.
+    fs.rmSync(targetDir(out, 'gate'), { recursive: true, force: true });
     const tmp = `${snapshotFile(out)}.${process.pid}`;
     fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
     fs.renameSync(tmp, snapshotFile(out));
@@ -468,8 +508,12 @@ export function snapshotStatus(repo: string, out: string, o: { verify?: boolean 
  * demand), offline. The gate profile also builds non-incrementally: what it compiles is judged,
  * and incremental state is one more thing carried from one candidate's build into the next.
  */
-export function cargoMounts(kind: CargoProfile, outIn: string): { binds: SandboxBind[]; env: Record<string, string> } {
+export function cargoMounts(
+  kind: CargoProfile, outIn: string, o: { gateCache?: string } = {},
+): { binds: SandboxBind[]; env: Record<string, string> } {
   if (kind !== 'author' && kind !== 'gate') throw new CargoRefused(`unknown cargo profile ${String(kind)}`);
+  const key = o.gateCache ?? 'base';
+  if (kind === 'gate' && !GATE_CACHE_KEY.test(key)) throw new CargoRefused(`${key} is not a gate cache name`);
   const out = requireAbsoluteOut(outIn);
   if (!fs.lstatSync(out, { throwIfNoEntry: false })?.isDirectory()) throw new CargoRefused(`${out} is not a directory`);
   const home = snapshotDir(out);
@@ -484,7 +528,8 @@ export function cargoMounts(kind: CargoProfile, outIn: string): { binds: Sandbox
   if (snapshotDigest(home).digest !== recorded.digest) {
     throw new CargoRefused(`the crate snapshot no longer hashes to its recorded digest: run \`${snapshotCommand(recorded.repo, out)}\``);
   }
-  const target = targetDir(out, kind);
+  if (kind === 'gate' && key !== 'base') seedGateCache(out, key);
+  const target = kind === 'gate' ? gateCacheDir(out, key) : targetDir(out, kind);
   const bad = realDirUnder(out, target, true);
   if (bad) throw new CargoRefused(`refusing the ${kind} build cache: ${bad}`);
   return {

@@ -24,7 +24,7 @@ import { noCargoTestsReported } from '../experiment/runner.ts';
 import { checkAllowlist, DEFAULT_LIMITS, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import {
-  cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, lockDigestOf, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
+  cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, lockDigestOf, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
   snapshotStatus, targetDir, wipeAuthorCache,
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
@@ -462,7 +462,7 @@ section('baseline: falsified on the base, which lacks padded(); in bwrap with no
     argv.includes('bwrap') && argv.includes('--unshare-all') && !argv.includes('--share-net') && argv.includes('/usr/bin/cargo'));
   check('the snapshot read-only at /cargo-home, the gate cache read-write at /cargo-target',
     binds.some((b) => b.flag === '--ro-bind' && b.src === fs.realpathSync(snapshotDir(out)) && b.dest === '/cargo-home')
-    && binds.some((b) => b.flag === '--bind' && b.src === fs.realpathSync(targetDir(out, 'gate')) && b.dest === '/cargo-target'));
+    && binds.some((b) => b.flag === '--bind' && b.src === fs.realpathSync(gateCacheDir(out, 'base')) && b.dest === '/cargo-target'));
   check('the author cache is never bound into a gate', !argv.some((a) => a.includes(path.join('cargo', 'target', 'author'))));
   check('offline and non-incremental', argv.join(' ').includes('--setenv CARGO_NET_OFFLINE true') && argv.join(' ').includes('--setenv CARGO_INCREMENTAL 0'));
   check('the test is bound in from memory at both of its paths', argv.filter((a) => a === '--ro-bind-data').length === 2
@@ -477,7 +477,7 @@ section('baseline: falsified on the base, which lacks padded(); in bwrap with no
   check('inside the sandbox the same TCP connect fails: the network gate is falsified, its test ran and failed',
     n.conclusion === 'falsified' && nr.every((r) => r.status === 'ran' && /test result: FAILED\. 0 passed; 1 failed/.test(stdoutOf(r))),
     `${n.conclusion} ${stdoutOf(nr[0] ?? ({} as ExecutionRecord)).slice(-300)} ${nr[0]?.why ?? ''}`);
-  check('the gate cache now holds what the gates built', listing(targetDir(out, 'gate')).length > 0);
+  check('the base gate cache now holds what the baseline built', listing(gateCacheDir(out, 'base')).length > 0);
 }
 
 section('a vacuous cargo gate is invalid, never a pass');
@@ -536,8 +536,11 @@ section('evaluate: supported on a diff that adds padded()');
   check('its run printed the result line it is read from', recordsOf(g!).every((r) => /test result: ok\. 1 passed; 0 failed/.test(stdoutOf(r))));
   check('the network holdout still fails: no network on a candidate either', n?.conclusion === 'falsified', n?.conclusion);
   check('so the verdict is rejected-by-gates', v.verdict === 'rejected-by-gates', `${v.verdict} ${v.verdictReasons.join('; ')}`);
-  check('the author cache was not touched by the gates', listing(targetDir(out, 'gate')).length > 0
-    && !recordsOf(g!).some((r) => r.sandboxArgv.some((x) => x.includes(path.join('cargo', 'target', 'author')))));
+  check('the author cache was not touched by the gates', !recordsOf(g!).some((r) => r.sandboxArgv.some((x) => x.includes(path.join('cargo', 'target', 'author')))));
+  const key = gateCacheKey(c.diffArtifact.digest);
+  check('the candidate\'s gates built in its own cache, gate/<diffDigest16>, never in gate/base',
+    recordsOf(g!).every((r) => bindsOf(r.sandboxArgv).some((b) => b.flag === '--bind' && b.dest === '/cargo-target' && b.src === path.join(fs.realpathSync(targetDir(out, 'gate')), key))));
+  check('and that cache is gone after evaluate, gate/base kept', !fs.existsSync(gateCacheDir(out, key)) && listing(gateCacheDir(out, 'base')).length > 0);
 }
 
 /**
@@ -614,6 +617,30 @@ section('a candidate cannot forge a cargo gate\'s result (P2-R30)');
   check('reading two binaries\' output is invalid',
     /not the placed test/.test(noCargoTestsReported(`${OK_LINE}\n${OK_LINE}\n`, `     Running tests/${t}.rs (/x)\n     Running src/evil.rs (/y)\n`, t) ?? ''));
   check('reading none is invalid', noCargoTestsReported(`${OK_LINE}\n`, '', t) !== null);
+}
+
+section('one candidate\'s build cannot reach another\'s gate (P2-R28)');
+{
+  const POISON_GATE = [
+    '#[test]',
+    'fn pads() {',
+    '    assert!(!std::path::Path::new("/cargo-target/poison.txt").exists(), "POISONED: left by an earlier candidate\'s build.rs");',
+    '    assert_eq!(fixture_core::padded(7, 3), "007");',
+    '}', '',
+  ].join('\n');
+  const { m, x } = await lockedCargoGate('gate cache poisoning', POISON_GATE);
+  const addPadded = (tree: string) => fs.appendFileSync(path.join(tree, 'crates/core/src/lib.rs'), PADDED_FIX);
+  const a = await judged(m, x, (tree) => {
+    addPadded(tree);
+    fs.writeFileSync(path.join(tree, 'crates/core/build.rs'),
+      'fn main() { std::fs::write("/cargo-target/poison.txt", "from candidate A").unwrap(); println!("cargo:rerun-if-changed=build.rs"); }\n');
+  });
+  check('candidate A, whose build.rs writes into its gate cache, fails its own gate', a.g?.conclusion === 'falsified', `${a.g?.conclusion} ${recordsOf(a.g!)[0]?.why}`);
+  check('nothing it wrote is in gate/base or left under gate/', !fs.existsSync(path.join(gateCacheDir(out, 'base'), 'poison.txt'))
+    && fs.readdirSync(targetDir(out, 'gate')).every((n) => n === 'base'), fs.readdirSync(targetDir(out, 'gate')).join(','));
+  const b = await judged(m, x, addPadded);
+  check('clean candidate B is still accepted: its verdict does not depend on A', b.g?.conclusion === 'supported' && b.c.verdict === 'accepted-by-gates',
+    `${b.g?.conclusion} ${b.c.verdict} ${stdoutOf(recordsOf(b.g!)[0] ?? ({} as ExecutionRecord)).slice(-300)}`);
 }
 
 section('the snapshot is verified in full before every gate run and exec launch (P2-R29)');

@@ -11,7 +11,7 @@ import {
   type EventSink, type GateRunContext, type GateRunResult,
 } from '../experiment/runner.ts';
 import { DEFAULT_LIMITS, type SandboxLimits, type SandboxProfile } from '../experiment/sandbox.ts';
-import { cargoConfigRefusal, cargoMounts, CargoRefused, snapshotRefusal } from './cargo.ts';
+import { cargoConfigRefusal, cargoMounts, CargoRefused, gateCacheKey, removeGateCache, snapshotRefusal } from './cargo.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, GATE_DIR } from './policy.ts';
 import { mountRefusal } from './sandbox.ts';
@@ -171,14 +171,15 @@ export const CARGO_GATE_LIMITS: SandboxLimits = {
 };
 export const CARGO_GATE_TIMEOUT_MS = 600_000;
 
-function runContext(ctx: GateContext, x: Experiment) {
+/** `cache` is the gate build cache: `base` for a baseline, the candidate's key at evaluate. */
+function runContext(ctx: GateContext, x: Experiment, cache: string) {
   const cargo = x.harness === 'cargo';
   return {
     repoRoot: ctx.repoRoot, store: ctx.store, artifacts: ctx.artifacts, events: ctx.events,
     runs: ctx.runs ?? MIN_GATE_RUNS, sandbox: ctx.sandbox, now: ctx.now,
     timeoutMs: ctx.timeoutMs ?? (cargo ? CARGO_GATE_TIMEOUT_MS : undefined),
     limits: cargo ? { ...CARGO_GATE_LIMITS, ...ctx.limits } : ctx.limits,
-    ...(cargo ? { cargo: gateCargo(ctx) } : {}),
+    ...(cargo ? { cargo: gateCargo(ctx, cache) } : {}),
   };
 }
 
@@ -187,12 +188,12 @@ function runContext(ctx: GateContext, x: Experiment) {
  * with only itself allowed under `<out>`; the tree under test must carry the `Cargo.lock` the
  * snapshot was fetched for.
  */
-function gateCargo(ctx: GateContext): NonNullable<GateRunContext['cargo']> {
+function gateCargo(ctx: GateContext, cache: string): NonNullable<GateRunContext['cargo']> {
   const out = ctx.out;
   if (!out) return { refused: 'a cargo gate needs the mission\'s <out>, where its crate snapshot and build cache are' };
   let m: ReturnType<typeof cargoMounts>;
   try {
-    m = cargoMounts('gate', out);
+    m = cargoMounts('gate', out, { gateCache: cache });
   } catch (err) {
     if (err instanceof CargoRefused) return { refused: err.message.replace('<repo>', ctx.repoRoot) };
     throw err;
@@ -258,7 +259,7 @@ export async function baseline(
   const out: GateEvaluation[] = [];
   for (const x of gatesOf(ctx, m, opts.experimentIds)) {
     const r = await runGate(x, {
-      ...runContext(ctx, x),
+      ...runContext(ctx, x, 'base'),
       target: { kind: 'base', diffDigest: null },
       materialise: () => createWorkspace(ctx.repoRoot, x.baseRevision),
     });
@@ -433,27 +434,35 @@ export async function evaluate(ctx: GateContext, candidateId: string): Promise<C
     } catch (err) {
       unreadable = `the diff artifact cannot be read: ${(err as Error).message}`;
     }
-    for (const id of [...lockRow.scope.experimentIds].sort()) {
-      const x = ctx.store.experiment(id);
-      // Missing or changed after the lock: the verdict names it from the rows; nothing to run.
-      if (!x || x.harnessDigest !== lockRow.scope.harnessDigests[id]) continue;
-      const r = await runGate(x, {
-        ...runContext(ctx, x),
-        // A holdout's per-run events would name it; its records are kept on its evaluation row.
-        ...(x.role === 'holdout' ? { events: undefined } : {}),
-        target: { kind: 'candidate', diffDigest: digest },
-        materialise: () => {
-          if (unreadable || !diff) throw new Error(unreadable ?? 'no diff');
-          const ws = createWorkspace(ctx.repoRoot, c.baseCommit);
-          const applied = applyDiff(ws, diff, digest);
-          if ('invalid' in applied) {
-            ws.dispose();
-            throw new Error(applied.invalid);
-          }
-          return ws;
-        },
-      });
-      record(ctx, m, x, r, { target: 'candidate', revision: c.baseCommit, candidate: c });
+    // This candidate's own gate cache, seeded from the base's: nothing another candidate built
+    // is visible to it, and it is gone once its gates have run (P2-R28).
+    const cache = gateCacheKey(digest);
+    if (ctx.out) removeGateCache(ctx.out, cache);
+    try {
+      for (const id of [...lockRow.scope.experimentIds].sort()) {
+        const x = ctx.store.experiment(id);
+        // Missing or changed after the lock: the verdict names it from the rows; nothing to run.
+        if (!x || x.harnessDigest !== lockRow.scope.harnessDigests[id]) continue;
+        const r = await runGate(x, {
+          ...runContext(ctx, x, cache),
+          // A holdout's per-run events would name it; its records are kept on its evaluation row.
+          ...(x.role === 'holdout' ? { events: undefined } : {}),
+          target: { kind: 'candidate', diffDigest: digest },
+          materialise: () => {
+            if (unreadable || !diff) throw new Error(unreadable ?? 'no diff');
+            const ws = createWorkspace(ctx.repoRoot, c.baseCommit);
+            const applied = applyDiff(ws, diff, digest);
+            if ('invalid' in applied) {
+              ws.dispose();
+              throw new Error(applied.invalid);
+            }
+            return ws;
+          },
+        });
+        record(ctx, m, x, r, { target: 'candidate', revision: c.baseCommit, candidate: c });
+      }
+    } finally {
+      if (ctx.out) removeGateCache(ctx.out, cache);
     }
   }
   const v = candidateVerdict(verdictRows(ctx, c));
