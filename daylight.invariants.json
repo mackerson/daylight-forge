@@ -238,5 +238,19 @@
       },
       "callee": "(^|\\.)(execSync|execFile|execFileSync|spawn|spawnSync|fork)$"
     }
+  },
+  {
+    "id": "campaign-verdict-is-pure",
+    "prose": "A campaign candidate's verdict is computed from rows handed to it. engine/forge/campaign-verdict.ts never calls into the swarm, the mission store, the experiment runner, the director, the integration code, the wave review or the findings.",
+    "rationale": "ADR-19 for campaigns (§3.2): attempt state, narrative, reviewer claims and wave findings are not verdict inputs. A verdict that could look things up could read them; this keeps the only inputs the CampaignVerdictRows its caller passes. engine/test/forge-campaign-integrate-verdict.ts holds the property half and the red half.",
+    "predicate": {
+      "type": "forbidden-call",
+      "from": {
+        "file": "^engine/forge/campaign-verdict\\.ts$"
+      },
+      "to": {
+        "file": "^engine/(swarm/|mission/store\\.ts$|experiment/|forge/(wave|finding|director|integrate|campaign-gates)\\.ts$)"
+      }
+    }
   }
 ]
