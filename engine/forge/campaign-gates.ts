@@ -138,6 +138,21 @@ function baselineOf(ctx: GateContext, m: Mission, x: Experiment): GateEvaluation
   return ctx.store.gateEvaluations({ missionId: m.id, target: 'base' }).filter((g) => g.experimentId === x.id && g.harnessDigest === x.harnessDigest).at(-1);
 }
 
+/** `campaign gate list`, a person's view: each gate with its role, binding and baseline; a holdout's path withheld. */
+export function listCampaignGates(ctx: Pick<GateContext, 'store'>, campaignId: string) {
+  const m = ctx.store.mission(campaignId);
+  if (!m || m.kind !== 'campaign') throw new GateRefused(`${campaignId} is not a campaign`);
+  const lock = campaignLockOf(ctx, campaignId);
+  return {
+    campaignId, lock: lock?.scope ?? null,
+    gates: ctx.store.experimentsFor(m.id).filter(LOCKABLE).map((x) => ({
+      experimentId: x.id, role: x.role, ticketId: x.role === 'holdout' ? null : x.subject.startsWith('ticket:') ? x.subject.slice('ticket:'.length) : null,
+      testPath: x.role === 'holdout' ? null : x.testArtifact.path ?? '', harness: x.harness ?? 'node', harnessDigest: x.harnessDigest,
+      baseline: baselineOf({ store: ctx.store } as GateContext, m, x)?.conclusion ?? null, lockedBy: x.lockedBy ?? null,
+    })),
+  };
+}
+
 // ---- the lock --------------------------------------------------------------------------------
 
 export interface CampaignLockInput {

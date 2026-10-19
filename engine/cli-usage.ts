@@ -68,6 +68,11 @@ usage:
                                 status <repo> [--out <dir>]     # recorded digest, Cargo.lock match, cache sizes
                                 requests [--mission <m>]        # dependencies authors asked for
                                 resolve <request-id> [--declined] --rationale '<why>' --confirm <c>
+  node engine/cli.ts campaign   gate register <c> --role holdout|gate|regression --file <host path> [--ticket T] --expect-exit n --expect-stdout s | gate list <c>
+                                baseline <c> <repo> | lock <c> --ratchet|--no-ratchet --rationale '<why>' [--accept-vacuous x,…] --confirm <c8>
+                                run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run] | status <c> [<repo>] [--write]
+                                halt <c> --rationale '<why>' | resume <c> --halt <d> --rationale '<why>' --confirm <c8>
+                                adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>
