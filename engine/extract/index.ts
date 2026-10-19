@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Graph, GraphNode } from '../graph/types.ts';
 import type { CallSite, ImportBinding, ParsedFile, Parser } from './parser.ts';
 import { aliasesFromTsconfig, Resolver } from './resolve.ts';
+import { crateFromManifest, isLocalRustSpec, type RustCrate } from './rust-resolve.ts';
 import { activeParsers, parserFor } from './registry.ts';
 
 const IGNORED_DIRS = new Set([
@@ -34,7 +35,13 @@ export interface ExtractOptions {
   includeTests?: boolean;
 }
 
-const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)\//;
+/**
+ * Rust integration tests live in a crate's `tests/`, never under `src/`: a `tests/` directory
+ * under `src/` is a module tree its parent declares, and dropping it would leave that `mod`
+ * unresolved. `#[cfg(test)]` modules are only knowable after parsing, so they stay in the map,
+ * reached through their `mod` declaration.
+ */
+const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)\/|^(?!(.*\/)?src\/)(.*\/)?tests\/.+\.rs$/;
 
 /** Bundler-handled non-code imports. Not edges, and not resolution failures either. */
 const ASSET_RE = /\.(css|scss|sass|less|styl|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|mp[34]|webm|wasm|txt|md|ya?ml|graphql|gql)(\?.*)?$/i;
@@ -155,7 +162,7 @@ export function extract(options: ExtractOptions): Graph {
   const testFiles = includeTests ? [] : parseable.filter((f) => TEST_RE.test(f));
 
   const aliases = readAliases(root, allFiles);
-  const resolver = new Resolver(sourceFiles, aliases);
+  const resolver = new Resolver(sourceFiles, aliases, readCrates(root, allFiles));
 
   const graph: Graph = {
     root,
@@ -241,6 +248,7 @@ export function extract(options: ExtractOptions): Graph {
       graph.edges.push({ from: rel, to: node.id, kind: 'contains' });
     }
 
+    for (const message of parsed.diagnostics ?? []) graph.diagnostics.push({ file: rel, message });
     graph.shapes.push(...parsed.shapes);
     graph.functions.push(...parsed.functions);
     graph.literals.push(...parsed.literals);
@@ -263,9 +271,13 @@ export function extract(options: ExtractOptions): Graph {
       graph.stats.imports++;
 
       const target = resolver.resolve(spec, rel);
+      // `use super::*` inside an inline `mod tests` names this very file: resolved, but no edge.
+      if (target === rel && rel.endsWith('.rs')) continue;
       if (target) {
-        graph.edges.push({ from: rel, to: target, kind: 'imports', spec });
-      } else if (spec.startsWith('.')) {
+        // A Rust `mod x;` declares a child module: containment in the module tree, not a use.
+        const kind = spec.startsWith('mod ') ? 'contains' : 'imports';
+        graph.edges.push({ from: rel, to: target, kind, spec });
+      } else if (spec.startsWith('.') || isLocalRustSpec(spec)) {
         // A relative specifier we failed to resolve is our bug, not an external package.
         graph.stats.unresolvedImports++;
         graph.diagnostics.push({ file: rel, message: `unresolved relative import: ${spec}` });
@@ -377,4 +389,18 @@ function readAliases(root: string, allFiles: string[]): ReturnType<typeof aliase
     }
   }
   return aliases;
+}
+
+/** Every `[package]` in the tree, so `crate::` and cross-crate paths have somewhere to land. */
+function readCrates(root: string, allFiles: string[]): RustCrate[] {
+  const crates: RustCrate[] = [];
+  for (const manifest of allFiles.filter((f) => /(^|\/)Cargo\.toml$/.test(f))) {
+    try {
+      const crate = crateFromManifest(manifest, fs.readFileSync(path.join(root, manifest), 'utf8'));
+      if (crate) crates.push(crate);
+    } catch {
+      // An unreadable manifest just means that crate's paths stay unresolved.
+    }
+  }
+  return crates;
 }

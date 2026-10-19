@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
  */
 
 /** Dependencies the engine loads at runtime. Everything else is bundled or dev-only. */
-export const RUNTIME_DEPS = ['@modelcontextprotocol/sdk', 'zod', 'typescript'];
+export const RUNTIME_DEPS = ['@modelcontextprotocol/sdk', 'zod', 'typescript', 'web-tree-sitter'];
 
 export interface RepoManifest {
   name: string;
