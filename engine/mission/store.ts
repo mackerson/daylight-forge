@@ -498,7 +498,9 @@ export class MissionStore {
       createdAt: at,
       updatedAt: at,
     };
-    this.db.exec('BEGIN');
+    // Inside a caller's transaction (a campaign creating and granting a ticket mission) it joins it.
+    const own = !this.db.isTransaction;
+    if (own) this.db.exec('BEGIN');
     try {
       this.db
         .prepare(
@@ -524,9 +526,9 @@ export class MissionStore {
           scope: { operation: 'adhoc-mission', objective: m.objective }, artifactIds: [],
         });
       }
-      this.db.exec('COMMIT');
+      if (own) this.db.exec('COMMIT');
     } catch (err) {
-      this.db.exec('ROLLBACK');
+      if (own) this.db.exec('ROLLBACK');
       throw err;
     }
     return this.requireMission(m.id);
@@ -1935,6 +1937,11 @@ export class MissionStore {
         .run(JSON.stringify(permissions), JSON.stringify({ ...m.budget, maxUsd }), this.now(), m.id);
       return { mission: this.transitionMission(m.id, 'ready'), decision };
     });
+  }
+
+  /** A ticket's implement mission and its derived grant, together: a refused grant leaves no mission. */
+  createTicketMission(input: CreateMissionInput, campaignDecisionId: string): { mission: Mission; decision: Decision } {
+    return this.tx(() => this.deriveAuthorizeMission(this.createMission(input).id, campaignDecisionId));
   }
 
   /**

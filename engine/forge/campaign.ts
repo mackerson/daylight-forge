@@ -324,11 +324,10 @@ export function startTicketMission(ctx: DaylightContext, o: { campaignId: string
   const refused = ctx.store.envelopeRefusal(parent.id, { missionId: c.id, operation: 'admit-work-item', ticketId: '', at: ctx.store.clock() });
   if (refused) throw new DecisionRefused(`refused: ${refused}`);
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(o.base)) throw new Error('a ticket mission starts from a full commit id');
-  const mission = ctx.store.createMission({
+  const { mission: ready, decision } = ctx.store.createTicketMission({
     projectId: c.projectId, kind: 'implement', parentId: c.id, objective: w.title, baseRevision: o.base,
     scope: { paths: t.scope }, workItemId: w.id, ...(t.budget.maxUsd !== undefined ? { budget: { maxUsd: t.budget.maxUsd } } : {}),
-  });
-  const { mission: ready, decision } = ctx.store.deriveAuthorizeMission(mission.id, parent.id);
+  }, parent.id);
   emit(ctx, ready, 'approval', 'campaign.mission.authorized', campaignActorOf(c.id), {
     decisionId: decision.id, derivedFrom: parent.id, ticketId: t.ticketId, permissions: ready.permissions, maxUsd: ready.budget.maxUsd ?? null,
   });
