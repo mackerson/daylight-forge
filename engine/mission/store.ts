@@ -1758,10 +1758,14 @@ export class MissionStore {
     });
   }
 
-  /** The halts not followed by a `resume-campaign` naming them; the latest first. Empty: not halted. */
+  /**
+   * The halts no person has resumed (`resume-campaign`, or `adopt-integration-tip`, which resumes
+   * the halt it names); the latest first. Empty: not halted.
+   */
   campaignHalts(campaignId: string): Decision[] {
     const all = this.decisions(campaignId);
-    const resumed = new Set(all.filter((d) => d.scope.operation === 'resume-campaign' && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+    const resumed = new Set(all.filter((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip')
+      && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
     return all.filter((d) => d.scope.operation === 'halt-campaign' && !resumed.has(d.id)).reverse();
   }
 
