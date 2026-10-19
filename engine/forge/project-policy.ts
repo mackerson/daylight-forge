@@ -1,0 +1,313 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/**
+ * Per-project policy (RULINGS P2-R6): `<repo>/daylight.policy.json`, read by the host from the
+ * repository's working tree, never by an agent. It selects which built-in protected sets apply,
+ * adds protected globs, names the gate harness and sets the author's turn and time defaults.
+ *
+ * It can only tighten what an author may touch: `protectedPaths` adds, `languages` chooses
+ * among built-in sets, and the `always` set applies whatever the file says. No file means
+ * exactly the behaviour before it existed: the `always` and `node` sets.
+ *
+ * The protected sets are data (`PROTECTED_SETS`) so that the matcher, the author prompt and
+ * docs/daylight/POLICY.md are all read off one list.
+ */
+
+export const POLICY_FILE = 'daylight.policy.json';
+export const POLICY_SCHEMA = 'daylight.policy/v1';
+export const INVARIANTS_FILE = 'daylight.invariants.json';
+export const MAX_POLICY_BYTES = 64 * 1024;
+export const MAX_AUTHOR_TURNS = 1000;
+export const MAX_AUTHOR_TIMEOUT_SECONDS = 6 * 60 * 60;
+export const MAX_PROTECTED_GLOBS = 64;
+export const MAX_GLOB_CHARS = 256;
+const MAX_GLOBSTARS = 4;
+const MAX_GATE_ARGS = 32;
+const MAX_GATE_ARG_CHARS = 256;
+
+export const LANGUAGES = ['node', 'rust'] as const;
+export type Language = (typeof LANGUAGES)[number];
+export const GATE_HARNESSES = ['cargo', 'node'] as const;
+export type GateHarness = (typeof GATE_HARNESSES)[number];
+
+/**
+ * One protected rule, matched against a repo-relative path split on `/`:
+ * - `basename`: the last component is one of `values`, at any depth;
+ * - `segment`: any component is one of `values` (the directory and everything under it);
+ * - `segment-prefix`: any component starts with one of `values`;
+ * - `root-dir`: the first component is one of `values`.
+ */
+export interface ProtectedRule {
+  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir';
+  values: readonly string[];
+  /** How the author prompt and POLICY.md name it. */
+  label: string;
+}
+
+export type ProtectedSetName = 'always' | Language;
+
+/**
+ * The built-in sets. `always` applies with or without a policy file; `always` plus `node` is
+ * exactly the set ADR-21 fixed before policies existed. Each entry is a way to make an install,
+ * a build script, a hook, a CI job or a check run the author's code, or to change what the
+ * host's own checks read.
+ *
+ * Per-crate `Cargo.toml` files are protected as well as the workspace one (P2-R4): a member's
+ * manifest adds dependencies and build scripts exactly as the root does.
+ */
+export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly ProtectedRule[]>> = Object.freeze({
+  always: Object.freeze([
+    {
+      kind: 'basename',
+      values: [
+        'pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
+        'Cargo.lock', 'poetry.lock', 'uv.lock', 'Pipfile.lock', 'Gemfile.lock', 'composer.lock', 'go.sum',
+        'flake.lock',
+      ],
+      label: 'lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock, Cargo.lock and the like) at any depth',
+    },
+    { kind: 'segment-prefix', values: ['.git'], label: 'anything whose path has a component starting .git (.git/, .github/, .gitignore, .gitattributes, .gitmodules)' },
+    { kind: 'root-dir', values: ['scripts'], label: 'scripts/ at the root' },
+    { kind: 'basename', values: [INVARIANTS_FILE], label: INVARIANTS_FILE },
+    { kind: 'basename', values: [POLICY_FILE], label: POLICY_FILE },
+  ] satisfies ProtectedRule[]),
+  node: Object.freeze([
+    { kind: 'basename', values: ['package.json'], label: 'package.json at any depth' },
+    { kind: 'segment', values: ['node_modules'], label: 'anything under node_modules' },
+  ] satisfies ProtectedRule[]),
+  rust: Object.freeze([
+    { kind: 'basename', values: ['Cargo.toml'], label: 'every Cargo.toml, the workspace one and each crate\'s' },
+    { kind: 'basename', values: ['Cargo.lock'], label: 'every Cargo.lock' },
+    { kind: 'segment', values: ['.cargo'], label: 'anything under a .cargo/ directory' },
+    { kind: 'basename', values: ['rust-toolchain.toml', 'rust-toolchain'], label: 'rust-toolchain.toml (and the older rust-toolchain)' },
+    { kind: 'basename', values: ['build.rs'], label: 'build.rs at any depth' },
+  ] satisfies ProtectedRule[]),
+});
+
+export interface ProjectPolicy {
+  schema: typeof POLICY_SCHEMA;
+  languages: Language[];
+  /** Repo-relative globs the project adds; `**` and `*` only. */
+  protectedPaths: string[];
+  /** Read by nobody this wave but tests; the director wires it to the gate after merge. */
+  gate: { harness: GateHarness; command?: string[] } | null;
+  /** Already clamped to `MAX_AUTHOR_TURNS` and `MAX_AUTHOR_TIMEOUT_SECONDS`. */
+  author: { maxTurns?: number; timeoutSeconds?: number };
+  /** Fields that were above their maximum and were lowered to it. */
+  clamped: string[];
+  /** sha256 of the file's bytes, for the run event. */
+  digest: string;
+}
+
+/** The file is not a policy this version reads. One line, naming the file. */
+export class ProjectPolicyError extends Error {
+  constructor(reason: string) {
+    super(`${POLICY_FILE}: ${reason}`);
+    this.name = 'ProjectPolicyError';
+  }
+}
+
+// ---- matching ------------------------------------------------------------------
+
+function ruleMatches(rule: ProtectedRule, parts: readonly string[]): boolean {
+  switch (rule.kind) {
+    case 'basename': return rule.values.includes(parts.at(-1) ?? '');
+    case 'segment': return parts.some((s) => rule.values.includes(s));
+    case 'segment-prefix': return parts.some((s) => rule.values.some((v) => s.startsWith(v)));
+    case 'root-dir': return rule.values.includes(parts[0] ?? '');
+  }
+}
+
+const segmentRegex = (seg: string) => new RegExp(`^${seg.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
+
+/** `**` is zero or more whole components; `*` is any run within one component. */
+function globMatches(pattern: readonly string[], parts: readonly string[]): boolean {
+  if (!pattern.length) return !parts.length;
+  if (pattern[0] === '**') return globMatches(pattern.slice(1), parts) || (parts.length > 0 && globMatches(pattern, parts.slice(1)));
+  return parts.length > 0 && segmentRegex(pattern[0]).test(parts[0]) && globMatches(pattern.slice(1), parts.slice(1));
+}
+
+export const languagesOf = (policy: ProjectPolicy | null | undefined): Language[] => policy?.languages ?? ['node'];
+
+/**
+ * Which sets protect `p`: `always`, a language, or `project` for one of the policy's globs.
+ * Empty when nothing does. With no policy, the `always` and `node` sets apply.
+ */
+export function protectedBy(p: string, policy?: ProjectPolicy | null): string[] {
+  const parts = p.split('/');
+  const out: string[] = [];
+  for (const name of ['always', ...languagesOf(policy)] as ProtectedSetName[]) {
+    if (PROTECTED_SETS[name].some((r) => ruleMatches(r, parts))) out.push(name);
+  }
+  if (policy?.protectedPaths.some((g) => globMatches(g.split('/'), parts))) out.push('project');
+  return out;
+}
+
+/** The protected list as the author prompt says it, one entry per rule, from the data above. */
+export function protectedLabels(policy?: ProjectPolicy | null): string[] {
+  const sets: ProtectedSetName[] = ['always', ...languagesOf(policy)];
+  const labels = [...new Set(sets.flatMap((s) => PROTECTED_SETS[s].map((r) => r.label)))];
+  return [...labels, ...(policy?.protectedPaths ?? [])];
+}
+
+// ---- loading -------------------------------------------------------------------
+
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const keyName = (k: string) => JSON.stringify(k.slice(0, 64));
+
+function onlyKeys(o: Record<string, unknown>, known: readonly string[], where: string): void {
+  const unknown = Object.keys(o).find((k) => !known.includes(k));
+  if (unknown !== undefined) throw new ProjectPolicyError(`unknown key ${keyName(unknown)}${where ? ` in ${where}` : ''}`);
+}
+
+/** Why `g` is not a glob this version reads, or null. */
+export function globRefusal(g: unknown): string | null {
+  if (typeof g !== 'string' || !g) return 'a protected path must be a non-empty string';
+  if (g.length > MAX_GLOB_CHARS) return `a protected path is over ${MAX_GLOB_CHARS} characters`;
+  if (CONTROL.test(g) || g.includes('\\')) return 'a protected path has a control character or a backslash';
+  if (g.startsWith('/')) return 'a protected path is repo-relative: no leading slash';
+  const parts = g.split('/');
+  if (parts.some((s) => s === '' || s === '.' || s === '..')) return 'a protected path may not have an empty, . or .. component';
+  if (/[?[\]{}!]/.test(g)) return 'a protected path supports only ** and *';
+  if (parts.some((s) => s.includes('**') && s !== '**')) return 'a protected path uses ** only as a whole component';
+  if (parts.filter((s) => s === '**').length > MAX_GLOBSTARS) return `a protected path has more than ${MAX_GLOBSTARS} **`;
+  return null;
+}
+
+function positiveInt(v: unknown, where: string): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw new ProjectPolicyError(`${where} must be a positive integer`);
+  return v;
+}
+
+/** The policy in `raw` (the file's bytes), validated, or a `ProjectPolicyError`. */
+export function parseProjectPolicy(raw: Buffer | string): ProjectPolicy {
+  const bytes = typeof raw === 'string' ? Buffer.from(raw, 'utf8') : raw;
+  if (bytes.length > MAX_POLICY_BYTES) throw new ProjectPolicyError(`over ${MAX_POLICY_BYTES} bytes`);
+  let doc: unknown;
+  try {
+    doc = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw new ProjectPolicyError('not JSON');
+  }
+  if (!isObject(doc)) throw new ProjectPolicyError('not a JSON object');
+  onlyKeys(doc, ['schema', 'languages', 'protectedPaths', 'gate', 'author'], '');
+  if (doc.schema !== POLICY_SCHEMA) throw new ProjectPolicyError(`schema must be "${POLICY_SCHEMA}"`);
+
+  let languages: Language[] = ['node'];
+  if (doc.languages !== undefined) {
+    if (!Array.isArray(doc.languages) || !doc.languages.length) throw new ProjectPolicyError('languages must be a non-empty list');
+    const bad = doc.languages.find((l) => !(LANGUAGES as readonly unknown[]).includes(l));
+    if (bad !== undefined) throw new ProjectPolicyError(`languages: unknown language ${keyName(String(bad))}; known: ${LANGUAGES.join(', ')}`);
+    languages = [...new Set(doc.languages as Language[])];
+  }
+
+  let protectedPaths: string[] = [];
+  if (doc.protectedPaths !== undefined) {
+    if (!Array.isArray(doc.protectedPaths)) throw new ProjectPolicyError('protectedPaths must be a list');
+    if (doc.protectedPaths.length > MAX_PROTECTED_GLOBS) throw new ProjectPolicyError(`protectedPaths has more than ${MAX_PROTECTED_GLOBS} entries`);
+    for (const g of doc.protectedPaths) {
+      const why = globRefusal(g);
+      if (why) throw new ProjectPolicyError(why);
+    }
+    protectedPaths = [...new Set(doc.protectedPaths as string[])];
+  }
+
+  let gate: ProjectPolicy['gate'] = null;
+  if (doc.gate !== undefined) {
+    if (!isObject(doc.gate)) throw new ProjectPolicyError('gate must be an object');
+    onlyKeys(doc.gate, ['harness', 'command'], 'gate');
+    if (!(GATE_HARNESSES as readonly unknown[]).includes(doc.gate.harness)) {
+      throw new ProjectPolicyError(`gate.harness must be one of ${GATE_HARNESSES.join(', ')}`);
+    }
+    gate = { harness: doc.gate.harness as GateHarness };
+    if (doc.gate.command !== undefined) {
+      const c = doc.gate.command;
+      if (!Array.isArray(c) || !c.length || c.length > MAX_GATE_ARGS) throw new ProjectPolicyError(`gate.command must be a list of 1 to ${MAX_GATE_ARGS} strings`);
+      if (c.some((a) => typeof a !== 'string' || !a || a.length > MAX_GATE_ARG_CHARS || CONTROL.test(a))) {
+        throw new ProjectPolicyError(`gate.command entries must be non-empty strings of at most ${MAX_GATE_ARG_CHARS} characters, without control characters`);
+      }
+      gate.command = [...c] as string[];
+    }
+  }
+
+  const author: ProjectPolicy['author'] = {};
+  const clamped: string[] = [];
+  if (doc.author !== undefined) {
+    if (!isObject(doc.author)) throw new ProjectPolicyError('author must be an object');
+    onlyKeys(doc.author, ['maxTurns', 'timeoutSeconds'], 'author');
+    if (doc.author.maxTurns !== undefined) {
+      const n = positiveInt(doc.author.maxTurns, 'author.maxTurns');
+      if (n > MAX_AUTHOR_TURNS) clamped.push('author.maxTurns');
+      author.maxTurns = Math.min(n, MAX_AUTHOR_TURNS);
+    }
+    if (doc.author.timeoutSeconds !== undefined) {
+      const n = positiveInt(doc.author.timeoutSeconds, 'author.timeoutSeconds');
+      if (n > MAX_AUTHOR_TIMEOUT_SECONDS) clamped.push('author.timeoutSeconds');
+      author.timeoutSeconds = Math.min(n, MAX_AUTHOR_TIMEOUT_SECONDS);
+    }
+  }
+
+  return {
+    schema: POLICY_SCHEMA, languages, protectedPaths, gate, author, clamped,
+    digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+  };
+}
+
+/**
+ * `<repoRoot>/daylight.policy.json`, validated, or null when there is none. Refused (a
+ * `ProjectPolicyError`) when it is not a regular file (a symlink is not followed), is over
+ * 64 KB, is not JSON, or has a key this version does not know: a policy that is half-read is
+ * a policy that silently protects less than its author meant.
+ */
+export function loadProjectPolicy(repoRoot: string): ProjectPolicy | null {
+  const file = path.join(repoRoot, POLICY_FILE);
+  let fd: number;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new ProjectPolicyError('not a regular file');
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new ProjectPolicyError('not a regular file');
+    if (st.size > MAX_POLICY_BYTES) throw new ProjectPolicyError(`over ${MAX_POLICY_BYTES} bytes`);
+    // One byte past the size it reported, so a file that grew since the stat is still caught.
+    const buf = Buffer.alloc(st.size + 1);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    return parseProjectPolicy(buf.subarray(0, n));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// ---- author defaults ---------------------------------------------------------------
+
+export interface AuthorLimits {
+  maxTurns: number;
+  timeoutMs: number;
+  /** Where each came from. */
+  source: { maxTurns: 'policy' | 'default'; timeoutMs: 'flag' | 'policy' | 'default' };
+}
+
+/**
+ * The turn and time limits `forge run` gives the author: a `--timeout` flag first, then the
+ * policy, then the built-in default. A flag is clamped to the same maximum a policy is.
+ */
+export function authorLimits(
+  policy: ProjectPolicy | null | undefined, defaults: { maxTurns: number; timeoutMs: number }, flagTimeoutMs?: number,
+): AuthorLimits {
+  const fromPolicy = policy?.author.timeoutSeconds;
+  const timeoutMs = flagTimeoutMs ?? (fromPolicy !== undefined ? fromPolicy * 1000 : defaults.timeoutMs);
+  return {
+    maxTurns: Math.min(policy?.author.maxTurns ?? defaults.maxTurns, MAX_AUTHOR_TURNS),
+    timeoutMs: Math.min(timeoutMs, MAX_AUTHOR_TIMEOUT_SECONDS * 1000),
+    source: {
+      maxTurns: policy?.author.maxTurns !== undefined ? 'policy' : 'default',
+      timeoutMs: flagTimeoutMs !== undefined ? 'flag' : fromPolicy !== undefined ? 'policy' : 'default',
+    },
+  };
+}

@@ -529,6 +529,8 @@ export type PolicyRule =
 export interface PolicyViolation {
   rule: PolicyRule;
   path: string | null;
+  /** Under a project policy, which protected set matched (`protected by the rust set`). */
+  why?: string;
 }
 
 /**
