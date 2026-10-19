@@ -43,6 +43,8 @@ export const ROLE_MCP_TOOLS = Object.freeze({
    * attempt by `authorTools`. None of the claim or proposal tools.
    */
   author: Object.freeze(['request_dependency']),
+  /** A wave reviewer files findings about the files a wave changed, and reads nothing back (§6.2). */
+  waveReview: Object.freeze(['report_finding']),
 }) satisfies Readonly<Record<string, readonly string[]>>;
 
 /** The spec text a decompose prompt carries, at most. Larger specs are split by a person. */

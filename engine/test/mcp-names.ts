@@ -34,8 +34,8 @@ check('every allowlisted MCP tool is under that server key',
   allowed.length > 0 && allowed.every((m) => m[1] === key), allowed.map((m) => m[1]).join(','));
 check('every allowlisted tool is one the server registers',
   [...allowedTools].every((t) => registered.has(t)), [...allowedTools].filter((t) => !registered.has(t)).join(','));
-const decomposeOnly = new Set<string>(ROLE_MCP_TOOLS.decompose);
-check('every registered tool is allowlisted for the reviewer, or is a decompose-only tool',
+const decomposeOnly = new Set<string>([...ROLE_MCP_TOOLS.decompose, ...ROLE_MCP_TOOLS.waveReview]);
+check('every registered tool is allowlisted for the reviewer, or is a decompose- or wave-review-only tool',
   [...registered].every((t) => allowedTools.has(t) || decomposeOnly.has(t)),
   [...registered].filter((t) => !allowedTools.has(t) && !decomposeOnly.has(t)).join(','));
 
@@ -51,6 +51,11 @@ check('a decomposer is allowed propose_work_item and nothing that reads',
   ROLE_MCP_TOOLS.decompose.length === 1 && ROLE_MCP_TOOLS.decompose[0] === 'propose_work_item');
 check('every decompose tool is one the server registers',
   ROLE_MCP_TOOLS.decompose.every((t) => registered.has(t)));
+check('a wave reviewer is allowed report_finding and nothing that reads (§6.2)',
+  ROLE_MCP_TOOLS.waveReview.length === 1 && ROLE_MCP_TOOLS.waveReview[0] === 'report_finding' && registered.has('report_finding'));
+check('a reviewer and an author are never allowed report_finding',
+  !allowedTools.has('report_finding') && !ROLE_MCP_TOOLS.review.includes('report_finding') && !ROLE_MCP_TOOLS.author.some((t) => t === 'report_finding'));
+check('the author role still lists request_dependency (R4)', ROLE_MCP_TOOLS.author.includes('request_dependency'));
 
 const prompts: Array<[string, string]> = [
   ['the fixture reviewer prompt', fs.readFileSync(path.join(FIXTURE_DIR, 'review-prompts', 'reviewer.md'), 'utf8')],
