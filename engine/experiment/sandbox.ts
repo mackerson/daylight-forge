@@ -192,7 +192,8 @@ const insideRoot = (root: string, arg: string): boolean => {
   return abs === root || abs.startsWith(`${root}${path.sep}`);
 };
 
-const CARGO_NAME = /^[A-Za-z0-9_-]{1,128}$/;
+/** A package or target name. Never option-shaped: `-p --config` must not pass as a name. */
+const CARGO_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/;
 
 /**
  * `cargo test`'s flags a cargo gate may use. A value is checked by the function; `null` takes
@@ -218,6 +219,9 @@ function checkCargo(command: string[], worktree: string): { ok: true } | { ok: f
   const root = path.resolve(worktree);
   const sep = command.indexOf('--', 2);
   const own = command.slice(2, sep < 0 ? undefined : sep);
+  if (own.filter((a) => a === '--test' || a.startsWith('--test=')).length > 1) {
+    return { ok: false, why: 'at most one --test: a cargo gate runs one target, so its result counts that target only' };
+  }
   for (let i = 0; i < own.length; i++) {
     const arg = own[i];
     if (!arg.startsWith('-')) return { ok: false, why: `\`${arg}\` is not an allowed argument to cargo test; name a target with --test <name>` };

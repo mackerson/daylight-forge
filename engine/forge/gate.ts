@@ -136,7 +136,8 @@ export function registerGate(ctx: GateContext, input: RegisterGateInput): Experi
     command = template.map((a) => (a === TEST_TOKEN ? target : a));
     const at = command.indexOf('--test');
     const sep = command.indexOf('--', 2);
-    if (command[1] !== 'test' || at < 0 || command[at + 1] !== target || (sep >= 0 && sep < at)) {
+    const tests = command.slice(0, sep < 0 ? undefined : sep).filter((a) => a === '--test' || a.startsWith('--test='));
+    if (command[1] !== 'test' || at < 0 || command[at + 1] !== target || (sep >= 0 && sep < at) || tests.length !== 1) {
       throw new GateRefused('a cargo gate runs `cargo test --test {test}`: its own target, so the result line counts the gate\'s tests and nothing else');
     }
   } else {

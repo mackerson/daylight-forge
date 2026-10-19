@@ -93,6 +93,10 @@ section('the cargo allowlist');
   check('a bare test-name filter is refused', !ok(['cargo', 'test', 'some_test']));
   check('after --, only --test-threads=N', ok(['cargo', 'test', '--', '--test-threads=4']) && !ok(['cargo', 'test', '--', '--nocapture'])
     && !ok(['cargo', 'test', '--', '--test-threads=0']) && !ok(['cargo', 'test', '--', '--test-threads=4', 'filter']));
+  check('an option-shaped package or target name is refused (-p --config, --package=--config, --test --config, -p -Zunstable-options)',
+    !ok(['cargo', 'test', '-p', '--config']) && !ok(['cargo', 'test', '--package=--config']) && !ok(['cargo', 'test', '--test', '--config'])
+    && !ok(['cargo', 'test', '-p', '-Zunstable-options']));
+  check('two --test flags are refused', !ok(['cargo', 'test', '--test', 'a', '--test', 'b']) && !ok(['cargo', 'test', '--test=a', '--test', 'b']));
   check('a --test name that is not a plain target name is refused', !ok(['cargo', 'test', '--test', '../x']) && !ok(['cargo', 'test', '--test']));
   check('the node harness refuses cargo', /cargo harness/.test((() => { const r = checkAllowlist(cmd, '/work'); return r.ok ? '' : r.why; })()));
   check('the cargo harness refuses node', !checkAllowlist(['node', '--test', 'a.js'], '/work', 'cargo').ok);
@@ -353,6 +357,8 @@ let netGate!: Experiment;
   check('a crate under .daylight-gates is refused', (await throws(() => registerGate(ctx, { ...input, crate: '.daylight-gates/x' }))) instanceof GateRefused);
   check('a command that does not run its own target is refused',
     (await throws(() => registerGate(ctx, { ...input, command: ['cargo', 'test', '--offline', '--workspace', '--', '--test-threads=1', '{test}'] }))) instanceof GateRefused);
+  check('a command naming a second --test target is refused at registration',
+    (await throws(() => registerGate(ctx, { ...input, command: ['cargo', 'test', '--test', '{test}', '--test', 'other'] }))) instanceof GateRefused);
   check('a command with --config is refused at registration',
     !!(await throws(() => registerGate(ctx, { ...input, command: ['cargo', 'test', '--config', 'x', '--test', '{test}'] }))));
   check('--crate on a node gate is refused', (await throws(() => registerGate(ctx, { ...input, harness: 'node', basename: 'p.test.js' }))) instanceof GateRefused);
