@@ -108,7 +108,8 @@ never have it):
 - Each accepted call is one line in `<out>/dependency-requests/<attempt>.jsonl`, at most 20
   per attempt. It is data: nothing installs, fetches or runs it. The host re-checks every line
   when it reads it, and takes the mission and attempt from which outbox it is, never from the
-  line.
+  line. Lines that are not valid requests are skipped and counted: `deps requests` ends with
+  `skipped: N`, and each need says so when N is not zero.
 - Each open request is a `request-dependency` need on the mission (derived, never stored), one
   per mission and dependency however often it was asked for.
 

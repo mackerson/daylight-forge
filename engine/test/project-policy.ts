@@ -312,7 +312,8 @@ section('request_dependency: the author asks, a person decides');
   fs.writeFileSync(box, [lines()[0], lines()[1], '{"v":1,"at":0,"request":{"ecosystem":"cargo","name":"evil;sh","reason":"x"}}',
     '{"v":1,"at":0,"request":{"ecosystem":"cargo","name":"serde_json","version":"1","reason":"again"},"missionId":"m_forged"}', 'not json'].join('\n') + '\n');
 
-  const rows = dependencyRequests(d, { missionId: mission.id });
+  const { requests: rows, skipped } = dependencyRequests(d, { missionId: mission.id });
+  check('the forged lines are counted, not silently dropped', skipped === 3, String(skipped));
   check('the host re-reads the outbox: two valid requests, forged lines skipped', rows.length === 2 && rows.every((r) => r.status === 'open'), JSON.stringify(rows.map((r) => r.name)));
   const serde = rows.find((r) => r.name === 'serde_json')!;
   check('a request id is derived from the mission and the dependency', serde.id === dependencyRequestId(mission.id, { ecosystem: 'cargo', name: 'serde_json', version: '1' }));
@@ -320,6 +321,7 @@ section('request_dependency: the author asks, a person decides');
   const needs = needsOf(d, d.store.mission(mission.id)!).filter((n) => n.kind === 'request-dependency');
   check('needsOf derives one request-dependency need per open request', needs.length === 2 && needs.some((n) => n.ref === serde.id), JSON.stringify(needs));
   check('the need names the dependency, not the author\'s reason', needs.every((n) => !n.why.includes('parse the config')));
+  check('and says how many outbox lines were skipped', needs.every((n) => n.why.includes('skipped: 3 malformed outbox lines')), needs[0]?.why);
 
   const code = resolveConfirm(serde).digest8;
   const attemptResolve = (env: NodeJS.ProcessEnv, confirm: string | undefined, rationale = 'added serde_json 1 to crates/x', declined = false) => {
@@ -337,7 +339,7 @@ section('request_dependency: the author asks, a person decides');
   check('the resolve code does not confirm a decline', attemptResolve({}, code, 'no', true) instanceof DecisionRefused
     && resolveConfirm(serde, { declined: true }).digest8 !== code);
   check('resolve without a rationale is refused', attemptResolve({}, code, ' ') instanceof DependencyRequestRefused);
-  check('nothing was recorded by any refusal', dependencyRequests(d, { missionId: mission.id }).every((r) => r.status === 'open'));
+  check('nothing was recorded by any refusal', dependencyRequests(d, { missionId: mission.id }).requests.every((r) => r.status === 'open'));
   const manifest = path.join(tmp, 'repo', 'Cargo.toml');
   fs.mkdirSync(path.dirname(manifest), { recursive: true });
   fs.writeFileSync(manifest, '[package]\nname = "x"\n');
@@ -358,9 +360,12 @@ section('request_dependency: the author asks, a person decides');
   delete clean.CLAUDECODE;
   delete clean.DAYLIGHT_SESSION;
   const list = cli(['requests', '--mission', mission.id, '--format', 'json', '--out', out], clean);
-  const listed = JSON.parse(list.stdout || '[]') as Array<{ id: string; status: string }>;
-  check('deps requests --format json lists them with their status', list.status === 0 && listed.length === 2
+  const listing = JSON.parse(list.stdout || '{}') as { requests: Array<{ id: string; status: string }>; skipped: number };
+  const listed = listing.requests ?? [];
+  check('deps requests --format json lists them with their status and the skipped count', list.status === 0 && listed.length === 2 && listing.skipped === 3
     && listed.find((x) => x.id === serde.id)?.status === 'resolved', list.stderr);
+  const text = cli(['requests', '--mission', mission.id, '--out', out], clean);
+  check('the human listing ends with the skipped count', text.status === 0 && /^skipped: 3 malformed outbox line\(s\)$/m.test(text.stdout), text.stdout);
   const other = listed.find((x) => x.status === 'open')!;
   const preview = cli(['resolve', other.id, '--declined', '--out', out], clean);
   const digest = /digest (sha256:[0-9a-f]{64})/.exec(preview.stdout)?.[1] ?? '';

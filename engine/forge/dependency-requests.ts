@@ -113,24 +113,34 @@ function readLines(file: string): string[] {
   }
 }
 
-/** The valid requests in one attempt's outbox, each re-checked and redacted; the rest are skipped. */
-export function readRequestOutbox(out: string, attemptId: string): DependencyRequest[] {
-  const got: DependencyRequest[] = [];
+/**
+ * The valid requests in one attempt's outbox, each re-checked and redacted, and how many
+ * non-empty lines were skipped (malformed, oversize, or past the per-attempt cap), so a
+ * tampered outbox is visible rather than silently smaller.
+ */
+export function readRequestOutbox(out: string, attemptId: string): { requests: DependencyRequest[]; skipped: number } {
+  const requests: DependencyRequest[] = [];
+  let skipped = 0;
   for (const raw of readLines(requestOutboxFile(out, attemptId))) {
-    if (got.length >= MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT) break;
-    if (!raw.trim() || Buffer.byteLength(raw, 'utf8') > MAX_LINE_BYTES) continue;
+    if (!raw.trim()) continue;
+    if (requests.length >= MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT || Buffer.byteLength(raw, 'utf8') > MAX_LINE_BYTES) {
+      skipped++;
+      continue;
+    }
     let line: unknown;
     try {
       line = JSON.parse(raw);
     } catch {
+      skipped++;
       continue;
     }
     const env = line as Partial<RequestOutboxLine>;
-    if (!env || typeof env !== 'object' || env.v !== 1 || Object.keys(env).some((k) => !['v', 'at', 'request'].includes(k))) continue;
-    const checked = validateDependencyRequest(env.request);
-    if (!isRequestRefusal(checked)) got.push({ ...checked, reason: redact(checked.reason).text });
+    const checked = !env || typeof env !== 'object' || env.v !== 1 || Object.keys(env).some((k) => !['v', 'at', 'request'].includes(k))
+      ? null : validateDependencyRequest(env.request);
+    if (checked && !isRequestRefusal(checked)) requests.push({ ...checked, reason: redact(checked.reason).text });
+    else skipped++;
   }
-  return got;
+  return { requests, skipped };
 }
 
 /**
@@ -161,7 +171,7 @@ export function registerRequestDependencyTool(server: McpServer, ctx: { attempt:
     async (a) => {
       const checked = validateDependencyRequest(a);
       if (isRequestRefusal(checked)) return reply({ accepted: false, field: checked.field, reason: checked.refused }, true);
-      if (readRequestOutbox(ctx.out, ctx.attempt.id).length >= MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT) {
+      if (readRequestOutbox(ctx.out, ctx.attempt.id).requests.length >= MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT) {
         return reply({ accepted: false, field: 'count', reason: `at most ${MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT} requests per session` }, true);
       }
       const line: RequestOutboxLine = { v: 1, at: Date.now(), request: { ...checked, reason: redact(checked.reason).text } };
@@ -203,14 +213,23 @@ export const isDependencyRequestId = (s: unknown): boolean => typeof s === 'stri
 const resolutionOf = (decisions: readonly Decision[], id: string): Decision | null =>
   decisions.filter((d) => d.scope.operation === RESOLVE_OPERATION && d.scope.requestId === id).at(-1) ?? null;
 
+export interface DependencyRequestList {
+  requests: DependencyRequestRow[];
+  /** Outbox lines that were not valid requests, across every attempt read. */
+  skipped: number;
+}
+
 /** Every request the mission's author attempts filed, with whether a person has resolved it. */
-export function missionDependencyRequests(ctx: Pick<DaylightContext, 'out' | 'store'>, mission: Mission): DependencyRequestRow[] {
-  if (mission.kind !== 'implement') return [];
+export function missionDependencyRequests(ctx: Pick<DaylightContext, 'out' | 'store'>, mission: Mission): DependencyRequestList {
+  if (mission.kind !== 'implement') return { requests: [], skipped: 0 };
   const rows = new Map<string, DependencyRequestRow>();
+  let skipped = 0;
   const decisions = ctx.store.decisions(mission.id);
   for (const task of ctx.store.tasks(mission.id).filter((t) => t.role === 'author')) {
     for (const a of ctx.store.attempts(task.id)) {
-      for (const r of readRequestOutbox(ctx.out, a.id)) {
+      const box = readRequestOutbox(ctx.out, a.id);
+      skipped += box.skipped;
+      for (const r of box.requests) {
         const id = dependencyRequestId(mission.id, r);
         const seen = rows.get(id);
         if (seen) {
@@ -225,23 +244,26 @@ export function missionDependencyRequests(ctx: Pick<DaylightContext, 'out' | 'st
       }
     }
   }
-  return [...rows.values()];
+  return { requests: [...rows.values()], skipped };
 }
 
-export function dependencyRequests(ctx: Pick<DaylightContext, 'out' | 'store'>, o: { missionId?: string } = {}): DependencyRequestRow[] {
+export function dependencyRequests(ctx: Pick<DaylightContext, 'out' | 'store'>, o: { missionId?: string } = {}): DependencyRequestList {
   const missions = o.missionId ? [ctx.store.mission(o.missionId)].filter((m): m is Mission => !!m) : ctx.store.missions();
-  return missions.flatMap((m) => missionDependencyRequests(ctx, m));
+  const lists = missions.map((m) => missionDependencyRequests(ctx, m));
+  return { requests: lists.flatMap((l) => l.requests), skipped: lists.reduce((n, l) => n + l.skipped, 0) };
 }
 
 const describe = (r: Pick<DependencyRequest, 'ecosystem' | 'name' | 'version'>) => `${r.ecosystem} ${r.name}${r.version ? ` ${r.version}` : ''}`;
 
 /** One `request-dependency` need per open request (ADR-13: derived on read, never stored). */
 export function dependencyNeeds(ctx: Pick<DaylightContext, 'out' | 'store'>, mission: Mission): Need[] {
-  return missionDependencyRequests(ctx, mission)
+  const { requests, skipped } = missionDependencyRequests(ctx, mission);
+  const note = skipped ? ` (skipped: ${skipped} malformed outbox line${skipped === 1 ? '' : 's'})` : '';
+  return requests
     .filter((r) => r.status === 'open')
     .map((r) => ({
       kind: 'request-dependency', ref: r.id,
-      why: `the author asked for ${describe(r)}; a person adds it (or declines), then runs \`daylight deps resolve ${r.id}\``,
+      why: `the author asked for ${describe(r)}; a person adds it (or declines), then runs \`daylight deps resolve ${r.id}\`${note}`,
     }));
 }
 
@@ -275,7 +297,7 @@ export function resolveConfirm(r: DependencyRequestRow, o: { declined?: boolean 
 
 export function findDependencyRequest(ctx: Pick<DaylightContext, 'out' | 'store'>, requestId: string): DependencyRequestRow {
   if (!isDependencyRequestId(requestId)) throw new DependencyRequestRefused(`not a dependency request id: ${requestId.slice(0, 80)}`);
-  const found = dependencyRequests(ctx).find((r) => r.id === requestId);
+  const found = dependencyRequests(ctx).requests.find((r) => r.id === requestId);
   if (!found) throw new DependencyRequestRefused(`unknown dependency request ${requestId}`);
   return found;
 }

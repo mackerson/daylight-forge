@@ -55,9 +55,9 @@ function requests(p: Parsed, d: DaylightContext, asJson: boolean): number {
   const missionId = p.flags.get('mission');
   if (missionId === 'true') throw new Usage('--mission needs a mission id');
   if (missionId && !d.store.mission(missionId)) throw new DependencyRequestRefused(`unknown mission ${missionId}`);
-  const rows = dependencyRequests(d, { missionId });
+  const { requests: rows, skipped } = dependencyRequests(d, { missionId });
   if (asJson) {
-    json(rows);
+    json({ requests: rows, skipped });
     return 0;
   }
   if (!rows.length) say('no dependency requests');
@@ -67,6 +67,8 @@ function requests(p: Parsed, d: DaylightContext, asJson: boolean): number {
     say(`  reason (from the author, unverified): ${r.reason.replace(/\s+/g, ' ')}`);
     if (r.decisionId) say(`  resolved by decision ${r.decisionId}`);
   }
+  // Lines that were not valid requests: a tampered or torn outbox shows here, never silently.
+  say(`skipped: ${skipped} malformed outbox line(s)`);
   return 0;
 }
 
