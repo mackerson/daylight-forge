@@ -4,12 +4,12 @@ import path from 'node:path';
 
 /**
  * Per-project policy (RULINGS P2-R6): `<repo>/daylight.policy.json`, read by the host from the
- * repository's working tree, never by an agent. It selects which built-in protected sets apply,
- * adds protected globs, names the gate harness and sets the author's turn and time defaults.
+ * repository's working tree, never by an agent. It adds protected globs, names the project's
+ * languages and gate harness, and sets the author's turn and time defaults.
  *
- * It can only tighten what an author may touch: `protectedPaths` adds, `languages` chooses
- * among built-in sets, and the `always` set applies whatever the file says. No file means
- * exactly the behaviour before it existed: the `always` and `node` sets.
+ * It can only tighten what an author may touch (P2-R32): every built-in set applies whatever
+ * the file says, and `protectedPaths` only adds. `languages` only chooses which sets the author
+ * prompt spells out (and, later, the default gate harness); it never unprotects anything.
  *
  * The protected sets are data (`PROTECTED_SETS`) so that the matcher, the author prompt and
  * docs/daylight/POLICY.md are all read off one list.
@@ -49,8 +49,9 @@ export interface ProtectedRule {
 export type ProtectedSetName = 'always' | Language;
 
 /**
- * The built-in sets. `always` applies with or without a policy file; `always` plus `node` is
- * exactly the set ADR-21 fixed before policies existed. Each entry is a way to make an install,
+ * The built-in sets, every one applied to every repository, with or without a policy file
+ * (P2-R32): the rust rules never match in a Node repository and the reverse. The names group
+ * them for the prompt and the docs. Each entry is a way to make an install,
  * a build script, a hook, a CI job or a check run the author's code, or to change what the
  * host's own checks read.
  *
@@ -132,20 +133,24 @@ function globMatches(pattern: readonly string[], parts: readonly string[]): bool
 export const languagesOf = (policy: ProjectPolicy | null | undefined): Language[] => policy?.languages ?? ['node'];
 
 /**
- * Which sets protect `p`: `always`, a language, or `project` for one of the policy's globs.
- * Empty when nothing does. With no policy, the `always` and `node` sets apply.
+ * Which sets protect `p`: `always`, `node`, `rust`, or `project` for one of the policy's globs.
+ * Empty when nothing does. Every built-in set is checked whatever `languages` says.
  */
 export function protectedBy(p: string, policy?: ProjectPolicy | null): string[] {
   const parts = p.split('/');
   const out: string[] = [];
-  for (const name of ['always', ...languagesOf(policy)] as ProtectedSetName[]) {
+  for (const name of Object.keys(PROTECTED_SETS) as ProtectedSetName[]) {
     if (PROTECTED_SETS[name].some((r) => ruleMatches(r, parts))) out.push(name);
   }
   if (policy?.protectedPaths.some((g) => globMatches(g.split('/'), parts))) out.push('project');
   return out;
 }
 
-/** The protected list as the author prompt says it, one entry per rule, from the data above. */
+/**
+ * The protected list as the author prompt says it, one entry per rule, from the data above:
+ * `always` and the project's languages (no policy: `node`). Wording only; `protectedBy`
+ * enforces every set.
+ */
 export function protectedLabels(policy?: ProjectPolicy | null): string[] {
   const sets: ProtectedSetName[] = ['always', ...languagesOf(policy)];
   const labels = [...new Set(sets.flatMap((s) => PROTECTED_SETS[s].map((r) => r.label)))];

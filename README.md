@@ -170,9 +170,9 @@ failure states you can show on purpose, and the five-minute version by screen ar
 - **Fail closed.** No bubblewrap, no sandboxed run. A review profile that cannot be built refuses
   the review rather than running it open. Every policy violation, such as an author editing
   `package.json` or the gate directory, is uncurable.
-- **Per-project policy.** An optional `daylight.policy.json` at the repository root selects the
-  protected sets by language (`node`, `rust` or both), adds protected globs and sets the author's
-  turn and time caps; it can only add protection, and without it nothing changes. For Rust every
+- **Per-project policy.** An optional `daylight.policy.json` at the repository root names the
+  project's languages, adds protected globs and sets the author's turn and time caps; it can only
+  add protection. The built-in protected sets apply to every repository with or without it. Every
   `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml` and `build.rs` is protected, so an
   author that needs a crate asks for it with the `request_dependency` MCP tool and a person adds
   it and records that with `daylight deps resolve`. See

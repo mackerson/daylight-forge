@@ -38,10 +38,11 @@ export interface PolicyContext {
 /**
  * Why a single path is refused, every reason at once.
  *
- * Protected (fail-closed): the sets in `PROTECTED_SETS` the project's policy selects, plus its
- * own globs. With no policy that is `package.json`, lockfiles, anything under `node_modules`,
- * any component starting `.git` (`.git/`, `.github/`, `.gitignore`, `.gitattributes`,
- * `.gitmodules`), the invariants and policy files, and `scripts/` at the root. Each one is a
+ * Protected (fail-closed): every set in `PROTECTED_SETS`, whatever the policy's `languages`,
+ * plus the policy's own globs: among them `package.json`, lockfiles, anything under
+ * `node_modules`, any component starting `.git` (`.git/`, `.github/`, `.gitignore`,
+ * `.gitattributes`, `.gitmodules`), Cargo manifests and build scripts, the invariants and
+ * policy files, and `scripts/` at the root. Each one is a
  * way to make an install, a hook, a CI job or a check run the author's code, or to hide files
  * from the host's `add -A`.
  */

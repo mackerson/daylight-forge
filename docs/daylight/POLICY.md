@@ -1,9 +1,10 @@
 # Project policy
 
 `<repo>/daylight.policy.json` tells the Forge what an author may not touch in this repository,
-which gate harness the project uses, and how long an author may run. It is optional. **Without
-it, behaviour is exactly what it was before policies existed**: the `always` and `node` sets
-below, a 60-turn author and a 10-minute timeout.
+which gate harness the project uses, and how long an author may run. It is optional, and it can
+only tighten (RULINGS P2-R32): **every built-in set below applies to every repository, with or
+without a policy**, and nothing in the file removes a protected path. Without it an author gets
+60 turns and a 10-minute timeout.
 
 The host reads it from the repository's working tree at `forge run` (RULINGS P2-R6). An agent
 never reads or writes it, and the file is itself a protected path, at any depth, with or
@@ -24,7 +25,7 @@ without a policy.
 | Key | Meaning |
 | --- | --- |
 | `schema` | Required, exactly `daylight.policy/v1`. |
-| `languages` | Which built-in sets apply besides `always`: `node`, `rust` or both. Default `["node"]`; an empty list is refused. |
+| `languages` | `node`, `rust` or both. Default `["node"]`; an empty list is refused. It only chooses which sets the author's prompt spells out (and, later, the default gate harness). It never unprotects anything: a `["rust"]` project still has `package.json` and `node_modules` protected. |
 | `protectedPaths` | Repo-relative globs the project adds. `**` is any number of whole components, `*` any run inside one. No leading slash, no `.` or `..` component, no other glob syntax, at most 64 entries. Globs only add: there is no way to unprotect anything. A path is matched exactly, so write `dir/**` to protect a directory. |
 | `gate.harness` | `cargo` or `node`. Read by nobody yet; the gate is wired to it after the P2 merge. |
 | `gate.command` | Optional argv template, `{test}` standing for the test path. Not a shell string. |
@@ -43,7 +44,11 @@ The sets are data (`PROTECTED_SETS` in `engine/forge/project-policy.ts`). The ca
 and the author's prompt are both built from that data, and `engine/test/project-policy.ts`
 checks that every name in it appears on this page.
 
-**always**, whatever the policy says:
+All three apply in every repository, whatever `languages` says; the names only group them.
+A rust rule never matches in a Node repository, nor the reverse, so applying them all costs a
+project nothing it uses.
+
+**always**:
 
 - lockfiles at any depth: `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`,
   `yarn.lock`, `bun.lock`, `bun.lockb`, `Cargo.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`,

@@ -71,7 +71,7 @@ section('no policy file: today\'s behaviour exactly');
   check('every oracle path gets the same rules with no policy, a null policy and languages ["node"]',
     same.length === ORACLE_PATHS.length, ORACLE_PATHS.filter((p) => !same.includes(p)).join(','));
   check('a file with only the schema is the node set', JSON.stringify(policy({}).languages) === '["node"]');
-  check('without a policy, Cargo.toml is not protected (the node set is unchanged)', !isProtected('Cargo.toml') && !isProtected('build.rs'));
+  check('without a policy every built-in set still applies (P2-R32): Cargo.toml and build.rs are protected', isProtected('Cargo.toml') && isProtected('crates/x/build.rs'));
   const v = checkPolicy([file('package.json')]);
   check('without a policy a violation carries no why, as before', JSON.stringify(v) === '[{"rule":"protected-path","path":"package.json"}]', JSON.stringify(v));
 }
@@ -86,7 +86,9 @@ section('the rust set (P2-R4)');
   check('src/main.rs and src/build/mod.rs are not', !isProtected('src/main.rs', rust) && !isProtected('src/build/mod.rs', rust));
   check('a rust-only project keeps the always set (.github, lockfiles, invariants, scripts/)',
     ['.github/workflows/ci.yml', 'pnpm-lock.yaml', 'daylight.invariants.json', 'scripts/release.sh'].every((p) => isProtected(p, rust)));
-  check('a rust-only project does not protect package.json', !isProtected('package.json', rust));
+  check('a rust-only project still protects package.json and node_modules (languages never unprotect)',
+    isProtected('package.json', rust) && isProtected('sub/package.json', rust) && isProtected('node_modules/x/index.js', rust));
+  check('nor does a node-only one unprotect the rust set', isProtected('crates/x/Cargo.toml', policy({ languages: ['node'] })));
   const both = policy({ languages: ['rust', 'node'] });
   check('rust and node together protect both', isProtected('package.json', both) && isProtected('crates/x/Cargo.toml', both));
   const v = checkPolicy([file('crates/x/Cargo.toml')], { policy: rust });
