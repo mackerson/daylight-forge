@@ -72,7 +72,7 @@ console.log('\ndispatch');
     parserFor(parsers, 'src/a.ts')?.name !== 'toy');
   check('a .toy file goes to the toy provider',
     parserFor(parsers, 'src/a.toy')?.name === 'toy');
-  check('an unclaimed extension goes nowhere', parserFor(parsers, 'src/a.rs') === undefined);
+  check('an unclaimed extension goes nowhere', parserFor(parsers, 'src/a.zig') === undefined);
   check('a file with no extension goes nowhere', parserFor(parsers, 'Makefile') === undefined);
   check('every claimed extension is reported',
     claimedExtensions(parsers).has('.toy') && claimedExtensions(parsers).has('.ts'));

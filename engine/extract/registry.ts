@@ -1,3 +1,4 @@
+import { RustParser } from './rust-parser.ts';
 import { TypeScriptParser } from './ts-parser.ts';
 import type { Parser } from './parser.ts';
 
@@ -28,7 +29,7 @@ export interface RegistryResult {
 }
 
 export function builtinParsers(): Parser[] {
-  return [new TypeScriptParser()];
+  return [new TypeScriptParser(), new RustParser()];
 }
 
 /**
