@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { GateHarness } from '../mission/types.ts';
 
 /**
  * The execution boundary for experiments.
@@ -186,18 +187,90 @@ const ALLOWED_FLAGS: Record<string, ((value: string) => boolean) | null> = {
   '--test-name-pattern': (v) => v.length > 0,
 };
 
+const insideRoot = (root: string, arg: string): boolean => {
+  const abs = path.resolve(root, arg);
+  return abs === root || abs.startsWith(`${root}${path.sep}`);
+};
+
+const CARGO_NAME = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * `cargo test`'s flags a cargo gate may use. A value is checked by the function; `null` takes
+ * none. `--manifest-path` is judged as a path, inside the worktree.
+ */
+const CARGO_FLAGS: Record<string, ((value: string) => boolean) | null> = {
+  '--offline': null, '--workspace': null, '--lib': null, '--locked': null, '--frozen': null, '--release': null,
+  '-p': (v) => CARGO_NAME.test(v), '--package': (v) => CARGO_NAME.test(v),
+  '--test': (v) => CARGO_NAME.test(v),
+  '--manifest-path': (v) => v.length > 0 && path.posix.basename(v) === 'Cargo.toml',
+};
+
+/** Flags that load configuration or unstable behaviour from an argument; named in the refusal. */
+const CARGO_REFUSED = new Set(['--config', '-Z', '--target-dir', '--artifact-dir']);
+
+/**
+ * `cargo test` only, with only the flags above, and after `--` only `--test-threads=N`. A
+ * `--config` or `-Z` would let the command re-point the registry, the target directory or the
+ * build itself from the argv; a path, wherever one appears, must resolve inside the worktree.
+ */
+function checkCargo(command: string[], worktree: string): { ok: true } | { ok: false; why: string } {
+  if (command[1] !== 'test') return { ok: false, why: `a cargo gate runs \`cargo test\`; got \`cargo ${command[1] ?? ''}\`` };
+  const root = path.resolve(worktree);
+  const sep = command.indexOf('--', 2);
+  const own = command.slice(2, sep < 0 ? undefined : sep);
+  for (let i = 0; i < own.length; i++) {
+    const arg = own[i];
+    if (!arg.startsWith('-')) return { ok: false, why: `\`${arg}\` is not an allowed argument to cargo test; name a target with --test <name>` };
+    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    const name = eq >= 0 ? arg.slice(0, eq) : arg;
+    if (CARGO_REFUSED.has(name) || name.startsWith('-Z')) {
+      return { ok: false, why: `\`${name}\` reconfigures cargo from the command line; a cargo gate may use ${Object.keys(CARGO_FLAGS).join(', ')}` };
+    }
+    if (!(name in CARGO_FLAGS)) {
+      return { ok: false, why: `\`${name}\` is not one of the cargo flags a gate may use: ${Object.keys(CARGO_FLAGS).join(', ')}` };
+    }
+    const takesValue = CARGO_FLAGS[name];
+    if (!takesValue) {
+      if (eq >= 0) return { ok: false, why: `\`${arg}\` is not an allowed use of \`${name}\`` };
+      continue;
+    }
+    const value = eq >= 0 ? arg.slice(eq + 1) : own[++i];
+    if (value === undefined || !takesValue(value)) return { ok: false, why: `\`${name} ${value ?? ''}\` is not an allowed use of \`${name}\`` };
+    if (name === '--manifest-path' && !insideRoot(root, value)) {
+      return { ok: false, why: `\`${value}\` resolves outside the worktree` };
+    }
+  }
+  if (sep >= 0) {
+    for (const arg of command.slice(sep + 1)) {
+      if (!/^--test-threads=[1-9][0-9]{0,2}$/.test(arg)) {
+        return { ok: false, why: `\`${arg}\` after \`--\` is not allowed; a cargo gate passes only --test-threads=N to its test binary` };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 /**
  * Is this a command the runner will execute at all?
  *
- * Only `node`, only on files inside the worktree, with only the flags above. Flags that
- * evaluate or preload code from an argument would let a command smuggle in a test that was
- * never registered. A `--flag=value` is judged by name and value; a bare non-flag argument
- * is treated as a path and must resolve inside the worktree, whether or not it exists yet.
+ * Under the `node` harness: only `node`, only on files inside the worktree, with only the
+ * flags above. Flags that evaluate or preload code from an argument would let a command
+ * smuggle in a test that was never registered. A `--flag=value` is judged by name and value;
+ * a bare non-flag argument is treated as a path and must resolve inside the worktree, whether
+ * or not it exists yet. Under the `cargo` harness: only `cargo test`, as `checkCargo` says.
  */
 export function checkAllowlist(
-  command: string[], worktree: string,
+  command: string[], worktree: string, harness: GateHarness = 'node',
 ): { ok: true } | { ok: false; why: string } {
   if (!command.length) return { ok: false, why: 'empty command' };
+  if (harness === 'cargo') {
+    if (command[0] !== 'cargo') return { ok: false, why: `the cargo harness runs only \`cargo\`; got \`${command[0]}\`` };
+    return checkCargo(command, worktree);
+  }
+  if (harness !== 'node') return { ok: false, why: `unknown harness ${String(harness)}` };
+  if (command[0] === 'cargo') {
+    return { ok: false, why: '`cargo` runs only under the cargo harness (gate add --harness cargo)' };
+  }
   if (command[0] !== 'node') {
     return { ok: false, why: `only \`node\` is allowed; got \`${command[0]}\`` };
   }
@@ -229,22 +302,45 @@ export function checkAllowlist(
   return { ok: true };
 }
 
+/** The system cargo: inside the read-only `/usr` bind, never one found on a PATH. */
+export const CARGO_BINARY = '/usr/bin/cargo';
+
 /**
- * The command as it runs inside the sandbox: our own node, paths under `/work`.
+ * The command as it runs inside the sandbox: our own node (or the system cargo), paths under
+ * `/work`.
  *
- * Assumes `checkAllowlist` passed, so every non-flag argument resolves inside `worktree`.
+ * Assumes `checkAllowlist` passed, so every path argument resolves inside `worktree`.
  */
-export function sandboxCommand(command: string[], worktree: string): string[] {
+export function sandboxCommand(command: string[], worktree: string, harness: GateHarness = 'node'): string[] {
   const root = path.resolve(worktree);
+  const inWork = (arg: string) => {
+    const abs = path.resolve(root, arg);
+    if (abs === root) return WORK;
+    return path.posix.join(WORK, path.relative(root, abs).split(path.sep).join('/'));
+  };
+  if (harness === 'cargo') {
+    return [
+      CARGO_BINARY,
+      ...command.slice(1).map((arg, i, rest) => {
+        if (arg.startsWith('--manifest-path=')) return `--manifest-path=${inWork(arg.slice('--manifest-path='.length))}`;
+        return i > 0 && rest[i - 1] === '--manifest-path' ? inWork(arg) : arg;
+      }),
+    ];
+  }
   return [
     nodeBinary(),
-    ...command.slice(1).map((arg) => {
-      if (arg.startsWith('-')) return arg;
-      const abs = path.resolve(root, arg);
-      if (abs === root) return WORK;
-      return path.posix.join(WORK, path.relative(root, abs).split(path.sep).join('/'));
-    }),
+    ...command.slice(1).map((arg) => (arg.startsWith('-') ? arg : inWork(arg))),
   ];
+}
+
+/**
+ * A host directory bound into the sandbox beside `/work`: the crate snapshot and a build cache
+ * (forge/cargo.ts). Never under `/work`, never `/`.
+ */
+export interface SandboxBind {
+  kind: 'ro' | 'rw';
+  src: string;
+  dest: string;
 }
 
 export function sandboxArgv(
@@ -262,6 +358,10 @@ export function sandboxArgv(
     files?: Array<{ fd: number; path: string }>;
     /** bwrap writes JSON status here, including the child's pid once it has started it. */
     statusFd?: number;
+    /** Which runner the command is for. Defaults to `node`. */
+    harness?: GateHarness;
+    /** Extra host directories, bound after the worktree. */
+    binds?: SandboxBind[];
   },
 ): string[] {
   if (!profile.available) {
@@ -317,10 +417,17 @@ export function sandboxArgv(
     '--ro-bind', path.resolve(opts.worktree), WORK,
   );
   for (const f of opts.files ?? []) argv.push('--ro-bind-data', String(f.fd), path.posix.join(WORK, f.path));
+  for (const b of opts.binds ?? []) {
+    const dest = path.posix.normalize(b.dest);
+    if (!path.isAbsolute(b.src) || !path.posix.isAbsolute(dest) || dest === '/' || dest === WORK || dest.startsWith(`${WORK}/`)) {
+      throw new Error(`refusing to bind ${b.src} at ${b.dest}: an extra bind is absolute and lands outside ${WORK}`);
+    }
+    argv.push(b.kind === 'rw' ? '--bind' : '--ro-bind', b.src, dest);
+  }
   argv.push(
     '--chdir', WORK,
     '--',
-    ...sandboxCommand(opts.command, opts.worktree),
+    ...sandboxCommand(opts.command, opts.worktree, opts.harness),
   );
   return argv;
 }
