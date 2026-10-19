@@ -106,7 +106,9 @@ A person then:
 4. records the decision: `daylight deps resolve <request-id> --rationale '<why>' --confirm <c>`.
    Run it once without `--confirm` to see what you are confirming. Like every Forge decision it
    is refused under `CLAUDECODE` or `DAYLIGHT_SESSION` and recorded as `human:<OS user>`. It
-   edits no manifest and runs no snapshot; it prints what to run next;
+   edits no manifest and runs no snapshot; it prints what to run next. A person who will not
+   add it runs the same command with `--declined`, recorded as a `reject` decision rather than
+   an `approve`; the confirm code differs, so one cannot stand in for the other;
 5. re-runs the author: `daylight forge run <m> <repo> --tools <author>`.
 
 An author's edit of a protected manifest is never curable by resolving a request: the request

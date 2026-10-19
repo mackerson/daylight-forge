@@ -13,7 +13,7 @@ import { DecisionRefused } from './policy.ts';
  * `cli.ts`.
  *
  *   deps requests [--mission <m>] [--format json]
- *   deps resolve  <request-id> --rationale '<why>' --confirm <digest8>
+ *   deps resolve  <request-id> [--declined] --rationale '<why>' --confirm <digest8>
  *
  * Same contract as the other Forge commands: `--out` (default: this directory's data dir),
  * `--format json`, exit 0 when it ran, 2 for bad arguments or a missing `--confirm` (the digest
@@ -74,8 +74,9 @@ function resolve(p: Parsed, d: DaylightContext, asJson: boolean, env: NodeJS.Pro
   const requestId = p.positionals[0];
   if (!requestId) throw new Usage('deps resolve needs a <request-id>');
   const confirm = p.flags.get('confirm');
+  const declined = p.flags.get('declined') === 'true';
   if (confirm === undefined) {
-    const c = resolveConfirm(findDependencyRequest(d, requestId));
+    const c = resolveConfirm(findDependencyRequest(d, requestId), { declined });
     if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
     else {
       for (const l of c.lines) say(l);
@@ -85,10 +86,10 @@ function resolve(p: Parsed, d: DaylightContext, asJson: boolean, env: NodeJS.Pro
     return 2;
   }
   const actor = actorFor(p.flags.get('actor'));
-  const r = resolveDependencyRequest(d, { requestId, actor, rationale: p.flags.get('rationale'), confirm, env });
+  const r = resolveDependencyRequest(d, { requestId, actor, rationale: p.flags.get('rationale'), confirm, env, declined });
   if (asJson) json(r);
   else {
-    say(`resolved ${r.request.id} (${r.request.ecosystem} ${r.request.name}) by ${actor} (${r.decision.id})`);
+    say(`${declined ? 'declined' : 'resolved'} ${r.request.id} (${r.request.ecosystem} ${r.request.name}) by ${actor} (${r.decision.id})`);
     say('nothing was installed and no manifest was changed');
     say(`next: ${r.next}`);
   }

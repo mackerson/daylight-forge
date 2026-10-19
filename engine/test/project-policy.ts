@@ -288,9 +288,9 @@ section('request_dependency: the author asks, a person decides');
   check('the need names the dependency, not the author\'s reason', needs.every((n) => !n.why.includes('parse the config')));
 
   const code = resolveConfirm(serde).digest8;
-  const attemptResolve = (env: NodeJS.ProcessEnv, confirm: string | undefined, rationale = 'added serde_json 1 to crates/x') => {
+  const attemptResolve = (env: NodeJS.ProcessEnv, confirm: string | undefined, rationale = 'added serde_json 1 to crates/x', declined = false) => {
     try {
-      resolveDependencyRequest(d, { requestId: serde.id, actor: HUMAN, rationale, confirm, env });
+      resolveDependencyRequest(d, { requestId: serde.id, actor: HUMAN, rationale, confirm, env, declined });
       return null;
     } catch (err) {
       return err as Error;
@@ -300,14 +300,16 @@ section('request_dependency: the author asks, a person decides');
   check('resolve under DAYLIGHT_SESSION is refused', attemptResolve({ DAYLIGHT_SESSION: 'm:t:a1' }, code) instanceof DecisionRefused);
   check('resolve without the confirm code is refused', attemptResolve({}, undefined) instanceof DecisionRefused);
   check('resolve with a wrong code is refused', attemptResolve({}, '00000000') instanceof DecisionRefused);
+  check('the resolve code does not confirm a decline', attemptResolve({}, code, 'no', true) instanceof DecisionRefused
+    && resolveConfirm(serde, { declined: true }).digest8 !== code);
   check('resolve without a rationale is refused', attemptResolve({}, code, ' ') instanceof DependencyRequestRefused);
   check('nothing was recorded by any refusal', dependencyRequests(d, { missionId: mission.id }).every((r) => r.status === 'open'));
   const manifest = path.join(tmp, 'repo', 'Cargo.toml');
   fs.mkdirSync(path.dirname(manifest), { recursive: true });
   fs.writeFileSync(manifest, '[package]\nname = "x"\n');
   const r = resolveDependencyRequest(d, { requestId: serde.id, actor: HUMAN, rationale: 'added serde_json 1', confirm: code, env: {} });
-  check('a person resolves it with the code: one decision with the rationale', r.decision.scope.operation === 'resolve-dependency-request'
-    && r.decision.rationale === 'added serde_json 1' && r.decision.actor === HUMAN);
+  check('a person resolves it with the code: one approve decision with the rationale', r.decision.scope.operation === 'resolve-dependency-request'
+    && r.decision.kind === 'approve' && r.decision.rationale === 'added serde_json 1' && r.decision.actor === HUMAN);
   check('it says what to run next and runs none of it', r.next.includes(`daylight deps snapshot ${PROJECT.root}`)
     && fs.readFileSync(manifest, 'utf8') === '[package]\nname = "x"\n');
   check('the need is gone once resolved', !needsOf(d, d.store.mission(mission.id)!).some((n) => n.ref === serde.id));
@@ -326,14 +328,18 @@ section('request_dependency: the author asks, a person decides');
   check('deps requests --format json lists them with their status', list.status === 0 && listed.length === 2
     && listed.find((x) => x.id === serde.id)?.status === 'resolved', list.stderr);
   const other = listed.find((x) => x.status === 'open')!;
-  const preview = cli(['resolve', other.id, '--out', out], clean);
+  const preview = cli(['resolve', other.id, '--declined', '--out', out], clean);
   const digest = /digest (sha256:[0-9a-f]{64})/.exec(preview.stdout)?.[1] ?? '';
   check('resolve without --confirm prints the digest and exits 2', preview.status === 2 && !!digest, preview.stdout + preview.stderr);
-  const agent = cli(['resolve', other.id, '--rationale', 'ok', '--confirm', digest.slice(7, 15), '--out', out], { ...clean, CLAUDECODE: '1' });
+  const agent = cli(['resolve', other.id, '--declined', '--rationale', 'ok', '--confirm', digest.slice(7, 15), '--out', out], { ...clean, CLAUDECODE: '1' });
   check('resolve under CLAUDECODE exits 1 and records nothing', agent.status === 1 && /CLAUDECODE/.test(agent.stderr), agent.stderr);
-  const human = cli(['resolve', other.id, '--rationale', 'added it', '--confirm', digest.slice(7, 15), '--out', out], clean);
-  check('resolve from a person\'s shell exits 0 and says what to run next',
-    human.status === 0 && /no manifest was changed/.test(human.stdout) && /next: /.test(human.stdout), human.stdout + human.stderr);
+  const human = cli(['resolve', other.id, '--declined', '--rationale', 'not worth a dependency', '--confirm', digest.slice(7, 15), '--out', out], clean);
+  check('resolve --declined from a person\'s shell exits 0 and says what to run next',
+    human.status === 0 && /^declined /.test(human.stdout) && /no manifest was changed/.test(human.stdout) && /next: /.test(human.stdout), human.stdout + human.stderr);
+  const after = openDaylight(out);
+  const kinds = after.store.decisions(mission.id).filter((x) => x.scope.operation === 'resolve-dependency-request').map((x) => x.kind).sort().join();
+  after.close();
+  check('the two resolves are recorded as approve and reject, the same operation', kinds === 'approve,reject', kinds);
   check('an unknown subcommand is a usage error', cli(['install', 'serde', '--out', out], clean).status === 2);
 }
 

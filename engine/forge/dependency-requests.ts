@@ -250,15 +250,19 @@ export class DependencyRequestRefused extends Error {
   }
 }
 
-/** What `--confirm` checks for a resolve: the request's identity and its dependency. */
-export function resolveConfirm(r: DependencyRequestRow): { digest: string; digest8: string; lines: string[] } {
+/**
+ * What `--confirm` checks for a resolve: the request's identity, its dependency, and whether it
+ * is declined, so a code confirmed for adding a dependency does not decline it or the reverse.
+ */
+export function resolveConfirm(r: DependencyRequestRow, o: { declined?: boolean } = {}): { digest: string; digest8: string; lines: string[] } {
+  const declined = o.declined === true;
   const digest = digestOf(canonicalJson({
-    operation: RESOLVE_OPERATION, requestId: r.id, missionId: r.missionId, ecosystem: r.ecosystem, name: r.name, version: r.version ?? null,
+    operation: RESOLVE_OPERATION, requestId: r.id, missionId: r.missionId, ecosystem: r.ecosystem, name: r.name, version: r.version ?? null, declined,
   }));
   return {
     digest, digest8: confirmCodeOf(digest),
     lines: [
-      `resolve dependency request ${r.id} on mission ${r.missionId}`,
+      `${declined ? 'decline' : 'resolve'} dependency request ${r.id} on mission ${r.missionId}`,
       `${describe(r)} (asked by ${r.attemptIds.length} attempt(s))`,
       'this records your decision only: it edits no manifest and runs nothing',
     ],
@@ -285,6 +289,8 @@ export interface ResolveInput {
   rationale: string | undefined;
   confirm: string | undefined;
   env: NodeJS.ProcessEnv;
+  /** `--declined`: the person will not add it; recorded as a `reject` decision. */
+  declined?: boolean;
 }
 
 /**
@@ -294,20 +300,22 @@ export interface ResolveInput {
  */
 export function resolveDependencyRequest(ctx: DaylightContext, input: ResolveInput): { decision: Decision; request: DependencyRequestRow; next: string } {
   const r = findDependencyRequest(ctx, input.requestId);
-  assertHumanDecision(input.env, input.actor, input.confirm, resolveConfirm(r).digest);
+  const declined = input.declined === true;
+  assertHumanDecision(input.env, input.actor, input.confirm, resolveConfirm(r, { declined }).digest);
   if (!input.rationale?.trim()) throw new DependencyRequestRefused('refused: resolving a dependency request needs a rationale');
   if (r.status === 'resolved') throw new DependencyRequestRefused(`dependency request ${r.id} is already resolved (${r.decisionId})`);
   const mission = ctx.store.mission(r.missionId)!;
   const decision = ctx.store.recordDecision({
-    missionId: mission.id, projectId: mission.projectId, revision: mission.baseRevision, actor: input.actor, kind: 'approve',
+    missionId: mission.id, projectId: mission.projectId, revision: mission.baseRevision, actor: input.actor, kind: declined ? 'reject' : 'approve',
     rationale: input.rationale.trim(),
-    scope: { operation: RESOLVE_OPERATION, requestId: r.id, ecosystem: r.ecosystem, name: r.name, version: r.version ?? null },
+    scope: { operation: RESOLVE_OPERATION, requestId: r.id, ecosystem: r.ecosystem, name: r.name, version: r.version ?? null, declined },
     artifactIds: [],
   });
   ctx.events.append({
     projectId: mission.projectId, missionId: mission.id, actorId: input.actor, category: 'approval', name: 'dependency.request.resolved',
-    payload: { decisionId: decision.id, requestId: r.id, ecosystem: r.ecosystem, name: r.name, version: r.version ?? null },
+    payload: { decisionId: decision.id, requestId: r.id, ecosystem: r.ecosystem, name: r.name, version: r.version ?? null, declined },
   });
   const repo = ctx.store.project(mission.projectId)?.root ?? '<repo>';
-  return { decision, request: { ...r, status: 'resolved', decisionId: decision.id }, next: nextSteps(r, repo, mission.id) };
+  const next = declined ? `nothing to add; re-run \`daylight forge run ${mission.id} ${repo} --tools <author>\` if the author should try without it` : nextSteps(r, repo, mission.id);
+  return { decision, request: { ...r, status: 'resolved', decisionId: decision.id }, next };
 }
