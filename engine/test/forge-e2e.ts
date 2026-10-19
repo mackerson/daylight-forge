@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { detectSandbox } from '../experiment/sandbox.ts';
 import { openDaylight } from '../mission/context.ts';
-import type { Attempt, Candidate, Decision, Mission, Need, WorkItem } from '../mission/types.ts';
+import type { Attempt, Candidate, Decision, Experiment, Mission, Need, WorkItem } from '../mission/types.ts';
 import { ImplementRefused, runImplement } from '../forge/orchestrate.ts';
 import { runMission } from '../mission/orchestrate.ts';
 import { harness } from './harness.ts';
@@ -746,6 +746,17 @@ section('a project policy (P2-R6): the rust set and the author limits come from 
     const second = inspect(m.id).events.find((e) => e.name === 'attempt.started' && e.attemptId === again.attempt.id);
     check('a --timeout flag overrides the policy, and nothing is recorded as clamped',
       second?.payload.timeoutMs === 120_000 && second?.payload.maxTurns === 300 && JSON.stringify(second?.payload.clamped) === '[]', JSON.stringify(second?.payload));
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust'], gate: { harness: 'cargo' } }));
+    const gm = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', 'gate harness from policy',
+      '--rationale', 'policy fixture', '--confirm', confirmOf('adhoc-mission', 'gate harness from policy').digest8, '--out', out, '--format', 'json']));
+    const rsTest = path.join(tmp, 'padded.rs');
+    fs.writeFileSync(rsTest, '#[test]\nfn padded() {}\n');
+    const fromPolicy = json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--test', rsTest, '--expect-exit', '0',
+      '--expect-stdout', 'test result: ok.', '--out', out, '--format', 'json']));
+    const fromFlag = json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--harness', 'node', '--test', path.join(tmp, 'add.test.js'),
+      '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out, '--format', 'json']));
+    check('gate add takes the policy\'s gate.harness when --harness is not given, and the flag wins over it',
+      fromPolicy.harness === 'cargo' && (fromFlag.harness ?? 'node') === 'node', `${fromPolicy.harness} ${fromFlag.harness}`);
   } finally {
     fs.rmSync(policyFile, { force: true });
   }
