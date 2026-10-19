@@ -94,7 +94,10 @@ from the file layout and each `Cargo.toml`'s package name (`mod`, `crate::`, `su
 `self::`, other workspace crates); cargo is never run, and a path that cannot be found stays
 unresolved. `mod x;` is recorded as a contains edge in the module tree, not an import, and a
 module's `use super::…` back to the file that declares it is its parent link. Neither counts
-toward cycle detection; every other `use` does. Further languages plug in through `DAYLIGHT_PARSERS` (see `engine/extract/registry.ts`).
+toward cycle detection; every other `use` does. Macro arguments are unparsed tokens, so calls
+written inside `println!(…)` or `vec![…]` are not seen. The graph has no module kind, so `mod`
+declarations appear as nodes of kind `variable`. Further languages plug in through
+`DAYLIGHT_PARSERS` (see `engine/extract/registry.ts`).
 
 ![The same repository as a dependency graph](docs/map-graph.png)
 
