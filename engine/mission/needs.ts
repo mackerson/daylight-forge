@@ -1,4 +1,5 @@
 import { ambiguities } from '../forge/decompose.ts';
+import { dependencyNeeds } from '../forge/dependency-requests.ts';
 import type { DaylightContext } from './context.ts';
 import { compare, missionClaims, type Comparison } from './disputes.ts';
 import type { Candidate, Decision, Experiment, GateEvaluation, Mission, Need } from './types.ts';
@@ -136,7 +137,7 @@ function implementNeeds(ctx: DaylightContext, mission: Mission): Need[] {
       why: `implement mission ${mission.id} is a draft without write; a person authorizes it before anything runs`,
     });
   }
-  return [...out, ...gateNeeds(ctx, mission), ...candidateNeeds(ctx, mission)];
+  return [...out, ...gateNeeds(ctx, mission), ...candidateNeeds(ctx, mission), ...dependencyNeeds(ctx, mission)];
 }
 
 export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Comparison): Need[] {
