@@ -57,7 +57,7 @@ const ORACLE_PATHS = [
 ];
 const CTX = { specPath: 'docs/SPEC.md', scope: { paths: ['src', 'README.md', 'docs', 'packages', 'sub', 'scripts', 'crates', '.cargo'] } };
 
-section('no policy file: today\'s behaviour exactly');
+section('no policy file: the built-in sets, the node oracle unchanged');
 {
   const repo = path.join(tmp, 'none');
   fs.mkdirSync(repo);

@@ -3,8 +3,9 @@
 `<repo>/daylight.policy.json` tells the Forge what an author may not touch in this repository,
 which gate harness the project uses, and how long an author may run. It is optional, and it can
 only tighten (RULINGS P2-R32): **every built-in set below applies to every repository, with or
-without a policy**, and nothing in the file removes a protected path. Without it an author gets
-60 turns and a 10-minute timeout.
+without a policy**, and nothing in the file removes a protected path. Without it every
+built-in set still applies (P2-R32 supersedes P2-R6's "absent file = today's Node defaults")
+and an author gets 60 turns and a 10-minute timeout.
 
 The host reads it from the repository's working tree at `forge run` (RULINGS P2-R6). An agent
 never reads or writes it, and the file is itself a protected path, at any depth, with or

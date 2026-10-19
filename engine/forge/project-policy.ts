@@ -85,7 +85,7 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     { kind: 'segment', values: ['.husky'], label: 'anything under .husky/' },
     {
       kind: 'basename', values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml'],
-      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml) at any depth',
+      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml) at any depth',
     },
   ] satisfies ProtectedRule[]),
   node: Object.freeze([
