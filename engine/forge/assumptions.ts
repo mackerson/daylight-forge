@@ -112,7 +112,9 @@ export function decideAssumption(ctx: DaylightContext, input: DecideAssumptionIn
   if (value === undefined) throw new DecisionRefused(`refused: ${input.operation} needs --value`);
   assertHumanDecision(input.env, input.actor, input.confirm, confirmDigest(ctx, input.operation, a.id, { value, followUp: input.followUp?.statement }).digest);
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: an assumption decision needs a rationale');
-  if (textRefusal(value, MAX_EXAMPLE_BYTES, true)) throw new DecisionRefused('refused: the value is not plain text within its cap');
+  if (input.operation !== 'confirm-assumption' && textRefusal(value, MAX_EXAMPLE_BYTES, true)) {
+    throw new DecisionRefused('refused: the value is not plain text within its cap');
+  }
   if (input.followUp && input.operation !== 'overturn-assumption') throw new DecisionRefused('refused: only an overturn creates a follow-up');
   let followUp: Parameters<typeof ctx.store.decideAssumption>[1]['followUp'];
   if (input.followUp) followUp = followUpOf(ctx, a, input.followUp, input.actor);
