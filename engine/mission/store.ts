@@ -17,6 +17,10 @@ import type {
   UsageSource, Application, Candidate, CandidateFile, CandidateVerdict, GateEvaluation, GateTarget,
   IngestSource, PolicyViolation, SandboxReason, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
 } from './types.ts';
+import { campaignActorOf, FINDING_SEVERITIES, isCampaignActor } from './types.ts';
+import type {
+  CampaignLockScope, CampaignWave, Finding, FindingSeverity, Integration, IntegrationMethod, IntegrationState,
+} from './types.ts';
 
 /**
  * The mission store: what work was asked for, who attempted it, and what each attempt
@@ -173,7 +177,7 @@ function normaliseScope(scope: MissionScope): MissionScope {
   return { ...scope, paths };
 }
 
-const EXPERIMENT_ROLES: readonly ExperimentRole[] = ['probe', 'gate', 'holdout'];
+const EXPERIMENT_ROLES: readonly ExperimentRole[] = ['probe', 'gate', 'holdout', 'regression', 'acceptance'];
 
 const DEFAULT_PERMISSIONS: MissionPermissions = {
   read: true, write: false, execute: false, deploy: false,
@@ -1513,31 +1517,44 @@ export class MissionStore {
         throw new Error(`gate evaluation diff ${String(input.diffDigest)} is not candidate ${c.id}'s diff ${c.diffArtifact.digest}`);
       }
     }
+    if (input.target === 'integrated') {
+      // Exactly what was tested: the integration's own commit and onto → commit diff, on its campaign.
+      const i = input.integrationId ? this.integration(input.integrationId) : null;
+      if (!i || i.campaignId !== m.id || i.candidateId !== input.candidateId) {
+        throw new Error(`integration ${String(input.integrationId)} is not campaign ${m.id}'s integration of candidate ${String(input.candidateId)}`);
+      }
+      if (!i.integratedDiffDigest || input.diffDigest !== i.integratedDiffDigest || input.revision !== i.integratedCommit) {
+        throw new Error(`gate evaluation ${String(input.diffDigest)} at ${input.revision} is not integration ${i.id}'s ${String(i.integratedDiffDigest)} at ${String(i.integratedCommit)}`);
+      }
+    } else if (input.integrationId !== undefined) {
+      throw new Error('only an integrated evaluation names an integration');
+    }
     const g: GateEvaluation = { ...input, id: newId('gateEvaluation'), createdAt: this.now() };
     this.db
       .prepare(
         `INSERT INTO gate_evaluations
          (id, mission_id, project_id, revision, experiment_id, candidate_id, target, diff_digest,
-          harness_digest, executions, conclusion, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          integration_id, harness_digest, executions, conclusion, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         g.id, g.missionId, g.projectId, g.revision, g.experimentId, g.candidateId ?? null, g.target,
-        g.diffDigest, g.harnessDigest, JSON.stringify(g.executions), g.conclusion, g.createdAt,
+        g.diffDigest, g.integrationId ?? null, g.harnessDigest, JSON.stringify(g.executions), g.conclusion, g.createdAt,
       );
     for (const ref of g.executions) this.recordArtifact(ref);
     return g;
   }
 
-  gateEvaluations(filter: { missionId?: string; candidateId?: string; target?: GateTarget }): GateEvaluation[] {
-    if (filter.missionId === undefined && filter.candidateId === undefined) {
-      throw new Error('gateEvaluations needs a missionId or a candidateId');
+  gateEvaluations(filter: { missionId?: string; candidateId?: string; target?: GateTarget; integrationId?: string }): GateEvaluation[] {
+    if (filter.missionId === undefined && filter.candidateId === undefined && filter.integrationId === undefined) {
+      throw new Error('gateEvaluations needs a missionId, a candidateId or an integrationId');
     }
     const where: string[] = [];
     const args: string[] = [];
     if (filter.missionId !== undefined) { where.push('mission_id=?'); args.push(filter.missionId); }
     if (filter.candidateId !== undefined) { where.push('candidate_id=?'); args.push(filter.candidateId); }
     if (filter.target !== undefined) { where.push('target=?'); args.push(filter.target); }
+    if (filter.integrationId !== undefined) { where.push('integration_id=?'); args.push(filter.integrationId); }
     return this.db
       .prepare(`SELECT * FROM gate_evaluations WHERE ${where.join(' AND ')} ORDER BY created_at, id`)
       .all(...args)
@@ -1557,14 +1574,20 @@ export class MissionStore {
     const scope = d?.scope as { operation?: unknown; candidateId?: unknown; diffDigest?: unknown } | undefined;
     const approving = (d?.kind === 'approve' && scope?.operation === 'approve-candidate')
       || (d?.kind === 'override' && scope?.operation === 'override-candidate');
-    if (!d || !approving || d.missionId !== c.missionId || scope?.candidateId !== c.id
-      || scope.diffDigest !== c.diffArtifact.digest) {
-      throw new Error(`decision ${input.decisionId} does not approve candidate ${c.id} at ${c.diffArtifact.digest}`);
+    if (d && scope?.operation === 'integrate-candidate') {
+      // A campaign landing: the director's derived decision, onto the integration tip (§4.3).
+      const why = this.integratedApplicationRefusal(c, d, input);
+      if (why) throw new Error(why);
+    } else {
+      if (!d || !approving || d.missionId !== c.missionId || scope?.candidateId !== c.id
+        || scope.diffDigest !== c.diffArtifact.digest) {
+        throw new Error(`decision ${input.decisionId} does not approve candidate ${c.id} at ${c.diffArtifact.digest}`);
+      }
+      if (input.baseCommit !== c.baseCommit) {
+        throw new Error(`application base ${input.baseCommit} is not candidate ${c.id}'s base ${c.baseCommit}`);
+      }
+      if (!isHumanActor(input.appliedBy)) throw new Error(`apply needs a human:<name> actor, not ${input.appliedBy}`);
     }
-    if (input.baseCommit !== c.baseCommit) {
-      throw new Error(`application base ${input.baseCommit} is not candidate ${c.id}'s base ${c.baseCommit}`);
-    }
-    if (!isHumanActor(input.appliedBy)) throw new Error(`apply needs a human:<name> actor, not ${input.appliedBy}`);
     if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(input.tree)) throw new Error(`application tree ${JSON.stringify(input.tree)} is not a git object id`);
     if (this.application(c.id)) throw new Error(`candidate ${c.id} is already applied`);
     const p: Application = {
@@ -1588,6 +1611,296 @@ export class MissionStore {
       )
       .run(p.id, p.candidateId, p.missionId, p.decisionId, p.projectId, p.baseCommit, p.commit, p.tree, p.ref, p.appliedBy, p.at);
     return p;
+  }
+
+  /**
+   * Why an `integrate-candidate` decision does not cover this application, or null: a campaign
+   * actor's approval of this candidate's exact diff, naming an integration of it that is being
+   * landed, whose commit, tip and integrated digest the application repeats.
+   */
+  private integratedApplicationRefusal(c: Candidate, d: Decision, input: CreateApplicationInput): string | null {
+    const s = d.scope as Record<string, unknown>;
+    if (d.kind !== 'approve' || !isCampaignActor(d.actor) || d.missionId !== c.missionId || s.candidateId !== c.id
+      || s.diffDigest !== c.diffArtifact.digest) {
+      return `decision ${d.id} is not a campaign's integrate-candidate decision for candidate ${c.id} at ${c.diffArtifact.digest}`;
+    }
+    const i = typeof s.integrationId === 'string' ? this.integration(s.integrationId) : null;
+    if (!i || i.candidateId !== c.id || (i.state !== 'evaluating' && i.state !== 'integrated')) {
+      return `decision ${d.id} names no integration of candidate ${c.id} that is being landed`;
+    }
+    if (input.commit !== i.integratedCommit || s.integratedCommit !== i.integratedCommit || input.baseCommit !== i.onto || s.onto !== i.onto
+      || s.integratedDiffDigest !== i.integratedDiffDigest) {
+      return `application ${input.commit} onto ${input.baseCommit} is not integration ${i.id}'s ${String(i.integratedCommit)} onto ${i.onto}`;
+    }
+    if (input.appliedBy !== d.actor || d.actor !== campaignActorOf(i.campaignId)) {
+      return `an integrated application is recorded as ${d.actor}, the campaign that decided it, not ${input.appliedBy}`;
+    }
+    return null;
+  }
+
+  // ---- campaign integration (WS-R6) --------------------------------------------------
+  //
+  // The director's rows: integrations of candidates onto a campaign's integration ref, the
+  // campaign gate lock, waves and wave-review findings. Refs live in git; these say why each
+  // one moved, and nothing here touches git.
+
+  /** Run `fn` inside `BEGIN IMMEDIATE`: the write lock is held before anything is read. */
+  immediate<T>(fn: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const out = fn();
+      this.db.exec('COMMIT');
+      return out;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  recordIntegration(input: {
+    id?: string; campaignId: string; missionId: string; candidateId: string; ref: string; onto: string; candidateBase: string;
+  }): Integration {
+    const campaign = this.requireMission(input.campaignId);
+    if (campaign.kind !== 'campaign') throw new Error(`mission ${campaign.id} is ${campaign.kind}, not a campaign`);
+    const m = this.requireMission(input.missionId);
+    if (m.parentId !== campaign.id) throw new Error(`mission ${m.id} is not a ticket mission of campaign ${campaign.id}`);
+    const c = this.candidate(input.candidateId);
+    if (!c || c.missionId !== m.id) throw new Error(`candidate ${input.candidateId} is not a candidate of mission ${m.id}`);
+    if (input.id !== undefined && !isEntityId('integration', input.id)) throw new Error(`${input.id} is not an integration id`);
+    for (const sha of [input.onto, input.candidateBase]) {
+      if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) throw new Error(`${JSON.stringify(sha)} is not a git object id`);
+    }
+    const at = this.now();
+    const i: Integration = {
+      id: input.id ?? newId('integration'), campaignId: campaign.id, projectId: campaign.projectId, missionId: m.id,
+      candidateId: c.id, ref: input.ref, onto: input.onto, candidateBase: input.candidateBase, method: null,
+      integratedCommit: null, integratedTree: null, integratedDiffDigest: null, state: 'pending', conflictPaths: [],
+      acceptanceVacuous: null, decisionId: null, applicationId: null, createdAt: at, updatedAt: at,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO integrations
+         (id, campaign_id, project_id, mission_id, candidate_id, ref, onto, candidate_base, state, conflict_paths, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(i.id, i.campaignId, i.projectId, i.missionId, i.candidateId, i.ref, i.onto, i.candidateBase, i.state, '[]', at, at);
+    return i;
+  }
+
+  /**
+   * Move an integration, compare-and-set on its state: refused unless it is `from` now and the
+   * move is one `INTEGRATION_TRANSITIONS` draws. `evaluating → evaluating` only patches.
+   */
+  updateIntegration(id: string, from: IntegrationState, patch: Partial<Pick<Integration,
+    'state' | 'method' | 'integratedCommit' | 'integratedTree' | 'integratedDiffDigest' | 'conflictPaths' | 'acceptanceVacuous'
+    | 'decisionId' | 'applicationId'>>): Integration {
+    const i = this.integration(id);
+    if (!i) throw new Error(`unknown integration ${id}`);
+    const to = patch.state ?? from;
+    if (i.state !== from) throw new IllegalTransition('integration', id, `${i.state} (expected ${from})`, to);
+    if (to !== from && !INTEGRATION_TRANSITIONS[from].includes(to)) throw new IllegalTransition('integration', id, from, to);
+    const next: Integration = { ...i, ...patch, state: to, updatedAt: this.now() };
+    const r = this.db
+      .prepare(
+        `UPDATE integrations SET state=?, method=?, integrated_commit=?, integrated_tree=?, integrated_diff_digest=?,
+           conflict_paths=?, acceptance_vacuous=?, decision_id=?, application_id=?, updated_at=?
+         WHERE id=? AND state=?`,
+      )
+      .run(
+        next.state, next.method, next.integratedCommit, next.integratedTree, next.integratedDiffDigest,
+        JSON.stringify(next.conflictPaths), next.acceptanceVacuous === null ? null : next.acceptanceVacuous ? 1 : 0,
+        next.decisionId, next.applicationId, next.updatedAt, id, from,
+      );
+    if (!r.changes) throw new IllegalTransition('integration', id, 'changed underneath', to);
+    return this.integration(id)!;
+  }
+
+  integration(id: string): Integration | null {
+    const r = this.db.prepare('SELECT * FROM integrations WHERE id=?').get(id);
+    return r ? rowToIntegration(r) : null;
+  }
+
+  integrations(campaignId: string, opts: { state?: IntegrationState; missionId?: string } = {}): Integration[] {
+    return this.db
+      .prepare('SELECT * FROM integrations WHERE campaign_id=? ORDER BY created_at, rowid')
+      .all(campaignId)
+      .map(rowToIntegration)
+      .filter((i) => (opts.state === undefined || i.state === opts.state) && (opts.missionId === undefined || i.missionId === opts.missionId));
+  }
+
+  /** The candidate's latest integration that was not abandoned, or null. */
+  integrationFor(candidateId: string): Integration | null {
+    const r = this.db
+      .prepare(`SELECT * FROM integrations WHERE candidate_id=? AND state <> 'abandoned' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get(candidateId);
+    return r ? rowToIntegration(r) : null;
+  }
+
+  /**
+   * The campaign gate set a lock of exactly these experiments would freeze, its bindings and its
+   * digest: the one computation behind `lockCampaignGates`, its `--confirm` preview and the
+   * director's preflight. A binding comes from the experiment's subject (`ticket:<id>`), which
+   * nothing rewrites after registration; the digest covers it and the ratchet flag (P2-R17).
+   */
+  campaignGateSet(campaignId: string, experimentIds: readonly string[], ratchet: boolean): {
+    experiments: Experiment[]; bindings: Record<string, string | null>; roles: CampaignLockScope['roles']; gateSetDigest: string;
+  } {
+    const m = this.requireMission(campaignId);
+    if (m.kind !== 'campaign') throw new Error(`mission ${m.id} is ${m.kind}, not a campaign`);
+    const ids = [...new Set(experimentIds)].sort();
+    if (!ids.length) throw new Error(`campaign ${m.id}: a gate lock names at least one gate`);
+    const experiments = ids.map((id) => {
+      const x = this.experiment(id);
+      if (!x || x.missionId !== m.id) throw new Error(`experiment ${id} is not an experiment of campaign ${m.id}`);
+      if (x.role !== 'regression' && x.role !== 'gate' && x.role !== 'holdout') {
+        throw new Error(`experiment ${id} is a ${x.role}; a campaign lock names regression gates, gates and holdouts`);
+      }
+      return x;
+    });
+    const bindings = Object.fromEntries(experiments.map((x) => [x.id, campaignBindingOf(x)]));
+    const roles = Object.fromEntries(experiments.map((x) => [x.id, x.role])) as CampaignLockScope['roles'];
+    const lines = experiments.map((x) => `${x.id}:${x.harnessDigest}:${x.role}:${bindings[x.id] ?? '*'}`).sort();
+    return { experiments, bindings, roles, gateSetDigest: digestOf([...lines, `ratchet:${ratchet}`].join('\n')) };
+  }
+
+  /**
+   * `campaign lock`, as one transaction: recompute the set inside `BEGIN IMMEDIATE`, refuse any
+   * other than the one confirmed, record the human's `lock-campaign-gates` decision and stamp
+   * `locked_by`. Same shape as `lockGates`.
+   */
+  lockCampaignGates(campaignId: string, input: LockGatesInput & { ratchet: boolean }): { decision: Decision; gateSetDigest: string } {
+    const m = this.requireMission(campaignId);
+    if (typeof input.expectedGateSetDigest !== 'string' || !input.expectedGateSetDigest) {
+      throw new Error(`campaign ${m.id}: a gate lock names the gate-set digest the human confirmed`);
+    }
+    return this.immediate(() => {
+      const set = this.campaignGateSet(m.id, input.experimentIds, input.ratchet);
+      if (set.gateSetDigest !== input.expectedGateSetDigest) {
+        throw new GateSetMoved(
+          `campaign ${m.id}: the gate set is ${set.gateSetDigest}, not the one confirmed (${input.expectedGateSetDigest}); ` +
+            'a gate changed after it was shown — review it and lock again',
+        );
+      }
+      const ids = set.experiments.map((x) => x.id);
+      const vacuous = [...new Set(input.vacuousOverrides ?? [])].sort();
+      for (const id of vacuous) if (!ids.includes(id)) throw new Error(`vacuous override ${id} is not one of the gates being locked`);
+      const scope: CampaignLockScope = {
+        operation: 'lock-campaign-gates', experimentIds: ids,
+        harnessDigests: Object.fromEntries(set.experiments.map((x) => [x.id, x.harnessDigest])),
+        vacuousOverrides: vacuous, bindings: set.bindings, roles: set.roles, ratchet: input.ratchet, gateSetDigest: set.gateSetDigest,
+      };
+      const decision = this.recordDecision({
+        missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: input.actor, kind: 'approve',
+        rationale: input.rationale, scope: scope as unknown as Record<string, unknown>, artifactIds: input.artifactIds ?? [],
+      });
+      const lock = this.db.prepare('UPDATE experiments SET locked_by=?, updated_at=? WHERE id=?');
+      for (const id of ids) lock.run(decision.id, this.now(), id);
+      return { decision, gateSetDigest: set.gateSetDigest };
+    });
+  }
+
+  /** The campaign's latest approving `lock-campaign-gates` decision, or null. */
+  campaignLockDecision(campaignId: string): Decision | null {
+    return this.decisions(campaignId).filter((d) => d.kind === 'approve' && d.scope.operation === 'lock-campaign-gates').at(-1) ?? null;
+  }
+
+  recordWave(w: Omit<CampaignWave, 'closedAt' | 'reviewMissionId'>): CampaignWave {
+    const m = this.requireMission(w.campaignId);
+    if (m.kind !== 'campaign') throw new Error(`mission ${m.id} is ${m.kind}, not a campaign`);
+    const want = (this.waves(m.id).at(-1)?.seq ?? 0) + 1;
+    if (w.seq !== want) throw new Error(`campaign ${m.id}'s next wave is ${want}, not ${w.seq}`);
+    const at = this.now();
+    this.db
+      .prepare('INSERT INTO campaign_waves (campaign_id, seq, from_commit, to_commit, ticket_ids, review_mission_id, closed_at) VALUES (?,?,?,?,?,NULL,?)')
+      .run(m.id, w.seq, w.fromCommit, w.toCommit, JSON.stringify(w.ticketIds), at);
+    return { ...w, reviewMissionId: null, closedAt: at };
+  }
+
+  /** Name the wave's review mission, once. */
+  setWaveReview(campaignId: string, seq: number, reviewMissionId: string): CampaignWave {
+    const r = this.db
+      .prepare('UPDATE campaign_waves SET review_mission_id=? WHERE campaign_id=? AND seq=? AND review_mission_id IS NULL')
+      .run(reviewMissionId, campaignId, seq);
+    if (!r.changes) throw new Error(`wave ${seq} of campaign ${campaignId} is unknown or already has a review mission`);
+    return this.waves(campaignId).find((w) => w.seq === seq)!;
+  }
+
+  waves(campaignId: string): CampaignWave[] {
+    return (this.db.prepare('SELECT * FROM campaign_waves WHERE campaign_id=? ORDER BY seq').all(campaignId) as Array<Record<string, unknown>>)
+      .map((r) => ({
+        campaignId: r.campaign_id as string, seq: r.seq as number, fromCommit: r.from_commit as string, toCommit: r.to_commit as string,
+        ticketIds: parseJson<string[]>(r.ticket_ids as string, []), reviewMissionId: (r.review_mission_id as string | null) ?? null,
+        closedAt: r.closed_at as number,
+      }));
+  }
+
+  /** Idempotent on `id`: the same finding ingested twice is one row. */
+  recordFinding(f: Omit<Finding, 'createdAt' | 'corroboratedBy' | 'fixTicketId'>): Finding {
+    if (!isEntityId('finding', f.id)) throw new Error(`${f.id} is not a finding id`);
+    if (!(FINDING_SEVERITIES as readonly string[]).includes(f.severity)) throw new Error(`severity ${String(f.severity)} is not one of ${FINDING_SEVERITIES.join(', ')}`);
+    const a = this.requireAttempt(f.attemptId);
+    if (a.missionId !== f.reviewMissionId) throw new Error(`attempt ${a.id} is not an attempt of review mission ${f.reviewMissionId}`);
+    const have = this.finding(f.id);
+    if (have) return have;
+    const at = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO findings (id, project_id, campaign_id, wave_seq, review_mission_id, attempt_id, path, severity, title, statement,
+           finding_artifact, corroborated_by, fix_ticket_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]',NULL,?)`,
+      )
+      .run(f.id, f.projectId, f.campaignId, f.waveSeq, f.reviewMissionId, f.attemptId, f.path, f.severity, f.title, f.statement,
+        JSON.stringify(f.findingArtifact), at);
+    this.recordArtifact(f.findingArtifact);
+    return this.finding(f.id)!;
+  }
+
+  finding(id: string): Finding | null {
+    const r = this.db.prepare('SELECT * FROM findings WHERE id=?').get(id);
+    return r ? rowToFinding(r) : null;
+  }
+
+  findings(campaignId: string, opts: { waveSeq?: number; severity?: FindingSeverity } = {}): Finding[] {
+    return this.db
+      .prepare('SELECT * FROM findings WHERE campaign_id=? ORDER BY wave_seq, created_at, id')
+      .all(campaignId)
+      .map(rowToFinding)
+      .filter((f) => (opts.waveSeq === undefined || f.waveSeq === opts.waveSeq) && (opts.severity === undefined || f.severity === opts.severity));
+  }
+
+  /** Corroboration and the fix ticket a finding became; neither touches a verdict (ADR-19). */
+  updateFinding(id: string, patch: { corroboratedBy?: string[]; fixTicketId?: string }): Finding {
+    const f = this.finding(id);
+    if (!f) throw new Error(`unknown finding ${id}`);
+    if (patch.fixTicketId !== undefined && f.fixTicketId !== undefined && f.fixTicketId !== patch.fixTicketId) {
+      throw new Error(`finding ${id} already became ${f.fixTicketId}`);
+    }
+    this.db.prepare('UPDATE findings SET corroborated_by=?, fix_ticket_id=? WHERE id=?')
+      .run(JSON.stringify(patch.corroboratedBy ?? f.corroboratedBy), patch.fixTicketId ?? f.fixTicketId ?? null, id);
+    return this.finding(id)!;
+  }
+
+  /**
+   * The rows half of `integrationRefusals`: integrated rows without their decision or
+   * application, decisions or applications that do not name them back, and more than one
+   * landing per candidate. One line per breach; empty means it holds.
+   */
+  integrationRowRefusals(campaignId: string): string[] {
+    const out: string[] = [];
+    for (const i of this.integrations(campaignId)) {
+      if (i.state !== 'integrated') {
+        if (i.decisionId || i.applicationId) out.push(`${i.id}: ${i.state}, yet names a decision or an application`);
+        continue;
+      }
+      const d = i.decisionId ? this.decision(i.decisionId) : null;
+      if (!d || d.scope.operation !== 'integrate-candidate' || d.scope.integrationId !== i.id || d.actor !== campaignActorOf(campaignId)) {
+        out.push(`${i.id}: decision ${String(i.decisionId)} is not this campaign's integrate-candidate decision for it`);
+      }
+      const p = this.application(i.candidateId);
+      if (!p || p.id !== i.applicationId || p.commit !== i.integratedCommit || p.baseCommit !== i.onto || p.decisionId !== i.decisionId) {
+        out.push(`${i.id}: application ${String(i.applicationId)} does not record commit ${String(i.integratedCommit)} onto ${i.onto}`);
+      }
+    }
+    return out;
   }
 
   application(candidateId: string): Application | null {
@@ -1975,6 +2288,7 @@ function rowToGateEvaluation(row: unknown): GateEvaluation {
     harnessDigest: r.harness_digest as string,
     executions: parseJson<ArtifactRef[]>(r.executions as string, []),
     conclusion: r.conclusion as ExperimentConclusion,
+    ...(r.integration_id ? { integrationId: r.integration_id as string } : {}),
     createdAt: r.created_at as number,
   };
 }
@@ -2008,5 +2322,47 @@ function rowToIngestSource(r: Record<string, unknown>): IngestSource {
     missionId: r.mission_id as string,
     attemptId: r.attempt_id as string,
     ingestedAt: r.ingested_at as number,
+  };
+}
+
+/** `pending → evaluating → integrated`, with the exits each step can take. */
+const INTEGRATION_TRANSITIONS: Record<IntegrationState, readonly IntegrationState[]> = {
+  pending: ['evaluating', 'conflict', 'rejected', 'abandoned'],
+  evaluating: ['integrated', 'rejected', 'abandoned'],
+  integrated: [],
+  conflict: [],
+  rejected: [],
+  abandoned: [],
+};
+
+/** The ticket a campaign experiment is bound to, from its subject (`ticket:<id>`), or null. */
+export function campaignBindingOf(x: Pick<Experiment, 'subject'>): string | null {
+  return x.subject.startsWith('ticket:') ? x.subject.slice('ticket:'.length) : null;
+}
+
+function rowToIntegration(row: unknown): Integration {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string, campaignId: r.campaign_id as string, projectId: r.project_id as string, missionId: r.mission_id as string,
+    candidateId: r.candidate_id as string, ref: r.ref as string, onto: r.onto as string, candidateBase: r.candidate_base as string,
+    method: (r.method as IntegrationMethod | null) ?? null, integratedCommit: (r.integrated_commit as string | null) ?? null,
+    integratedTree: (r.integrated_tree as string | null) ?? null, integratedDiffDigest: (r.integrated_diff_digest as string | null) ?? null,
+    state: r.state as IntegrationState, conflictPaths: parseJson<string[]>(r.conflict_paths as string, []),
+    acceptanceVacuous: r.acceptance_vacuous === null || r.acceptance_vacuous === undefined ? null : r.acceptance_vacuous === 1,
+    decisionId: (r.decision_id as string | null) ?? null, applicationId: (r.application_id as string | null) ?? null,
+    createdAt: r.created_at as number, updatedAt: r.updated_at as number,
+  };
+}
+
+function rowToFinding(row: unknown): Finding {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string, projectId: r.project_id as string, campaignId: r.campaign_id as string, waveSeq: r.wave_seq as number,
+    reviewMissionId: r.review_mission_id as string, attemptId: r.attempt_id as string, path: r.path as string,
+    severity: r.severity as FindingSeverity, title: r.title as string, statement: r.statement as string,
+    findingArtifact: parseJson(r.finding_artifact as string, null as unknown as ArtifactRef),
+    corroboratedBy: parseJson<string[]>(r.corroborated_by as string, []),
+    ...(r.fix_ticket_id ? { fixTicketId: r.fix_ticket_id as string } : {}),
+    createdAt: r.created_at as number,
   };
 }
