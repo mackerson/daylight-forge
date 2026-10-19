@@ -104,7 +104,7 @@ never have it):
 - `ecosystem` is `cargo` or `npm`. `name` must match the ecosystem's grammar (a crate name of
   at most 64 characters; a lower-case, optionally scoped npm name), at most 128 characters.
   `version` is an optional registry requirement (`1`, `^0.4`, `>=0.4, <0.6`): no URL, path or
-  git source. `reason` is at most 1 KB, without control characters, and is redacted.
+  git source, no whitespace except after a `,`, and no part starting `-`. `reason` is at most 1 KB, without control characters, and is redacted.
 - Each accepted call is one line in `<out>/dependency-requests/<attempt>.jsonl`, at most 20
   per attempt. It is data: nothing installs, fetches or runs it. The host re-checks every line
   when it reads it, and takes the mission and attempt from which outbox it is, never from the

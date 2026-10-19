@@ -52,8 +52,12 @@ export const isRequestRefusal = (v: DependencyRequest | DependencyRequestRefusal
 const CRATE_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
 /** An npm name: lower case, optionally `@scope/`, never starting with `.` or `_`. */
 const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
-/** Version requirement characters only: no `:` or `/`, so no URL, path or git source. */
-const VERSION = /^[0-9A-Za-z.^~=<>*+, |-]+$/;
+/**
+ * A version requirement: comparators of requirement characters only (no `:` or `/`, so no URL,
+ * path or git source), joined by `,` with optional spaces after it. No other whitespace and no
+ * comparator starting `-`, so nothing in it reads as a flag (`1 --registry=evil`).
+ */
+const VERSION = /^[0-9A-Za-z.^~=<>*+|][0-9A-Za-z.^~=<>*+|-]*(?:, ?[0-9A-Za-z.^~=<>*+|][0-9A-Za-z.^~=<>*+|-]*)*$/;
 
 const refuse = (field: DependencyRequestField, refused: string): DependencyRequestRefusal => ({ field, refused });
 
@@ -76,7 +80,7 @@ export function validateDependencyRequest(raw: unknown): DependencyRequest | Dep
     if (typeof r.version !== 'string' || !r.version.trim()) return refuse('version', 'empty');
     version = r.version.trim();
     if (version.length > MAX_DEPENDENCY_VERSION_CHARS) return refuse('version', `over ${MAX_DEPENDENCY_VERSION_CHARS} characters`);
-    if (!VERSION.test(version) || version.startsWith('-')) return refuse('version', 'not a version requirement');
+    if (!VERSION.test(version)) return refuse('version', 'not a version requirement');
   }
   const reasonWhy = textRefusal(r.reason, MAX_DEPENDENCY_REASON_BYTES, true);
   if (reasonWhy) return refuse('reason', reasonWhy);

@@ -258,8 +258,8 @@ section('request_dependency: the author asks, a person decides');
     refusedField({ ...good, ecosystem: 'npm', name: '@scope/pkg' }) === null && refusedField({ ...good, ecosystem: 'npm', name: 'Pkg' }) === 'name'
     && refusedField({ ...good, ecosystem: 'npm', name: '.hidden' }) === 'name');
   check('a version that is a URL, path or git source is refused',
-    ['git+https://x/y', 'file:../x', 'https://evil', '--registry=x', '1; rm'].every((v) => refusedField({ ...good, version: v }) === 'version'));
-  check('version requirements are admitted', ['1', '^0.4', '>=0.4, <0.6', '~1.2.3', '*', '1.0.0-beta.1'].every((v) => refusedField({ ...good, version: v }) === null));
+    ['git+https://x/y', 'file:../x', 'https://evil', '--registry=x', '1; rm', '1 --registry=evil', '1,-x', '1, --x', '1\t2', '>=1 <2', '1  ,2'].every((v) => refusedField({ ...good, version: v }) === 'version'));
+  check('version requirements are admitted', ['1', '^0.4', '>=0.4, <0.6', '>=0.4,<0.6', '~1.2.3', '*', '1.0.0-beta.1', '1||2'].every((v) => refusedField({ ...good, version: v }) === null));
   check(`a reason over ${MAX_DEPENDENCY_REASON_BYTES} bytes is refused`, refusedField({ ...good, reason: 'r'.repeat(MAX_DEPENDENCY_REASON_BYTES + 1) }) === 'reason');
   check('a reason with a bidi control is refused', refusedField({ ...good, reason: 'ok‮evil' }) === 'reason');
   check('an unknown key (a forged provenance) is refused', refusedField({ ...good, missionId: 'm_x' }) === 'payload');
