@@ -213,7 +213,11 @@ const graph = extract({ root: FIXTURE });
   const G = 'crates/geometry/src';
   const A = 'crates/app/src';
   const files = graph.nodes.filter((n) => n.kind === 'file').map((n) => n.id).sort();
-  check('every .rs file is in the map', files.length === 7, JSON.stringify(files));
+  check('every .rs file outside tests/ is in the map', files.length === 10, JSON.stringify(files));
+  check('integration tests are classed as tests, as TypeScript test files are',
+    !files.some((f) => f.includes('/tests/')) &&
+      graph.testImports.some((t) => t.from === 'crates/geometry/tests/area.rs' && t.to === 'crates/geometry/src/shapes/circle.rs'),
+    JSON.stringify(graph.testImports));
   check('and parsed cleanly', graph.diagnostics.length === 0, JSON.stringify(graph.diagnostics));
   check('nothing first-party is left unresolved', graph.stats.unresolvedImports === 0, JSON.stringify(graph.stats));
 
@@ -282,6 +286,29 @@ console.log('\ndetectors run over Rust unchanged');
   check('D3 groups them by signature',
     dup.d3.some((g) => g.members.some((m) => m.endsWith('#filter_values')) && g.members.some((m) => m.endsWith('#keep_above'))));
   fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\ntests, examples, benches and cfg(test) modules are not dead');
+{
+  const live = (g: ReturnType<typeof extract>) => {
+    const report = detectStructure(g);
+    const dead = new Set(report.dead.filter((d) => d.kind === 'file').map((d) => d.id));
+    return { report, dead };
+  };
+  const { report, dead } = live(graph);
+  for (const f of ['crates/geometry/examples/demo.rs', 'crates/geometry/benches/scale.rs']) {
+    check(`${f} is a crate root`, report.entrypoints.includes(f), JSON.stringify(report.entrypoints));
+  }
+  check('a #[cfg(test)] module is reached through its mod declaration',
+    !dead.has('crates/geometry/src/testing.rs') && graph.nodes.some((n) => n.id === 'crates/geometry/src/testing.rs'));
+
+  const withTests = live(extract({ root: FIXTURE, includeTests: true }));
+  check('with --include-tests, an integration test is a crate root',
+    withTests.report.entrypoints.includes('crates/geometry/tests/area.rs'), JSON.stringify(withTests.report.entrypoints));
+  check('and neither it nor its shared module is dead',
+    !withTests.dead.has('crates/geometry/tests/area.rs') && !withTests.dead.has('crates/geometry/tests/common/mod.rs'),
+    JSON.stringify([...withTests.dead]));
+  check('no fixture file is dead with tests included', withTests.dead.size === 0, JSON.stringify([...withTests.dead]));
 }
 
 console.log('\nthe check gate over Rust');

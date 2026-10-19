@@ -111,8 +111,13 @@ export function findEntrypoints(graph: Graph, files: Set<string>): string[] {
       found.add(f);
     }
     if (/\.config\.[cm]?[jt]s$/.test(base)) found.add(f);
-    // Cargo fixes a crate's roots by layout rather than declaring them, at any depth.
+    // Cargo fixes a crate's roots by layout rather than declaring them, at any depth — the
+    // same set `crateRoot()` in extract/rust-resolve.ts treats as roots.
     if (/(^|\/)(src\/(main|lib)|src\/bin\/[^/]+|build)\.rs$/.test(f)) found.add(f);
+    // Integration tests, examples and benches are roots only beside a Cargo.toml; a `tests/`
+    // directory elsewhere is an ordinary module directory.
+    const target = /^(?:(.*)\/)?(tests|examples|benches)\/[^/]+(\/main)?\.rs$/.exec(f);
+    if (target && fs.existsSync(path.join(graph.root, target[1] ?? '', 'Cargo.toml'))) found.add(f);
   }
 
   return [...found].sort();

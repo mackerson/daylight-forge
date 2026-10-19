@@ -3,6 +3,9 @@
 pub mod shapes;
 pub mod units;
 
+#[cfg(test)]
+mod testing;
+
 pub use self::shapes::Shape;
 
 #[macro_export]

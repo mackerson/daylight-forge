@@ -35,7 +35,13 @@ export interface ExtractOptions {
   includeTests?: boolean;
 }
 
-const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)\//;
+/**
+ * Rust integration tests live in a crate's `tests/`, never under `src/`: a `tests/` directory
+ * under `src/` is a module tree its parent declares, and dropping it would leave that `mod`
+ * unresolved. `#[cfg(test)]` modules are only knowable after parsing, so they stay in the map,
+ * reached through their `mod` declaration.
+ */
+const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)\/|^(?!(.*\/)?src\/)(.*\/)?tests\/.+\.rs$/;
 
 /** Bundler-handled non-code imports. Not edges, and not resolution failures either. */
 const ASSET_RE = /\.(css|scss|sass|less|styl|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|mp[34]|webm|wasm|txt|md|ya?ml|graphql|gql)(\?.*)?$/i;
