@@ -66,6 +66,8 @@ usage:
   node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
   node engine/cli.ts deps       snapshot <repo> [--out <dir>]   # cargo fetch --locked on the host, with network
                                 status <repo> [--out <dir>]     # recorded digest, Cargo.lock match, cache sizes
+                                requests [--mission <m>]        # dependencies authors asked for
+                                resolve <request-id> [--declined] --rationale '<why>' --confirm <c>
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>

@@ -1,10 +1,12 @@
 import path from 'node:path';
 import { defaultOut } from '../paths.ts';
 import { CargoRefused, createSnapshot, snapshotStatus } from './cargo.ts';
+import { runDepsRequestsCommand } from './commands-deps-requests.ts';
 
 /**
  * `daylight deps snapshot|status`: the crate snapshot a Rust repository's gates and author
- * builds run offline against (forge/cargo.ts, docs/daylight/CARGO.md).
+ * builds run offline against (forge/cargo.ts, docs/daylight/CARGO.md). `requests|resolve` go to
+ * commands-deps-requests.ts.
  *
  * Same contract as the other Forge commands: `--out` (default: the repository's data dir),
  * `--format json` for one JSON document on stdout, exit 0 when the command ran (a lock that no
@@ -41,12 +43,12 @@ const mib = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 /** `argv` is everything after `deps`: the subcommand, then its arguments. */
 export async function runDepsCommand(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const sub = argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
-  // TODO(merge with WS-R4): if (sub === 'requests' || sub === 'resolve') return runDepsRequestsCommand(argv, env); from ./commands-deps-requests.ts
+  if (sub === 'requests' || sub === 'resolve') return runDepsRequestsCommand(argv, env);
   const p = parse(argv.slice(sub ? 1 : 0));
   const asJson = p.flags.get('format') === 'json';
   try {
     const [repoArg] = p.positionals;
-    if (sub !== 'snapshot' && sub !== 'status') throw new Usage('deps needs one of: snapshot, status');
+    if (sub !== 'snapshot' && sub !== 'status') throw new Usage('deps needs one of: snapshot, status, requests, resolve');
     if (!repoArg) throw new Usage(`deps ${sub} needs a <repo>`);
     const repo = path.resolve(repoArg);
     const explicit = p.flags.get('out');

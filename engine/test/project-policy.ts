@@ -393,6 +393,14 @@ section('request_dependency: the author asks, a person decides');
   after.close();
   check('the two resolves are recorded as approve and reject, the same operation', kinds === 'approve,reject', kinds);
   check('an unknown subcommand is a usage error', cli(['install', 'serde', '--out', out], clean).status === 2);
+  const daylight = (args: string[]) => spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'cli.ts'), 'deps', ...args],
+    { encoding: 'utf8', env: clean });
+  const routed = daylight(['requests', '--mission', mission.id, '--format', 'json', '--out', out]);
+  const unknown = daylight(['install', 'serde', '--out', out]);
+  check('daylight deps routes requests|resolve: --help exits 0 like snapshot|status, an unknown verb is a usage error',
+    daylight(['requests', '--help']).status === 0 && daylight(['resolve', '--help']).status === 0 && daylight(['snapshot', '--help']).status === 0
+    && routed.status === 0 && (JSON.parse(routed.stdout || '{}') as { requests?: unknown[] }).requests?.length === 2
+    && unknown.status === 2 && /snapshot, status, requests, resolve/.test(unknown.stderr), routed.stderr + unknown.stderr);
 }
 
 done();
