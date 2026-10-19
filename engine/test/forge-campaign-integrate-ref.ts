@@ -14,15 +14,15 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { applicationRefusals } from '../forge/apply.ts';
 import {
-  buildIntegrated, ensureIntegrationRef, InjectedCrash, integratedDigestOf, integrationRefFor, integrationRefusals, integrationTip,
+  adoptIntegrationTip, adoptScopeOf, buildIntegrated, ensureIntegrationRef, InjectedCrash, integratedDigestOf, integrationRefFor, integrationRefusals, integrationTip,
   landCandidate, prepareIntegration, reconcileIntegrations, refTarget, type IntegrationStep,
 } from '../forge/integrate.ts';
-import { applyRefFor } from '../forge/confirm.ts';
+import { applyRefFor, confirmDigest } from '../forge/confirm.ts';
 import { digestOf } from '../mission/artifacts.ts';
 import type { Candidate, Mission } from '../mission/types.ts';
 import { harness } from './harness.ts';
 import {
-  commitOn, diffOf, fakeDeps, filesOf, git, makeCampaign, makeCandidate, makeRepo, makeTicketMission, openCtx, repoState, tempDir,
+  ACTOR, commitOn, diffOf, fakeDeps, filesOf, git, makeCampaign, makeCandidate, makeRepo, makeTicketMission, openCtx, repoState, tempDir,
 } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
@@ -217,6 +217,38 @@ section('resume: the rows the table names that no crash above leaves');
   git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), foreign]);
   const r3 = reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T1', deps });
   check('a ref no row explains is reported moved, for the director to halt integration-moved', r3.moved?.actual === foreign && r3.moved.expected === i.integratedCommit);
+
+  section('adopt-tip: a person explains the foreign commits and answers the halt');
+  const halt = w.ctx.store.recordDecision({
+    missionId: w.campaign.id, projectId: w.campaign.projectId, revision: w.base, actor: ACTOR, kind: 'defer', rationale: 'moved',
+    scope: { operation: 'halt-campaign', reason: 'integration-moved' }, artifactIds: [],
+  });
+  const scope = adoptScopeOf(w.ictx, w.campaign.id, halt.id);
+  const code = confirmDigest(w.ictx, 'adopt-integration-tip', w.campaign.id, { adopt: { ref: scope.ref, from: scope.from, to: scope.to, haltDecisionId: halt.id } }).digest8;
+  const human = { ...process.env, CLAUDECODE: '', DAYLIGHT_SESSION: '' };
+  const tryAdopt = (o: Partial<Parameters<typeof adoptIntegrationTip>[1]>) => {
+    try {
+      adoptIntegrationTip(w.ictx, { campaignId: w.campaign.id, haltDecisionId: halt.id, actor: ACTOR, rationale: 'pushed by hand, reviewed', confirm: code, env: human, ...o });
+      return null;
+    } catch (err) {
+      return (err as Error).message;
+    }
+  };
+  check('refused under CLAUDECODE', /CLAUDECODE/.test(tryAdopt({ env: { ...human, CLAUDECODE: '1' } }) ?? ''));
+  check('refused with the wrong confirm code', /--confirm/.test(tryAdopt({ confirm: '00000000' }) ?? ''));
+  check('the scope names the move: from the last landing to the foreign commit', scope.from === i.integratedCommit && scope.to === foreign);
+  const rewritten = commitOn(w.repo, w.base, { README: 'history rewritten\n' });
+  git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), rewritten]);
+  const s2 = adoptScopeOf(w.ictx, w.campaign.id, halt.id);
+  const c2 = confirmDigest(w.ictx, 'adopt-integration-tip', w.campaign.id, { adopt: { ref: s2.ref, from: s2.from, to: s2.to, haltDecisionId: halt.id } }).digest8;
+  check('a ref rewritten under a landing is never adopted', /would be lost/.test(tryAdopt({ confirm: c2 }) ?? ''));
+  git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), foreign]);
+  check('accepted from a person\'s shell', tryAdopt({}) === null);
+  check('the halt is answered and the ref is explained again', reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T1', deps }).moved === null
+    && integrationRefusals(w.ictx, w.campaign.id).length === 0, integrationRefusals(w.ictx, w.campaign.id).join('; '));
+  const s3 = adoptScopeOf(w.ictx, w.campaign.id, halt.id);
+  const c3 = confirmDigest(w.ictx, 'adopt-integration-tip', w.campaign.id, { adopt: { ref: s3.ref, from: s3.from, to: s3.to, haltDecisionId: halt.id } }).digest8;
+  check('a second adoption of the same halt is refused', /not an unanswered halt/.test(tryAdopt({ confirm: c3 }) ?? ''));
   w.ctx.close();
 }
 

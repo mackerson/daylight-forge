@@ -51,6 +51,8 @@ export interface ConfirmOptions {
   experimentIds?: readonly string[];
   /** `lock-campaign-gates`: whether the lock ratchets (P2-R17). Required. */
   ratchet?: boolean;
+  /** `adopt-integration-tip`: the move being adopted and the halt it answers. Required. */
+  adopt?: { ref: string; from: string; to: string; haltDecisionId: string };
   /** `authorize-mission`: what will be granted. Required. */
   permissions?: { write: boolean; execute: boolean };
   /** `authorize-mission`: the budget that will be set, or null to leave it. Required. */
@@ -107,6 +109,15 @@ export function confirmDigest(
         ...experiments.filter((x) => x.role !== 'holdout')
           .map((x) => `${x.role} ${x.id} ${bindings[x.id] ? `ticket ${bindings[x.id]}` : 'every ticket'} harness ${x.harnessDigest}`),
         ...(holdouts ? [`${holdouts} holdout(s), counted, not named`] : []),
+      ]);
+    }
+    case 'adopt-integration-tip': {
+      const a = opts.adopt;
+      if (!a) throw new Error('adopt-integration-tip confirms a move of the integration ref; pass the ref, from, to and the halt');
+      return out(digestOf(canonicalJson({ operation, ...a, campaignId: subjectId })), [
+        `adopt ${a.ref} at ${a.to} for campaign ${subjectId}`,
+        `the rows explain it up to ${a.from}; everything after is recorded as adopted by you, not landed by the director`,
+        `answers halt ${a.haltDecisionId}`,
       ]);
     }
     case 'approve-work-item':

@@ -4,13 +4,14 @@ import type { DaylightContext } from '../mission/context.ts';
 import type { CreateDecisionInput, MissionStore } from '../mission/store.ts';
 import { campaignActorOf, isHumanActor } from '../mission/types.ts';
 import type {
-  Application, CampaignEnvelope, Candidate, Decision, EnvelopeRequest, Integration, IntegrateCandidateScope, IntegrationMethod,
+  AdoptTipScope, Application, CampaignEnvelope, Candidate, Decision, EnvelopeRequest, Integration, IntegrateCandidateScope, IntegrationMethod,
   Mission,
 } from '../mission/types.ts';
 import { HARDENED_GIT_CONFIG, hardenedGitEnv } from '../experiment/runner.ts';
 import { gitIn, parseRaw, rediff, scratchFor, type Scratch } from './apply.ts';
 import { envelopeRefusal } from './campaign.ts';
-import { applyRefFor } from './confirm.ts';
+import { applyRefFor, confirmDigest } from './confirm.ts';
+import { assertHumanDecision } from './policy.ts';
 import { commitMessage } from './trailers.ts';
 import { EMPTY_TREE } from './workspace.ts';
 
@@ -585,4 +586,53 @@ export function integrationRefusals(ctx: Pick<IntegrateContext, 'store' | 'repoR
     s.dispose();
   }
   return out;
+}
+
+// ---- adopting a moved tip ----------------------------------------------------------------------
+
+export interface AdoptTipInput {
+  campaignId: string;
+  /** The `integration-moved` halt (or any unanswered halt) this answers. */
+  haltDecisionId: string;
+  actor: string;
+  rationale: string;
+  confirm: string | undefined;
+  env?: Readonly<Record<string, string | undefined>>;
+}
+
+/** What `campaign adopt-tip` would record now: the ref, where the rows put it, where it is. */
+export function adoptScopeOf(ctx: Pick<IntegrateContext, 'store' | 'repoRoot'>, campaignId: string, haltDecisionId: string): AdoptTipScope {
+  const ref = integrationRefFor(campaignId);
+  const to = refTarget(ctx.repoRoot, ref);
+  if (!to) throw new IntegrationRefused(`${ref} does not exist; there is nothing to adopt`);
+  return { operation: 'adopt-integration-tip', ref, from: expectedTip(ctx.store, campaignId), to, haltDecisionId };
+}
+
+/**
+ * `campaign adopt-tip` (§4.4): a person accepts commits that reached the integration ref outside
+ * the director, so the rows explain them again and the halt they caused is answered. A guarded
+ * human act. Refused unless the move only added commits on top of what the rows explain: a ref
+ * rewritten under a landing is never adopted, because that would drop a landing silently.
+ */
+export function adoptIntegrationTip(ctx: IntegrateContext & { env?: Readonly<Record<string, string | undefined>> }, input: AdoptTipInput): Decision {
+  const campaign = ctx.store.mission(input.campaignId);
+  if (!campaign || campaign.kind !== 'campaign') throw new IntegrationRefused(`${input.campaignId} is not a campaign`);
+  const scope = adoptScopeOf(ctx, campaign.id, input.haltDecisionId);
+  const digest = confirmDigest(ctx, 'adopt-integration-tip', campaign.id, { adopt: { ref: scope.ref, from: scope.from, to: scope.to, haltDecisionId: scope.haltDecisionId } });
+  assertHumanDecision(input.env ?? ctx.env ?? process.env, input.actor, input.confirm, digest.digest);
+  if (!input.rationale?.trim()) throw new IntegrationRefused('an adoption needs a rationale');
+  const ds = ctx.store.decisions(campaign.id);
+  const halt = ds.find((d) => d.id === input.haltDecisionId && d.scope.operation === 'halt-campaign');
+  const answered = ds.some((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip') && d.scope.haltDecisionId === input.haltDecisionId);
+  if (!halt || answered) throw new IntegrationRefused(`decision ${input.haltDecisionId} is not an unanswered halt of campaign ${campaign.id}`);
+  if (scope.to === scope.from) throw new IntegrationRefused(`${scope.ref} is where the rows put it; there is nothing to adopt`);
+  if (!succeeds(() => gitIn({ repo: ctx.repoRoot }, ['merge-base', '--is-ancestor', scope.from, scope.to]))) {
+    throw new IntegrationRefused(`${scope.ref} at ${scope.to} does not descend from ${scope.from}, the last commit the rows explain; a landing would be lost, so it is not adopted`);
+  }
+  const d = ctx.store.recordDecision({
+    missionId: campaign.id, projectId: campaign.projectId, revision: scope.to, actor: input.actor, kind: 'approve', rationale: input.rationale.trim(),
+    scope: scope as unknown as Record<string, unknown>, artifactIds: [],
+  });
+  emit(ctx, campaign, 'lifecycle', 'campaign.resumed', { decisionId: d.id, integrationRef: scope.ref, tip: scope.to, adoptedFrom: scope.from, haltDecisionId: halt.id });
+  return d;
 }
