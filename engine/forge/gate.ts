@@ -497,7 +497,10 @@ export function authorBrief(ctx: GateContext, missionId: string): { missionId: s
     .filter((x): x is Experiment => !!x && x.role === 'gate')
     .map((x) => ({
       experimentId: x.id, testPath: x.testArtifact.path ?? '', testSource: ctx.artifacts.text(x.testArtifact),
-      command: x.command, prediction: x.prediction,
+      // A cargo gate's target name is the gate's own and exists in no author tree: it is shown
+      // as what it stands for, never as a target the author could create.
+      command: x.harness === 'cargo' ? x.command.map((a) => (a === cargoTargetOf(x.id) ? '<the gate\'s registered test>' : a)) : x.command,
+      prediction: x.prediction,
     }));
   return { missionId: m.id, gateSetDigest: lockRow.scope.gateSetDigest, gates };
 }

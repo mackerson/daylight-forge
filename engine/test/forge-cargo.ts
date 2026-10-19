@@ -29,7 +29,7 @@ import {
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
 import {
-  baseline, CARGO_GATE_LIMITS, CARGO_GATE_TIMEOUT_MS, cargoTargetOf, DEFAULT_CARGO_GATE_COMMAND, evaluate, GateRefused, lock, registerGate, type GateContext,
+  authorBrief, baseline, CARGO_GATE_LIMITS, CARGO_GATE_TIMEOUT_MS, cargoTargetOf, DEFAULT_CARGO_GATE_COMMAND, evaluate, GateRefused, lock, registerGate, type GateContext,
 } from '../forge/gate.ts';
 import { checkPolicy } from '../forge/policy.ts';
 import { confirmDigest } from '../forge/confirm.ts';
@@ -512,6 +512,10 @@ section('evaluate: supported on a diff that adds padded()');
 {
   const code = confirmDigest(ctx, 'lock-gates', mission.id, { experimentIds: [gate.id, netGate.id] }).digest8;
   lock(ctx, { missionId: mission.id, actor: HUMAN, rationale: 'padded, and no network', confirm: code });
+  const brief = authorBrief(ctx, mission.id);
+  check('the author brief names no daylight_<x_id> target; it says the gate\'s registered test',
+    brief.gates.length === 1 && !JSON.stringify(brief).includes(cargoTargetOf(gate.id)) && brief.gates[0].command.includes('<the gate\'s registered test>'),
+    JSON.stringify(brief.gates[0]?.command));
   const ws = createWorkspace(repo, commit);
   let diff: Buffer;
   try {
