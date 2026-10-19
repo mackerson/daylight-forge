@@ -60,7 +60,7 @@ deterministically, let agents attach evidenced claims) and P1 turned it into a f
 specification, then a scoped author workspace, then an independent test, then an approved merge.
 Everything lives on your machine, in SQLite files outside the repository.
 
-![The tree view of a 10,000-file monorepo](docs/tree.png)
+![Daylight mapping its own repository, as a tree](docs/map-tree.png)
 
 ## What it does
 
@@ -84,7 +84,7 @@ Everything lives on your machine, in SQLite files outside the repository.
 - **Mission Control.** The Electron app: the 3D map, plus screens for work items, implement
   detail, gate sets, candidate review, the ledger and ingest, with a derived "needs you" strip.
 
-![The same monorepo as a dependency graph](docs/graph.png)
+![The same repository as a dependency graph](docs/map-graph.png)
 
 ## Get started
 
