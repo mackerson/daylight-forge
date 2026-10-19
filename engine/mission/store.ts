@@ -5,8 +5,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonicalJson, digestOf } from './artifacts.ts';
 import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
 import {
-  ATTEMPT_TRANSITIONS, canTransition, DECISION_OPERATIONS, ID_PREFIX, isEntityId, isHumanActor,
-  MISSION_TRANSITIONS,
+  ATTEMPT_TRANSITIONS, campaignActorOf, canTransition, DECISION_OPERATIONS, DERIVED_OPERATIONS, ID_PREFIX, isCampaignActor,
+  isEntityId, isHumanActor, MISSION_TRANSITIONS,
   NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, SANDBOX_REASONS, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
@@ -16,6 +16,9 @@ import type {
   NetworkMode, NewExperiment, ProjectIdentity, Task, TaskRole, TaskState, TokenUsage,
   UsageSource, Application, Candidate, CandidateFile, CandidateVerdict, GateEvaluation, GateTarget,
   IngestSource, PolicyViolation, SandboxReason, UsageRecordResult, UsageTurn, WorkItem, WorkItemStatus,
+  ApprovePlanScope, Assumption, AssumptionDecisionScope, AssumptionSource, AssumptionStatus, AuthorizeCampaignScope,
+  CampaignEnvelope, CampaignHaltReason, CampaignTicket, EnvelopeRequest, RetryTicketScope, TicketAcceptance, TicketBudget,
+  TicketOrigin,
 } from './types.ts';
 
 /**
@@ -74,16 +77,61 @@ const mergeRefs = (have: ArtifactRef[], add: ArtifactRef[]): ArtifactRef[] =>
 const maxOf = (a: number | null, b: number | null): number | null =>
   a === null ? b : b === null ? a : Math.max(a, b);
 
-/** An approving `authorize-mission` decision of this mission, by a human, that granted write. */
-export function grantsWrite(d: Decision | null | undefined, missionId: string): boolean {
+type GrantMission = Pick<Mission, 'id' | 'kind' | 'parentId'>;
+
+/**
+ * Why a `campaign:` actor's `authorize-mission` decision is not a grant on `mission`, or null.
+ * Pure, over the three rows: `parent` must be a human `authorize-campaign` on the mission's
+ * parent campaign that `d` names as `derivedFrom`, by that campaign's actor, inside its
+ * `notAfter`, for a ticket it names (or one a derived `admit-work-item` admitted, which
+ * `derivationRefusals` checks against rows), and asking for no more than it allows.
+ */
+export function campaignGrantRefusal(d: Decision, parent: Decision | null | undefined, mission: GrantMission): string | null {
+  const scope = d.scope as { operation?: unknown; derivedFrom?: unknown; ticketId?: unknown; admittedBy?: unknown;
+    maxUsd?: unknown; permissions?: { write?: unknown; execute?: unknown; deploy?: unknown } };
+  if (!isCampaignActor(d.actor)) return `decision ${d.id} is not a campaign actor's`;
+  if (!parent || scope.derivedFrom !== parent.id) return `derived decision ${d.id} names no recorded authorize-campaign decision`;
+  if (parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+    return `decision ${parent.id} is not a human authorize-campaign decision`;
+  }
+  if (d.actor !== campaignActorOf(parent.missionId)) return `decision ${d.id} is recorded as ${d.actor}, not campaign ${parent.missionId}'s actor`;
+  if (d.missionId !== mission.id) return `decision ${d.id} is not on mission ${mission.id}`;
+  if (mission.kind !== 'implement' || mission.parentId !== parent.missionId) {
+    return `mission ${mission.id} is not an implement mission of campaign ${parent.missionId}`;
+  }
+  const env = parent.scope as unknown as CampaignEnvelope;
+  if (!(d.at >= parent.at && d.at <= env.notAfter)) return `decision ${d.id} was recorded outside authorization ${parent.id}'s window`;
+  if (scope.permissions?.deploy === true) return `decision ${d.id} grants deploy, which no campaign grants`;
+  if (scope.permissions?.execute === true && env.execute !== true) return `decision ${d.id} grants execute, which authorization ${parent.id} does not`;
+  if (typeof scope.maxUsd !== 'number' || !(scope.maxUsd <= env.maxUsdPerMission)) {
+    return `decision ${d.id}'s budget is not within authorization ${parent.id}'s $${env.maxUsdPerMission} per mission`;
+  }
+  const inEnvelope = typeof scope.ticketId === 'string' && Array.isArray(env.ticketIds) && env.ticketIds.includes(scope.ticketId);
+  if (!inEnvelope && !isEntityId('decision', scope.admittedBy)) return `decision ${d.id} names a ticket outside authorization ${parent.id}`;
+  return null;
+}
+
+/**
+ * An approving `authorize-mission` decision of this mission that granted write: by a human, or
+ * by a campaign actor whose grant `campaignGrantRefusal` accepts against `parent` (its
+ * `derivedFrom`) and `mission`. Without both, a campaign actor's decision grants nothing.
+ */
+export function grantsWrite(
+  d: Decision | null | undefined, missionId: string, parent: Decision | null = null, mission?: GrantMission,
+): boolean {
   const scope = d?.scope as { operation?: unknown; permissions?: { write?: unknown } } | undefined;
-  return !!d && d.missionId === missionId && d.kind === 'approve' && isHumanActor(d.actor)
-    && scope?.operation === 'authorize-mission' && scope.permissions?.write === true;
+  if (!d || d.missionId !== missionId || d.kind !== 'approve' || scope?.operation !== 'authorize-mission' || scope.permissions?.write !== true) {
+    return false;
+  }
+  if (isHumanActor(d.actor)) return true;
+  return !!mission && mission.id === missionId && campaignGrantRefusal(d, parent, mission) === null;
 }
 
 /** A write grant (`grantsWrite`) that also carried `execute: true` explicitly (R17.1). */
-export function grantsExec(d: Decision | null | undefined, missionId: string): boolean {
-  return grantsWrite(d, missionId) && (d!.scope as { permissions?: { execute?: unknown } }).permissions?.execute === true;
+export function grantsExec(
+  d: Decision | null | undefined, missionId: string, parent: Decision | null = null, mission?: GrantMission,
+): boolean {
+  return grantsWrite(d, missionId, parent, mission) && (d!.scope as { permissions?: { execute?: unknown } }).permissions?.execute === true;
 }
 
 /**
@@ -103,6 +151,17 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
   if (!DECISION_OPERATIONS.includes(operation as DecisionOperation)) {
     return `decision ${d.id} names unknown operation ${String(operation)}`;
   }
+  // The director process, under a human authorize-campaign decision it names (P2-R19): only the
+  // derived operations, and never without the grant it derives from.
+  if (isCampaignActor(d.actor)) {
+    if (!DERIVED_OPERATIONS.includes(operation as DecisionOperation)) {
+      return `${String(operation)} decision ${d.id} is a person's act; a campaign actor never records it`;
+    }
+    if (!isEntityId('decision', d.scope.derivedFrom)) {
+      return `derived ${String(operation)} decision ${d.id} names no authorize-campaign decision it derives from`;
+    }
+    return null;
+  }
   // A Forge act is a person's, and says which person. An agent, a runner or a bare `human`
   // with no name cannot authorise, lock, approve or apply.
   if (!isHumanActor(d.actor)) return `${String(operation)} decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
@@ -117,8 +176,9 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
  */
 export function attemptRefusal(
   a: Pick<Attempt, 'id' | 'missionId' | 'origin' | 'sandbox'>,
-  mission: Pick<Mission, 'id' | 'kind' | 'permissions'>,
+  mission: Pick<Mission, 'id' | 'kind' | 'permissions' | 'parentId'>,
   grant: Decision | null | undefined,
+  parent: Decision | null = null,
 ): string | null {
   if (a.origin === 'ingested') {
     if (mission.kind !== 'work') return `attempt ${a.id} is ingested, and mission ${mission.id} is not a work mission; only work missions hold ingested attempts`;
@@ -138,11 +198,12 @@ export function attemptRefusal(
     // Write is to the author's detached workspace (R7); no other profile has a writable tree.
     if (s.profile !== 'author') return `attempt ${a.id} asks for write under the ${s.profile} profile; only the author profile writes`;
     if (!s.authorizeDecisionId) return `attempt ${a.id} asks for write without naming the authorize decision that granted it`;
-    if (!grantsWrite(grant, mission.id)) {
-      return `decision ${s.authorizeDecisionId} is not a human authorize-mission decision granting write on mission ${mission.id}`;
+    if (!grantsWrite(grant, mission.id, parent, mission)) {
+      const derived = grant && isCampaignActor(grant.actor) ? `: ${campaignGrantRefusal(grant, parent, mission) ?? 'not a write grant'}` : '';
+      return `decision ${s.authorizeDecisionId} is not a human authorize-mission decision granting write on mission ${mission.id}${derived}`;
     }
     if (!mission.permissions.write) return `mission ${mission.id} does not hold write`;
-    if (s.exec && (!grantsExec(grant, mission.id) || !mission.permissions.execute)) {
+    if (s.exec && (!grantsExec(grant, mission.id, parent, mission) || !mission.permissions.execute)) {
       return `attempt ${a.id} asks for exec, which decision ${s.authorizeDecisionId} did not grant on mission ${mission.id}`;
     }
   }
@@ -342,6 +403,11 @@ export class MissionStore {
     this.db.close();
   }
 
+  /** The store's clock, which every row it writes is stamped with. */
+  clock(): number {
+    return this.now();
+  }
+
   // ---- projects --------------------------------------------------------------
 
   ensureProject(p: ProjectIdentity): void {
@@ -374,6 +440,20 @@ export class MissionStore {
     if (input.permissions?.deploy) throw new Error('deploy is never granted');
     if (input.kind === 'spec' && input.permissions?.execute) {
       throw new Error('a spec mission only decomposes; it never executes');
+    }
+    if (input.kind === 'campaign' && (input.permissions?.execute || input.parentId !== undefined)) {
+      throw new Error('a campaign mission plans and grants; it never executes and has no parent');
+    }
+    if (input.parentId !== undefined) {
+      // A parent is a campaign of the same project; its children build its tickets or review its waves.
+      const parent = this.mission(input.parentId);
+      if (!parent || parent.kind !== 'campaign' || parent.projectId !== input.projectId) {
+        throw new Error(`parent ${input.parentId} is not a campaign mission of project ${input.projectId}`);
+      }
+      if (input.kind !== 'implement' && input.kind !== 'audit') throw new Error(`a campaign's child is an implement or audit mission, not ${input.kind}`);
+      if (input.kind === 'implement' && (input.workItemId === undefined || this.campaignTicketByWorkItem(input.workItemId)?.campaignId !== parent.id)) {
+        throw new Error(`an implement mission of campaign ${parent.id} builds one of its tickets' work items`);
+      }
     }
     if (input.kind === 'implement') {
       if ((input.workItemId === undefined) === (input.adhoc === undefined)) {
@@ -468,7 +548,7 @@ export class MissionStore {
       throw new Error(`mission ${m.id} is ${m.kind}; write is granted only to an implement mission`);
     }
     // A spec mission only decomposes and a work mission only records; neither runs anything.
-    if (input.permissions.execute && (m.kind === 'spec' || m.kind === 'work')) {
+    if (input.permissions.execute && (m.kind === 'spec' || m.kind === 'work' || m.kind === 'campaign')) {
       throw new Error(`mission ${m.id} is a ${m.kind} mission; it never executes`);
     }
     if (input.maxUsd !== null && !(Number.isFinite(input.maxUsd) && input.maxUsd > 0)) {
@@ -682,11 +762,22 @@ export class MissionStore {
     } else {
       sandbox = { ...READ_ONLY_SANDBOX, ...input.sandbox };
     }
+    const grant = sandbox?.authorizeDecisionId ? this.decision(sandbox.authorizeDecisionId) : null;
+    const parent = this.grantParent(grant);
     const why = attemptRefusal(
-      { id: `on task ${t.id}`, missionId: t.missionId, origin, sandbox }, this.requireMission(t.missionId),
-      sandbox?.authorizeDecisionId ? this.decision(sandbox.authorizeDecisionId) : null,
+      { id: `on task ${t.id}`, missionId: t.missionId, origin, sandbox }, this.requireMission(t.missionId), grant, parent,
     );
     if (why) throw new Error(why);
+    // A derived grant is also checked against its envelope now: expired, halted, a moved plan or
+    // gate lock, and nothing starts (fail closed).
+    if (grant && sandbox?.write && isCampaignActor(grant.actor)) {
+      const scope = grant.scope as { permissions?: MissionPermissions; maxUsd?: number | null };
+      const refusal = this.envelopeRefusal(parent?.id ?? '', {
+        missionId: t.missionId, operation: 'authorize-mission', ticketId: String(grant.scope.ticketId ?? ''),
+        permissions: scope.permissions, maxUsd: scope.maxUsd ?? null, at: this.now(),
+      });
+      if (refusal) throw new Error(`refused: ${refusal}`);
+    }
     if (input.mcpToken !== undefined && input.mcpToken.length < 32) {
       throw new Error('an MCP token must be at least 32 characters of randomness');
     }
@@ -778,9 +869,10 @@ export class MissionStore {
       .prepare(`SELECT * FROM attempts WHERE sandbox_write != 0 ${projectId ? 'AND project_id=?' : ''} ORDER BY started_at, id`)
       .all(...(projectId ? [projectId] : []));
     return rows.map((r) => this.rowToAttempt(r)).filter((a) => {
-      const grant = a.sandbox?.authorizeDecisionId ?? null;
+      const grantId = a.sandbox?.authorizeDecisionId ?? null;
       const mission = this.mission(a.missionId);
-      return !mission || attemptRefusal(a, mission, grant !== null ? this.decision(grant) : null) !== null;
+      const grant = grantId !== null ? this.decision(grantId) : null;
+      return !mission || attemptRefusal(a, mission, grant, this.grantParent(grant)) !== null;
     });
   }
 
@@ -1124,15 +1216,16 @@ export class MissionStore {
 
   /** The most recent approving `lock-gates` decision of a mission, or null. */
   lockDecision(missionId: string): Decision | null {
-    return this.latestOperation(missionId, 'lock-gates');
+    return this.latestDecision(missionId, 'lock-gates');
   }
 
   /** The most recent approving `authorize-mission` decision of a mission, or null. */
   authorizeDecision(missionId: string): Decision | null {
-    return this.latestOperation(missionId, 'authorize-mission');
+    return this.latestDecision(missionId, 'authorize-mission');
   }
 
-  private latestOperation(missionId: string, operation: DecisionOperation): Decision | null {
+  /** The most recent approving decision of `operation` on a mission, or null. */
+  latestDecision(missionId: string, operation: DecisionOperation): Decision | null {
     const all = this.decisions(missionId).filter((d) => d.kind === 'approve' && d.scope.operation === operation);
     return all.at(-1) ?? null;
   }
@@ -1348,10 +1441,8 @@ export class MissionStore {
     if (w.status !== from) throw new IllegalTransition('work item', workItemId, `${w.status} (expected ${from})`, to);
     if (!canTransition(WORK_ITEM_TRANSITIONS, from, to)) throw new IllegalTransition('work item', workItemId, from, to);
     const d = this.decision(decisionId);
-    const scope = d?.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown } | undefined;
     const operation = to === 'approved' ? 'approve-work-item' : 'reject-work-item';
-    if (!d || d.projectId !== w.projectId || d.missionId !== w.missionId || scope?.operation !== operation || scope.workItemId !== w.id
-      || scope.contentDigest !== w.contentDigest) {
+    if (!d || d.projectId !== w.projectId || d.missionId !== w.missionId || !movesWorkItem(d, w, to)) {
       throw new Error(`decision ${decisionId} is not a ${operation} decision on mission ${w.missionId} naming ${w.id} at ${w.contentDigest}`);
     }
     const r = this.db
@@ -1422,6 +1513,611 @@ export class MissionStore {
     if (w.project_id !== projectId) throw new Error(`work item ${workItemId} belongs to ${w.project_id}, not ${projectId}`);
     if (w.status !== 'approved') throw new Error(`work item ${workItemId} is ${w.status}; a mission builds only an approved one`);
     return w.consumed_by === missionId;
+  }
+
+  // ---- campaigns (WS-R5) -------------------------------------------------------------
+  //
+  // A campaign is a mission of kind `campaign`; its tickets are rows bound to work items, its
+  // children are implement missions naming it as parent. Everything the director process may
+  // do without a person is a derived decision, and `recordDerivedDecision` is its one writer.
+
+  /** Run `fn` in the caller's transaction, or in its own `BEGIN IMMEDIATE` when there is none. */
+  private tx<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const out = fn();
+      this.db.exec('COMMIT');
+      return out;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  private requireCampaign(campaignId: string): Mission {
+    const m = this.requireMission(campaignId);
+    if (m.kind !== 'campaign') throw new Error(`mission ${campaignId} is a ${m.kind} mission, not a campaign`);
+    return m;
+  }
+
+  /** The `authorize-campaign` decision a campaign actor's grant names, or null. */
+  private grantParent(grant: Decision | null | undefined): Decision | null {
+    if (!grant || !isCampaignActor(grant.actor)) return null;
+    const from = grant.scope.derivedFrom;
+    return typeof from === 'string' ? this.decision(from) : null;
+  }
+
+  /**
+   * The plan a campaign was last imported at, from its own `campaign.plan.imported` event, or
+   * null. Only ever compared against digests a person approved and authorized, so a stale or
+   * foreign record can refuse a derived act and never admit one.
+   */
+  currentPlan(campaignId: string): { planArtifact: string; planDigest: string; planRevision: string; commit: string; path: string } | null {
+    const r = this.db
+      .prepare(`SELECT payload FROM events WHERE mission_id=? AND name='campaign.plan.imported' AND actor_id='daylight' ORDER BY sequence DESC LIMIT 1`)
+      .get(campaignId) as { payload: string } | undefined;
+    const p = parseJson<Record<string, unknown>>(r?.payload, {});
+    const fields = ['planArtifact', 'planDigest', 'planRevision', 'commit', 'path'] as const;
+    if (!fields.every((k) => typeof p[k] === 'string')) return null;
+    return { planArtifact: p.planArtifact as string, planDigest: p.planDigest as string, planRevision: p.planRevision as string,
+      commit: p.commit as string, path: p.path as string };
+  }
+
+  insertCampaignTickets(rows: Array<Omit<CampaignTicket, 'createdAt'>>): CampaignTicket[] {
+    return this.tx(() => rows.map((r) => {
+      if (this.campaignTicket(r.campaignId, r.ticketId)) throw new Error(`campaign ${r.campaignId} already has ticket ${r.ticketId}`);
+      return this.writeTicket(r);
+    }));
+  }
+
+  private writeTicket(r: Omit<CampaignTicket, 'createdAt'>): CampaignTicket {
+    const c = this.requireCampaign(r.campaignId);
+    const w = this.workItem(r.workItemId);
+    if (!w || w.missionId !== c.id || w.projectId !== c.projectId || r.projectId !== c.projectId) {
+      throw new Error(`ticket ${r.ticketId}'s work item ${r.workItemId} is not a work item of campaign ${c.id}`);
+    }
+    this.db
+      .prepare(
+        `INSERT INTO campaign_tickets
+         (campaign_id, ticket_id, project_id, work_item_id, origin, lane, depends_on, scope, acceptance, budget, blocks_on,
+          ticket_digest, source_ref, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(campaign_id, ticket_id) DO UPDATE SET work_item_id=excluded.work_item_id, lane=excluded.lane,
+           depends_on=excluded.depends_on, scope=excluded.scope, acceptance=excluded.acceptance, budget=excluded.budget,
+           blocks_on=excluded.blocks_on, ticket_digest=excluded.ticket_digest`,
+      )
+      .run(
+        r.campaignId, r.ticketId, r.projectId, r.workItemId, r.origin, r.lane, JSON.stringify(r.dependsOn), JSON.stringify(r.scope),
+        JSON.stringify(r.acceptance), JSON.stringify(r.budget), JSON.stringify(r.blocksOn), r.ticketDigest, r.sourceRef ?? null, this.now(),
+      );
+    return this.campaignTicket(r.campaignId, r.ticketId)!;
+  }
+
+  /**
+   * A plan import's rows, in one transaction: each ticket whose digest is unchanged keeps its row
+   * and work item; a new or changed one gets its work item (idempotent by id) and its row; a plan
+   * ticket the plan no longer names loses its row, and its work item is superseded by the next
+   * `approve-plan`. Refused when a changed or dropped ticket's work item is being built by a
+   * mission that is not closed.
+   */
+  importPlanTickets(
+    campaignId: string, entries: Array<{ workItem: CreateWorkItemInput & { id: string }; ticket: Omit<CampaignTicket, 'createdAt' | 'workItemId'> }>,
+  ): { added: string[]; kept: string[]; dropped: string[] } {
+    return this.tx(() => {
+      const c = this.requireCampaign(campaignId);
+      const have = new Map(this.campaignTickets(c.id, { origin: 'plan' }).map((t) => [t.ticketId, t]));
+      const named = new Set(entries.map((e) => e.ticket.ticketId));
+      const busy = (t: CampaignTicket) => {
+        const by = this.workItemConsumer(t.workItemId);
+        return by !== null && this.mission(by)?.state !== 'closed' ? by : null;
+      };
+      const out = { added: [] as string[], kept: [] as string[], dropped: [] as string[] };
+      for (const t of have.values()) {
+        const entry = entries.find((e) => e.ticket.ticketId === t.ticketId);
+        if (entry && entry.ticket.ticketDigest === t.ticketDigest) continue;
+        const by = busy(t);
+        if (by) throw new Error(`ticket ${t.ticketId} changed while mission ${by} builds it; close that mission first`);
+      }
+      for (const t of have.values()) {
+        if (named.has(t.ticketId)) continue;
+        this.db.prepare('DELETE FROM campaign_tickets WHERE campaign_id=? AND ticket_id=?').run(c.id, t.ticketId);
+        out.dropped.push(t.ticketId);
+      }
+      for (const e of entries) {
+        if (e.ticket.campaignId !== c.id || e.ticket.origin !== 'plan') throw new Error(`ticket ${e.ticket.ticketId} is not a plan ticket of campaign ${c.id}`);
+        const was = have.get(e.ticket.ticketId);
+        if (was && was.ticketDigest === e.ticket.ticketDigest) {
+          out.kept.push(was.ticketId);
+          continue;
+        }
+        const w = this.createWorkItem(e.workItem);
+        this.writeTicket({ ...e.ticket, workItemId: w.id });
+        out.added.push(e.ticket.ticketId);
+      }
+      return out;
+    });
+  }
+
+  campaignTickets(campaignId: string, opts: { origin?: TicketOrigin } = {}): CampaignTicket[] {
+    return (this.db.prepare('SELECT * FROM campaign_tickets WHERE campaign_id=? ORDER BY created_at, rowid').all(campaignId) as
+      Array<Record<string, unknown>>).map(rowToTicket).filter((t) => opts.origin === undefined || t.origin === opts.origin);
+  }
+
+  campaignTicket(campaignId: string, ticketId: string): CampaignTicket | null {
+    const r = this.db.prepare('SELECT * FROM campaign_tickets WHERE campaign_id=? AND ticket_id=?').get(campaignId, ticketId) as
+      | Record<string, unknown> | undefined;
+    return r ? rowToTicket(r) : null;
+  }
+
+  campaignTicketByWorkItem(workItemId: string): CampaignTicket | null {
+    const r = this.db.prepare('SELECT * FROM campaign_tickets WHERE work_item_id=?').get(workItemId) as Record<string, unknown> | undefined;
+    return r ? rowToTicket(r) : null;
+  }
+
+  /**
+   * The plan work items `approve-plan` must list, and those it must supersede, as rows say now:
+   * every plan ticket's work item at its digest; every plan work item of the campaign no ticket
+   * row names that is not already rejected or superseded.
+   */
+  planApprovalSet(campaignId: string): { workItems: Record<string, string>; supersedes: string[] } {
+    const tickets = this.campaignTickets(campaignId, { origin: 'plan' });
+    const workItems: Record<string, string> = {};
+    for (const t of tickets) workItems[t.workItemId] = this.workItem(t.workItemId)!.contentDigest;
+    const c = this.requireCampaign(campaignId);
+    const supersedes = this.workItems(c.projectId, { missionId: c.id })
+      .filter((w) => w.proposedBy === 'plan' && !(w.id in workItems) && !this.campaignTicketByWorkItem(w.id)
+        && (w.status === 'proposed' || w.status === 'approved'))
+      .map((w) => w.id).sort();
+    return { workItems, supersedes };
+  }
+
+  /**
+   * `approve-plan`, in one transaction: the human decision naming every plan ticket's work item
+   * at its digest; each proposed one approved; the work items the plan dropped or changed
+   * superseded; the plan's non-blocking defaults moved `open → pending`; `draft → ready`.
+   * Refused when the plan moved since it was shown, or when a superseded item is being built.
+   */
+  approvePlan(campaignId: string, input: { actor: string; rationale: string; scope: ApprovePlanScope; artifactIds?: string[] }): Decision {
+    return this.tx(() => {
+      const c = this.requireCampaign(campaignId);
+      if (c.state !== 'draft' && c.state !== 'ready') throw new Error(`campaign ${c.id} is ${c.state}; a plan is approved before it runs`);
+      const plan = this.currentPlan(c.id);
+      if (!plan || plan.planDigest !== input.scope.planDigest || plan.planRevision !== input.scope.planRevision) {
+        throw new Error(`campaign ${c.id}'s plan is not the one shown; review it and approve again`);
+      }
+      const want = this.planApprovalSet(c.id);
+      if (canonical(want.workItems) !== canonical(input.scope.workItems) || canonical(want.supersedes) !== canonical([...input.scope.supersedes].sort())) {
+        throw new Error(`campaign ${c.id}'s tickets changed since they were shown; review them and approve again`);
+      }
+      for (const id of want.supersedes) {
+        const by = this.workItemConsumer(id);
+        if (by !== null && this.mission(by)?.state !== 'closed') {
+          throw new Error(`work item ${id} is being built by mission ${by}; close it before its ticket is superseded`);
+        }
+      }
+      const decision = this.recordDecision({
+        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor, kind: 'approve',
+        rationale: input.rationale, scope: { ...input.scope, supersedes: want.supersedes }, artifactIds: input.artifactIds ?? [],
+      });
+      for (const id of Object.keys(want.workItems)) {
+        if (this.workItem(id)!.status === 'proposed') this.setWorkItemStatus(id, 'proposed', 'approved', decision.id);
+      }
+      for (const id of want.supersedes) this.setWorkItemStatus(id, this.workItem(id)!.status, 'superseded', decision.id);
+      this.db
+        .prepare(`UPDATE assumptions SET status='pending', decision_id=?, updated_at=? WHERE campaign_id=? AND source='plan-default'
+                  AND status='open' AND blocking=0 AND default_value<>''`)
+        .run(decision.id, this.now(), c.id);
+      if (c.state === 'draft') this.transitionMission(c.id, 'ready');
+      return decision;
+    });
+  }
+
+  /** The campaign's most recent human `authorize-campaign` decision, or null. */
+  campaignAuthorization(campaignId: string): Decision | null {
+    return this.decisions(campaignId)
+      .filter((d) => d.kind === 'approve' && isHumanActor(d.actor) && d.scope.operation === 'authorize-campaign').at(-1) ?? null;
+  }
+
+  /**
+   * `authorize-campaign`, as one transaction. Refused unless the latest `approve-plan` names the
+   * current plan and the envelope does too; the latest `lock-campaign-gates` names the gate set
+   * the human confirmed (`expectedGateSetDigest`, a string compare); every ticket is an approved
+   * plan ticket; and the caps are ordered and bounded. Author turn and time bounds against the
+   * policy are the caller's (`forge/campaign.ts`), which has the policy blob.
+   */
+  authorizeCampaign(
+    campaignId: string, input: { actor: string; rationale: string; scope: AuthorizeCampaignScope; expectedGateSetDigest: string; artifactIds?: string[] },
+  ): Decision {
+    return this.tx(() => {
+      const c = this.requireCampaign(campaignId);
+      if (c.state !== 'ready') throw new Error(`campaign ${c.id} is ${c.state}; it is authorized once its plan is approved`);
+      const e = input.scope;
+      const why = envelopeShapeRefusal(e, this.now());
+      if (why) throw new Error(`refused: ${why}`);
+      const plan = this.currentPlan(c.id);
+      const approve = this.latestDecision(c.id, 'approve-plan');
+      if (!plan || !approve || approve.scope.planDigest !== plan.planDigest) throw new Error(`refused: campaign ${c.id}'s current plan is not approved`);
+      if (e.planDigest !== plan.planDigest) throw new Error(`refused: the authorization names plan ${e.planDigest}, not the current ${plan.planDigest}`);
+      const lock = this.latestDecision(c.id, 'lock-campaign-gates');
+      if (!lock || lock.scope.gateSetDigest !== input.expectedGateSetDigest || e.gateSetDigest !== input.expectedGateSetDigest) {
+        throw new Error(`refused: campaign ${c.id}'s gate lock is not the expected gate set`);
+      }
+      for (const id of e.ticketIds) {
+        const t = this.campaignTicket(c.id, id);
+        if (!t || t.origin !== 'plan' || this.workItem(t.workItemId)?.status !== 'approved') {
+          throw new Error(`refused: ticket ${id} is not an approved plan ticket of campaign ${c.id}`);
+        }
+      }
+      return this.recordDecision({
+        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor, kind: 'approve',
+        rationale: input.rationale, scope: { ...e }, artifactIds: input.artifactIds ?? [],
+      });
+    });
+  }
+
+  /** The halts not followed by a `resume-campaign` naming them; the latest first. Empty: not halted. */
+  campaignHalts(campaignId: string): Decision[] {
+    const all = this.decisions(campaignId);
+    const resumed = new Set(all.filter((d) => d.scope.operation === 'resume-campaign' && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+    return all.filter((d) => d.scope.operation === 'halt-campaign' && !resumed.has(d.id)).reverse();
+  }
+
+  /**
+   * Record a halt. A person's is recorded as theirs; the director's (`campaign:<id>`) is derived
+   * from the current authorization (fail closed), which a halt may name even once expired.
+   */
+  recordHalt(campaignId: string, actor: string, reason: CampaignHaltReason): Decision {
+    return this.tx(() => {
+      const c = this.requireCampaign(campaignId);
+      const base = { missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor, kind: 'defer' as const, artifactIds: [] };
+      if (!isCampaignActor(actor)) {
+        return this.recordDecision({ ...base, rationale: `halted: ${reason}`, scope: { operation: 'halt-campaign', reason } });
+      }
+      const parent = this.campaignAuthorization(c.id);
+      if (!parent) throw new Error(`campaign ${c.id} has no authorization a director halt could derive from`);
+      return this.recordDerivedDecision(parent.id, {
+        ...base, rationale: `halted by the director: ${reason}`, scope: { operation: 'halt-campaign', reason, derivedFrom: parent.id },
+      });
+    });
+  }
+
+  /** A person resumes a halted campaign, naming the halt they read. */
+  recordResume(campaignId: string, input: { actor: string; rationale: string; haltDecisionId: string }): Decision {
+    return this.tx(() => {
+      const c = this.requireCampaign(campaignId);
+      const halt = this.campaignHalts(c.id).find((d) => d.id === input.haltDecisionId);
+      if (!halt) throw new Error(`decision ${input.haltDecisionId} is not an unresumed halt of campaign ${c.id}`);
+      return this.recordDecision({
+        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor, kind: 'approve', rationale: input.rationale,
+        scope: { operation: 'resume-campaign', haltDecisionId: halt.id, reason: halt.scope.reason }, artifactIds: [],
+      });
+    });
+  }
+
+  /** The derived `admit-work-item` that admitted this work item into its campaign, or null. */
+  admission(campaignId: string, workItemId: string): Decision | null {
+    return this.decisions(campaignId)
+      .filter((d) => d.scope.operation === 'admit-work-item' && isCampaignActor(d.actor) && d.scope.workItemId === workItemId).at(-1) ?? null;
+  }
+
+  /** Implement missions released by a `retry-ticket` decision (P2-R25, P2-R27): closed inconclusive or cancelled. */
+  releasedMissions(projectId?: string): Set<string> {
+    const rows = this.db
+      .prepare(`SELECT scope FROM decisions WHERE scope LIKE '%"retry-ticket"%' ${projectId ? 'AND project_id=?' : ''}`)
+      .all(...(projectId ? [projectId] : [])) as Array<{ scope: string }>;
+    const out = new Set<string>();
+    for (const r of rows) {
+      const scope = parseJson<Record<string, unknown>>(r.scope, {});
+      if (scope.operation !== 'retry-ticket' || typeof scope.closedMissionId !== 'string') continue;
+      const m = this.mission(scope.closedMissionId);
+      if (m?.state === 'closed' && (m.outcome === 'inconclusive' || m.outcome === 'cancelled')) out.add(m.id);
+    }
+    return out;
+  }
+
+  /**
+   * Why `request` falls outside the envelope of the human `authorize-campaign` decision
+   * `parentDecisionId`, or null. Rows only. The parent must be the campaign's current
+   * authorization; except for a halt (always allowed, fail closed): inside `notAfter`, not
+   * halted, the plan and gate lock it names still current, and for a ticket mission's act a
+   * ticket it covers (named, or admitted by a derived `admit-work-item`), no more execute or
+   * budget than it allows, and no second open mission on the ticket.
+   */
+  envelopeRefusal(parentDecisionId: string, req: EnvelopeRequest): string | null {
+    const parent = parentDecisionId ? this.decision(parentDecisionId) : null;
+    if (!parent || parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+      return `decision ${parentDecisionId || '(none)'} is not a human authorize-campaign decision`;
+    }
+    const campaign = this.mission(parent.missionId);
+    if (!campaign || campaign.kind !== 'campaign') return `decision ${parent.id} is not on a campaign`;
+    const m = this.mission(req.missionId);
+    if (!m) return `unknown mission ${req.missionId}`;
+    if (!DERIVED_OPERATIONS.includes(req.operation)) return `${req.operation} is not a derived operation`;
+    const onCampaign = m.id === campaign.id;
+    const campaignAct = req.operation === 'admit-work-item' || req.operation === 'halt-campaign';
+    if (campaignAct !== onCampaign) return `${req.operation} is recorded on ${campaignAct ? 'the campaign' : 'a ticket mission'}, not mission ${m.id}`;
+    if (!onCampaign && (m.parentId !== campaign.id || m.kind !== 'implement')) return `mission ${m.id} is not an implement mission of campaign ${campaign.id}`;
+    if (this.campaignAuthorization(campaign.id)?.id !== parent.id) return `decision ${parent.id} is not campaign ${campaign.id}'s current authorization`;
+    if (req.operation === 'halt-campaign') return null;
+    const env = parent.scope as unknown as CampaignEnvelope;
+    if (!(req.at >= parent.at && req.at <= env.notAfter)) return `authorization ${parent.id} is not in force at ${req.at} (until ${env.notAfter})`;
+    const halt = this.campaignHalts(campaign.id)[0];
+    if (halt) return `campaign ${campaign.id} is halted (${String(halt.scope.reason)}, ${halt.id})`;
+    const plan = this.currentPlan(campaign.id);
+    const approve = this.latestDecision(campaign.id, 'approve-plan');
+    if (!plan || !approve || approve.scope.planDigest !== plan.planDigest || env.planDigest !== plan.planDigest) {
+      return `campaign ${campaign.id}'s plan moved since authorization ${parent.id}`;
+    }
+    if (this.latestDecision(campaign.id, 'lock-campaign-gates')?.scope.gateSetDigest !== env.gateSetDigest) {
+      return `campaign ${campaign.id}'s gate lock moved since authorization ${parent.id}`;
+    }
+    if (req.operation === 'admit-work-item') return null;
+    const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
+    if (!t || t.campaignId !== campaign.id) return `mission ${m.id} builds no ticket of campaign ${campaign.id}`;
+    if (req.ticketId && req.ticketId !== t.ticketId) return `mission ${m.id} builds ticket ${t.ticketId}, not ${req.ticketId}`;
+    if (!env.ticketIds.includes(t.ticketId) && !this.admission(campaign.id, t.workItemId)) {
+      return `ticket ${t.ticketId} is outside authorization ${parent.id}`;
+    }
+    if (req.operation === 'authorize-mission') {
+      const p = req.permissions;
+      if (!p || p.deploy) return 'a derived grant names its permissions and never deploy';
+      if (p.execute && !env.execute) return `authorization ${parent.id} does not grant execute`;
+      if (typeof req.maxUsd !== 'number' || !(req.maxUsd > 0 && req.maxUsd <= env.maxUsdPerMission)) {
+        return `a derived grant's budget is at most $${env.maxUsdPerMission} per mission`;
+      }
+      const released = this.releasedMissions(campaign.projectId);
+      const others = this.missions(campaign.projectId)
+        .filter((o) => o.id !== m.id && o.kind === 'implement' && o.workItemId === t.workItemId && !released.has(o.id));
+      if (others.length) return `ticket ${t.ticketId} is already built by mission ${others[0].id}`;
+    }
+    return null;
+  }
+
+  /**
+   * The one writer of a `campaign:` actor's decision (P2-R19): re-checks the parent
+   * `authorize-campaign` envelope against rows, then inserts. Opens no transaction; its callers
+   * hold one. Called only from the files the `derived-writer-callers` invariant names.
+   */
+  recordDerivedDecision(parentDecisionId: string, input: CreateDecisionInput): Decision {
+    const parent = this.decision(parentDecisionId);
+    if (!parent) throw new Error(`refused: unknown decision ${parentDecisionId}`);
+    const operation = input.scope.operation as DecisionOperation;
+    if (input.actor !== campaignActorOf(parent.missionId)) {
+      throw new Error(`refused: a decision derived from ${parent.id} is recorded as ${campaignActorOf(parent.missionId)}, not ${input.actor}`);
+    }
+    if (input.scope.derivedFrom !== parent.id) throw new Error(`refused: a derived decision names ${parent.id} as derivedFrom`);
+    const m = this.requireMission(input.missionId);
+    if (input.projectId !== m.projectId) throw new Error(`refused: decision names project ${input.projectId}, not ${m.projectId}`);
+    if (!input.rationale?.trim()) throw new Error(`refused: decision on mission ${m.id} needs a rationale`);
+    const refusal = decisionRefusal({ ...input, id: `on mission ${m.id}` });
+    if (refusal) throw new Error(`refused: ${refusal}`);
+    const scope = input.scope as { permissions?: MissionPermissions; maxUsd?: number | null; ticketId?: unknown };
+    const why = this.envelopeRefusal(parent.id, {
+      missionId: m.id, operation, ticketId: typeof scope.ticketId === 'string' ? scope.ticketId : '',
+      permissions: scope.permissions, maxUsd: scope.maxUsd ?? null, at: this.now(),
+    });
+    if (why) throw new Error(`refused: ${why}`);
+    const d: Decision = { ...input, id: newId('decision'), at: this.now() };
+    if (operation === 'authorize-mission') {
+      const grant = campaignGrantRefusal(d, parent, m);
+      if (grant) throw new Error(`refused: ${grant}`);
+    }
+    return this.writeDecision(d);
+  }
+
+  /**
+   * The director's grant on a ticket mission, as `authorizeMission` records a person's: the
+   * derived `authorize-mission` (write, execute as the envelope allows, budget the lesser of the
+   * ticket's and the envelope's per-mission cap), the permissions and budget, `draft → ready`.
+   */
+  deriveAuthorizeMission(missionId: string, campaignDecisionId: string): { mission: Mission; decision: Decision } {
+    return this.tx(() => {
+      const m = this.requireMission(missionId);
+      if (m.kind !== 'implement' || !m.parentId) throw new Error(`mission ${m.id} is not a campaign's implement mission`);
+      if (m.state !== 'draft') throw new Error(`mission ${m.id} is ${m.state}; a derived grant is made on a draft`);
+      const parent = this.decision(campaignDecisionId);
+      if (!parent || parent.missionId !== m.parentId) throw new Error(`decision ${campaignDecisionId} is not on mission ${m.id}'s campaign`);
+      const env = parent.scope as unknown as CampaignEnvelope;
+      const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
+      if (!t) throw new Error(`mission ${m.id} builds no campaign ticket`);
+      const maxUsd = Math.min(t.budget.maxUsd ?? Number.POSITIVE_INFINITY, env.maxUsdPerMission);
+      const permissions: MissionPermissions = { read: true, write: true, execute: env.execute === true, deploy: false };
+      const admittedBy = env.ticketIds?.includes(t.ticketId) ? undefined : this.admission(parent.missionId, t.workItemId)?.id;
+      const decision = this.recordDerivedDecision(parent.id, {
+        missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: campaignActorOf(parent.missionId), kind: 'approve',
+        rationale: `derived from ${parent.id} for ticket ${t.ticketId}`,
+        scope: { operation: 'authorize-mission', permissions, maxUsd, derivedFrom: parent.id, ticketId: t.ticketId, ...(admittedBy ? { admittedBy } : {}) },
+        artifactIds: [],
+      });
+      this.db
+        .prepare('UPDATE missions SET permissions=?, budget=?, updated_at=? WHERE id=?')
+        .run(JSON.stringify(permissions), JSON.stringify({ ...m.budget, maxUsd }), this.now(), m.id);
+      return { mission: this.transitionMission(m.id, 'ready'), decision };
+    });
+  }
+
+  /**
+   * The director admits a generated (fix) ticket's proposed work item within the envelope: the
+   * derived `admit-work-item` and `proposed → approved`, together. Whether the finding and the
+   * wave allow it is `admitIfWithinEnvelope`'s question.
+   */
+  admitWorkItem(workItemId: string, campaignDecisionId: string, scope: { ticketId: string; findingId?: string; waveSeq: number }): Decision {
+    return this.tx(() => {
+      const w = this.workItem(workItemId);
+      if (!w || w.status !== 'proposed') throw new Error(`work item ${workItemId} is not a proposed work item`);
+      const t = this.campaignTicketByWorkItem(w.id);
+      if (!t || t.origin !== 'fix' || t.ticketId !== scope.ticketId) throw new Error(`work item ${w.id} is not fix ticket ${scope.ticketId}'s`);
+      const parent = this.decision(campaignDecisionId);
+      if (!parent || parent.missionId !== t.campaignId) throw new Error(`decision ${campaignDecisionId} is not on campaign ${t.campaignId}`);
+      const c = this.requireCampaign(t.campaignId);
+      const d = this.recordDerivedDecision(parent.id, {
+        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: campaignActorOf(c.id), kind: 'approve',
+        rationale: `admitted under ${parent.id}: fix ticket ${t.ticketId}`,
+        scope: { operation: 'admit-work-item', derivedFrom: parent.id, workItemId: w.id, contentDigest: w.contentDigest, ticketId: t.ticketId,
+          ...(scope.findingId ? { findingId: scope.findingId } : {}), waveSeq: scope.waveSeq },
+        artifactIds: [],
+      });
+      this.setWorkItemStatus(w.id, 'proposed', 'approved', d.id);
+      return d;
+    });
+  }
+
+  /**
+   * `campaign retry`: a person releases a ticket whose mission was refused at preflight (P2-R25):
+   * that mission is closed inconclusive or cancelled, ran no attempt and applied nothing. Records
+   * the `retry-ticket` decision on the campaign and clears `consumed_by`, compare-and-set.
+   */
+  retryTicket(campaignId: string, input: { actor: string; rationale: string; scope: RetryTicketScope }): Decision {
+    return this.tx(() => {
+      const c = this.requireCampaign(campaignId);
+      const s = input.scope;
+      const t = this.campaignTicket(c.id, s.ticketId);
+      if (!t || t.workItemId !== s.workItemId) throw new Error(`refused: ticket ${s.ticketId} of campaign ${c.id} is not work item ${s.workItemId}`);
+      const w = this.workItem(t.workItemId)!;
+      if (w.contentDigest !== s.contentDigest) throw new Error(`refused: work item ${w.id} is not at ${s.contentDigest}`);
+      if (this.workItemConsumer(w.id) !== s.closedMissionId) throw new Error(`refused: work item ${w.id} is not held by mission ${s.closedMissionId}`);
+      const m = this.requireMission(s.closedMissionId);
+      if (m.state !== 'closed' || (m.outcome !== 'inconclusive' && m.outcome !== 'cancelled')) {
+        throw new Error(`refused: mission ${m.id} is ${m.state}${m.outcome ? ` ${m.outcome}` : ''}; only a mission closed inconclusive or cancelled is released`);
+      }
+      if (this.applications(m.id).length) throw new Error(`refused: mission ${m.id} applied a candidate`);
+      const attempted = this.db.prepare('SELECT 1 FROM attempts WHERE mission_id=? LIMIT 1').get(m.id);
+      if (attempted) throw new Error(`refused: mission ${m.id} ran an attempt; retry releases a mission refused at preflight only`);
+      const d = this.recordDecision({
+        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor, kind: 'approve',
+        rationale: input.rationale, scope: { ...s }, artifactIds: [],
+      });
+      const r = this.db.prepare('UPDATE work_items SET consumed_by=NULL, updated_at=? WHERE id=? AND consumed_by=?').run(this.now(), w.id, m.id);
+      if (r.changes !== 1) throw new Error(`refused: work item ${w.id} changed underneath`);
+      return d;
+    });
+  }
+
+  /**
+   * Every campaign-actor decision that is not one `recordDerivedDecision` would have written: its
+   * parent missing or not a human authorize-campaign on its campaign, outside the window, or (for
+   * a grant) beyond the envelope or admitted by nothing. Empty is the only acceptable answer.
+   */
+  derivationRefusals(projectId?: string): string[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM decisions WHERE actor LIKE 'campaign:%' ${projectId ? 'AND project_id=?' : ''} ORDER BY at, rowid`)
+      .all(...(projectId ? [projectId] : []));
+    const out: string[] = [];
+    for (const d of rows.map((r) => this.rowToDecision(r))) {
+      const why = decisionRefusal(d);
+      if (why) {
+        out.push(why);
+        continue;
+      }
+      const parent = typeof d.scope.derivedFrom === 'string' ? this.decision(d.scope.derivedFrom) : null;
+      if (!parent || parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+        out.push(`derived decision ${d.id} names no human authorize-campaign decision`);
+        continue;
+      }
+      if (d.actor !== campaignActorOf(parent.missionId)) out.push(`derived decision ${d.id} is recorded as ${d.actor}, not campaign ${parent.missionId}'s actor`);
+      const m = this.mission(d.missionId);
+      const env = parent.scope as unknown as CampaignEnvelope;
+      if (!m || (m.id !== parent.missionId && m.parentId !== parent.missionId)) out.push(`derived decision ${d.id} is outside campaign ${parent.missionId}`);
+      if (d.scope.operation !== 'halt-campaign' && !(d.at >= parent.at && d.at <= env.notAfter)) {
+        out.push(`derived decision ${d.id} was recorded outside authorization ${parent.id}'s window`);
+      }
+      if (d.scope.operation === 'authorize-mission' && m) {
+        const grant = campaignGrantRefusal(d, parent, m);
+        if (grant) out.push(grant);
+        const by = d.scope.admittedBy;
+        if (!grant && typeof by === 'string') {
+          const a = this.decision(by);
+          const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
+          if (!a || a.scope.operation !== 'admit-work-item' || !isCampaignActor(a.actor) || !t || a.scope.workItemId !== t.workItemId) {
+            out.push(`derived grant ${d.id} names admission ${by}, which admitted nothing it builds`);
+          }
+        }
+      }
+      if (d.scope.operation === 'admit-work-item') {
+        const t = typeof d.scope.workItemId === 'string' ? this.campaignTicketByWorkItem(d.scope.workItemId) : null;
+        if (!t || t.campaignId !== parent.missionId || t.origin === 'plan') out.push(`derived admission ${d.id} names no generated ticket of campaign ${parent.missionId}`);
+      }
+    }
+    return out;
+  }
+
+  // ---- assumptions ------------------------------------------------------------------
+
+  recordAssumption(input: Omit<Assumption, 'id' | 'createdAt' | 'updatedAt' | 'projectId' | 'decisionId' | 'followUpWorkItemId'> & { decisionId?: string }): Assumption {
+    const c = this.requireCampaign(input.campaignId);
+    if (input.status !== 'open' && input.status !== 'pending') throw new Error('an assumption is recorded open or pending');
+    for (const [k, v] of [['question', input.question], ['rationale', input.rationale]] as const) {
+      if (typeof v !== 'string' || !v.trim()) throw new Error(`an assumption needs a ${k}`);
+    }
+    const at = this.now();
+    const id = newId('assumption');
+    // The CHECKs refuse a pending row nobody human recorded (P2-R12).
+    this.db
+      .prepare(
+        `INSERT INTO assumptions (id, project_id, campaign_id, mission_id, ticket_id, owner_decision_id, question, default_value, rationale,
+           status, blocking, source, recorded_by, decision_id, follow_up_work_item_id, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`,
+      )
+      .run(
+        id, c.projectId, c.id, input.missionId ?? null, input.ticketId ?? null, input.ownerDecisionId ?? null, input.question, input.default,
+        input.rationale, input.status, input.blocking ? 1 : 0, input.source, input.recordedBy, input.decisionId ?? null, at, at,
+      );
+    return this.assumption(id)!;
+  }
+
+  assumption(id: string): Assumption | null {
+    const r = this.db.prepare('SELECT * FROM assumptions WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? rowToAssumption(r) : null;
+  }
+
+  assumptions(campaignId: string, opts: { status?: AssumptionStatus } = {}): Assumption[] {
+    return (this.db.prepare('SELECT * FROM assumptions WHERE campaign_id=? ORDER BY created_at, rowid').all(campaignId) as
+      Array<Record<string, unknown>>).map(rowToAssumption).filter((a) => opts.status === undefined || a.status === opts.status);
+  }
+
+  /**
+   * A person's decision on an assumption, in one transaction: `confirm-assumption` (pending →
+   * confirmed, on its default), `decide-assumption` (open → confirmed, on the value given),
+   * `overturn-assumption` (to overturned; with `followUp`, its one proposed work item and ticket
+   * row are written first and the decision names them). Nothing else moves.
+   */
+  decideAssumption(id: string, input: {
+    actor: string; rationale: string; scope: AssumptionDecisionScope;
+    followUp?: { workItem: CreateWorkItemInput & { id: string }; ticket: Omit<CampaignTicket, 'createdAt' | 'workItemId'> };
+  }): Decision {
+    return this.tx(() => {
+      const a = this.assumption(id);
+      if (!a) throw new Error(`unknown assumption ${id}`);
+      const c = this.requireCampaign(a.campaignId);
+      const op = input.scope.operation;
+      if (input.scope.assumptionId !== a.id) throw new Error(`the decision names assumption ${input.scope.assumptionId}, not ${a.id}`);
+      const from: Record<AssumptionDecisionScope['operation'], AssumptionStatus[]> = {
+        'confirm-assumption': ['pending'], 'decide-assumption': ['open'], 'overturn-assumption': ['open', 'pending', 'confirmed'],
+      };
+      if (!from[op]?.includes(a.status)) throw new Error(`refused: assumption ${a.id} is ${a.status}; ${op} moves ${from[op]?.join(' or ') ?? 'nothing'}`);
+      if (op === 'confirm-assumption' && input.scope.value !== a.default) throw new Error(`refused: confirm names the default assumption ${a.id} proceeds on`);
+      if (op !== 'confirm-assumption' && !input.scope.value.trim()) throw new Error(`refused: ${op} needs a value`);
+      let followUpWorkItemId: string | undefined;
+      if (input.followUp) {
+        if (op !== 'overturn-assumption') throw new Error('only an overturn creates a follow-up');
+        const w = this.createWorkItem(input.followUp.workItem);
+        if (this.campaignTicket(c.id, input.followUp.ticket.ticketId)) throw new Error(`campaign ${c.id} already has ticket ${input.followUp.ticket.ticketId}`);
+        this.writeTicket({ ...input.followUp.ticket, workItemId: w.id });
+        followUpWorkItemId = w.id;
+      }
+      if (input.scope.followUpWorkItemId !== followUpWorkItemId) throw new Error('the decision names a follow-up work item it does not create');
+      const d = this.recordDecision({
+        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor,
+        kind: op === 'overturn-assumption' ? 'reject' : 'approve', rationale: input.rationale, scope: { ...input.scope }, artifactIds: [],
+      });
+      const status: AssumptionStatus = op === 'overturn-assumption' ? 'overturned' : 'confirmed';
+      const value = op === 'decide-assumption' ? input.scope.value : a.default;
+      this.db
+        .prepare('UPDATE assumptions SET status=?, default_value=?, decision_id=?, follow_up_work_item_id=?, updated_at=? WHERE id=? AND status=?')
+        .run(status, value, d.id, followUpWorkItemId ?? null, this.now(), a.id, a.status);
+      return d;
+    });
   }
 
   // ---- candidates ------------------------------------------------------------------
@@ -1666,9 +2362,20 @@ export class MissionStore {
     if (!input.rationale || !input.rationale.trim()) {
       throw new Error(`decision on mission ${m.id} needs a rationale`);
     }
+    // P2-R19: a campaign actor's decision is written by recordDerivedDecision only, after its envelope.
+    if (isCampaignActor(input.actor)) {
+      throw new Error(`a ${input.actor} decision is derived; recordDecision records a person's decision only`);
+    }
     const refusal = decisionRefusal({ ...input, id: `on mission ${m.id}` });
     if (refusal) throw new Error(refusal);
-    const d: Decision = { ...input, id: newId('decision'), at: this.now() };
+    return this.insertDecision(input);
+  }
+
+  private insertDecision(input: CreateDecisionInput): Decision {
+    return this.writeDecision({ ...input, id: newId('decision'), at: this.now() });
+  }
+
+  private writeDecision(d: Decision): Decision {
     this.db
       .prepare(
         `INSERT INTO decisions
@@ -1681,18 +2388,8 @@ export class MissionStore {
         d.predicate ?? null, d.value === undefined ? null : JSON.stringify(d.value),
         d.rationale, JSON.stringify(d.scope), JSON.stringify(d.artifactIds), d.at,
       );
-    this.db.prepare('UPDATE missions SET updated_at=? WHERE id=?').run(d.at, m.id);
+    this.db.prepare('UPDATE missions SET updated_at=? WHERE id=?').run(d.at, d.missionId);
     return d;
-  }
-
-  /**
-   * The one writer of a `campaign:` actor's decision (P2-R19): re-checks the parent
-   * `authorize-campaign` envelope against rows, then inserts. Opens no transaction; its callers
-   * hold one. Called only from the files the `derived-writer-callers` invariant names.
-   */
-  recordDerivedDecision(parentDecisionId: string, input: CreateDecisionInput): Decision {
-    void parentDecisionId; void input;
-    throw new NotImplemented('MissionStore.recordDerivedDecision');
   }
 
   decision(decisionId: string): Decision | null {
@@ -1887,6 +2584,97 @@ export function workItemContentDigest(w: Pick<
     spec: w.specArtifact.digest, anchor: w.anchor, title: w.title, statement: w.statement,
     examples: w.examples, negativeExamples: w.negativeExamples,
   }));
+}
+
+/**
+ * Whether decision `d` moves work item `w` to `to`: a person's `approve-work-item` /
+ * `reject-work-item` naming it at its digest; an `approve-plan` listing it at its digest (to
+ * approve) or among `supersedes`; a derived `admit-work-item` naming it at its digest.
+ */
+export function movesWorkItem(d: Decision, w: Pick<WorkItem, 'id' | 'contentDigest'>, to: WorkItemStatus): boolean {
+  const scope = d.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown; workItems?: unknown; supersedes?: unknown };
+  const names = scope.workItemId === w.id && scope.contentDigest === w.contentDigest;
+  if (scope.operation === 'approve-plan') {
+    if (d.kind !== 'approve' || !isHumanActor(d.actor)) return false;
+    if (to === 'approved') return (scope.workItems as Record<string, unknown> | undefined)?.[w.id] === w.contentDigest;
+    return to === 'superseded' && Array.isArray(scope.supersedes) && scope.supersedes.includes(w.id);
+  }
+  if (to === 'approved') {
+    return names && ((scope.operation === 'approve-work-item' && isHumanActor(d.actor))
+      || (scope.operation === 'admit-work-item' && isCampaignActor(d.actor)));
+  }
+  return names && scope.operation === 'reject-work-item' && isHumanActor(d.actor);
+}
+
+const MAX_NOT_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+const posFinite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
+const intIn = (n: unknown, lo: number, hi: number): n is number => Number.isInteger(n) && (n as number) >= lo && (n as number) <= hi;
+
+/** Why an authorize-campaign envelope is malformed or its caps disordered, or null. Row-free. */
+export function envelopeShapeRefusal(e: CampaignEnvelope, now: number): string | null {
+  if (!e || typeof e !== 'object') return 'an authorization carries an envelope';
+  if (typeof e.planDigest !== 'string' || typeof e.gateSetDigest !== 'string') return 'an authorization names its plan and gate set';
+  if (!Array.isArray(e.ticketIds) || !e.ticketIds.length || new Set(e.ticketIds).size !== e.ticketIds.length) {
+    return 'an authorization names its tickets, each once';
+  }
+  if (!Array.isArray(e.roster) || !e.roster.length || !Array.isArray(e.reviewRoster)) return 'an authorization names a roster of at least one author';
+  if (!posFinite(e.maxUsdTotal) || !posFinite(e.maxUsdPerMission)) return 'the spend caps are positive dollar figures';
+  if (e.maxUsdPerMission > e.maxUsdTotal) return 'the per-mission cap is above the campaign cap';
+  if (!intIn(e.maxTurns, 1, 1_000_000) || !intIn(e.timeoutSeconds, 1, 1_000_000)) return 'turns and timeout are positive whole numbers';
+  if (!intIn(e.maxAttemptsPerTicket, 1, 10)) return 'attempts per ticket are 1 to 10';
+  if (!intIn(e.concurrency, 1, 64)) return 'concurrency is 1 to 64';
+  if (!intIn(e.waveSize, 1, 10_000)) return 'the wave size is a positive whole number';
+  if (typeof e.execute !== 'boolean') return 'execute is yes or no';
+  if (e.autoApply !== 'integration-ref' && e.autoApply !== 'none') return 'auto-apply is integration-ref or none';
+  const f = e.fixLane;
+  if (!f || typeof f.enabled !== 'boolean' || !intIn(f.maxTicketsPerWave, 0, 5) || !(f.maxUsdPerTicket >= 0 && Number.isFinite(f.maxUsdPerTicket))) {
+    return 'the fix lane admits at most 5 tickets a wave (P2-R10) at a dollar cap';
+  }
+  if (f.maxUsdPerTicket > e.maxUsdPerMission) return 'the fix lane\'s per-ticket cap is above the per-mission cap';
+  if (!e.identity || typeof e.identity.name !== 'string' || typeof e.identity.email !== 'string') return 'an authorization names the committer identity';
+  if (!Number.isInteger(e.notAfter) || e.notAfter <= now || e.notAfter > now + MAX_NOT_AFTER_MS) return 'not-after is in the future, at most 30 days away';
+  return null;
+}
+
+function rowToTicket(r: Record<string, unknown>): CampaignTicket {
+  return {
+    campaignId: r.campaign_id as string,
+    ticketId: r.ticket_id as string,
+    projectId: r.project_id as string,
+    workItemId: r.work_item_id as string,
+    origin: r.origin as TicketOrigin,
+    lane: r.lane as string,
+    dependsOn: parseJson<string[]>(r.depends_on as string, []),
+    scope: parseJson<string[]>(r.scope as string, []),
+    acceptance: parseJson<TicketAcceptance>(r.acceptance as string, { kind: 'ci-only' }),
+    budget: parseJson<TicketBudget>(r.budget as string, {}),
+    blocksOn: parseJson<string[]>(r.blocks_on as string, []),
+    ticketDigest: r.ticket_digest as string,
+    sourceRef: (r.source_ref as string | null) ?? undefined,
+    createdAt: r.created_at as number,
+  };
+}
+
+function rowToAssumption(r: Record<string, unknown>): Assumption {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    campaignId: r.campaign_id as string,
+    missionId: (r.mission_id as string | null) ?? undefined,
+    ticketId: (r.ticket_id as string | null) ?? undefined,
+    ownerDecisionId: (r.owner_decision_id as string | null) ?? undefined,
+    question: r.question as string,
+    default: r.default_value as string,
+    rationale: r.rationale as string,
+    status: r.status as AssumptionStatus,
+    blocking: r.blocking === 1,
+    source: r.source as AssumptionSource,
+    recordedBy: r.recorded_by as string,
+    decisionId: (r.decision_id as string | null) ?? undefined,
+    followUpWorkItemId: (r.follow_up_work_item_id as string | null) ?? undefined,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
+  };
 }
 
 function rowToUsage(r: Record<string, unknown>): UsageTurn {

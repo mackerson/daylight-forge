@@ -259,6 +259,30 @@ CREATE TABLE work_items (
 );
 CREATE INDEX work_items_project ON work_items(project_id, created_at);
 
+-- Campaigns (WS-R5). A ticket is a plan entry bound to the work item it became; the plan
+-- itself is an artifact, and every list column is JSON.
+CREATE TABLE campaign_tickets (
+  campaign_id TEXT NOT NULL REFERENCES missions(id), ticket_id TEXT NOT NULL, project_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL UNIQUE REFERENCES work_items(id), origin TEXT NOT NULL CHECK (origin IN ('plan','fix','follow-up')),
+  lane TEXT NOT NULL, depends_on TEXT NOT NULL, scope TEXT NOT NULL, acceptance TEXT NOT NULL, budget TEXT NOT NULL,
+  blocks_on TEXT NOT NULL, ticket_digest TEXT NOT NULL, source_ref TEXT, created_at INTEGER NOT NULL,
+  PRIMARY KEY (campaign_id, ticket_id)
+);
+-- P2-R12: a row nobody human recorded is never pending, except a plan default a human
+-- approved with the plan (its decision_id is that approve-plan).
+CREATE TABLE assumptions (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, campaign_id TEXT NOT NULL REFERENCES missions(id),
+  mission_id TEXT REFERENCES missions(id), ticket_id TEXT, owner_decision_id TEXT,
+  question TEXT NOT NULL, default_value TEXT NOT NULL, rationale TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('open','pending','confirmed','overturned')), blocking INTEGER NOT NULL CHECK (blocking IN (0,1)),
+  source TEXT NOT NULL CHECK (source IN ('plan-default','operator')), recorded_by TEXT NOT NULL,
+  decision_id TEXT REFERENCES decisions(id), follow_up_work_item_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (status IN ('open','pending') OR decision_id IS NOT NULL),
+  CHECK (status <> 'confirmed' OR default_value <> ''),
+  CHECK (status <> 'pending' OR recorded_by GLOB 'human:*' OR (source = 'plan-default' AND decision_id IS NOT NULL))
+);
+CREATE INDEX assumptions_campaign ON assumptions(campaign_id, status);
+
 CREATE TABLE candidates (
   id                 TEXT PRIMARY KEY,
   mission_id         TEXT NOT NULL REFERENCES missions(id),
