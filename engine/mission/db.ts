@@ -106,6 +106,8 @@ CREATE TABLE attempts (
   model              TEXT,
   parent_attempt_id  TEXT REFERENCES attempts(id),
   gate_set_digest    TEXT,
+  -- The spend ceiling the runner was given: a campaign's reservation (P2-R18).
+  max_cost_usd       REAL CHECK (max_cost_usd IS NULL OR max_cost_usd >= 0),
   pid                INTEGER,
   heartbeat_at       INTEGER,
   origin             TEXT NOT NULL DEFAULT 'daylight' CHECK (origin IN ('daylight','ingested')),
