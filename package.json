@@ -47,7 +47,6 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "three": "^0.185.1",
-    "tree-sitter-rust": "0.24.0",
     "typescript": "^5.9.2",
     "web-tree-sitter": "0.26.13",
     "zod": "^4.4.3"

@@ -35,12 +35,20 @@ console.log('\nvendored grammar');
   }
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {
     dependencies: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
-  check('both source packages are pinned exactly',
-    ['web-tree-sitter', 'tree-sitter-rust'].every((d) => /^\d+\.\d+\.\d+$/.test(pkg.dependencies[d] ?? '')),
-    JSON.stringify(pkg.dependencies));
-  check('and the README names those versions',
-    readme.includes(pkg.dependencies['web-tree-sitter']) && readme.includes(pkg.dependencies['tree-sitter-rust']));
+  check('the runtime package is pinned exactly',
+    /^\d+\.\d+\.\d+$/.test(pkg.dependencies['web-tree-sitter'] ?? ''), JSON.stringify(pkg.dependencies));
+  check('the grammar package is not a dependency at all',
+    !('tree-sitter-rust' in pkg.dependencies) && !('tree-sitter-rust' in (pkg.devDependencies ?? {})));
+  for (const name of Object.keys(GRAMMAR_FILES)) {
+    const row = readme.split('\n').find((l) => l.startsWith(`| \`${name}\``)) ?? '';
+    check(`the README gives ${name} a version, tarball URL and tarball sha256`,
+      /\| \d+\.\d+\.\d+ \| https:\/\/registry\.npmjs\.org\/\S+\.tgz \| `[0-9a-f]{64}` \|/.test(row), row);
+  }
+  check('and the runtime row names the pinned version',
+    readme.split('\n').some((l) =>
+      l.startsWith('| `web-tree-sitter.wasm`') && l.includes(`| ${pkg.dependencies['web-tree-sitter']} |`)));
 }
 
 console.log('\nregistration');
