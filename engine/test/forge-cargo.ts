@@ -245,6 +245,22 @@ section('deps snapshot reads no ancestor config and refuses what would leave the
   crate(withGit, 'gitdep', '', 'dependencies = [\n "x",\n]\n\n[[package]]\nname = "x"\nversion = "0.1.0"\nsource = "git+https://example.invalid/x#0000"\n');
   const r5 = await throws(() => createSnapshot(withGit, path.join(tmp, 'git-out')));
   check('a git dependency in the lock is refused', r5 instanceof CargoRefused && /git dependenc/.test(r5.message), r5?.message);
+  const cfgDir = (name: string, text: string) => {
+    const d = path.join(tmp, name);
+    fs.mkdirSync(path.join(d, '.cargo'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.cargo', 'config.toml'), text);
+    return cargoConfigRefusal(d) ?? '';
+  };
+  const RUNNER = '[target.x86_64-unknown-linux-gnu]\nrunner = ["/usr/bin/sh", "/work/fake-runner.sh"]\n';
+  check('a bracket inside a quoted string in an array does not hide a later runner (review M, H1 residue)',
+    /sets target\.x86_64-unknown-linux-gnu\.runner/.test(cfgDir('cfg-quoted-bracket', `[build]\nrustflags = ["--cfg", "x=\\"[\\""]\n${RUNNER}`)));
+  check('nor one inside a literal string', /\.runner/.test(cfgDir('cfg-literal-bracket', `[build]\nrustflags = ['--cfg', 'x=[[', "]"]\n${RUNNER}`)));
+  check('nor a # inside a string, across a multi-line array', /\.runner/.test(cfgDir('cfg-multiline', `[build]\nrustflags = [\n  "-C", # comment [\n  "link-arg=#[",\n]\n${RUNNER}`)));
+  check('the quoted bracket alone is tolerated', cfgDir('cfg-quoted-ok', '[build]\nrustflags = ["--cfg", "x=\\"[\\""]\n') === '');
+  check('an array that never closes is refused as unreadable, never read in part',
+    /cannot be read/.test(cfgDir('cfg-unclosed', `[build]\nrustflags = ["-C",\n${RUNNER}`)));
+  check('a string that never closes is refused as unreadable', /cannot be read/.test(cfgDir('cfg-unclosed-string', `[build]\nrustflags = ["-C\n${RUNNER}`)));
+  check('a file that is not TOML at all is refused as unreadable', /cannot be read/.test(cfgDir('cfg-garbage', `this is not toml\n${RUNNER}`)));
   check('cargoConfigRefusal refuses a .cargo that is a symlink', (() => {
     const d = path.join(tmp, 'linked-cargo');
     fs.mkdirSync(d);
@@ -622,6 +638,17 @@ section('a candidate cannot forge a cargo gate\'s result (P2-R30)');
     fs.writeFileSync(path.join(tree, '.cargo/config.toml'), '[target.x86_64-unknown-linux-gnu]\nrunner = ["/usr/bin/sh", "/work/fake-runner.sh"]\n');
     fs.writeFileSync(path.join(tree, 'fake-runner.sh'), `echo "running 1 test"; echo "${OK_LINE}"\n`);
   });
+  const { m: m3, x: x3 } = await lockedCargoGate('runner hidden behind a quoted bracket');
+  const hidden = await judged(m3, x3, (tree) => {
+    fs.appendFileSync(path.join(tree, 'crates/core/src/lib.rs'), '\npub fn padded(_n: u64, _w: usize) -> String { String::from("wrong") }\n');
+    fs.mkdirSync(path.join(tree, '.cargo'));
+    fs.writeFileSync(path.join(tree, '.cargo/config.toml'),
+      '[build]\nrustflags = ["--cfg", "x=\\"[\\""]\n[target.x86_64-unknown-linux-gnu]\nrunner = ["/usr/bin/sh", "/work/fake-runner.sh"]\n');
+    fs.writeFileSync(path.join(tree, 'fake-runner.sh'), `echo "running 1 test"; echo "${OK_LINE}"\n`);
+  });
+  const hr = hidden.g ? recordsOf(hidden.g) : [];
+  check('a runner after a quoted bracket in rustflags is seen and refused; the candidate is not accepted',
+    hidden.g?.conclusion === 'invalid' && /\.runner/.test(hr[0]?.why ?? '') && hidden.c.verdict !== 'accepted-by-gates', `${hidden.g?.conclusion} ${hr[0]?.why}`);
   const rr = runner.g ? recordsOf(runner.g) : [];
   check('a .cargo/config.toml runner in the candidate is invalid, refused before cargo runs',
     runner.g?.conclusion === 'invalid' && rr.length === 1 && !rr[0].observed && /\.cargo\/config\.toml sets target\.x86_64-unknown-linux-gnu\.runner/.test(rr[0].why ?? ''),

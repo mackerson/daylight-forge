@@ -197,6 +197,28 @@ function stripComment(line: string): string {
 }
 
 /**
+ * `depth` after the brackets of one line of an array, counting only those outside strings: a
+ * `"…"` basic string (with `\\` escapes) or a `'…'` literal string, and stopping at a `#`
+ * comment. Null when a string does not close on its line: arrays here hold one-line strings.
+ */
+function arrayDepth(line: string, depth: number): number | null {
+  let q: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '\\' && q === '"') i++;
+      else if (c === q) q = null;
+    } else if (c === '"' || c === "'") {
+      if (line.startsWith(c.repeat(3), i)) return null;
+      q = c;
+    } else if (c === '#') break;
+    else if (c === '[') depth++;
+    else if (c === ']') depth--;
+  }
+  return q ? null : depth;
+}
+
+/**
  * Every key a cargo config file sets, as dotted paths, or why it cannot be read. A small reader,
  * not a TOML parser: tables, dotted keys and one level of inline table. Multi-line strings and
  * arrays are skipped over by bracket depth; anything it does not understand is a refusal.
@@ -237,10 +259,11 @@ export function cargoConfigKeys(text: string): { keys: string[][] } | { error: s
         while (++n < lines.length && !lines[n].includes(fence));
       }
     } else if (value.startsWith('[')) {
-      let depth = 0;
-      const count = (s: string) => { for (const c of stripComment(s)) depth += c === '[' ? 1 : c === ']' ? -1 : 0; };
-      count(value);
-      while (depth > 0 && ++n < lines.length) count(lines[n]);
+      const start = n + 1;
+      let depth = arrayDepth(value, 0);
+      while (depth !== null && depth > 0 && ++n < lines.length) depth = arrayDepth(lines[n], depth);
+      if (depth === null) return { error: `line ${n + 1}: unreadable string in an array` };
+      if (depth !== 0) return { error: `line ${start}: an array that never closes` };
     }
   }
   return { keys };
