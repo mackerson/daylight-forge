@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Graph, GraphNode } from '../graph/types.ts';
 import type { CallSite, ImportBinding, ParsedFile, Parser } from './parser.ts';
 import { aliasesFromTsconfig, Resolver } from './resolve.ts';
+import { crateFromManifest, isLocalRustSpec, type RustCrate } from './rust-resolve.ts';
 import { activeParsers, parserFor } from './registry.ts';
 
 const IGNORED_DIRS = new Set([
@@ -155,7 +156,7 @@ export function extract(options: ExtractOptions): Graph {
   const testFiles = includeTests ? [] : parseable.filter((f) => TEST_RE.test(f));
 
   const aliases = readAliases(root, allFiles);
-  const resolver = new Resolver(sourceFiles, aliases);
+  const resolver = new Resolver(sourceFiles, aliases, readCrates(root, allFiles));
 
   const graph: Graph = {
     root,
@@ -266,7 +267,7 @@ export function extract(options: ExtractOptions): Graph {
       const target = resolver.resolve(spec, rel);
       if (target) {
         graph.edges.push({ from: rel, to: target, kind: 'imports', spec });
-      } else if (spec.startsWith('.')) {
+      } else if (spec.startsWith('.') || isLocalRustSpec(spec)) {
         // A relative specifier we failed to resolve is our bug, not an external package.
         graph.stats.unresolvedImports++;
         graph.diagnostics.push({ file: rel, message: `unresolved relative import: ${spec}` });
@@ -378,4 +379,18 @@ function readAliases(root: string, allFiles: string[]): ReturnType<typeof aliase
     }
   }
   return aliases;
+}
+
+/** Every `[package]` in the tree, so `crate::` and cross-crate paths have somewhere to land. */
+function readCrates(root: string, allFiles: string[]): RustCrate[] {
+  const crates: RustCrate[] = [];
+  for (const manifest of allFiles.filter((f) => /(^|\/)Cargo\.toml$/.test(f))) {
+    try {
+      const crate = crateFromManifest(manifest, fs.readFileSync(path.join(root, manifest), 'utf8'));
+      if (crate) crates.push(crate);
+    } catch {
+      // An unreadable manifest just means that crate's paths stay unresolved.
+    }
+  }
+  return crates;
 }

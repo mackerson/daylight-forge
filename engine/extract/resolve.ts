@@ -1,5 +1,6 @@
 import path from 'node:path';
 import ts from 'typescript';
+import { type RustCrate, RustResolver } from './rust-resolve.ts';
 
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 
@@ -21,14 +22,18 @@ export class Resolver {
   /** Repo-relative paths of every file we know about, for existence checks. */
   private readonly known: Set<string>;
   private readonly aliases: PathAlias[];
+  private readonly rust: RustResolver;
 
-  constructor(files: Iterable<string>, aliases: PathAlias[] = []) {
+  constructor(files: Iterable<string>, aliases: PathAlias[] = [], crates: RustCrate[] = []) {
     this.known = new Set(files);
     this.aliases = aliases;
+    this.rust = new RustResolver(this.known, crates);
   }
 
   /** Returns the resolved repo-relative path, or null if external/unresolvable. */
   resolve(spec: string, fromFile: string): string | null {
+    if (fromFile.endsWith('.rs')) return this.rust.resolve(spec, fromFile);
+
     if (spec.startsWith('.')) {
       const base = path.posix.join(path.posix.dirname(fromFile), spec);
       return this.tryCandidates(base);
