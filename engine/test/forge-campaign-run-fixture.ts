@@ -16,10 +16,11 @@ import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { identifyProject } from '../mission/project.ts';
 import { newId, type CreateDecisionInput, type MissionStore } from '../mission/store.ts';
 import type {
-  AuthorizeCampaignScope, Candidate, CandidateFile, CampaignEnvelope, Decision, EnvelopeRequest, Mission,
+  AuthorizeCampaignScope, Candidate, CandidateFile, CampaignEnvelope, CampaignTicket, Decision, EnvelopeRequest, Mission, PlanFileV1,
 } from '../mission/types.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
 import type { IntegrateDeps } from '../forge/integrate.ts';
+import type { CampaignHost } from '../forge/director.ts';
 
 export const ACTOR = `human:${os.userInfo().username}`;
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -106,31 +107,47 @@ export const ENVELOPE: Omit<CampaignEnvelope, 'notAfter'> = {
   identity: { name: 'Daylight campaign', email: 'campaign@daylight.invalid' },
 };
 
-/** A campaign mission at `base` and a human `authorize-campaign` decision on it. */
-export function makeCampaign(ctx: DaylightContext, repo: string, base: string, env: Partial<CampaignEnvelope> = {}): { campaign: Mission; auth: Decision } {
-  const projectId = identifyProject(repo).id;
-  const campaign = ctx.store.createMission({
-    projectId, kind: 'campaign', objective: 'campaign fixture', baseRevision: base, scope: { paths: ['daylight.plan.json'] },
-  });
+/** A human `authorize-campaign` decision on the campaign: the envelope the director runs under. */
+export function authorizeCampaign(ctx: DaylightContext, campaign: Mission, env: Partial<CampaignEnvelope> = {}): Decision {
   const scope: AuthorizeCampaignScope = { operation: 'authorize-campaign', ...ENVELOPE, notAfter: Date.now() + 3_600_000, ...env };
-  const auth = ctx.store.recordDecision({
-    missionId: campaign.id, projectId, revision: base, actor: ACTOR, kind: 'approve', rationale: 'fixture',
+  return ctx.store.recordDecision({
+    missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: ACTOR, kind: 'approve', rationale: 'fixture',
     scope: scope as unknown as Record<string, unknown>, artifactIds: [],
   });
-  return { campaign, auth };
+}
+
+/** A campaign mission at `base` and a human `authorize-campaign` decision on it. */
+export function makeCampaign(ctx: DaylightContext, repo: string, base: string, env: Partial<CampaignEnvelope> = {}, paths = ['daylight.plan.json']): { campaign: Mission; auth: Decision } {
+  const projectId = identifyProject(repo).id;
+  ctx.store.ensureProject(identifyProject(repo));
+  const campaign = ctx.store.createMission({
+    projectId, kind: 'campaign', objective: 'campaign fixture', baseRevision: base, scope: { paths },
+  });
+  return { campaign, auth: authorizeCampaign(ctx, campaign, env) };
+}
+
+/** A work item on the campaign, approved by a person (R5's approve-plan stands in for this). */
+export function makeWorkItem(ctx: DaylightContext, campaign: Mission, ticketId: string, o: { approve?: boolean; title?: string; statement?: string } = {}): string {
+  const spec = ctx.artifacts.put(`plan ${campaign.id}`, { kind: 'spec', projectId: campaign.projectId, label: 'plan' });
+  const w = ctx.store.createWorkItem({
+    projectId: campaign.projectId, missionId: campaign.id, specArtifact: spec, specRevision: campaign.baseRevision, anchor: `ticket:${ticketId}`,
+    title: o.title ?? `Ticket ${ticketId}`, statement: o.statement ?? `do ${ticketId}`, examples: [], negativeExamples: [], proposedBy: 'plan',
+  });
+  if (o.approve !== false) approveWorkItem(ctx, campaign, w.id);
+  return w.id;
+}
+
+export function approveWorkItem(ctx: DaylightContext, campaign: Mission, workItemId: string): void {
+  const w = ctx.store.workItem(workItemId)!;
+  ctx.store.decideWorkItem(w.id, 'proposed', 'approved', {
+    missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: ACTOR, kind: 'approve', rationale: 'fixture',
+    scope: { operation: 'approve-work-item', workItemId: w.id, contentDigest: w.contentDigest }, artifactIds: [],
+  });
 }
 
 /** An approved work item on the campaign and its implement mission, authorized by a person (the surgical path). */
 export function makeTicketMission(ctx: DaylightContext, campaign: Mission, ticketId: string, base: string, scope?: string[]): Mission {
-  const spec = ctx.artifacts.put(`plan ${campaign.id}`, { kind: 'spec', projectId: campaign.projectId, label: 'plan' });
-  const w = ctx.store.createWorkItem({
-    projectId: campaign.projectId, missionId: campaign.id, specArtifact: spec, specRevision: base, anchor: `ticket:${ticketId}`,
-    title: `Ticket ${ticketId}`, statement: `do ${ticketId}`, examples: [], negativeExamples: [], proposedBy: 'plan',
-  });
-  ctx.store.decideWorkItem(w.id, 'proposed', 'approved', {
-    missionId: campaign.id, projectId: campaign.projectId, revision: base, actor: ACTOR, kind: 'approve', rationale: 'fixture',
-    scope: { operation: 'approve-work-item', workItemId: w.id, contentDigest: w.contentDigest }, artifactIds: [],
-  });
+  const w = { id: makeWorkItem(ctx, campaign, ticketId) };
   const m = ctx.store.createMission({
     projectId: campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: base, parentId: campaign.id,
     workItemId: w.id, scope: { paths: scope ?? [] },
@@ -174,5 +191,58 @@ export function fakeDeps(o: { refuse?: string; seen?: EnvelopeRequest[] } = {}):
       return o.refuse ?? null;
     },
     recordDerivedDecision: (store, parent, input) => rawDecision(store, { ...input, scope: { ...input.scope, derivedFrom: parent } }),
+  };
+}
+
+/** A plan ticket row as R5 will store it. */
+export function ticketRow(campaign: Mission, workItemId: string, t: { id: string; lane: string; dependsOn?: string[]; scope: string[]; acceptance?: CampaignTicket['acceptance']; budget?: CampaignTicket['budget']; origin?: CampaignTicket['origin']; blocksOn?: string[] }): CampaignTicket {
+  return {
+    campaignId: campaign.id, ticketId: t.id, projectId: campaign.projectId, workItemId, origin: t.origin ?? 'plan', lane: t.lane, dependsOn: t.dependsOn ?? [],
+    scope: t.scope, acceptance: t.acceptance ?? { kind: 'ci-only' }, budget: t.budget ?? {}, blocksOn: t.blocksOn ?? [], ticketDigest: `sha256:${'d'.repeat(64)}`,
+    createdAt: Date.now(),
+  };
+}
+
+/**
+ * WS-R5's side of the director, stood in for with human acts and raw rows: ticket missions are
+ * created and authorized by a person (the surgical path, §2.3), halts and admissions written as
+ * R5's derived decisions will be.
+ */
+export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFileV1, tickets: CampaignTicket[], o: { deps?: IntegrateDeps; open?: string[] } = {}): CampaignHost & { tickets(): CampaignTicket[] } {
+  const auth = () => ctx.store.decisions(campaign.id).filter((d) => d.scope.operation === 'authorize-campaign').at(-1)!;
+  return {
+    tickets: () => tickets,
+    plan: () => plan,
+    openOwnerDecisions: () => new Set(o.open ?? []),
+    authorizationRefusal: () => null,
+    startTicketMission: (_c, ticketId, base) => {
+      const t = tickets.find((x) => x.ticketId === ticketId)!;
+      const env = auth().scope as unknown as CampaignEnvelope;
+      const m = ctx.store.createMission({
+        projectId: campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: base, parentId: campaign.id,
+        workItemId: t.workItemId, scope: { paths: t.scope },
+      });
+      return ctx.store.authorizeMission({
+        missionId: m.id, actor: ACTOR, rationale: 'stand-in for the derived grant', permissions: { write: true, execute: env.execute },
+        maxUsd: Math.min(t.budget.maxUsd ?? Infinity, env.maxUsdPerMission),
+      }).mission;
+    },
+    halt: (_c, reason) => rawDecision(ctx.store, {
+      missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: `campaign:${campaign.id}`, kind: 'approve',
+      rationale: `halted: ${reason}`, scope: { operation: 'halt-campaign', reason, derivedFrom: auth().id }, artifactIds: [],
+    }),
+    fileFixTicket: (_c, t) => {
+      const workItemId = makeWorkItem(ctx, campaign, t.ticketId, { approve: false, title: t.title, statement: t.statement });
+      const row = ticketRow(campaign, workItemId, { id: t.ticketId, lane: t.lane, scope: t.scope, acceptance: t.acceptance, budget: t.budget, origin: 'fix' });
+      tickets.push({ ...row, sourceRef: t.sourceRef });
+      return row;
+    },
+    admitIfWithinEnvelope: (_c, workItemId, wave) => {
+      const env = auth().scope as unknown as CampaignEnvelope;
+      if (!env.fixLane.enabled || wave.admitted >= Math.min(5, env.fixLane.maxTicketsPerWave)) return false;
+      approveWorkItem(ctx, campaign, workItemId);
+      return true;
+    },
+    integrate: o.deps ?? fakeDeps(),
   };
 }
