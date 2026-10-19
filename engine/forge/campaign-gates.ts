@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { digestOf } from '../mission/artifacts.ts';
 import { GateSetMoved } from '../mission/store.ts';
@@ -6,7 +5,8 @@ import type {
   CampaignLockScope, CampaignTicket, CampaignVerdictRows, Decision, ExpectedObservation, Experiment, GateEvaluation, GateHarness,
   Integration, Mission, PlanFileV1,
 } from '../mission/types.ts';
-import { HARDENED_GIT_CONFIG, hardenedGitEnv, harnessHolds, runGate } from '../experiment/runner.ts';
+import { harnessHolds, runGate } from '../experiment/runner.ts';
+import { gitIn } from './apply.ts';
 import { campaignVerdict, requiredChecks } from './campaign-verdict.ts';
 import { gateCacheKey, removeGateCache } from './cargo.ts';
 import { confirmDigest } from './confirm.ts';
@@ -78,9 +78,7 @@ export function registerCampaignGate(ctx: GateContext, input: RegisterCampaignGa
 
 /** `path` at `commit` of `repo`, read from git objects: the plan's tests, never the working tree. */
 export function blobAt(repo: string, commit: string, rel: string): Buffer {
-  return execFileSync('git', [...HARDENED_GIT_CONFIG, '-C', repo, 'cat-file', 'blob', `${commit}:${rel}`], {
-    env: hardenedGitEnv(), stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, maxBuffer: 16 * 1024 * 1024,
-  });
+  return gitIn({ repo }, ['cat-file', 'blob', `${commit}:${rel}`]);
 }
 
 /**

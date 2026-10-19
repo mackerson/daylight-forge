@@ -1,6 +1,4 @@
-import { execFileSync } from 'node:child_process';
 import { detectSandbox, type SandboxProfile } from '../experiment/sandbox.ts';
-import { HARDENED_GIT_CONFIG, hardenedGitEnv } from '../experiment/runner.ts';
 import { requireMappedRepo, type DaylightContext } from '../mission/context.ts';
 import { missionSpend } from '../mission/ledger.ts';
 import { takeRunClaim } from '../mission/orchestrate.ts';
@@ -12,6 +10,7 @@ import type {
   FindingSeverity, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
+import { gitIn } from './apply.ts';
 import { campaignLockRefusal, concludeVerdict, evaluateIntegrated } from './campaign-gates.ts';
 import { dependencyNeeds } from './dependency-requests.ts';
 import type { GateContext } from './gate.ts';
@@ -118,7 +117,7 @@ const latestCandidate = (store: MissionStore, m: Mission): Candidate | undefined
 
 function isAncestor(repo: string, a: string, b: string): boolean {
   try {
-    execFileSync('git', [...HARDENED_GIT_CONFIG, '-C', repo, 'merge-base', '--is-ancestor', a, b], { stdio: 'ignore', env: hardenedGitEnv(), timeout: 60_000 });
+    gitIn({ repo }, ['merge-base', '--is-ancestor', a, b]);
     return true;
   } catch {
     return false;

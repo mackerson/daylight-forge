@@ -252,5 +252,56 @@
         "file": "^engine/(swarm/|mission/store\\.ts$|experiment/|forge/(wave|finding|director|integrate|campaign-gates)\\.ts$)"
       }
     }
+  },
+  {
+    "id": "director-spawns-nothing",
+    "prose": "The campaign director, its wave review, its gates, its status and its commands start no process of their own: every git command goes through apply.ts's hardened gitIn, and every gate and author run through the runner and the sandbox.",
+    "rationale": "ADR-17/ADR-38: refs outside refs/heads/daylight/** never change, and HEAD, the index and the working tree are never touched. A child_process call in these files is a git or shell command that skips the hardened config (no hooks, no fsmonitor, empty system config). engine/test/forge-campaign-run-director.ts and forge-campaign-integrate-ref.ts hold the behavioural half: HEAD, index, worktree and every other ref are byte-equal after a campaign, and planted hooks never fire.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^engine/forge/(director|wave|campaign-gates|campaign-status|campaign-verdict|commands-campaign-run|finding)\\.ts$"
+      },
+      "callee": "(^|\\.)(execFileSync|execSync|execFile|exec|spawnSync|spawn|fork)$"
+    }
+  },
+{
+    "id": "integration-ref-moves-by-cas",
+    "prose": "engine/forge/integrate.ts moves a campaign's integration ref only by compare-and-swap (casRef: update-ref <ref> <new> <old>), both to land and to undo a landing.",
+    "rationale": "\u00a74.3: a ref moved by someone else between integration and landing must refuse the landing, not be overwritten. The row half is integrationRefusals (every first-parent commit to the tip is a landing or a person's adoption), asserted empty in engine/test/forge-campaign-integrate-ref.ts, which also shows a moved ref refusing the CAS.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/integrate\\.ts$"
+      },
+      "callee": "^casRef$",
+      "min": 3
+    }
+  },
+{
+    "id": "campaign-spend-within-cap",
+    "prose": "The director asks campaignSpendRefusal before every launch: a reservation that would pass the campaign cap waits, an unknown cost or a breach halts.",
+    "rationale": "P2-R11, P2-R18: campaign spend never exceeds the cap the human authorized. The behavioural half is engine/test/forge-campaign-run-director.ts (unknown cost halts; a reservation holds a launch until the cap allows; spend stays within the cap).",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/director\\.ts$"
+      },
+      "callee": "^campaignSpendRefusal$",
+      "min": 2
+    }
+  },
+{
+    "id": "no-holdout-in-repair",
+    "prose": "A repair brief carries public checks' output, redacted, and only a count of failed holdouts: engine/forge/director.ts redacts every text it puts in one.",
+    "rationale": "ADR-18 for campaigns (\u00a74.7): an author must not learn a holdout's id, path or output through the attempt after it. engine/test/forge-campaign-run-director.ts asserts no holdout text, id or path in any prompt or campaign event; this static half goes red if the brief stops redacting.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/director\\.ts$"
+      },
+      "callee": "^redact$",
+      "min": 3
+    }
   }
 ]
