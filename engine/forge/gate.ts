@@ -11,7 +11,7 @@ import {
   type EventSink, type GateRunContext, type GateRunResult,
 } from '../experiment/runner.ts';
 import type { SandboxLimits, SandboxProfile } from '../experiment/sandbox.ts';
-import { cargoMounts, CargoRefused, snapshotRefusal } from './cargo.ts';
+import { cargoConfigRefusal, cargoMounts, CargoRefused, snapshotRefusal } from './cargo.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, GATE_DIR } from './policy.ts';
 import { mountRefusal } from './sandbox.ts';
@@ -189,7 +189,13 @@ function gateCargo(ctx: GateContext): NonNullable<GateRunContext['cargo']> {
     const why = mountRefusal(b.src, { home: os.homedir(), out, allow: [b.src], outAllow: [b.src] });
     if (why) return { refused: `refusing to mount the cargo ${b.dest}: ${why}` };
   }
-  return { ...m, preflight: (tree) => snapshotRefusal(tree, out, ctx.repoRoot) };
+  return {
+    ...m,
+    preflight: (tree) => {
+      const config = cargoConfigRefusal(tree);
+      return config ? `the tree under test's ${config}` : snapshotRefusal(tree, out, ctx.repoRoot);
+    },
+  };
 }
 
 function record(

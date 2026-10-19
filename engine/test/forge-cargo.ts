@@ -108,9 +108,13 @@ section('the cargo allowlist');
 section('reading a cargo run');
 {
   const t = 'daylight_x_1';
-  check('an ok result with tests is readable', noCargoTestsReported('test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n', '', t) === null);
-  check('a FAILED result is readable: it is a failing gate', noCargoTestsReported('test result: FAILED. 0 passed; 1 failed; 0 ignored;\n', '', t) === null);
-  check('0 passed, 0 failed is vacuous, so unreadable', /0 tests/.test(noCargoTestsReported('test result: ok. 0 passed; 0 failed; 0 ignored;\n', '', t) ?? ''));
+  const ran = `     Running tests/${t}.rs (/cargo-target/debug/deps/${t}-0123)\n`;
+  check('an ok result with tests is readable', noCargoTestsReported('test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n', ran, t) === null);
+  check('a FAILED result is readable: it is a failing gate', noCargoTestsReported('test result: FAILED. 0 passed; 1 failed; 0 ignored;\n', ran, t) === null);
+  check('0 passed, 0 failed is vacuous, so unreadable', /0 tests/.test(noCargoTestsReported('test result: ok. 0 passed; 0 failed; 0 ignored;\n', ran, t) ?? ''));
+  check('a result with no Running line for the placed test is unreadable', /not the placed test/.test(noCargoTestsReported('test result: ok. 2 passed; 0 failed;\n', '', t) ?? ''));
+  check('a Running line for another file under the target\'s name is unreadable',
+    /not the placed test/.test(noCargoTestsReported('test result: ok. 2 passed; 0 failed;\n', `     Running src/evil.rs (/cargo-target/debug/deps/${t}-0)\n`, t) ?? ''));
   check('the gate\'s own target not compiling is a failing gate',
     noCargoTestsReported('', 'error[E0425]: cannot find function\nerror: could not compile `fixture-core` (test "daylight_x_1") due to 1 previous error\n', t) === null);
   check('another unit not compiling is unreadable', noCargoTestsReported('', 'error: could not compile `fixture-core` (lib) due to 1 previous error\n', t) !== null);
@@ -469,6 +473,82 @@ section('evaluate: supported on a diff that adds padded()');
   check('so the verdict is rejected-by-gates', v.verdict === 'rejected-by-gates', `${v.verdict} ${v.verdictReasons.join('; ')}`);
   check('the author cache was not touched by the gates', listing(targetDir(out, 'gate')).length > 0
     && !recordsOf(g!).some((r) => r.sandboxArgv.some((x) => x.includes(path.join('cargo', 'target', 'author')))));
+}
+
+/**
+ * A mission with one locked cargo gate, and a candidate on it made by `edit`. The policy
+ * violations are recorded as none on purpose: the harness's own checks are under test here,
+ * not policy's, and they must hold without it.
+ */
+async function lockedCargoGate(objective: string, testSource = PADDED_GATE): Promise<{ m: Mission; x: Experiment; base: GateEvaluation }> {
+  const m = newMission(objective);
+  const x = registerGate(ctx, { missionId: m.id, role: 'gate', testSource, basename: 'padded.rs', prediction: PASS, harness: 'cargo', crate: 'crates/core' });
+  const [base] = await baseline(ctx, m.id);
+  if (base.conclusion === 'falsified') {
+    lock(ctx, { missionId: m.id, actor: HUMAN, rationale: 'r', confirm: confirmDigest(ctx, 'lock-gates', m.id, { experimentIds: [x.id] }).digest8 });
+  }
+  return { m, x, base };
+}
+async function judged(m: Mission, x: Experiment, edit: (tree: string) => void): Promise<{ c: Candidate; g: GateEvaluation | undefined }> {
+  const g0 = dctx.store.authorizeMission({ missionId: m.id, actor: HUMAN, rationale: 'go', permissions: { write: true, execute: false }, maxUsd: null }).decision;
+  const ws = createWorkspace(repo, commit);
+  let diff: Buffer;
+  try {
+    edit(ws.tree);
+    diff = diffOf(ws);
+  } finally {
+    ws.dispose();
+  }
+  const task = dctx.store.createTask({ missionId: m.id, role: 'author', objective: 'probe' });
+  const a = dctx.store.startAttempt({
+    taskId: task.id, runnerId: 'agent:mock:author',
+    sandbox: { profile: 'author', network: 'none', write: true, exec: false, authorizeDecisionId: g0.id },
+  });
+  dctx.store.finishAttempt(a.id, { state: 'completed', exitCode: 0, costUsd: null });
+  const meta = { projectId: project.id, revision: commit };
+  const c0 = dctx.store.createCandidate({
+    missionId: m.id, attemptId: a.id, projectId: project.id, baseCommit: commit,
+    diffArtifact: dctx.artifacts.put(diff, { ...meta, kind: 'diff' }),
+    summaryArtifact: dctx.artifacts.put('{}', { ...meta, kind: 'summary' }),
+    files: [{ path: 'crates/core/src/lib.rs', change: 'modified', insertions: 1, deletions: 0, mode: 'file', previousMode: 'file' }],
+    policyViolations: [], secretHits: 0,
+    gateSetDigest: dctx.store.lockDecision(m.id)!.scope.gateSetDigest as string,
+    profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed',
+  });
+  const c = await evaluate(ctx, c0.id);
+  return { c, g: dctx.store.gateEvaluations({ candidateId: c.id, target: 'candidate' }).find((r) => r.experimentId === x.id) };
+}
+const OK_LINE = 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s';
+
+section('a candidate cannot forge a cargo gate\'s result (P2-R30)');
+{
+  const { m, x } = await lockedCargoGate('forged [[test]] entry');
+  const t = cargoTargetOf(x.id);
+  const forged = await judged(m, x, (tree) => {
+    fs.appendFileSync(path.join(tree, 'crates/core/Cargo.toml'), `\n[[test]]\nname = "${t}"\npath = "src/evil.rs"\nharness = false\n`);
+    fs.writeFileSync(path.join(tree, 'crates/core/src/evil.rs'), `fn main() { println!("${OK_LINE}"); }\n`);
+  });
+  const fr = forged.g ? recordsOf(forged.g) : [];
+  check('a [[test]] entry giving the gate\'s target name to another file is invalid, never supported',
+    forged.g?.conclusion === 'invalid' && fr.every((r) => /not the placed test/.test(r.why ?? '')), `${forged.g?.conclusion} ${fr[0]?.why}`);
+  check('even though that file printed the ok line and exited 0', fr.some((r) => stdoutOf(r).includes('test result: ok.') && r.exitCode === 0));
+  check('so the verdict is not an acceptance', forged.c.verdict !== 'accepted-by-gates', forged.c.verdict);
+
+  const { m: m2, x: x2 } = await lockedCargoGate('forged runner');
+  const runner = await judged(m2, x2, (tree) => {
+    fs.appendFileSync(path.join(tree, 'crates/core/src/lib.rs'), '\npub fn padded(_n: u64, _w: usize) -> String { String::from("wrong") }\n');
+    fs.mkdirSync(path.join(tree, '.cargo'));
+    fs.writeFileSync(path.join(tree, '.cargo/config.toml'), '[target.x86_64-unknown-linux-gnu]\nrunner = ["/usr/bin/sh", "/work/fake-runner.sh"]\n');
+    fs.writeFileSync(path.join(tree, 'fake-runner.sh'), `echo "running 1 test"; echo "${OK_LINE}"\n`);
+  });
+  const rr = runner.g ? recordsOf(runner.g) : [];
+  check('a .cargo/config.toml runner in the candidate is invalid, refused before cargo runs',
+    runner.g?.conclusion === 'invalid' && rr.length === 1 && !rr[0].observed && /\.cargo\/config\.toml sets target\.x86_64-unknown-linux-gnu\.runner/.test(rr[0].why ?? ''),
+    `${runner.g?.conclusion} ${rr[0]?.why}`);
+  check('and is not accepted', runner.c.verdict !== 'accepted-by-gates', runner.c.verdict);
+  check('reading two binaries\' output is invalid',
+    /not the placed test/.test(noCargoTestsReported(`${OK_LINE}\n${OK_LINE}\n`, `     Running tests/${t}.rs (/x)\n     Running src/evil.rs (/y)\n`, t) ?? ''));
+  check('reading none is invalid', noCargoTestsReported(`${OK_LINE}\n`, '', t) !== null);
 }
 
 section('a Cargo.lock change refuses the run, in one line naming the command');

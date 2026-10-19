@@ -104,6 +104,134 @@ export function snapshotDigest(dir: string): { digest: string; files: number; by
   return { digest: sha256(lines.join('\n')), files, bytes };
 }
 
+// ---- cargo configuration ------------------------------------------------------------------
+
+/**
+ * The cargo configuration keys a repository's `.cargo/config.toml` may carry (P2-R29): build
+ * flags, profiles, aliases and display settings. Everything else is refused, which covers what
+ * the review named — registries, sources, `[net]`, `[http]`, credentials, `build.rustc*`,
+ * `build.target-dir`, `[target.*].runner`/`linker`, `[env]`, `[unstable]`, `[patch]` — and
+ * whatever cargo adds next.
+ */
+const TOLERATED_TOP = new Set(['profile', 'alias', 'term', 'cargo-new', 'doc', 'future-incompat-report']);
+const TOLERATED_BUILD = new Set(['rustflags', 'rustdocflags', 'jobs', 'incremental', 'target']);
+const TOLERATED_TARGET = new Set(['rustflags', 'rustdocflags']);
+
+function toleratedKey(k: string[]): boolean {
+  if (!k.length) return true;
+  if (TOLERATED_TOP.has(k[0])) return true;
+  if (k[0] === 'build') return k.length === 1 || (k.length === 2 && TOLERATED_BUILD.has(k[1]));
+  if (k[0] === 'target') return k.length <= 2 || (k.length === 3 && TOLERATED_TARGET.has(k[2]));
+  return false;
+}
+
+/** A dotted TOML key, bare or quoted, as its parts; null when it is not one this reader knows. */
+function keyParts(raw: string): string[] | null {
+  const parts: string[] = [];
+  const re = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/y;
+  let i = 0;
+  while (i < raw.length) {
+    re.lastIndex = i;
+    const m = re.exec(raw);
+    if (!m) return null;
+    parts.push(m[1] ?? m[2] ?? m[3]);
+    i = re.lastIndex;
+    if (m[4] === '') break;
+  }
+  return parts.length ? parts : null;
+}
+
+/** `text` with a trailing `# comment` removed, quotes respected. */
+function stripComment(line: string): string {
+  let q: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '\\' && q === '"') i++;
+      else if (c === q) q = null;
+    } else if (c === '"' || c === "'") q = c;
+    else if (c === '#') return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * Every key a cargo config file sets, as dotted paths, or why it cannot be read. A small reader,
+ * not a TOML parser: tables, dotted keys and one level of inline table. Multi-line strings and
+ * arrays are skipped over by bracket depth; anything it does not understand is a refusal.
+ */
+export function cargoConfigKeys(text: string): { keys: string[][] } | { error: string } {
+  const keys: string[][] = [];
+  let prefix: string[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let n = 0; n < lines.length; n++) {
+    const line = stripComment(lines[n]).trim();
+    if (!line) continue;
+    const header = /^\[\[?([^\]]+)\]\]?$/.exec(line);
+    if (header) {
+      const k = keyParts(header[1]);
+      if (!k) return { error: `line ${n + 1}: unreadable table header` };
+      prefix = k;
+      keys.push(k);
+      continue;
+    }
+    const eq = line.indexOf('=');
+    const k = eq > 0 ? keyParts(line.slice(0, eq)) : null;
+    if (!k) return { error: `line ${n + 1}: not a key = value line` };
+    const value = line.slice(eq + 1).trim();
+    const full = [...prefix, ...k];
+    keys.push(full);
+    if (value.startsWith('{')) {
+      if (!value.endsWith('}') || value.slice(1, -1).includes('{')) return { error: `line ${n + 1}: nested or multi-line inline tables are not read` };
+      for (const pair of value.slice(1, -1).split(',')) {
+        if (!pair.trim()) continue;
+        const e = pair.indexOf('=');
+        const sub = e > 0 ? keyParts(pair.slice(0, e)) : null;
+        if (!sub) return { error: `line ${n + 1}: unreadable inline table` };
+        keys.push([...full, ...sub]);
+      }
+    } else if (value.startsWith('"""') || value.startsWith("'''")) {
+      const fence = value.slice(0, 3);
+      if (value.length < 6 || !value.endsWith(fence)) {
+        while (++n < lines.length && !lines[n].includes(fence));
+      }
+    } else if (value.startsWith('[')) {
+      let depth = 0;
+      const count = (s: string) => { for (const c of stripComment(s)) depth += c === '[' ? 1 : c === ']' ? -1 : 0; };
+      count(value);
+      while (depth > 0 && ++n < lines.length) count(lines[n]);
+    }
+  }
+  return { keys };
+}
+
+/**
+ * Why `<dir>/.cargo/config.toml` (or the legacy `.cargo/config`) may not be used, or null: a
+ * link anywhere on the way, a file this reader cannot read, or any key outside the tolerated set.
+ * Cargo reads this file inside the sandbox too (cwd `/work`), so the gate preflight asks the same
+ * question of every tree under test, and `deps snapshot` of the repository.
+ */
+export function cargoConfigRefusal(dir: string): string | null {
+  const dotCargo = path.join(dir, '.cargo');
+  const st = fs.lstatSync(dotCargo, { throwIfNoEntry: false });
+  if (!st) return null;
+  if (st.isSymbolicLink() || !st.isDirectory()) return '.cargo is not a plain directory; cargo configuration is never read through a link';
+  for (const name of fs.readdirSync(dotCargo)) {
+    if (name !== 'config' && name !== 'config.toml' && !/^credentials/.test(name)) continue;
+    if (/^credentials/.test(name)) return `.cargo/${name}: a credentials file is never used`;
+    const f = path.join(dotCargo, name);
+    const fst = fs.lstatSync(f);
+    if (!fst.isFile()) return `.cargo/${name} is not a plain file`;
+    const r = cargoConfigKeys(fs.readFileSync(f, 'utf8'));
+    if ('error' in r) return `.cargo/${name}: ${r.error}; cargo configuration that cannot be read is refused`;
+    const bad = r.keys.filter((k) => !toleratedKey(k)).map((k) => k.join('.'));
+    if (bad.length) {
+      return `.cargo/${name} sets ${[...new Set(bad)].slice(0, 5).join(', ')}; only build flags, profiles, aliases and display settings are allowed (docs/daylight/CARGO.md)`;
+    }
+  }
+  return null;
+}
+
 /** The recorded snapshot, or null when none was made or the record cannot be read. */
 export function readSnapshot(out: string): SnapshotRecord | null {
   try {

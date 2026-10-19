@@ -935,22 +935,33 @@ export function noTestsReported(stdout: string): string | null {
 }
 
 const CARGO_RESULT = /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed;/gm;
+const CARGO_RUNNING = /^\s+Running (.*)$/gm;
 
 /**
  * The cargo counterpart of `noTestsReported`: `cargo test` prints `test result: ok. N passed;
  * M failed; …` per test binary, and N + M summed is how many tests ran. None ran is `invalid`.
+ * A result is read only when stderr names exactly one binary run, `Running
+ * tests/<target>.rs (…)`: the placed test. A `[[test]]` entry that gives the target's name to
+ * another file, or a second target, is `invalid` (P2-R30).
  * No result line at all is `invalid` too, with one exception: the gate's own test target
  * failing to compile (`error: could not compile … (test "<target>")`). That is what a gate
  * calling a function the base lacks looks like in Rust, and it is a failing gate. A workspace
  * that does not build anywhere else, or a run that never got to cargo, says nothing either way.
  */
 export function noCargoTestsReported(stdout: string, stderr: string, target: string): string | null {
+  const t = target.replace(/[^A-Za-z0-9_-]/g, '');
   const results = [...stdout.matchAll(CARGO_RESULT)];
-  if (!results.length) {
-    const own = new RegExp(`^error: could not compile \`[^\`\n]+\` \\(test "${target.replace(/[^A-Za-z0-9_-]/g, '')}"\\)`, 'm');
+  const running = [...stderr.matchAll(CARGO_RUNNING)].map((m) => m[1]);
+  if (!results.length && !running.length) {
+    const own = new RegExp(`^error: could not compile \`[^\`\n]+\` \\(test "${t}"\\)`, 'm');
     if (own.test(stderr)) return null;
     return 'cargo printed no test result and the gate\'s own test target is not what failed to build; the workspace did not build or the run never started, which is not a failing gate';
   }
+  if (running.length !== 1 || !running[0].startsWith(`tests/${t}.rs (`)) {
+    return `the target that ran is not the placed test: cargo ran ${running.length} binar${running.length === 1 ? 'y' : 'ies'} (${running.map((r) => r.split(' (')[0]).join(', ').slice(0, 200) || 'none'}), not tests/${t}.rs alone`;
+  }
+  if (!results.length) return 'the placed test ran but printed no test result; it did not finish, which is not a failing gate';
+  if (results.length !== 1) return `cargo printed ${results.length} test results for one binary; the output is not the placed test's alone`;
   const ran = results.reduce((n, m) => n + Number(m[1]) + Number(m[2]), 0);
   if (ran === 0) return 'cargo reported 0 tests run; an empty gate is not evidence either way';
   return null;
