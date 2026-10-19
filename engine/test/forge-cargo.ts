@@ -372,6 +372,8 @@ section('the author exec tool builds against the snapshot, into the author cache
     check('a tree whose Cargo.lock is not the snapshot\'s is refused in one line naming the command',
       refused instanceof SandboxRefused && /does not match the crate snapshot/.test(refused.message) && refused.message.includes('daylight deps snapshot')
       && !refused.message.includes('\n'), refused?.message);
+    check('and names no host path: <out> and <repo> are placeholders', !!refused && !refused.message.includes(out) && !refused.message.includes(tmp)
+      && refused.message.includes('--out <out>'), refused?.message);
     const plain = path.join(tmp, 'not-cargo');
     fs.mkdirSync(plain);
     const pl = execLaunch(live, execAttempt, { tree: plain, out, command: ['node', '-v'] });

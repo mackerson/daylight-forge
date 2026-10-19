@@ -484,18 +484,26 @@ export function execLaunch(
  * snapshot, or a `Cargo.lock` that is not the one the snapshot was fetched for.
  */
 function authorCargo(tree: string, out: string, home: string): ReturnType<typeof cargoMounts> {
-  const why = snapshotRefusal(tree, out, readSnapshot(out)?.repo ?? '<repo>');
-  if (why) throw new SandboxRefused(why);
+  // What the author's `run` tool is told never names a host path (review L2): <out>, the
+  // repository and the tree are said as placeholders; the operator reads the same command.
+  const repo = readSnapshot(out)?.repo;
+  const spelled = [
+    [out, '<out>'], [resolved(out), '<out>'], [tree, '/work'], [resolved(tree), '/work'],
+    ...(repo ? [[repo, '<repo>'], [resolved(repo), '<repo>']] : []), [home, '~'], [resolved(home), '~'],
+  ].filter(([p]) => p.length > 1).sort((a, b) => b[0].length - a[0].length);
+  const hostless = (msg: string) => spelled.reduce((m, [p, to]) => m.split(p).join(to), msg);
+  const why = snapshotRefusal(tree, out, repo ?? '<repo>');
+  if (why) throw new SandboxRefused(hostless(why));
   let m: ReturnType<typeof cargoMounts>;
   try {
     m = cargoMounts('author', out);
   } catch (err) {
-    if (err instanceof CargoRefused) throw new SandboxRefused(err.message);
+    if (err instanceof CargoRefused) throw new SandboxRefused(hostless(err.message));
     throw err;
   }
   for (const bind of m.binds) {
     const refused = mountRefusal(bind.src, { home, out, allow: [bind.src], outAllow: [bind.src] });
-    if (refused) throw new SandboxRefused(`refusing to mount the cargo ${bind.dest}: ${refused}`);
+    if (refused) throw new SandboxRefused(hostless(`refusing to mount the cargo ${bind.dest}: ${refused}`));
   }
   return m;
 }
