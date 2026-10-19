@@ -351,13 +351,21 @@ console.log('\nmodule trees are not cycles; real cycles still are');
   check('a use super:: back to the declaring file is exempt, even against a re-export',
     !family.some((c) => c.members.includes('crates/app/src/fam/kid.rs')), JSON.stringify(family));
 
-  // Any other edge back still counts: implementing the parent's trait is a real dependency.
+  // Implementing or extending the parent's trait is a parent link too (ruling P2-R31).
   const shapes = path.join(tmp, 'crates/geometry/src/shapes/mod.rs');
   fs.writeFileSync(shapes, `pub use self::circle::Circle;\n${fs.readFileSync(shapes, 'utf8')}`);
   const withReexport = detectStructure(extract({ root: tmp })).cycles;
-  check('a re-export plus an impl of the parent\'s trait is still a cycle',
-    withReexport.some((c) => c.members.join() === 'crates/geometry/src/shapes/circle.rs,crates/geometry/src/shapes/mod.rs'),
-    JSON.stringify(withReexport));
+  check('a re-export plus an impl of the parent\'s trait is not a cycle',
+    !withReexport.some((c) => c.members.includes('crates/geometry/src/shapes/circle.rs')), JSON.stringify(withReexport));
+
+  // A call back into the parent is not a parent link: with a re-export it is a real cycle.
+  fs.writeFileSync(path.join(tmp, 'crates/app/src/fam/mod.rs'),
+    'mod kid;\npub use self::kid::Kid;\npub struct Parent;\npub fn make() -> Parent { Parent }\n');
+  fs.writeFileSync(path.join(tmp, 'crates/app/src/fam/kid.rs'),
+    'use super::{make, Parent};\npub struct Kid(pub Parent);\npub fn build() -> Kid { Kid(make()) }\n');
+  const calling = detectStructure(extract({ root: tmp })).cycles;
+  check('a child calling its parent, which re-exports it, is still a cycle',
+    calling.some((c) => c.members.join() === 'crates/app/src/fam/kid.rs,crates/app/src/fam/mod.rs'), JSON.stringify(calling));
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

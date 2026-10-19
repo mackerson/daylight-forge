@@ -257,9 +257,10 @@ export function detectStructure(graph: Graph): StructureReport {
 
   // ---- cycles (Tarjan over the file graph) -----------------------------------
   /**
-   * Dependencies only. A Rust `mod x;` is containment, and a child's `use super::…` back to
-   * the file that declared it is the module tree's parent link; counting either would report
-   * every crate's module tree as a cycle. Every other edge counts.
+   * Dependencies only. A Rust `mod x;` is containment, and a child's `use super::…`, `impl` or
+   * supertrait back to the file that declared it is the module tree's parent link; counting
+   * either would report every crate's module tree as a cycle. Every other edge, calls
+   * included, counts.
    */
   const declares = new Set(
     graph.edges.filter((e) => e.kind === 'contains' && files.has(e.to)).map((e) => `${e.from}\n${e.to}`),
@@ -267,7 +268,9 @@ export function detectStructure(graph: Graph): StructureReport {
   const dependsOn = new Map<string, Set<string>>();
   for (const e of graph.edges) {
     if (e.external || e.kind === 'contains') continue;
-    if (e.spec?.startsWith('super::') && declares.has(`${e.to}\n${e.from}`)) continue;
+    // Heritage edges are symbol-level, so both kinds of parent link compare as files.
+    if ((e.spec?.startsWith('super::') || e.kind === 'implements' || e.kind === 'extends') &&
+      declares.has(`${fileOf(e.to)}\n${fileOf(e.from)}`)) continue;
     const from = fileOf(e.from);
     const to = fileOf(e.to);
     if (!files.has(from) || !files.has(to) || from === to) continue;
