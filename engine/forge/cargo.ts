@@ -522,6 +522,15 @@ export function cargoMounts(
   if (missing || !recorded) {
     throw new CargoRefused(`no crate snapshot in ${out}${missing ? ` (${missing})` : ''}: run \`${snapshotCommand('<repo>', out)}\``);
   }
+  let repoReal: string | null = null;
+  try {
+    repoReal = fs.realpathSync(recorded.repo);
+  } catch {
+    // The repository moved; <out> cannot be inside a directory that is not there.
+  }
+  if (repoReal && within(fs.realpathSync(out), repoReal)) {
+    throw new CargoRefused(`${out} is inside ${recorded.repo}; the crate snapshot and build caches live outside the repository (use another --out)`);
+  }
   // Verified in full on every launch (P2-R29): the directory is writable by this uid on the host.
   const planted = snapshotRootRefusal(home);
   if (planted) throw new CargoRefused(`${planted}: run \`${snapshotCommand(recorded.repo, out)}\``);

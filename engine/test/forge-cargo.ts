@@ -148,6 +148,13 @@ section('mounts under <out> and $HOME');
   check('outAllow naming one directory does not admit its sibling', r(author, [snap]) !== null);
   check('a credential store is refused whatever outAllow says', r(path.join(home, '.ssh'), [path.join(home, '.ssh')]) !== null);
   check('the home directory itself is refused', r(home, [home]) !== null);
+  const sshOut = path.join(home, '.ssh', 'out');
+  const sshSnap = path.join(sshOut, 'cargo', 'snapshot');
+  fs.mkdirSync(sshSnap, { recursive: true });
+  check('an <out> under ~/.ssh does not make its snapshot bindable', mountRefusal(sshSnap, { home, out: sshOut, allow: [sshSnap], outAllow: [sshSnap] }) !== null);
+  const homeSnap = path.join(home, 'cargo', 'snapshot');
+  fs.mkdirSync(homeSnap, { recursive: true });
+  check('nor does an <out> that is $HOME itself', mountRefusal(homeSnap, { home, out: home, allow: [homeSnap], outAllow: [homeSnap] }) !== null);
 }
 
 section('the snapshot digest and the author cache wipe, on a synthetic <out>');

@@ -51,6 +51,9 @@ const SENSITIVE_HOME = [
   '.config/daylight', '.local/share/daylight',
 ];
 
+/** Where Daylight keeps its own data under `$HOME`: the default `<out>` lives in the first. */
+const DAYLIGHT_HOME_DIRS = ['.local/share/daylight', '.config/daylight'];
+
 export class SandboxRefused extends Error {
   constructor(message: string) {
     super(message);
@@ -148,9 +151,12 @@ export function mountRefusal(src: string, o: { home: string; out: string; allow?
   const outAllowed = p !== out && within(p, out) && (o.outAllow ?? []).some((a) => resolved(a) === p);
   if (p === '/') return 'the root filesystem';
   if (within(home, p)) return `${p} contains the home directory`;
+  if (outAllowed && within(home, out)) return `${p} is under an <out> that is the home directory or contains it`;
   for (const rel of SENSITIVE_HOME) {
     const dir = path.join(home, rel);
-    if (within(p, dir) && !(outAllowed && within(out, dir))) return `${p} is under ~/${rel}`;
+    // Only Daylight's own directories are passed over for an <out> inside them; an <out> under
+    // ~/.ssh or any other credential store never makes a bind there acceptable.
+    if (within(p, dir) && !(outAllowed && DAYLIGHT_HOME_DIRS.includes(rel) && within(out, dir))) return `${p} is under ~/${rel}`;
   }
   if (within(p, out) && !outAllowed) return `${p} is under <out>`;
   if (within(out, p)) return `${p} contains <out>`;
