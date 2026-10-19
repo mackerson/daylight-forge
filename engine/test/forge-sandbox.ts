@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { detectSandbox, nodeBinary, sandboxArgv, type SandboxProfile } from '../experiment/sandbox.ts';
-import { authorFor, authorLauncher, authorServer, authorTools, AUTHOR_FILE_TOOLS, reviewLauncher, RUN_TOOL } from '../forge/authors.ts';
+import { authorFor, authorLauncher, authorServer, authorTools, AUTHOR_FILE_TOOLS, REQUEST_DEPENDENCY, reviewLauncher, RUN_TOOL } from '../forge/authors.ts';
 import { captureCandidate } from '../forge/diff.ts';
 import {
   execLaunch, execRefusal, MCP_CONFIG, MCP_HANDSHAKE, NET_FILES, MCP_SHIM, MCP_SOCKET, mcpRuntimeDir, newMcpToken, profileLaunch,
@@ -245,8 +245,8 @@ section('the launcher refuses rows that do not grant it');
 
 section('exec is off by default and reachable only from the row');
 {
-  check('an author without exec gets the file tools only, never Bash',
-    JSON.stringify(authorTools(attemptOf())) === JSON.stringify([...AUTHOR_FILE_TOOLS]) && !authorTools(attemptOf({ exec: true })).includes('Bash'));
+  check('an author without exec gets the file tools and request_dependency only, never Bash',
+    JSON.stringify(authorTools(attemptOf())) === JSON.stringify([...AUTHOR_FILE_TOOLS, REQUEST_DEPENDENCY]) && !authorTools(attemptOf({ exec: true })).includes('Bash'));
   check('an author whose row holds exec also gets the run tool', authorTools(attemptOf({ exec: true })).includes(RUN_TOOL));
   check('exec is refused for a row without it', execRefusal(attemptOf()) !== null);
   check('exec is refused for a row with exec but no write grant',
@@ -254,7 +254,7 @@ section('exec is off by default and reachable only from the row');
   check('registering run on a row without exec is refused',
     !!throws(() => registerRunTool(new McpServer({ name: 't', version: '0' }), { attempt: attemptOf(), tree: path.join(tmp, 'tree'), out })));
   const tools = (s: McpServer) => Object.keys((s as unknown as { _registeredTools: Record<string, unknown> })._registeredTools ?? {});
-  check('the author MCP server has no run tool by default', tools(authorServer({ attempt: attemptOf(), tree: path.join(tmp, 'tree'), out })).length === 0);
+  check('the author MCP server has no run tool by default', JSON.stringify(tools(authorServer({ attempt: attemptOf(), tree: path.join(tmp, 'tree'), out }))) === '["request_dependency"]');
   check('and has it when the row holds exec', tools(authorServer({ attempt: attemptOf({ exec: true }), tree: path.join(tmp, 'tree'), out })).includes('run'));
   check('the exec launch is refused without exec on the row',
     !!throws(() => execLaunch(AVAILABLE, attemptOf(), { tree: path.join(tmp, 'tree'), out, command: ['node', '-v'] })));

@@ -9,6 +9,7 @@ import {
   type ExecResult, type McpEndpoint,
 } from './sandbox.ts';
 import type { Workspace } from './workspace.ts';
+import { registerRequestDependencyTool, REQUEST_DEPENDENCY_TOOL } from './dependency-requests.ts';
 
 /**
  * Who may author, and how an author is launched inside the `author` profile.
@@ -16,15 +17,19 @@ import type { Workspace } from './workspace.ts';
  * Only the mock author is available. Real providers are `unavailable` for implement until the
  * owner authorises one live run (R4 Q5, R9.4); their argv is defined here so that run changes
  * one status, not the launch. The tool allowlist is a parameter (D-2): authors get the file
- * tools and, only when their attempt row holds exec, the MCP `run` tool. Never `Bash`.
+ * tools, the MCP `request_dependency` tool (P2-R4) and, only when their attempt row holds exec,
+ * the MCP `run` tool. Never `Bash`.
  */
 
 export const AUTHOR_FILE_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'MultiEdit'] as const;
 export const RUN_TOOL = `mcp__${MCP_SERVER_KEY}__run`;
+export const REQUEST_DEPENDENCY = `mcp__${MCP_SERVER_KEY}__${REQUEST_DEPENDENCY_TOOL}`;
 
 /** The allowlist for an author attempt. `exec` comes from the attempt row, never a request. */
 export function authorTools(attempt: Pick<Attempt, 'id' | 'sandbox'>): string[] {
-  return execRefusal(attempt) === null ? [...AUTHOR_FILE_TOOLS, RUN_TOOL] : [...AUTHOR_FILE_TOOLS];
+  return execRefusal(attempt) === null
+    ? [...AUTHOR_FILE_TOOLS, REQUEST_DEPENDENCY, RUN_TOOL]
+    : [...AUTHOR_FILE_TOOLS, REQUEST_DEPENDENCY];
 }
 
 export type AuthorAvailability =
@@ -117,14 +122,15 @@ export function reviewLauncher(input: {
 }
 
 /**
- * The MCP server an author attempt reaches through its socket. It has `run` only when the
- * attempt row holds exec; otherwise it has no tools at all yet.
+ * The MCP server an author attempt reaches through its socket: `request_dependency` always,
+ * and `run` only when the attempt row holds exec.
  */
 export function authorServer(ctx: {
   attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; out: string; profile?: SandboxProfile;
   artifacts?: ArtifactStore; onRun?: (r: ExecResult, command: string[]) => void;
 }): McpServer {
   const server = new McpServer({ name: MCP_SERVER_KEY, version: '0.1.0' });
+  registerRequestDependencyTool(server, { attempt: ctx.attempt, out: requireOut(ctx.out) });
   if (execRefusal(ctx.attempt) === null) registerRunTool(server, ctx);
   return server;
 }

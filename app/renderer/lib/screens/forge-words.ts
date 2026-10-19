@@ -414,6 +414,7 @@ export const NEED_WORDS: Record<Need['kind'], string> = {
   apply: 'apply',
   'work-item-undecided': 'decide work item',
   'mission-awaiting-authorize': 'authorize mission',
+  'request-dependency': 'add dependency',
 };
 
 // ---- guarded acts -------------------------------------------------------------------------

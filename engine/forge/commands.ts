@@ -9,6 +9,7 @@ import { defaultOut } from '../paths.ts';
 import { runIngestCommand } from '../ingest/commands.ts';
 import { confirmDigest, type ConfirmOperation } from './confirm.ts';
 import { decompose } from './decompose.ts';
+import { findDependencyRequest, resolveConfirm } from './dependency-requests.ts';
 import { evaluate, GateRefused, listGates, type GateContext } from './gate.ts';
 import { runGateCommand } from './commands-gate.ts';
 import { runWorkItemCommand } from './commands-work-item.ts';
@@ -155,7 +156,7 @@ const EXEC_WITHOUT_WRITE = 'author exec is granted only with write: authorize --
 
 const OPERATIONS: readonly (ConfirmOperation | 'adjudicate')[] = [
   'authorize-mission', 'adhoc-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
-  'approve-candidate', 'reject-candidate', 'override-candidate', 'apply', 'adjudicate',
+  'approve-candidate', 'reject-candidate', 'override-candidate', 'apply', 'adjudicate', 'resolve-dependency-request',
 ];
 
 /**
@@ -180,6 +181,11 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
         subject: need(p, 'subject'), predicate: need(p, 'predicate'), value: parseDecisionValue(valueOf(p)),
         experimentId: last(p, 'experiment'),
       });
+      return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
+    }
+    if (operation === 'resolve-dependency-request') {
+      // `deps resolve`'s digest, `--declined` included; the request lives in an outbox, not the store.
+      const c = resolveConfirm(findDependencyRequest(ctx, subjectId), { declined: last(p, 'declined') === 'true' });
       return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
     }
     let opts = {};

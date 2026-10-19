@@ -707,6 +707,50 @@ section('no sandbox: reviews are refused, not run open, unless a person opts out
   }
 }
 
+section('a project policy (P2-R6): the rust set and the author limits come from daylight.policy.json');
+{
+  const policyFile = path.join(repo, 'daylight.policy.json');
+  const rustEdit = path.join(tmp, 'mock-author-rust.cjs');
+  fs.writeFileSync(rustEdit, author({
+    'src/add.js': 'module.exports = (a, b) => a + b;\n',
+    'crates/x/Cargo.toml': '[package]\nname = "x"\n[dependencies]\nevil = "1"\n',
+    'crates/x/build.rs': 'fn main() {}\n',
+  }));
+  const objective = 'make add return the sum (rust policy)';
+  const c0 = confirmOf('adhoc-mission', objective);
+  const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective,
+    '--rationale', 'policy fixture', '--confirm', c0.digest8, '--out', out, '--format', 'json']));
+  const c1 = confirmOf('authorize-mission', m.id, ['--write']);
+  run(['mission', 'authorize', m.id, '--out', out, '--write', '--rationale', 'r', '--confirm', c1.digest8]);
+  run(['gate', 'add', m.id, '--role', 'gate', '--test', path.join(tmp, 'add.test.js'), '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out]);
+  run(['gate', 'baseline', m.id, repo, '--out', out]);
+  const c2 = confirmOf('lock-gates', m.id);
+  run(['gate', 'lock', m.id, '--out', out, '--rationale', 'r', '--confirm', c2.digest8]);
+  try {
+    fs.writeFileSync(policyFile, '{ "schema": "daylight.policy/v1", "languages": ["rust"], "surprise": true }');
+    const bad = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
+    check('a policy with an unknown key refuses the run, in one line naming the file',
+      bad.code === 1 && /daylight\.policy\.json: unknown key "surprise"/.test(bad.err), bad.err.slice(-300));
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust', 'node'], author: { maxTurns: 300, timeoutSeconds: 3600 } }));
+    const r = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
+    const res = json<{ candidate: Candidate; verdict: string; attempt: Attempt }>(r);
+    const v = res.candidate.policyViolations;
+    check('a crate manifest and a build script are protected-path under the rust set', res.verdict === 'policy-violation'
+      && ['crates/x/Cargo.toml', 'crates/x/build.rs'].every((p) => v.some((x) => x.rule === 'protected-path' && x.path === p && x.why === 'protected by the rust set')),
+      JSON.stringify(v));
+    const started = inspect(m.id).events.find((e) => e.name === 'attempt.started' && e.attemptId === res.attempt.id);
+    check('the run event records the limits the policy set', started?.payload.maxTurns === 300 && started?.payload.timeoutMs === 3_600_000
+      && JSON.stringify(started?.payload.limitSources) === '{"maxTurns":"policy","timeoutMs":"policy"}', JSON.stringify(started?.payload));
+    const flagged = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json', '--timeout', '120'], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
+    const again = json<{ attempt: Attempt }>(flagged);
+    const second = inspect(m.id).events.find((e) => e.name === 'attempt.started' && e.attemptId === again.attempt.id);
+    check('a --timeout flag overrides the policy, and nothing is recorded as clamped',
+      second?.payload.timeoutMs === 120_000 && second?.payload.maxTurns === 300 && JSON.stringify(second?.payload.clamped) === '[]', JSON.stringify(second?.payload));
+  } finally {
+    fs.rmSync(policyFile, { force: true });
+  }
+}
+
 section('negative: no sandbox means no author attempt');
 {
   const d = openDaylight(out);

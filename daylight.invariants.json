@@ -213,5 +213,30 @@
       "callee": "^redact$",
       "min": 1
     }
+  },
+  {
+    "id": "dependency-resolve-is-guarded",
+    "prose": "Resolving a dependency request goes through the one decision-authenticity guard, assertHumanDecision.",
+    "rationale": "P2-R4: an author asks for a crate, a person decides. A resolve path that stopped calling the guard would let an agent session close its own request. engine/test/project-policy.ts holds the behavioural half: CLAUDECODE, DAYLIGHT_SESSION and a wrong --confirm are each refused.",
+    "predicate": {
+      "type": "required-callee",
+      "within": {
+        "file": "^engine/forge/dependency-requests\\.ts$"
+      },
+      "callee": "^assertHumanDecision$",
+      "min": 1
+    }
+  },
+  {
+    "id": "dependency-requests-never-execute",
+    "prose": "The dependency-request and project-policy modules never spawn a process: a request is data a person reads, and the policy is data the host reads.",
+    "rationale": "P2-R4 and P2-R6: the request carries agent-written names and reasons; nothing here may install, fetch or run them, and resolve explicitly does not run the snapshot. A child_process call in these files is the first step to doing so.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^engine/forge/(dependency-requests|commands-deps-requests|project-policy)\\.ts$"
+      },
+      "callee": "(^|\\.)(execSync|execFile|execFileSync|spawn|spawnSync|fork)$"
+    }
   }
 ]

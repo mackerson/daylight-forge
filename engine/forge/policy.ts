@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { CandidateFile, MissionScope, PolicyRule, PolicyViolation } from '../mission/types.ts';
 import { isHumanActor } from '../mission/types.ts';
+import { protectedBy, type ProjectPolicy } from './project-policy.ts';
 
 /**
  * The Forge's pure rules: which paths a candidate diff may touch (ADR-21), and whether a
@@ -14,16 +15,9 @@ import { isHumanActor } from '../mission/types.ts';
 // ---- candidate paths ---------------------------------------------------------
 
 export const GATE_DIR = '.daylight-gates';
-export const INVARIANTS_FILE = 'daylight.invariants.json';
+export { INVARIANTS_FILE } from './project-policy.ts';
 export const MAX_DIFF_BYTES = 1024 * 1024;
 export const MAX_DIFF_FILES = 200;
-
-/** Lockfiles by basename, at any depth: each pins what an install would fetch and run. */
-const LOCKFILES = new Set([
-  'pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
-  'Cargo.lock', 'poetry.lock', 'uv.lock', 'Pipfile.lock', 'Gemfile.lock', 'composer.lock', 'go.sum',
-  'flake.lock',
-]);
 
 export interface PolicyContext {
   /** The mission's scope; an empty or absent `paths` admits every path. */
@@ -34,16 +28,23 @@ export interface PolicyContext {
   diffBytes?: number;
   maxBytes?: number;
   maxFiles?: number;
+  /**
+   * The project's `daylight.policy.json`, loaded by the host. Absent: the `always` and `node`
+   * sets, exactly as before policies existed.
+   */
+  policy?: ProjectPolicy | null;
 }
 
 /**
  * Why a single path is refused, every reason at once.
  *
- * Protected (fail-closed, at any depth): `package.json`, lockfiles, anything under
+ * Protected (fail-closed): every set in `PROTECTED_SETS`, whatever the policy's `languages`,
+ * plus the policy's own globs: among them `package.json`, lockfiles, anything under
  * `node_modules`, any component starting `.git` (`.git/`, `.github/`, `.gitignore`,
- * `.gitattributes`, `.gitmodules`), the invariants file, and `scripts/` at the root. Each one
- * is a way to make an install, a hook, a CI job or a check run the author's code, or to hide
- * files from the host's `add -A`.
+ * `.gitattributes`, `.gitmodules`), Cargo manifests and build scripts, the invariants and
+ * policy files, and `scripts/` at the root. Each one is a
+ * way to make an install, a hook, a CI job or a check run the author's code, or to hide files
+ * from the host's `add -A`.
  */
 export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): PolicyRule[] {
   const rules: PolicyRule[] = [];
@@ -53,12 +54,7 @@ export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): Po
     || parts.some((s) => s === '..' || s === '.' || s === '');
   if (escapes) rules.push('path-escape');
 
-  const base = parts.at(-1) ?? '';
-  if (base === 'package.json' || LOCKFILES.has(base) || base === INVARIANTS_FILE
-    || parts.includes('node_modules') || parts.some((s) => s.startsWith('.git'))
-    || parts[0] === 'scripts') {
-    rules.push('protected-path');
-  }
+  if (protectedBy(p, ctx.policy).length) rules.push('protected-path');
   if (parts[0] === GATE_DIR) rules.push('gate-path');
   if (ctx.specPath !== undefined && p === normalise(ctx.specPath)) rules.push('spec-path');
 
@@ -81,7 +77,12 @@ export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): Po
 export function checkPolicy(files: readonly CandidateFile[], ctx: PolicyContext = {}): PolicyViolation[] {
   const out: PolicyViolation[] = [];
   for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
-    for (const rule of new Set(pathViolations(f, ctx))) out.push({ rule, path: f.path });
+    for (const rule of new Set(pathViolations(f, ctx))) {
+      // Which set matched is said only under a loaded policy, so a repository without one
+      // records exactly the rows it did before policies existed.
+      const why = rule === 'protected-path' && ctx.policy ? `protected by the ${protectedBy(f.path, ctx.policy).join(' and ')} set` : undefined;
+      out.push(why ? { rule, path: f.path, why } : { rule, path: f.path });
+    }
   }
   if (!files.length) out.push({ rule: 'empty-diff', path: null });
   if (files.length > (ctx.maxFiles ?? MAX_DIFF_FILES)) out.push({ rule: 'too-many-files', path: null });

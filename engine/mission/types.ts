@@ -529,6 +529,8 @@ export type PolicyRule =
 export interface PolicyViolation {
   rule: PolicyRule;
   path: string | null;
+  /** Under a project policy, which protected set matched (`protected by the rust set`). */
+  why?: string;
 }
 
 /**
@@ -623,7 +625,8 @@ export interface IngestSource {
 
 export type NeedKind =
   | 'blocked' | 'dispute' | 'spec-ambiguity' | 'gate-lock' | 'gate-vacuous'
-  | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize';
+  | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize'
+  | 'request-dependency';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {
@@ -644,11 +647,13 @@ export type DecisionKind =
  */
 export type DecisionOperation =
   | 'authorize-mission' | 'lock-gates' | 'approve-work-item' | 'reject-work-item'
-  | 'approve-candidate' | 'reject-candidate' | 'override-candidate' | 'adhoc-mission';
+  | 'approve-candidate' | 'reject-candidate' | 'override-candidate' | 'adhoc-mission'
+  | 'resolve-dependency-request';
 
 export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'authorize-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
   'approve-candidate', 'reject-candidate', 'override-candidate', 'adhoc-mission',
+  'resolve-dependency-request',
 ];
 
 /** `mission authorize`: the only act that turns `write` on (ADR-9, ADR-34). */
