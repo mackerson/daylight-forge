@@ -661,7 +661,7 @@ interface RunLoop {
   /** After each run: why the tree under test is no longer the one it was, or null. */
   treeDrift?: () => string | null;
   /** After a run that finished: why its output cannot be read as a result, or null. */
-  unreadable?: (stdout: string, stderr: string) => string | null;
+  unreadable?: (stdout: string, stderr: string, signal: string | null) => string | null;
   /** A cargo gate's second placement of the same bytes, worktree-relative, and where it is on the host. */
   cargoTest?: { rel: string; placed: string };
   /** Everything a cargo run needs beside `/work`. */
@@ -703,7 +703,7 @@ async function runRegistered(o: RunLoop): Promise<void> {
     const drifted = driftedAt !== null;
     const moved = drifted ? null : o.treeDrift?.() ?? null;
     const unstarted = launchFailure(run);
-    const unreadable = drifted || moved || unstarted || run.timedOut ? null : o.unreadable?.(run.stdout, run.stderr) ?? null;
+    const unreadable = drifted || moved || unstarted || run.timedOut ? null : o.unreadable?.(run.stdout, run.stderr, run.signal) ?? null;
     const status: ExecutionStatus = drifted || moved || unstarted || unreadable ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
     rec.record({
       experimentId: experiment.id, runIndex: i,
@@ -936,6 +936,8 @@ export function noTestsReported(stdout: string): string | null {
 
 const CARGO_RESULT = /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed;/gm;
 const CARGO_RUNNING = /^\s+Running (.*)$/gm;
+/** What a process killed by a resource ceiling leaves in cargo's stderr: rustc, the linker or the test binary. */
+const RESOURCE_KILL = /\bsignal: (?:9|24|25)\b|\bsignal (?:9|24|25)\b|SIGKILL|SIGXCPU|SIGXFSZ|File size limit exceeded|CPU time limit exceeded|memory allocation of \d+ bytes failed/;
 
 /**
  * The cargo counterpart of `noTestsReported`: `cargo test` prints `test result: ok. N passed;
@@ -948,13 +950,21 @@ const CARGO_RUNNING = /^\s+Running (.*)$/gm;
  * calling a function the base lacks looks like in Rust, and it is a failing gate. A workspace
  * that does not build anywhere else, or a run that never got to cargo, says nothing either way.
  */
-export function noCargoTestsReported(stdout: string, stderr: string, target: string): string | null {
+export function noCargoTestsReported(stdout: string, stderr: string, target: string, signal: string | null = null): string | null {
   const t = target.replace(/[^A-Za-z0-9_-]/g, '');
+  // A ceiling killing cargo, rustc, the linker or the test is the harness's limit, not the change.
+  if (signal) return `cargo was killed by ${signal}; a resource limit is not a failing gate`;
+  const kill = RESOURCE_KILL.exec(stderr);
+  if (kill) return `a resource limit killed part of the build or the test (${kill[0]}); that is not a failing gate`;
   const results = [...stdout.matchAll(CARGO_RESULT)];
   const running = [...stderr.matchAll(CARGO_RUNNING)].map((m) => m[1]);
   if (!results.length && !running.length) {
+    // Only a rustc diagnostic located in the placed test itself: a linker failure or anything
+    // else that also ends in `could not compile … (test "<target>")` is not the change failing.
     const own = new RegExp(`^error: could not compile \`[^\`\n]+\` \\(test "${t}"\\)`, 'm');
-    if (own.test(stderr)) return null;
+    const located = new RegExp(`^\\s*--> (?:\\S*/)?tests/${t}\\.rs:\\d+:\\d+`, 'm');
+    const diagnostic = /^error(?:\[E\d+\])?: (?!could not compile|linking with)/m;
+    if (own.test(stderr) && located.test(stderr) && diagnostic.test(stderr)) return null;
     return 'cargo printed no test result and the gate\'s own test target is not what failed to build; the workspace did not build or the run never started, which is not a failing gate';
   }
   if (running.length !== 1 || !running[0].startsWith(`tests/${t}.rs (`)) {
@@ -1122,7 +1132,7 @@ export async function runGate(x: Experiment, ctx: GateRunContext): Promise<GateR
     await runRegistered({
       experiment: x, ctx, profile, rec, worktree: tree.tree, root, testRel, placed, registered, runs, timeoutMs,
       limitations, treeDrift: () => treeDriftOf(tree, testRel, cargoRel),
-      unreadable: kind === 'cargo' ? (stdout, stderr) => noCargoTestsReported(stdout, stderr, target) : noTestsReported,
+      unreadable: kind === 'cargo' ? (stdout, stderr, signal) => noCargoTestsReported(stdout, stderr, target, signal) : noTestsReported,
       ...(cargo && cargoTest ? { cargoTest, cargo: { binds: cargo.binds, env: cargo.env } } : {}),
     });
     return done();

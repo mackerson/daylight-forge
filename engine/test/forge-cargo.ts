@@ -21,7 +21,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { noCargoTestsReported } from '../experiment/runner.ts';
-import { checkAllowlist, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
+import { checkAllowlist, DEFAULT_LIMITS, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import {
   cargoMounts, CargoRefused, lockDigestOf, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
@@ -29,7 +29,7 @@ import {
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
 import {
-  baseline, cargoTargetOf, DEFAULT_CARGO_GATE_COMMAND, evaluate, GateRefused, lock, registerGate, type GateContext,
+  baseline, CARGO_GATE_LIMITS, CARGO_GATE_TIMEOUT_MS, cargoTargetOf, DEFAULT_CARGO_GATE_COMMAND, evaluate, GateRefused, lock, registerGate, type GateContext,
 } from '../forge/gate.ts';
 import { checkPolicy } from '../forge/policy.ts';
 import { confirmDigest } from '../forge/confirm.ts';
@@ -116,7 +116,14 @@ section('reading a cargo run');
   check('a Running line for another file under the target\'s name is unreadable',
     /not the placed test/.test(noCargoTestsReported('test result: ok. 2 passed; 0 failed;\n', `     Running src/evil.rs (/cargo-target/debug/deps/${t}-0)\n`, t) ?? ''));
   check('the gate\'s own target not compiling is a failing gate',
-    noCargoTestsReported('', 'error[E0425]: cannot find function\nerror: could not compile `fixture-core` (test "daylight_x_1") due to 1 previous error\n', t) === null);
+    noCargoTestsReported('', 'error[E0425]: cannot find function\n --> crates/core/tests/daylight_x_1.rs:2:43\nerror: could not compile `fixture-core` (test "daylight_x_1") due to 1 previous error\n', t) === null);
+  check('a compile error with no rustc diagnostic located in the placed test is unreadable',
+    noCargoTestsReported('', 'error[E0425]: cannot find function\n --> crates/core/src/lib.rs:2:43\nerror: could not compile `fixture-core` (test "daylight_x_1") due to 1 previous error\n', t) !== null);
+  check('a linker killed by a file-size limit is unreadable, never a failing gate',
+    /resource limit/.test(noCargoTestsReported('', 'error: linking with `cc` failed: exit status: 1\n  = note: collect2: fatal error: ld terminated with signal 25 [File size limit exceeded]\n --> tests/daylight_x_1.rs:1:1\nerror: could not compile `fixture-core` (test "daylight_x_1") due to 1 previous error\n', t) ?? ''));
+  check('a test binary killed by SIGXCPU is unreadable', /resource limit/.test(noCargoTestsReported('test result: ok. 1 passed; 0 failed;\n',
+    `     Running tests/${t}.rs (/x)\nerror: test failed, to rerun pass \`--test ${t}\`\nCaused by:\n  process didn't exit successfully: \`/x\` (signal: 24, SIGXCPU: CPU time limit exceeded)\n`, t) ?? ''));
+  check('cargo itself killed by a signal is unreadable', /SIGKILL/.test(noCargoTestsReported('', '', t, 'SIGKILL') ?? ''));
   check('another unit not compiling is unreadable', noCargoTestsReported('', 'error: could not compile `fixture-core` (lib) due to 1 previous error\n', t) !== null);
   check('another target with a longer name is not mistaken for the gate\'s',
     noCargoTestsReported('', 'error: could not compile `c` (test "daylight_x_10") due to 1 previous error\n', t) !== null);
@@ -549,6 +556,24 @@ section('a candidate cannot forge a cargo gate\'s result (P2-R30)');
   check('reading two binaries\' output is invalid',
     /not the placed test/.test(noCargoTestsReported(`${OK_LINE}\n${OK_LINE}\n`, `     Running tests/${t}.rs (/x)\n     Running src/evil.rs (/y)\n`, t) ?? ''));
   check('reading none is invalid', noCargoTestsReported(`${OK_LINE}\n`, '', t) !== null);
+}
+
+section('a resource limit hit while building the gate is invalid, never falsified (P2-R30)');
+{
+  check('cargo gates default to 900 CPU-s, 2 GiB files, 4 GiB memory and a 600 s wall clock',
+    CARGO_GATE_LIMITS.cpuSeconds === 900 && CARGO_GATE_LIMITS.fileSizeBytes === 2 * 1024 ** 3 && CARGO_GATE_LIMITS.memoryBytes === 4 * 1024 ** 3
+    && CARGO_GATE_TIMEOUT_MS === 600_000);
+  const m = newMission('fsize');
+  const x = registerGate(ctx, { missionId: m.id, role: 'gate', testSource: '#[test]\nfn dec() { assert_eq!(fixture_core::decimal(7), "7"); }\n',
+    basename: 'p.rs', prediction: PASS, harness: 'cargo', crate: 'crates/core' });
+  const [b] = await baseline({ ...ctx, limits: { ...DEFAULT_LIMITS, fileSizeBytes: 256 * 1024 } }, m.id);
+  const rs = recordsOf(b);
+  check('a gate that passes at base, run under a 256 KiB file-size ceiling, is invalid',
+    b.conclusion === 'invalid' && rs.every((r) => /resource limit|SIGXFSZ/.test(r.why ?? '')), `${b.conclusion} ${rs[0]?.why} ${stderrOf(rs[0] ?? ({} as ExecutionRecord)).slice(-300)}`);
+  check('the run records the ceiling it ran under', rs.every((r) => r.sandboxArgv.includes(`--fsize=${256 * 1024}`)));
+  const [ok] = await baseline(ctx, m.id);
+  check('under the cargo defaults the same gate runs to a result', ok.conclusion === 'supported'
+    && recordsOf(ok).every((r) => r.sandboxArgv.includes('--cpu=900') && r.sandboxArgv.includes(`--fsize=${2 * 1024 ** 3}`)), ok.conclusion);
 }
 
 section('a Cargo.lock change refuses the run, in one line naming the command');

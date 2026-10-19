@@ -10,7 +10,7 @@ import {
   commitOf, HARDENED_GIT_CONFIG, hardenedGitEnv, harnessHolds, MIN_GATE_RUNS, registerExperiment, runGate,
   type EventSink, type GateRunContext, type GateRunResult,
 } from '../experiment/runner.ts';
-import type { SandboxLimits, SandboxProfile } from '../experiment/sandbox.ts';
+import { DEFAULT_LIMITS, type SandboxLimits, type SandboxProfile } from '../experiment/sandbox.ts';
 import { cargoConfigRefusal, cargoMounts, CargoRefused, snapshotRefusal } from './cargo.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, GATE_DIR } from './policy.ts';
@@ -162,11 +162,23 @@ export function registerGate(ctx: GateContext, input: RegisterGateInput): Experi
 
 // ---- run + record ----------------------------------------------------------------------
 
+/**
+ * A cargo gate's ceilings when the caller names none (P2-R30): a cold dependency build is many
+ * rustc processes and a debuginfo test binary is large. The target dir is outside `/tmp`.
+ */
+export const CARGO_GATE_LIMITS: SandboxLimits = {
+  ...DEFAULT_LIMITS, cpuSeconds: 900, fileSizeBytes: 2 * 1024 ** 3, memoryBytes: 4 * 1024 ** 3, tasks: 512,
+};
+export const CARGO_GATE_TIMEOUT_MS = 600_000;
+
 function runContext(ctx: GateContext, x: Experiment) {
+  const cargo = x.harness === 'cargo';
   return {
     repoRoot: ctx.repoRoot, store: ctx.store, artifacts: ctx.artifacts, events: ctx.events,
-    runs: ctx.runs ?? MIN_GATE_RUNS, timeoutMs: ctx.timeoutMs, limits: ctx.limits, sandbox: ctx.sandbox, now: ctx.now,
-    ...(x.harness === 'cargo' ? { cargo: gateCargo(ctx) } : {}),
+    runs: ctx.runs ?? MIN_GATE_RUNS, sandbox: ctx.sandbox, now: ctx.now,
+    timeoutMs: ctx.timeoutMs ?? (cargo ? CARGO_GATE_TIMEOUT_MS : undefined),
+    limits: cargo ? { ...CARGO_GATE_LIMITS, ...ctx.limits } : ctx.limits,
+    ...(cargo ? { cargo: gateCargo(ctx) } : {}),
   };
 }
 
