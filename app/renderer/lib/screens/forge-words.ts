@@ -247,6 +247,7 @@ export function verdictWord(v: CandidateVerdict): Word {
     case 'gates-inconclusive': return { name: 'gates inconclusive', tone: 'warn' };
     case 'no-diff': return { name: 'no diff', tone: 'warn' };
     case 'stale-base': return { name: 'stale base', tone: 'warn' };
+    case 'rebase-conflict': return { name: 'rebase conflict', tone: 'warn' };
     default: return { name: 'pending', tone: 'dim' };
   }
 }

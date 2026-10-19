@@ -423,9 +423,11 @@ export type ExperimentConclusion =
 
 /**
  * `probe` is a P0 experiment about a claim. `gate` is an acceptance test the author is shown;
- * `holdout` is one it is not.
+ * `holdout` is one it is not. `regression` is a campaign's project-wide gate, which must pass at
+ * the campaign base and on every integrated tree; `acceptance` is a test a campaign author wrote
+ * for its own ticket, run and recorded, never locked (docs/daylight/CAMPAIGN.md).
  */
-export type ExperimentRole = 'probe' | 'gate' | 'holdout';
+export type ExperimentRole = 'probe' | 'gate' | 'holdout' | 'regression' | 'acceptance';
 
 /**
  * The test runner a gate runs under: `node --test`, or `cargo test` against a per-project crate
@@ -516,7 +518,9 @@ export interface WorkItem {
 
 export type CandidateVerdict =
   | 'pending' | 'accepted-by-gates' | 'rejected-by-gates' | 'gates-inconclusive'
-  | 'gates-invalid' | 'policy-violation' | 'no-diff' | 'stale-base';
+  | 'gates-invalid' | 'policy-violation' | 'no-diff' | 'stale-base'
+  /** A campaign candidate whose diff does not merge onto the integration tip (§3.4). */
+  | 'rebase-conflict';
 
 /** A file's mode as git records it. Anything but `file` and `executable` is refused. */
 export type FileMode = 'file' | 'executable' | 'symlink' | 'gitlink';
@@ -580,7 +584,8 @@ export interface Candidate {
   createdAt: number;
 }
 
-export type GateTarget = 'base' | 'candidate';
+/** `integrated`: a campaign candidate's diff applied onto the integration tip (§3.2). */
+export type GateTarget = 'base' | 'candidate' | 'integrated';
 
 /** One gate run against the base or against one candidate's diff. */
 export interface GateEvaluation {
@@ -592,8 +597,13 @@ export interface GateEvaluation {
   experimentId: string;
   candidateId?: string;
   target: GateTarget;
-  /** `sha256:<hex>` of the applied diff; null on the base. */
+  /**
+   * `sha256:<hex>` of the applied diff; null on the base. On an `integrated` evaluation, the
+   * digest of the tip → integrated-commit diff, and `revision` is the integrated commit.
+   */
   diffDigest: string | null;
+  /** The integration an `integrated` evaluation ran on. */
+  integrationId?: string;
   harnessDigest: string;
   executions: ArtifactRef[];
   conclusion: ExperimentConclusion;
@@ -647,6 +657,147 @@ export interface Need {
   kind: NeedKind;
   ref: string;
   why: string;
+}
+
+// ---- campaign integration, waves and the director (WS-R6) --------------------
+//
+// The director lands a campaign's tickets on its own integration ref by plumbing, judges each on
+// the integrated tree, repairs what fails, and reviews each wave of landings blind. Rows only;
+// docs/daylight/CAMPAIGN.md, ADR-38, ADR-39.
+
+/** A candidate's diff on its way onto the integration tip. `conflict` and `rejected` are final. */
+export type IntegrationState = 'pending' | 'evaluating' | 'integrated' | 'conflict' | 'rejected' | 'abandoned';
+/** `apply`: the tip was the candidate's own base. `three-way`: `git merge-tree` onto a tip that moved. */
+export type IntegrationMethod = 'apply' | 'three-way';
+
+export interface Integration {
+  id: string; campaignId: string; projectId: string; missionId: string; candidateId: string;
+  /** `refs/heads/daylight/campaign/<campaignId>`. */
+  ref: string;
+  /** The integration tip the diff was put onto. */
+  onto: string;
+  candidateBase: string;
+  method: IntegrationMethod | null;
+  integratedCommit: string | null; integratedTree: string | null;
+  /** `sha256:` of the `onto` → integrated-commit diff, with capture's flags: exactly what the checks ran on. */
+  integratedDiffDigest: string | null;
+  state: IntegrationState;
+  conflictPaths: string[];
+  /** Whether the ticket's own acceptance tests also pass on `onto` without the change: weak evidence, never a verdict input. */
+  acceptanceVacuous: boolean | null;
+  decisionId: string | null; applicationId: string | null;
+  createdAt: number; updatedAt: number;
+}
+
+/** A run of landings closed for review: `fromCommit..toCommit` on the integration ref. */
+export interface CampaignWave {
+  campaignId: string; seq: number; fromCommit: string; toCommit: string; ticketIds: string[];
+  reviewMissionId: string | null; closedAt: number;
+}
+
+/** One wave reviewer's report, re-validated and redacted on the host. A claim, never a verdict input (ADR-19). */
+export interface Finding {
+  id: string; projectId: string; campaignId: string; waveSeq: number; reviewMissionId: string; attemptId: string;
+  /** A file the wave changed. */
+  path: string; severity: FindingSeverity;
+  /** One line, at most 120 characters. */
+  title: string;
+  /** At most 4 KiB, redacted. */
+  statement: string;
+  /** The line as it crossed the MCP boundary. */
+  findingArtifact: ArtifactRef;
+  /** Other reviewers' findings with the same path and title. */
+  corroboratedBy: string[];
+  fixTicketId?: string;
+  createdAt: number;
+}
+
+/** What a campaign has spent, from rows, over every child mission (§4.6). Unknown is counted, never summed as zero. */
+export interface CampaignSpend {
+  /** Provider plus stdout-scan figures: scanned spend is money, not knowledge. */
+  spentUsd: number;
+  /** Provider figures only. */
+  knownUsd: number;
+  /** Finished attempts with no figure. Any one halts the campaign (P2-R11). */
+  unknownCount: number;
+  scannedCount: number;
+  runningCount: number;
+  /** Σ `attempts.max_cost_usd` over running attempts (P2-R18). */
+  reservedUsd: number;
+  capUsd: number;
+}
+
+/** What a repair attempt is told about the attempt before it, fenced as data in its prompt (§4.7). */
+export interface RepairBrief {
+  attempt: number; priorCandidateId: string;
+  outcome: 'rejected-by-gates' | 'gates-inconclusive' | 'rebase-conflict' | 'capture-refused' | 'policy-violation';
+  /** Public checks only; each tail redacted and at most 8 KiB, all of them at most 24 KiB. */
+  failures: Array<{ check: string; role: 'regression' | 'gate' | 'acceptance'; tail: string }>;
+  /** Holdouts that failed: a count, never an id, path or output. */
+  hiddenFailures: number;
+  conflictPaths: string[];
+  /** Violated policy rules, by path. */
+  policy: string[];
+  /** The author's own prior diff, redacted, at most 64 KiB. */
+  priorDiff: string;
+}
+
+/**
+ * The rows `campaignVerdict` reads, and nothing else: no attempt state, narrative, reviewer
+ * claim or finding (ADR-19). Holdouts are counted, never named, in what it returns.
+ */
+export interface CampaignVerdictRows {
+  candidate: Pick<Candidate, 'id' | 'files' | 'policyViolations' | 'secretHits' | 'gateSetDigest'> & { diffDigest: string };
+  ticketId: string;
+  /** The ticket's acceptance is `writer-authored`: at least one supported acceptance test is required. */
+  writerAuthored: boolean;
+  /** The integration row being judged, or null when none was recorded. */
+  integration: Pick<Integration, 'id' | 'state' | 'onto' | 'integratedCommit' | 'integratedDiffDigest' | 'conflictPaths'> | null;
+  /** The campaign's current `lock-campaign-gates` decision, or null. */
+  lock: { decisionId: string; scope: CampaignLockScope } | null;
+  /** The locked experiments as their rows read now; a missing one is absent. */
+  locked: Array<Pick<Experiment, 'id' | 'role' | 'harnessDigest' | 'lockedBy'>>;
+  /** Base evaluations of the campaign's experiments. */
+  baseline: Array<Pick<GateEvaluation, 'experimentId' | 'target' | 'harnessDigest' | 'conclusion'>>;
+  /** `integrated` evaluations of this integration. */
+  evaluations: Array<Pick<GateEvaluation, 'experimentId' | 'target' | 'integrationId' | 'diffDigest' | 'harnessDigest' | 'conclusion'>>;
+  /** `integrated` evaluations of the landing whose commit is `onto`: what the ratchet reads. */
+  ontoEvaluations: Array<Pick<GateEvaluation, 'experimentId' | 'harnessDigest' | 'conclusion'>>;
+  /** This candidate's acceptance experiments and their latest integrated conclusion. */
+  acceptance: Array<{ experimentId: string; conclusion: ExperimentConclusion | null }>;
+}
+
+/** `campaign run`'s options as data; the director adds its sandbox and host (forge/director.ts). */
+export interface CampaignRunOptions {
+  campaignId: string; repo: string; concurrency?: number; maxWaves?: number; dryRun?: boolean;
+}
+
+export interface CampaignRunResult {
+  campaignId: string;
+  integrationRef: string;
+  tip: string | null;
+  /** True when nothing was written: no row, no event, no ref. */
+  dryRun: boolean;
+  statuses: Record<string, TicketStatus>;
+  landed: string[];
+  halted: CampaignHaltReason | null;
+  /** Why the run did not start, or stopped. */
+  refused: string | null;
+  waves: number;
+  spend: CampaignSpend;
+  /** The dry run's plan: tickets that would be dispatched now, in order, with their reservation. */
+  schedule: Array<{ ticketId: string; lane: string; reserveUsd: number }>;
+}
+
+export interface CampaignStatusReport {
+  kind: 'daylight-campaign-status'; campaignId: string; projectId: string; planRevision: string;
+  integration: { ref: string; base: string; tip: string; landed: number; mergeHint: string };
+  authorization: { decisionId: string | null; notAfter: number | null; halted: CampaignHaltReason | null };
+  lanes: Array<{ lane: string; total: number; byStatus: Record<TicketStatus, number> }>;
+  tickets: Array<{ id: string; lane: string; status: TicketStatus; missionId?: string; attempts: number; commit?: string; reason?: string }>;
+  assumptions: { open: number; pending: number; confirmed: number; overturned: number; items: Assumption[] };
+  needs: Need[]; spend: CampaignSpend;
+  waves: Array<{ seq: number; tickets: number; findings: Record<FindingSeverity, number>; fixTickets: number }>;
 }
 
 // ---- decisions ---------------------------------------------------------------
