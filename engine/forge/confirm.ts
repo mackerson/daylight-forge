@@ -1,6 +1,6 @@
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import type { MissionStore } from '../mission/store.ts';
-import type { Candidate, Decision, DecisionOperation } from '../mission/types.ts';
+import type { CampaignEnvelope, Candidate, Decision, DecisionOperation, RetryTicketScope } from '../mission/types.ts';
 import { confirmCodeOf } from './policy.ts';
 
 /**
@@ -22,7 +22,7 @@ import { confirmCodeOf } from './policy.ts';
  * - `apply` (candidate id): the same, plus the approving decision it will apply and the ref
  *   it will create.
  */
-export type ConfirmOperation = DecisionOperation | 'apply';
+export type ConfirmOperation = DecisionOperation | 'apply' | 'record-assumption';
 
 /** The branch `apply` creates for a mission. Never overwritten. */
 export const applyRefFor = (missionId: string) => `refs/heads/daylight/${missionId}`;
@@ -44,7 +44,8 @@ export interface ConfirmDigest {
   lines: string[];
 }
 
-type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate' | 'decisions'>;
+type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate' | 'decisions' | 'currentPlan' | 'planApprovalSet'
+  | 'campaignTickets' | 'assumptions' | 'assumption'>;
 
 export interface ConfirmOptions {
   /** `lock-gates`: exactly the experiments the lock will name. Required. */
@@ -55,6 +56,17 @@ export interface ConfirmOptions {
   maxUsd?: number | null;
   /** `adhoc-mission`: the project the mission will belong to. Required. */
   projectId?: string;
+  /** `authorize-campaign`: the envelope that will be recorded, `operation` aside. Required. */
+  envelope?: CampaignEnvelope;
+  /** `retry-ticket`: the scope that will be recorded. Required. */
+  retry?: RetryTicketScope;
+  /** `resume-campaign`: the halt being resumed. Required. */
+  haltDecisionId?: string;
+  /** `decide-assumption` / `overturn-assumption`: the value decided; overturn's follow-up statement. */
+  value?: string;
+  followUp?: string;
+  /** `record-assumption`: the row that will be recorded (the subject is the campaign). */
+  assumption?: { question: string; default: string; ticketId?: string };
 }
 
 export function confirmDigest(
@@ -117,6 +129,77 @@ export function confirmDigest(
         `diff ${c.diffArtifact.digest} (${c.files.length} file(s)) on base ${c.baseCommit}`,
         `gates ${c.gateSetDigest}`, `verdict as recorded: ${c.verdict}`,
         ...(applying ? [`decision ${applying.decisionId ?? 'none'}`, `creates ${applying.ref}`] : []),
+      ]);
+    }
+    case 'approve-plan': {
+      const m = ctx.store.mission(subjectId);
+      const plan = m?.kind === 'campaign' ? ctx.store.currentPlan(m.id) : null;
+      if (!m || !plan) throw new Error(`${subjectId} is not a campaign with an imported plan`);
+      const { workItems, supersedes } = ctx.store.planApprovalSet(m.id);
+      const tickets = ctx.store.campaignTickets(m.id, { origin: 'plan' });
+      const owners = ctx.store.assumptions(m.id).filter((a) => a.source === 'plan-default');
+      const usd = tickets.reduce((n, t) => n + (t.budget.maxUsd ?? 0), 0);
+      const id = { operation, campaignId: m.id, projectId: m.projectId, planDigest: plan.planDigest, planRevision: plan.planRevision, workItems, supersedes };
+      return out(digestOf(canonicalJson(id)), [
+        `approve the plan of campaign ${m.id}: ${plan.path} at ${plan.commit.slice(0, 12)} (${plan.planDigest})`,
+        `${tickets.length} ticket(s) in ${new Set(tickets.map((t) => t.lane)).size} lane(s); ${supersedes.length} superseded`,
+        `${owners.length} owner decision(s), ${owners.filter((a) => a.blocking).length} blocking`,
+        `budget hints: $${Number(usd.toFixed(2))} over the tickets that name one`,
+      ]);
+    }
+    case 'authorize-campaign': {
+      const m = ctx.store.mission(subjectId);
+      if (!m || m.kind !== 'campaign') throw new Error(`${subjectId} is not a campaign`);
+      const e = opts.envelope;
+      if (!e) throw new Error('authorize-campaign confirms an envelope; pass the envelope it will record');
+      return out(digestOf(canonicalJson({ ...e, operation, campaignId: m.id, projectId: m.projectId })), [
+        `authorize campaign ${m.id}: ${e.ticketIds.length} ticket(s), plan ${e.planDigest}, gates ${e.gateSetDigest}`,
+        `spend: $${e.maxUsdTotal} in all, $${e.maxUsdPerMission} per mission; ${e.maxAttemptsPerTicket} attempt(s) per ticket`,
+        `authors ${e.roster.join(', ')}; ${e.maxTurns} turns, ${e.timeoutSeconds}s; concurrency ${e.concurrency}, wave ${e.waveSize}`,
+        `execute ${e.execute ? 'yes' : 'no'}; auto-apply ${e.autoApply}; review ${e.reviewRoster.length ? e.reviewRoster.join(', ') : 'off'}`,
+        `fix lane ${e.fixLane.enabled ? `${e.fixLane.maxTicketsPerWave} a wave at $${e.fixLane.maxUsdPerTicket}` : 'off'}; committer ${e.identity.name} <${e.identity.email}> (asserted)`,
+        `until ${new Date(e.notAfter).toISOString()}`,
+      ]);
+    }
+    case 'retry-ticket': {
+      const m = ctx.store.mission(subjectId);
+      if (!m || m.kind !== 'campaign') throw new Error(`${subjectId} is not a campaign`);
+      const r = opts.retry;
+      if (!r) throw new Error('retry-ticket confirms a release; pass the scope it will record');
+      return out(digestOf(canonicalJson({ ...r, operation, campaignId: m.id, projectId: m.projectId })), [
+        `retry ticket ${r.ticketId} of campaign ${m.id}: release work item ${r.workItemId}`,
+        `from mission ${r.closedMissionId}, closed: ${r.reason}`,
+      ]);
+    }
+    case 'resume-campaign': {
+      const m = ctx.store.mission(subjectId);
+      const halt = m ? ctx.store.decisions(m.id).find((d) => d.id === opts.haltDecisionId && d.scope.operation === 'halt-campaign') : undefined;
+      if (!m || !halt) throw new Error(`${String(opts.haltDecisionId)} is not a halt of campaign ${subjectId}`);
+      return out(digestOf(canonicalJson({ operation, haltDecisionId: halt.id, reason: halt.scope.reason, campaignId: m.id, projectId: m.projectId })), [
+        `resume campaign ${m.id}, halted by ${halt.actor}: ${String(halt.scope.reason)} (${halt.id})`,
+      ]);
+    }
+    case 'record-assumption': {
+      const m = ctx.store.mission(subjectId);
+      const a = opts.assumption;
+      if (!m || m.kind !== 'campaign' || !a) throw new Error('record-assumption confirms a row on a campaign; pass the assumption');
+      return out(digestOf(canonicalJson({ operation, campaignId: m.id, projectId: m.projectId, question: a.question, default: a.default, ticketId: a.ticketId ?? null })), [
+        `record an assumption on campaign ${m.id}${a.ticketId ? ` for ticket ${a.ticketId}` : ''}`,
+        `question: ${a.question}`, `proceeds on: ${a.default || '(nothing; it waits for you)'}`,
+      ]);
+    }
+    case 'confirm-assumption':
+    case 'decide-assumption':
+    case 'overturn-assumption': {
+      const a = ctx.store.assumption(subjectId);
+      if (!a) throw new Error(`unknown assumption ${subjectId}`);
+      const value = operation === 'confirm-assumption' ? a.default : opts.value;
+      if (value === undefined) throw new Error(`${operation} confirms a value; pass it`);
+      const id = { operation, assumptionId: a.id, question: a.question, default: a.default, status: a.status, value, followUp: opts.followUp ?? null };
+      return out(digestOf(canonicalJson(id)), [
+        `${operation.replace('-assumption', '')} assumption ${a.id} (${a.status}) of campaign ${a.campaignId}`,
+        `question: ${a.question}`, `default: ${a.default || '(none)'}`, `value: ${value}`,
+        ...(opts.followUp ? [`follow-up: ${opts.followUp}`] : []),
       ]);
     }
     default:
