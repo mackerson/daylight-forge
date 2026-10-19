@@ -44,11 +44,13 @@ export interface ConfirmDigest {
   lines: string[];
 }
 
-type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate' | 'decisions'>;
+type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate' | 'decisions'> & Partial<Pick<MissionStore, 'campaignGateSet'>>;
 
 export interface ConfirmOptions {
-  /** `lock-gates`: exactly the experiments the lock will name. Required. */
+  /** `lock-gates`, `lock-campaign-gates`: exactly the experiments the lock will name. Required. */
   experimentIds?: readonly string[];
+  /** `lock-campaign-gates`: whether the lock ratchets (P2-R17). Required. */
+  ratchet?: boolean;
   /** `authorize-mission`: what will be granted. Required. */
   permissions?: { write: boolean; execute: boolean };
   /** `authorize-mission`: the budget that will be set, or null to leave it. Required. */
@@ -91,6 +93,20 @@ export function confirmDigest(
       return out(gateSetDigest, [
         `lock ${experiments.length} gate(s) on mission ${subjectId}`,
         ...experiments.map((x) => `${x.role} ${x.id} harness ${x.harnessDigest}`),
+      ]);
+    }
+    case 'lock-campaign-gates': {
+      if (!opts.experimentIds || opts.ratchet === undefined || !ctx.store.campaignGateSet) {
+        throw new Error('lock-campaign-gates confirms a chosen set and a ratchet flag; pass the experiment ids and ratchet');
+      }
+      // The gate-set digest, which covers bindings, roles and the ratchet flag: what the lock records.
+      const { experiments, bindings, gateSetDigest } = ctx.store.campaignGateSet(subjectId, opts.experimentIds, opts.ratchet);
+      const holdouts = experiments.filter((x) => x.role === 'holdout').length;
+      return out(gateSetDigest, [
+        `lock ${experiments.length} campaign gate(s) on campaign ${subjectId}, ratchet ${opts.ratchet ? 'on' : 'off'}`,
+        ...experiments.filter((x) => x.role !== 'holdout')
+          .map((x) => `${x.role} ${x.id} ${bindings[x.id] ? `ticket ${bindings[x.id]}` : 'every ticket'} harness ${x.harnessDigest}`),
+        ...(holdouts ? [`${holdouts} holdout(s), counted, not named`] : []),
       ]);
     }
     case 'approve-work-item':
