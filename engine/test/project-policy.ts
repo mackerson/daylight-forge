@@ -112,6 +112,13 @@ section('project globs add, never remove');
   }
 }
 
+section('docs/daylight/POLICY.md names every protected value');
+{
+  const doc = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'docs', 'daylight', 'POLICY.md'), 'utf8');
+  const missing = Object.values(PROTECTED_SETS).flatMap((rules) => rules.flatMap((r) => r.values)).filter((v) => !doc.includes(`\`${v}\``));
+  check('every value in PROTECTED_SETS appears in POLICY.md', missing.length === 0, missing.join(','));
+}
+
 section('the policy file itself');
 {
   const any = [undefined, null, policy({ languages: ['rust'] }), policy({ protectedPaths: ['x/**'] })];
