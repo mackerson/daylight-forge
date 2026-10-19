@@ -183,6 +183,32 @@ fn run() { let p = Point::origin(); p.area(); helper::go("channel", 3); println!
   check('no diagnostics for a clean file', p.diagnostics === undefined);
 }
 
+console.log('\nattributes and negative impls');
+{
+  const p = parse(`
+#[macro_export]
+#[doc(hidden)]
+macro_rules! first_attr { () => {}; }
+#[doc(hidden)]
+/// documented
+#[macro_export]
+macro_rules! last_attr { () => {}; }
+#[doc(hidden)]
+macro_rules! local_only { () => {}; }
+pub struct Handle;
+impl !Send for Handle {}
+impl Clone for Handle { fn clone(&self) -> Self { Handle } }
+`);
+  const exported = (name: string) => p.nodes.find((n) => n.name === name)?.exported;
+  check('#[macro_export] counts as the first of several attributes', exported('first_attr') === true);
+  check('and past a doc comment as the last', exported('last_attr') === true);
+  check('a macro without it is not exported', exported('local_only') === false);
+  check('impl !Send is named as written', p.nodes.some((n) => n.name === 'impl !Send for Handle'),
+    JSON.stringify(p.nodes.map((n) => n.name)));
+  check('and records no implements', !p.heritage.some((h) => h.to === 'Send'), JSON.stringify(p.heritage));
+  check('a positive impl beside it still does', p.heritage.some((h) => h.to === 'Clone' && h.kind === 'implements'));
+}
+
 console.log('\na syntax error is a diagnostic, not a throw');
 {
   let threw = false;

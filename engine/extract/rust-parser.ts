@@ -76,6 +76,16 @@ function isPublic(n: Node): boolean {
   return !!vis && squash(vis.text) !== 'pub(self)';
 }
 
+/** The `#[...]` attributes on an item, in any order, looking past doc comments between them. */
+function attributesOf(n: Node): string[] {
+  const out: string[] = [];
+  for (let cur = n.previousNamedSibling; cur; cur = cur.previousNamedSibling) {
+    if (cur.type === 'attribute_item') out.push(cur.text);
+    else if (!COMMENT_TYPES.has(cur.type)) break;
+  }
+  return out;
+}
+
 /** Leftmost path segment: `a::b::c` → `a`, `self.x.y()` → `self`. Matches `use` bindings. */
 function leftmost(n: Node | null): string | undefined {
   let cur = n;
@@ -464,10 +474,12 @@ export class RustParser implements Parser {
           const type = n.childForFieldName('type');
           if (!type) break;
           const trait = n.childForFieldName('trait');
-          const name = squash(trait ? `impl ${trait.text} for ${type.text}` : `impl ${type.text}`);
+          // `impl !Send for X` says X does *not* implement Send: named as written, no heritage.
+          const negative = !!trait && n.children.some((c) => c?.type === '!');
+          const name = squash(trait ? `impl ${negative ? '!' : ''}${trait.text} for ${type.text}` : `impl ${type.text}`);
           const id = idFor(name, n);
           push(id, 'class', name, n, false);
-          const to = typeName(trait);
+          const to = negative ? undefined : typeName(trait);
           if (to) heritage.push({ from: id, to, kind: 'implements' });
           scope.push(id);
           visitMembers(n, id, 'impl');
@@ -484,7 +496,7 @@ export class RustParser implements Parser {
             n.type === 'type_item' ? 'typeAlias' : n.type === 'macro_definition' ? 'function' : 'variable';
           // `macro_rules!` has no `pub`; `#[macro_export]` is what puts it at the crate root.
           const exported = n.type === 'macro_definition'
-            ? /#\[\s*macro_export/.test(n.previousNamedSibling?.type === 'attribute_item' ? n.previousNamedSibling.text : '')
+            ? attributesOf(n).some((a) => /^#\[\s*macro_export\b/.test(a))
             : isPublic(n);
           push(idFor(name, n), kind, name, n, exported);
           if (n.type !== 'macro_definition') visitChildren(n);
