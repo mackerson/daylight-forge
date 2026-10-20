@@ -308,7 +308,10 @@ export function manifestRefusal(text: string): string | null {
   const r = cargoConfigKeys(text);
   if ('error' in r) return `${r.error}; a manifest that cannot be read is not snapshotted`;
   const table = r.keys.find((k) => k[0] === 'patch' || k[0] === 'replace')?.[0];
-  return table ? `has a [${table}]; patched crates are not snapshotted` : null;
+  if (table) return `has a [${table}]; patched crates are not snapshotted`;
+  // `<…dependencies>.<name>.registry[-index]`, in any dependency table, target-specific included.
+  const alt = r.keys.find((k) => k.length >= 3 && (k.at(-1) === 'registry' || k.at(-1) === 'registry-index') && /dependencies$/.test(k.at(-3)!));
+  return alt ? `names a registry for ${alt.at(-2)} (${alt.slice(-3).join('.')}); only crates.io is snapshotted` : null;
 }
 
 /**
@@ -387,10 +390,22 @@ function realDirUnder(out: string, p: string, create: boolean): string | null {
   return null;
 }
 
+/** The two spellings of crates.io a dependency's `source` takes; anything else is another registry. */
+const CRATES_IO_SOURCES = new Set(['registry+https://github.com/rust-lang/crates.io-index', 'sparse+https://index.crates.io/']);
+
+/** Why a dependency or lock `source` is refused, or null for crates.io. */
+function sourceRefusal(source: string): string | null {
+  if (CRATES_IO_SOURCES.has(source)) return null;
+  const shown = source.slice(0, 120);
+  return source.startsWith('git+') ? `from git (${shown}); git dependencies are not snapshotted` : `from ${shown}; only crates.io is snapshotted`;
+}
+
 /**
- * Refuse a workspace whose crates do not all come from inside it or from the registry: a member
- * or path dependency outside the repository, a git dependency anywhere in the lock, a `[patch]`.
- * None of those could build in `/work` anyway; this names them before anything is fetched.
+ * Refuse a workspace whose crates do not all come from inside it or from crates.io: a member or
+ * path dependency outside the repository, any other source (git, an alternate registry, a
+ * `registry-index` URL) in a manifest or anywhere in the lock, a `[patch]`. None of those could
+ * build in `/work` anyway, and `cargo fetch` would contact whatever a manifest names before
+ * `--locked` failed (review M3); this names them before anything is fetched.
  * `cargo metadata --no-deps` runs from `/`, offline, reading manifests only.
  */
 function workspaceRefusal(root: string, realRoot: string, cargo: string): void {
@@ -425,11 +440,18 @@ function workspaceRefusal(root: string, realRoot: string, cargo: string): void {
     manifest(pkg.manifest_path);
     for (const d of pkg.dependencies) {
       if (d.path && !inside(d.path)) throw new CargoRefused(`${pkg.name} depends on ${d.name} at ${d.path}, outside ${root}; path dependencies must be inside the repository`);
-      if (d.source?.startsWith('git+')) throw new CargoRefused(`${pkg.name} depends on ${d.name} from git (${d.source}); git dependencies are not snapshotted`);
+      const why = d.source ? sourceRefusal(d.source) : null;
+      if (why) throw new CargoRefused(`${pkg.name} depends on ${d.name} ${why}`);
     }
   }
-  const git = /^source = "(git\+[^"]*)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8'));
-  if (git) throw new CargoRefused(`Cargo.lock has a git dependency (${git[1].slice(0, 120)}); git dependencies are not snapshotted`);
+  // Every URL in the lock, not only `source = "…"` lines as cargo writes them: a hand-edited lock
+  // may spell a source any way TOML allows. Escapes are refused because cargo never writes one.
+  const lock = fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8');
+  if (/\\[uU]/.test(lock)) throw new CargoRefused('Cargo.lock has a unicode escape, which cargo never writes; it is not snapshotted');
+  for (const m of lock.matchAll(/(["'])([^"'\n]*:\/\/[^"'\n]*)\1/g)) {
+    const why = sourceRefusal(m[2]);
+    if (why) throw new CargoRefused(`Cargo.lock has a dependency ${why}`);
+  }
 }
 
 /**

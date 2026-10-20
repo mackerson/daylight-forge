@@ -19,9 +19,15 @@ fetched, when any of these holds:
 - `<repo>/.cargo/config.toml` (or the legacy `.cargo/config`) sets a key outside the tolerated set
   (below), is a symlink, or cannot be read;
 - a `.cargo/credentials*` file exists;
-- a manifest has a `[patch]`;
+- a manifest (the root one included, virtual or not) has a `[patch]` or `[replace]`, in any
+  spelling cargo honours (`["patch".crates-io]` too), or cannot be read by the key reader below;
+- a manifest gives a dependency a `registry` or `registry-index` key;
 - a workspace member or a path dependency is outside the repository;
-- any dependency comes from git.
+- any dependency in `cargo metadata`, or any URL in `Cargo.lock`, is not crates.io
+  (`registry+https://github.com/rust-lang/crates.io-index` or `sparse+https://index.crates.io/`):
+  git, an alternate registry and a `registry-index` URL are all refused, and so is a lock with a
+  unicode escape. `cargo fetch` would otherwise contact the named index from the host before
+  `--locked` failed.
 
 `cargo metadata --no-deps --offline` from `/` reads the manifests for these checks.
 
@@ -209,8 +215,8 @@ The second row is what "the base lacks the function" looks like in Rust.
 - The gate sandbox's root tmpfs (`/etc`, `/`) is writable inside the sandbox. This predates
   cargo: the exec sandbox remounts `/` read-only and the gate sandbox does not. It is in-sandbox
   only, but a build script can fill it outside the `/tmp` size cap.
-- Private registries and git dependencies are not supported: no credentials are passed to the
-  fetch, and git dependencies are refused.
+- Private registries, alternate registries and git dependencies are not supported: no
+  credentials are passed to the fetch, and any source other than crates.io is refused.
 - A candidate that changes `Cargo.lock` is already a policy violation. One that needs a new crate
   cannot pass its gates until a person applies the change and re-snapshots.
 - `forge-cargo.ts` fetches `itoa 1.0.11` from crates.io once per run. Set `DAYLIGHT_OFFLINE=1`

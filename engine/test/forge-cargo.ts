@@ -15,7 +15,7 @@
  * does not skip, like forge-e2e. The snapshot is fetched from crates.io once, below, in the step
  * labelled NETWORK; with DAYLIGHT_OFFLINE=1 everything from there on is skipped, said in one line.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -24,7 +24,7 @@ import { noCargoTestsReported } from '../experiment/runner.ts';
 import { checkAllowlist, DEFAULT_LIMITS, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import {
-  cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, lockDigestOf, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
+  cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, lockDigestOf, manifestRefusal, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
   snapshotStatus, targetDir, wipeAuthorCache,
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
@@ -264,6 +264,46 @@ section('deps snapshot reads no ancestor config and refuses what would leave the
   crate(withGit, 'gitdep', '', 'dependencies = [\n "x",\n]\n\n[[package]]\nname = "x"\nversion = "0.1.0"\nsource = "git+https://example.invalid/x#0000"\n');
   const r5 = await throws(() => createSnapshot(withGit, path.join(tmp, 'git-out')));
   check('a git dependency in the lock is refused', r5 instanceof CargoRefused && /git dependenc/.test(r5.message), r5?.message);
+  // Review M3, probe I2: a local beacon stands in for an attacker's registry. It runs as its own
+  // process because createSnapshot blocks this one while cargo runs.
+  const beaconLog = path.join(tmp, 'beacon.log');
+  fs.writeFileSync(beaconLog, '');
+  const beacon = spawn(process.execPath, ['-e', `const fs = require('fs'); const s = require('http').createServer((q, r) => {
+    fs.appendFileSync(process.argv[1], 'BEACON HIT: ' + q.url + ' ua=' + q.headers['user-agent'] + '\\n'); r.statusCode = 404; r.end(); });
+    s.listen(0, '127.0.0.1', () => console.log(s.address().port));`, beaconLog], { stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    const beaconPort = await new Promise<string>((resolve) => beacon.stdout!.once('data', (b: Buffer) => resolve(b.toString().trim())));
+    const index = `sparse+http://127.0.0.1:${beaconPort}/index/`;
+    const viaIndex = path.join(tmp, 'repo-registry-index');
+    crate(viaIndex, 'beaconed', `beacon = { version = "1", registry-index = "${index}" }\n`);
+    const m1 = await throws(() => createSnapshot(viaIndex, path.join(tmp, 'beacon-out')));
+    check('a registry-index dependency is refused before cargo fetch runs, naming it',
+      m1 instanceof CargoRefused && /beacon/.test(m1.message) && /only crates\.io/.test(m1.message) && !/cargo fetch/.test(m1.message), m1?.message);
+    const viaTable = path.join(tmp, 'repo-registry-index-table');
+    crate(viaTable, 'beaconedt', `\n[target.'cfg(unix)'.dependencies.beacon]\nversion = "1"\nregistry-index = "${index}"\n`);
+    const m2 = await throws(() => createSnapshot(viaTable, path.join(tmp, 'beacon-out')));
+    check('so is one declared as a target-specific dependency table', m2 instanceof CargoRefused && !/cargo fetch/.test(m2.message), m2?.message);
+    const viaRegistry = path.join(tmp, 'repo-registry-key');
+    crate(viaRegistry, 'named', 'beacon = { version = "1", registry = "evil" }\n');
+    const m3 = await throws(() => createSnapshot(viaRegistry, path.join(tmp, 'beacon-out')));
+    check('and a dependency naming a registry', m3 instanceof CargoRefused && !/cargo fetch/.test(m3.message), m3?.message);
+    check('manifestRefusal names the registry key and passes a crate called registry',
+      /registry-index/.test(manifestRefusal(`[dependencies]\nx = { version = "1", registry-index = "${index}" }\n`) ?? '')
+      && /registry/.test(manifestRefusal('[dev-dependencies.x]\nregistry = "evil"\n') ?? '')
+      && manifestRefusal('[dependencies]\nregistry = "1"\nregistry-index = { version = "1" }\n[package.metadata.x]\nregistry = "y"\n') === null);
+    const lockOnly = path.join(tmp, 'repo-lock-source');
+    crate(lockOnly, 'locked', '', `dependencies = [\n "x",\n]\n\n[[package]]\nname = "x"\nversion = "0.1.0"\nsource = '${index}'\n`);
+    const m4 = await throws(() => createSnapshot(lockOnly, path.join(tmp, 'beacon-out')));
+    check('a Cargo.lock source that is not crates.io is refused, however it is quoted', m4 instanceof CargoRefused && /Cargo\.lock has a dependency from sparse\+http/.test(m4.message), m4?.message);
+    const escaped = path.join(tmp, 'repo-lock-escape');
+    crate(escaped, 'escaped', '', `dependencies = [\n "x",\n]\n\n[[package]]\nname = "x"\nversion = "0.1.0"\nsource = "sparse+http\\u003a//127.0.0.1:${beaconPort}/index/"\n`);
+    const m5 = await throws(() => createSnapshot(escaped, path.join(tmp, 'beacon-out')));
+    check('and a lock that hides one behind a unicode escape', m5 instanceof CargoRefused && /unicode escape/.test(m5.message), m5?.message);
+    const hits = fs.readFileSync(beaconLog, 'utf8');
+    check('the beacon logged zero hits', hits === '', hits.slice(0, 300));
+  } finally {
+    beacon.kill();
+  }
   const cfgDir = (name: string, text: string) => {
     const d = path.join(tmp, name);
     fs.mkdirSync(path.join(d, '.cargo'), { recursive: true });
