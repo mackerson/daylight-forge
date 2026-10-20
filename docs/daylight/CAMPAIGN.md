@@ -60,7 +60,7 @@ the working tree. An uncommitted edit is not the plan.
 | `title` | One line, at most 120 characters. |
 | `statement` | A string, or a list of lines joined by newlines; at most 4 KiB joined. |
 | `examples`, `negativeExamples` | At most 10, each at most 1 KiB. |
-| `scope` | Repo-relative prefixes inside the ticket's lane `owns`, each a file or directory at the plan commit, or ending in `/` for a directory that does not exist yet. Never a protected path, a gate path, the plan file or `statusPath`. |
+| `scope` | Repo-relative prefixes inside the ticket's lane `owns`, each a file or directory at the plan commit or one that does not exist yet (a new file or directory is the point of a ticket, P2-R41), never below a file. Never a protected path (judged against the policy at the plan commit), a gate path, the plan file or `statusPath`. |
 | `owns` | Lanes' prefixes are pairwise disjoint, except a prefix both lanes list in `shared`. |
 | `dependsOn` | Existing tickets, no self edge, no cycle (a cycle is reported as its id path). |
 | `blocksOn` | Declared owner decisions. |

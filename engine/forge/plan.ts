@@ -399,8 +399,8 @@ function protectedScope(p: string, policy: ProjectPolicy | null, crates: CrateLa
 
 /**
  * Every rule the parsed plan breaks against its own commit, all at once: unique ids, known
- * lanes, dependencies and owner decisions, no cycle, scopes that exist, are not protected and
- * sit inside their lane, lanes that do not overlap except where both share, and gate and
+ * lanes, dependencies and owner decisions, no cycle, scopes that are not protected (existing or
+ * not yet, but never below a file) and sit inside their lane, lanes that do not overlap except where both share, and gate and
  * acceptance paths that are regular files (and crates that have a manifest) at the commit.
  */
 export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): PlanRefusal[] {
@@ -425,6 +425,10 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
   const dirs = new Set<string>();
   for (const f of ctx.tree) for (let i = f.indexOf('/'); i > 0; i = f.indexOf('/', i + 1)) dirs.add(f.slice(0, i));
   const exists = (p: string) => isFile(p) || dirs.has(p);
+  const underFile = (p: string) => {
+    for (let i = p.indexOf('/'); i > 0; i = p.indexOf('/', i + 1)) if (isFile(p.slice(0, i))) return true;
+    return false;
+  };
   const isCrate = (c: string) => isFile(`${prefixOf(c)}/Cargo.toml`);
   const crates = crateLayoutOf(ctx.tree, (p) => ctx.blobAt(p)?.toString('utf8') ?? null);
 
@@ -476,8 +480,9 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
       const s = prefixOf(raw);
       const sat = `${at}.scope[${k}]`;
       if (protectedPaths.has(s) || protectedScope(s, ctx.policy, crates)) r.add(sat, 'scope-protected', 'an author may not be given this path');
-      const planned = raw.endsWith('/') && owns.some((o) => under(s, o));
-      if (!exists(s) && !planned) r.add(sat, 'scope-path', 'not a file or directory at the plan commit');
+      // A path that does not exist yet is the point of a ticket (P2-R41): it passed the parse's
+      // repo-relative check and the protected check above. Only a path below a file cannot be.
+      if (!exists(s) && underFile(s)) r.add(sat, 'scope-path', 'below a file at the plan commit');
       if (lane && !owns.some((o) => under(s, o))) r.add(sat, 'scope-outside-lane', `not inside lane ${lane.id}'s prefixes`);
     });
     const acc = t.acceptance;
