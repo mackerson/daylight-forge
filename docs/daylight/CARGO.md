@@ -13,6 +13,10 @@ daylight deps snapshot <repo> [--out <dir>]   # on the host, with network; a per
 daylight deps status   <repo> [--out <dir>]   # recorded digest, verified; Cargo.lock match; cache sizes
 ```
 
+`deps snapshot` is refused under `CLAUDECODE` or `DAYLIGHT_SESSION`, in one line, before anything
+is read: a fetch on the host with network is a person's act (P2-R41). `deps status` and
+`deps requests` run in an agent session.
+
 `deps snapshot` checks the repository first. It refuses the repository, before anything is
 fetched, when any of these holds:
 

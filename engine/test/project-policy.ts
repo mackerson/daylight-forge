@@ -511,4 +511,32 @@ section('request_dependency: the author asks, a person decides');
     && unknown.status === 2 && /snapshot, status, requests, resolve/.test(unknown.stderr), routed.stderr + unknown.stderr);
 }
 
+section('deps snapshot is a person\'s act; deps status and requests run in an agent session (P2-R41)');
+{
+  const clean: NodeJS.ProcessEnv = { ...process.env };
+  delete clean.CLAUDECODE;
+  delete clean.DAYLIGHT_SESSION;
+  const deps = (args: string[], env: NodeJS.ProcessEnv) => spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'cli.ts'), 'deps', ...args],
+    { encoding: 'utf8', env });
+  // Not a cargo repository: were the refusal missing, the snapshot would stop at its own check, never fetch.
+  const repo = path.join(tmp, 'deps-session-repo');
+  const out = path.join(tmp, 'deps-session-out');
+  fs.mkdirSync(repo);
+  for (const v of ['CLAUDECODE', 'DAYLIGHT_SESSION']) {
+    const r = deps(['snapshot', repo, '--out', out], { ...clean, [v]: '1' });
+    const lines = r.stderr.trim().split('\n');
+    check(`${v}: deps snapshot is refused in one line naming the variable and the network`, r.status === 1 && lines.length === 1
+      && lines[0].includes(v) && /refused: .*host with network/.test(lines[0]), r.stderr);
+    const j = deps(['snapshot', repo, '--out', out, '--format', 'json'], { ...clean, [v]: '1' });
+    check(`${v}: and as JSON, refused: true`, j.status === 1 && (JSON.parse(j.stdout || '{}') as { refused?: boolean }).refused === true, j.stdout);
+    const st = deps(['status', repo, '--out', out, '--format', 'json'], { ...clean, [v]: '1' });
+    check(`${v}: deps status runs`, st.status === 0 && (JSON.parse(st.stdout || '{}') as { recorded?: unknown }).recorded === null, st.stderr);
+    const rq = deps(['requests', '--out', out, '--format', 'json'], { ...clean, [v]: '1' });
+    check(`${v}: deps requests runs`, rq.status === 0 && Array.isArray((JSON.parse(rq.stdout || '{}') as { requests?: unknown }).requests), `${rq.status} ${rq.stderr}`);
+  }
+  check('nothing was written under <out> by the refused snapshot', !fs.existsSync(path.join(out, 'cargo')));
+  const human = deps(['snapshot', repo, '--out', out], clean);
+  check('from a person\'s shell the same command reaches the snapshot\'s own checks', human.status === 1 && /no Cargo\.toml/.test(human.stderr), human.stderr);
+}
+
 done();
