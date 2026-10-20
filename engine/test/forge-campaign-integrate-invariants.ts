@@ -28,20 +28,20 @@ for (const [file, callee] of [['engine/forge/director.ts', 'execFileSync'], ['en
 }
 check('integrate.ts and apply.ts are where git runs, and are not in its scope', status('director-spawns-nothing', calls([['engine/forge/integrate.ts', 'spawnSync']])) === 'green');
 
-section('integration-ref-moves-by-cas');
+section('integrate-calls-cas-ref (a call count; the CAS itself is forge-campaign-integrate-ref.ts)');
 const cas = (n: number) => calls(Array.from({ length: n }, () => ['engine/forge/integrate.ts', 'casRef'] as [string, string]));
-check('green with the landing, its undo and the resume undo', status('integration-ref-moves-by-cas', cas(3)) === 'green');
-check('red when a compare-and-swap is dropped', status('integration-ref-moves-by-cas', cas(2)) === 'red');
+check('green with the landing, its undo and the resume undo', status('integrate-calls-cas-ref', cas(3)) === 'green');
+check('red when a compare-and-swap is dropped', status('integrate-calls-cas-ref', cas(2)) === 'red');
 
-section('campaign-spend-within-cap');
+section('director-asks-spend-refusal (a call count; the cap itself is forge-campaign-run-director.ts)');
 const spend = (n: number) => calls(Array.from({ length: n }, () => ['engine/forge/director.ts', 'campaignSpendRefusal'] as [string, string]));
-check('green with the launch check and the dry run\'s', status('campaign-spend-within-cap', spend(2)) === 'green');
-check('red when the director stops asking', status('campaign-spend-within-cap', spend(1)) === 'red');
+check('green with the launch, review and dry-run checks', status('director-asks-spend-refusal', spend(3)) === 'green');
+check('red when one path stops asking', status('director-asks-spend-refusal', spend(2)) === 'red');
 
-section('no-holdout-in-repair');
+section('director-redacts-brief-text (a call count; holdout secrecy is forge-campaign-run-director.ts)');
 const red = (n: number) => calls(Array.from({ length: n }, () => ['engine/forge/director.ts', 'redact'] as [string, string]));
-check('green with every brief text redacted', status('no-holdout-in-repair', red(3)) === 'green');
-check('red when one is not', status('no-holdout-in-repair', red(2)) === 'red');
+check('green with every brief text redacted', status('director-redacts-brief-text', red(3)) === 'green');
+check('red when one is not', status('director-redacts-brief-text', red(2)) === 'red');
 
 section('campaign-verdict-is-pure is registered (its red test is in forge-campaign-integrate-verdict.ts)');
 check('registered', invariants.some((i) => i.id === 'campaign-verdict-is-pure'));
