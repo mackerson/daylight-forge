@@ -26,9 +26,9 @@ without a policy.
 | Key | Meaning |
 | --- | --- |
 | `schema` | Required, exactly `daylight.policy/v1`. |
-| `languages` | `node`, `rust` or both. Default `["node"]`; an empty list is refused. It only chooses which sets the author's prompt lists first (the prompt lists every set, since every set is enforced) and, later, the default gate harness. It never unprotects anything: a `["rust"]` project still has `package.json` and `node_modules` protected. |
+| `languages` | `node`, `rust` or both. Default `["node"]`; an empty list is refused. It only chooses which sets the author's prompt lists first (the prompt lists every set, since every set is enforced) and, when `gate.harness` is absent, the default gate harness. It never unprotects anything: a `["rust"]` project still has `package.json` and `node_modules` protected. |
 | `protectedPaths` | Repo-relative globs the project adds. `**` is any number of whole components, `*` any run inside one. No leading slash, no `.` or `..` component, no other glob syntax, at most 64 entries. Globs only add: there is no way to unprotect anything. A path is matched exactly, so write `dir/**` to protect a directory. |
-| `gate.harness` | `cargo` or `node`. The harness `daylight gate add` registers when `--harness` is not given; the flag wins, and with neither it is `node`. |
+| `gate.harness` | `cargo` or `node`. The harness `daylight gate add` registers when `--harness` is not given, and a plan gate's when the plan names none (read at the plan commit); the flag or the plan's own `harness` wins. Without it, `languages` decides (P2-R32, P2-R37): `["rust"]` is `cargo`; `["node"]`, both, or no `languages` (or no policy) is `node`. |
 | `gate.command` | Optional argv template, `{test}` standing for the test path. Not a shell string. |
 | `author.maxTurns` | The author's turn cap. A positive integer, lowered to 1000 if above. |
 | `author.timeoutSeconds` | The author's wall-clock cap. A positive integer, lowered to 21600 (6 h) if above. `forge run --timeout` overrides it, and is lowered to the same maximum. |

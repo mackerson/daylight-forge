@@ -23,7 +23,7 @@ import { createDecomposeServer } from '../mcp/server.ts';
 import { openDaylight } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import {
-  authorLimits, loadProjectPolicy, MAX_AUTHOR_TIMEOUT_SECONDS, MAX_AUTHOR_TURNS, MAX_POLICY_BYTES, parseProjectPolicy,
+  authorLimits, defaultGateHarness, loadProjectPolicy, MAX_AUTHOR_TIMEOUT_SECONDS, MAX_AUTHOR_TURNS, MAX_POLICY_BYTES, parseProjectPolicy,
   POLICY_FILE, PROTECTED_SETS, protectedBy, ProjectPolicyError, type ProjectPolicy,
 } from '../forge/project-policy.ts';
 import type { CandidateFile } from '../mission/types.ts';
@@ -149,6 +149,23 @@ section('docs/daylight/POLICY.md names every protected value');
   const doc = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'docs', 'daylight', 'POLICY.md'), 'utf8');
   const missing = Object.values(PROTECTED_SETS).flatMap((rules) => rules.flatMap((r) => r.values)).filter((v) => !doc.includes(`\`${v}\``));
   check('every value in PROTECTED_SETS appears in POLICY.md', missing.length === 0, missing.join(','));
+}
+
+section('the default gate harness: gate.harness, else languages (P2-R32, P2-R37)');
+{
+  const P = policy;
+  const cases: Array<[string, ProjectPolicy | null, 'node' | 'cargo']> = [
+    ['no policy', null, 'node'],
+    ['no languages', P({}), 'node'],
+    ['["node"]', P({ languages: ['node'] }), 'node'],
+    ['["rust"]', P({ languages: ['rust'] }), 'cargo'],
+    ['["rust", "node"]', P({ languages: ['rust', 'node'] }), 'node'],
+    ['["node", "rust"]', P({ languages: ['node', 'rust'] }), 'node'],
+    ['["rust"] with gate.harness node', P({ languages: ['rust'], gate: { harness: 'node' } }), 'node'],
+    ['both with gate.harness cargo', P({ languages: ['rust', 'node'], gate: { harness: 'cargo' } }), 'cargo'],
+    ['["node"] with gate.harness cargo', P({ languages: ['node'], gate: { harness: 'cargo' } }), 'cargo'],
+  ];
+  for (const [name, p, want] of cases) check(`${name} → ${want}`, defaultGateHarness(p) === want, defaultGateHarness(p));
 }
 
 section('the policy file itself');

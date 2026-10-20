@@ -1016,7 +1016,7 @@ export interface PlanFileV1 {
 export interface PlanCampaignGateV1 {   // an ordinary R2 gate (P2-R16)
   id: string;                    // /^[a-z][a-z0-9-]{0,31}$/
   role: 'regression';            // must pass at base and on every integrated tree
-  harness?: GateHarness; path: string; crate?: string;  // test file at the plan commit; harness defaults to policy.gate?.harness ?? 'node'
+  harness?: GateHarness; path: string; crate?: string;  // test file at the plan commit; harness defaults to defaultGateHarness(policy)
   expect: ExpectedObservation; timeoutSeconds?: number;
 }
 export interface PlanGateTestV1 { path: string; harness?: GateHarness; crate?: string; expect: ExpectedObservation }

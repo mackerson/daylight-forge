@@ -13,6 +13,8 @@ import { confirmDigest } from './confirm.ts';
 import { cargoTargetOf, GateRefused, record, recordIntegrated, registerGate, runContext, type AuthorBriefGate, type GateContext } from './gate.ts';
 import { expectedTip } from './integrate.ts';
 import { assertHumanDecision } from './policy.ts';
+import { policyAt } from './plan.ts';
+import { defaultGateHarness } from './project-policy.ts';
 import { createWorkspace } from './workspace.ts';
 
 export { requiredChecks };
@@ -90,10 +92,12 @@ export function registerPlanGates(ctx: GateContext, campaignId: string, plan: Pl
   const m = requireCampaign(ctx, campaignId);
   const have = ctx.store.experimentsFor(m.id);
   const out: Experiment[] = [];
+  // The policy at the plan commit, as validation read it; only when a test names no harness.
+  let defaultHarness: GateHarness | undefined;
   const one = (role: 'regression' | 'gate', subject: string, ticketId: string | null,
     t: { path: string; harness?: GateHarness; crate?: string; expect: ExpectedObservation }) => {
     const source = blobAt(ctx.repoRoot, m.baseRevision, t.path).toString('utf8');
-    const harness = t.harness ?? o.defaultHarness ?? 'node';
+    const harness = t.harness ?? (defaultHarness ??= o.defaultHarness ?? defaultGateHarness(policyAt(ctx.repoRoot, m.baseRevision)));
     const found = have.find((x) => x.subject === subject && x.role === role && x.testArtifact.digest === digestOf(source)
       && (x.harness ?? 'node') === harness && JSON.stringify(x.prediction) === JSON.stringify(t.expect));
     if (found) {

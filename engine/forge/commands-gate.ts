@@ -5,7 +5,7 @@ import { defaultOut } from '../paths.ts';
 import type { ExpectedObservation, GateHarness } from '../mission/types.ts';
 import { confirmDigest } from './confirm.ts';
 import { DecisionRefused } from './policy.ts';
-import { loadProjectPolicy } from './project-policy.ts';
+import { defaultGateHarness, loadProjectPolicy } from './project-policy.ts';
 import {
   baseline, evaluate, GateRefused, listGates, lock, registerGate, type GateContext,
 } from './gate.ts';
@@ -79,11 +79,11 @@ function repoFor(d: DaylightContext, named: string | undefined): string {
   return root;
 }
 
-/** The `gate.harness` the mission's project names in daylight.policy.json, if any. */
+/** The harness the mission's project's daylight.policy.json implies: its `gate.harness`, else by `languages`. */
 function policyHarness(d: DaylightContext, missionId: string): GateHarness | undefined {
   const mission = d.store.mission(missionId);
   const root = mission ? d.store.project(mission.projectId)?.root : undefined;
-  return root ? loadProjectPolicy(root)?.gate?.harness : undefined;
+  return root ? defaultGateHarness(loadProjectPolicy(root)) : undefined;
 }
 
 function gateContext(d: DaylightContext, repoRoot: string, p: Parsed): GateContext {

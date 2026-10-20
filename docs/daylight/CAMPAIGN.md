@@ -66,7 +66,7 @@ the working tree. An uncommitted edit is not the plan.
 | `blocksOn` | Declared owner decisions. |
 | `acceptance` | `ci-only` (default), `gate` (tests that are regular files at the plan commit, bound to the ticket) or `writer-authored` (`testPaths` inside the ticket's scope; for cargo, under `<crate>/tests/`). |
 | `expect` | On a campaign gate, a gate test and writer-authored tests: an `exitCode` and at least one non-empty `stdoutIncludes` marker (`test result: ok.`, `# fail 0`), what `daylight gate add` requires; refused as `gate-expectation`, naming the gate (P2-R37). |
-| `harness`, `crate` | `node` or `cargo`; a crate only with cargo, and a directory with a `Cargo.toml` at the plan commit. There is no argv harness (P2-R16). |
+| `harness`, `crate` | `node` or `cargo`; a crate only with cargo, and a directory with a `Cargo.toml` at the plan commit. A campaign gate or gate test that names none takes the policy's default at the plan commit (`gate.harness`, else by `languages`; [POLICY.md](POLICY.md)); writer-authored tests that name none are `node`. There is no argv harness (P2-R16). |
 | `budget` | `maxUsd`, `maxTurns`, `timeoutSeconds`, `maxAttempts` (1–10). Each only lowers the envelope's cap. |
 | Caps | At most 2 MiB, 2,000 tickets, 64 lanes, 64 owner decisions, 16 campaign gates. Unknown keys are refused. |
 

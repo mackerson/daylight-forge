@@ -8,7 +8,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { importPlan } from '../forge/campaign.ts';
+import { importPlan, planOf } from '../forge/campaign.ts';
+import { registerPlanGates } from '../forge/campaign-gates.ts';
 import {
   isPlanRefusals, parsePlan, readPlanBlob, PlanRefused, ticketDigestOf, ticketWorkItemId, topoOrder, validatePlanAt, wavesPreview,
   MAX_TICKETS, MAX_PLAN_BYTES,
@@ -217,6 +218,32 @@ section('bytes come from git objects at one commit');
     check('a symlinked policy at the plan commit refuses the plan, as R4\'s loader does (review L2)', r.plan === null && has(r.refusals, 'policy'), show(r.refusals));
   }
   check('a policy glob at the plan commit protects a scope', has(at(OK).refusals, 'scope-protected', '$.tickets[0].scope[0]'), show(at(OK).refusals));
+}
+
+section('a plan gate with no harness takes the policy\'s default at the plan commit (P2-R32, P2-R37)');
+{
+  const noHarness = (): PlanFileV1 => {
+    const p = clone();
+    delete p.campaignGates[0].harness;
+    delete p.campaignGates[0].crate;
+    return p;
+  };
+  const harnessFor = (name: string, policy: Record<string, unknown> | null): string | undefined => {
+    const r = makeRepo(name, noHarness(), policy ? { 'daylight.policy.json': JSON.stringify({ schema: 'daylight.policy/v1', ...policy }) } : {});
+    const ctx = openDaylight(r.out);
+    try {
+      const { campaign } = importPlan(ctx, r.root, 'daylight.plan.json');
+      const [x] = registerPlanGates({ store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: r.root, out: r.out }, campaign.id, planOf(ctx, campaign.id).plan)
+        .filter((g) => g.role === 'regression');
+      return x?.harness ?? 'node';
+    } finally {
+      ctx.close();
+    }
+  };
+  check('no policy: node', harnessFor('h-none', null) === 'node');
+  check('languages ["rust"]: cargo', harnessFor('h-rust', { languages: ['rust'] }) === 'cargo');
+  check('languages ["rust", "node"]: node', harnessFor('h-both', { languages: ['rust', 'node'] }) === 'node');
+  check('gate.harness wins over languages', harnessFor('h-gate', { languages: ['rust'], gate: { harness: 'node' } }) === 'node');
 }
 
 section('order and digests');

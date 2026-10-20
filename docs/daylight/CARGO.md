@@ -117,7 +117,7 @@ daylight gate add <mission> --role gate|holdout --harness cargo --crate <dir> --
   --expect-exit 0 --expect-stdout 'test result: ok.'
 ```
 
-`--harness` defaults to `node`. It is stored on the experiment row and in the gate's expectation,
+`--harness` defaults to the project policy's `gate.harness`, else `cargo` when its `languages` is `["rust"]`, else `node` ([POLICY.md](POLICY.md)). It is stored on the experiment row and in the gate's expectation,
 so it is covered by the harness digest: changing it makes a new harness.
 
 ### Where the test goes
