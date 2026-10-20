@@ -24,8 +24,8 @@ import { noCargoTestsReported } from '../experiment/runner.ts';
 import { checkAllowlist, DEFAULT_LIMITS, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import {
-  authorCacheDir, cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, lockDigestOf, manifestRefusal, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
-  snapshotStatus, targetDir, wipeAuthorCache,
+  authorCacheDir, cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, gateRunKey, lockDigestOf, manifestRefusal, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
+  removeGateCache, removeGateRun, snapshotStatus, targetDir, wipeAuthorCache,
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
 import {
@@ -563,8 +563,9 @@ section('baseline: falsified on the base, which lacks padded(); in bwrap with no
     && binds.some((b) => b.flag === '--bind' && b.src === fs.realpathSync(gateCacheDir(out, 'base')) && b.dest === '/cargo-target'));
   check('the author cache is never bound into a gate', !argv.some((a) => a.includes(path.join('cargo', 'target', 'author'))));
   check('offline and non-incremental', argv.join(' ').includes('--setenv CARGO_NET_OFFLINE true') && argv.join(' ').includes('--setenv CARGO_INCREMENTAL 0'));
-  check('the test is bound in from memory at both of its paths', argv.filter((a) => a === '--ro-bind-data').length === 2
-    && argv.some((a) => a.endsWith(`/crates/core/tests/${cargoTargetOf(gate.id)}.rs`)));
+  check('the test is bound in from memory once, under the crate\'s tests/, never under .daylight-gates/ (P2-R42)',
+    argv.filter((a) => a === '--ro-bind-data').length === 1
+    && argv.some((a) => a.endsWith(`/crates/core/tests/${cargoTargetOf(gate.id)}.rs`)) && !argv.some((a) => a.includes('.daylight-gates')));
   check('no mount is $HOME, <out> or an ancestor of either', noHomeNoOut(argv), JSON.stringify(binds));
   const hostConnect = await new Promise<string>((resolve) => {
     const s = net.connect(port, '127.0.0.1', () => { s.end(); resolve('connected'); });
@@ -640,8 +641,22 @@ section('evaluate: supported on a diff that adds padded()');
   check('so the verdict is rejected-by-gates', v.verdict === 'rejected-by-gates', `${v.verdict} ${v.verdictReasons.join('; ')}`);
   check('the author cache was not touched by the gates', !recordsOf(g!).some((r) => r.sandboxArgv.some((x) => x.includes(path.join('cargo', 'target', 'author')))));
   const key = gateCacheKey(c.diffArtifact.digest);
-  check('the candidate\'s gates built in its own cache, gate/<diffDigest16>, never in gate/base',
-    recordsOf(g!).every((r) => bindsOf(r.sandboxArgv).some((b) => b.flag === '--bind' && b.dest === '/cargo-target' && b.src === path.join(fs.realpathSync(targetDir(out, 'gate')), key))));
+  const runCaches = rows.flatMap((r) => recordsOf(r)).map((r) => bindsOf(r.sandboxArgv).find((b) => b.flag === '--bind' && b.dest === '/cargo-target')?.src ?? '');
+  const under = path.join(fs.realpathSync(targetDir(out, 'gate')), key) + path.sep;
+  check('every gate and holdout run built in a cache of its own, gate/<diffDigest16>/<run>/, never in gate/base (P2-R42)',
+    runCaches.length >= 4 && runCaches.every((src) => src.startsWith(under) && /^r\d+-[0-9a-f]{16}$/.test(path.basename(src)))
+    && new Set(runCaches).size === runCaches.length, JSON.stringify(runCaches));
+  check('no run\'s cache outlives its run', runCaches.every((src) => !fs.existsSync(src)));
+  const seedRun = gateRunKey(0);
+  const t0 = performance.now();
+  cargoMounts('gate', out, { gateCache: key, run: seedRun });
+  const seedMs = performance.now() - t0;
+  removeGateRun(out, key, seedRun);
+  removeGateCache(out, key);
+  console.log(`  (one run's cache seeded from gate/base, ${listing(gateCacheDir(out, 'base')).length} entries, snapshot verified: ${seedMs.toFixed(0)} ms)`);
+  check('seeding one run\'s cache is cheap on the fixture (under 5 s)', seedMs < 5000, `${seedMs.toFixed(0)} ms`);
+  check('a candidate run without a run key is refused, never handed a shared cache',
+    /per run/.test((() => { try { cargoMounts('gate', out, { gateCache: key }); return ''; } catch (err) { return (err as Error).message; } })()));
   check('and that cache is gone after evaluate, gate/base kept', !fs.existsSync(gateCacheDir(out, key)) && listing(gateCacheDir(out, 'base')).length > 0);
 }
 

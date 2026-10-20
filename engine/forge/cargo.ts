@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SYSTEM_PATH, type SandboxBind } from '../experiment/sandbox.ts';
@@ -59,11 +59,19 @@ export const snapshotFile = (out: string): string => path.join(out, 'cargo', 'sn
 export const targetDir = (out: string, kind: CargoProfile): string => path.join(out, 'cargo', 'target', kind);
 
 /**
- * One gate build cache (P2-R28): `base`, written only by baseline runs, or one candidate's,
- * named by the first 16 hex characters of its diff digest and seeded from `base`.
+ * One gate build cache (P2-R28, P2-R42): `base`, written only by baseline runs, or one
+ * candidate's or integration's directory, named by the first 16 hex characters of its diff
+ * digest, which holds one throwaway cache per run, each seeded from `base`.
  */
 export const gateCacheDir = (out: string, key: string): string => path.join(targetDir(out, 'gate'), key);
 const GATE_CACHE_KEY = /^(base|[0-9a-f]{16})$/;
+
+/** One run's cache under a candidate's directory: `<out>/cargo/target/gate/<diffDigest16>/<run>/`. */
+export const gateRunDir = (out: string, key: string, run: string): string => path.join(gateCacheDir(out, key), run);
+const GATE_RUN_KEY = /^r[0-9]{1,4}-[0-9a-f]{16}$/;
+
+/** A fresh run key: the run index and 64 random bits, so no two runs ever name one directory. */
+export const gateRunKey = (index: number): string => `r${index}-${randomBytes(8).toString('hex')}`;
 
 /**
  * One mission's author build cache (review L4): every author of that mission builds here, and no
@@ -77,17 +85,19 @@ const MISSION_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 export const gateCacheKey = (diffDigest: string): string => diffDigest.replace(/^sha256:/, '').slice(0, 16);
 
 /**
- * A candidate's gate cache, created as a copy of `base` (reflinked where the filesystem can, a
- * plain copy otherwise) so it starts from the base's dependency builds and nothing any other
- * candidate built. `base` itself is never handed to a candidate.
+ * One run's gate cache, created as a copy of `base` (reflinked where the filesystem can, a plain
+ * copy otherwise) so it starts from the base's dependency builds and nothing any other run built
+ * (P2-R42): a holdout's run can write what it read into its cache, and the next run, the
+ * author's own acceptance test included, must never find it there. `base` itself is never
+ * handed to a candidate. A run directory that already exists is refused, never reused.
  */
-function seedGateCache(out: string, key: string): void {
-  const dst = gateCacheDir(out, key);
-  if (fs.lstatSync(dst, { throwIfNoEntry: false })) return;
+function seedGateRun(out: string, key: string, run: string): void {
+  const dst = gateRunDir(out, key, run);
+  const parentBad = realDirUnder(out, gateCacheDir(out, key), true);
+  if (parentBad) throw new CargoRefused(`refusing the gate build cache: ${parentBad}`);
+  if (fs.lstatSync(dst, { throwIfNoEntry: false })) throw new CargoRefused(`the gate run cache ${run} already exists; a run's cache is never reused`);
   const base = gateCacheDir(out, 'base');
   const bst = fs.lstatSync(base, { throwIfNoEntry: false });
-  const parentBad = realDirUnder(out, targetDir(out, 'gate'), true);
-  if (parentBad) throw new CargoRefused(`refusing the gate build cache: ${parentBad}`);
   if (!bst?.isDirectory() || bst.isSymbolicLink()) return;
   try {
     execFileSync('/usr/bin/cp', ['-a', '--reflink=auto', '--', base, dst], { stdio: 'ignore', timeout: 600_000, env: { PATH: SYSTEM_PATH } });
@@ -97,11 +107,18 @@ function seedGateCache(out: string, key: string): void {
   }
 }
 
-/** Remove one candidate's gate cache; `base` is never removed this way. */
+/** Remove one candidate's gate cache directory, every run's included; `base` is never removed this way. */
 export function removeGateCache(outIn: string, key: string): void {
   const out = requireAbsoluteOut(outIn);
   if (key === 'base' || !GATE_CACHE_KEY.test(key)) return;
   fs.rmSync(gateCacheDir(out, key), { recursive: true, force: true });
+}
+
+/** Remove one run's gate cache, in that run's `finally`. */
+export function removeGateRun(outIn: string, key: string, run: string): void {
+  const out = requireAbsoluteOut(outIn);
+  if (key === 'base' || !GATE_CACHE_KEY.test(key) || !GATE_RUN_KEY.test(run)) return;
+  fs.rmSync(gateRunDir(out, key, run), { recursive: true, force: true });
 }
 
 const sha256 = (b: Buffer | string): string => `sha256:${createHash('sha256').update(b).digest('hex')}`;
@@ -602,18 +619,11 @@ export function snapshotStatus(repo: string, out: string, o: { verify?: boolean 
 }
 
 /**
- * The binds and environment one profile's cargo runs with: the snapshot read-only at
- * `/cargo-home`, that profile's own build cache read-write at `/cargo-target` (created on
- * demand), offline. The gate profile also builds non-incrementally: what it compiles is judged,
- * and incremental state is one more thing carried from one candidate's build into the next.
+ * The snapshot directory, once it is verified in full (P2-R29): `<out>` a real directory, a
+ * recorded snapshot not inside the repository, no planted configuration, and the digest it was
+ * recorded with. Throws `CargoRefused` naming the command to run otherwise.
  */
-export function cargoMounts(
-  kind: CargoProfile, outIn: string, o: { gateCache?: string; mission?: string } = {},
-): { binds: SandboxBind[]; env: Record<string, string> } {
-  if (kind !== 'author' && kind !== 'gate') throw new CargoRefused(`unknown cargo profile ${String(kind)}`);
-  const key = o.gateCache ?? 'base';
-  if (kind === 'gate' && !GATE_CACHE_KEY.test(key)) throw new CargoRefused(`${key} is not a gate cache name`);
-  if (kind === 'author' && !MISSION_KEY.test(o.mission ?? '')) throw new CargoRefused('the author build cache is per mission; no mission id was given');
+export function verifySnapshot(outIn: string): string {
   const out = requireAbsoluteOut(outIn);
   if (!fs.lstatSync(out, { throwIfNoEntry: false })?.isDirectory()) throw new CargoRefused(`${out} is not a directory`);
   const home = snapshotDir(out);
@@ -637,8 +647,29 @@ export function cargoMounts(
   if (snapshotDigest(home).digest !== recorded.digest) {
     throw new CargoRefused(`the crate snapshot no longer hashes to its recorded digest: run \`${snapshotCommand(recorded.repo, out)}\``);
   }
-  if (kind === 'gate' && key !== 'base') seedGateCache(out, key);
-  const target = kind === 'gate' ? gateCacheDir(out, key) : authorCacheDir(out, o.mission!);
+  return home;
+}
+
+/**
+ * The binds and environment one profile's cargo runs with: the snapshot read-only at
+ * `/cargo-home`, that profile's own build cache read-write at `/cargo-target` (created on
+ * demand), offline. The gate profile also builds non-incrementally: what it compiles is judged,
+ * and incremental state is one more thing carried from one candidate's build into the next.
+ */
+export function cargoMounts(
+  kind: CargoProfile, outIn: string, o: { gateCache?: string; run?: string; mission?: string } = {},
+): { binds: SandboxBind[]; env: Record<string, string> } {
+  if (kind !== 'author' && kind !== 'gate') throw new CargoRefused(`unknown cargo profile ${String(kind)}`);
+  const key = o.gateCache ?? 'base';
+  if (kind === 'gate' && !GATE_CACHE_KEY.test(key)) throw new CargoRefused(`${key} is not a gate cache name`);
+  if (kind === 'gate' && key !== 'base' && !GATE_RUN_KEY.test(o.run ?? '')) {
+    throw new CargoRefused('a candidate\'s gate cache is per run (P2-R42); no run key was given');
+  }
+  if (kind === 'author' && !MISSION_KEY.test(o.mission ?? '')) throw new CargoRefused('the author build cache is per mission; no mission id was given');
+  const out = requireAbsoluteOut(outIn);
+  const home = verifySnapshot(out);
+  if (kind === 'gate' && key !== 'base') seedGateRun(out, key, o.run!);
+  const target = kind === 'author' ? authorCacheDir(out, o.mission!) : key === 'base' ? gateCacheDir(out, key) : gateRunDir(out, key, o.run!);
   const bad = realDirUnder(out, target, true);
   if (bad) throw new CargoRefused(`refusing the ${kind} build cache: ${bad}`);
   return {
