@@ -467,7 +467,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
           { taskId: task.id, attemptId: row.id });
       }
       // What an author that broke policy built is not left for the next author to link against.
-      if (candidate.policyViolations.length && wipeAuthorCache(ctx.out)) {
+      if (candidate.policyViolations.length && wipeAuthorCache(ctx.out, mission.id)) {
         emit(ctx, mission, 'process', 'forge.cargo.author-cache.wiped', { state: mission.state, candidateId: candidate.id },
           { taskId: task.id, attemptId: row.id });
       }

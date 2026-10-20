@@ -463,7 +463,7 @@ export function checkExecCommand(command: unknown): { ok: true; argv: string[] }
  */
 export function execLaunch(
   profile: SandboxProfile,
-  attempt: Pick<Attempt, 'id' | 'sandbox'>,
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox'>,
   o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
 ): SandboxLaunch {
   try {
@@ -496,7 +496,7 @@ export function hostless(tree: string, out: string, home: string): (msg: string)
 
 function execLaunchUnchecked(
   profile: SandboxProfile,
-  attempt: Pick<Attempt, 'id' | 'sandbox'>,
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox'>,
   o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
 ): SandboxLaunch {
   if (!profile.available) throw new SandboxRefused(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
@@ -511,7 +511,7 @@ function execLaunchUnchecked(
   const treeWhy = mountRefusal(tree, { home: o.home ?? os.homedir(), out: o.out, allow: [tree] });
   if (treeWhy) throw new SandboxRefused(`refusing to mount the exec tree: ${treeWhy}`);
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
-  const cargo = isCargoTree(tree) ? authorCargo(tree, o.out, o.home ?? os.homedir()) : null;
+  const cargo = isCargoTree(tree) ? authorCargo(tree, o.out, o.home ?? os.homedir(), attempt.missionId) : null;
   const b = baseSandbox(profile, limits, cargo?.env ?? {});
   b.rw(tree, WORK);
   for (const m of cargo?.binds ?? []) {
@@ -527,13 +527,13 @@ function execLaunchUnchecked(
  * The author profile's cargo binds for `tree`, each through `mountRefusal`, or a refusal: no
  * snapshot, or a `Cargo.lock` that is not the one the snapshot was fetched for.
  */
-function authorCargo(tree: string, out: string, home: string): ReturnType<typeof cargoMounts> {
+function authorCargo(tree: string, out: string, home: string, mission: string): ReturnType<typeof cargoMounts> {
   // Every refusal here reaches the author through execLaunch, which spells host paths away.
   const why = snapshotRefusal(tree, out, readSnapshot(out)?.repo ?? '<repo>');
   if (why) throw new SandboxRefused(why);
   let m: ReturnType<typeof cargoMounts>;
   try {
-    m = cargoMounts('author', out);
+    m = cargoMounts('author', out, { mission });
   } catch (err) {
     if (err instanceof CargoRefused) throw new SandboxRefused(err.message);
     throw err;
@@ -546,7 +546,7 @@ function authorCargo(tree: string, out: string, home: string): ReturnType<typeof
 }
 
 export function execArgv(
-  profile: SandboxProfile, attempt: Pick<Attempt, 'id' | 'sandbox'>, o: { tree: string; command: string[]; out: string; limits?: SandboxLimits },
+  profile: SandboxProfile, attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox'>, o: { tree: string; command: string[]; out: string; limits?: SandboxLimits },
 ): string[] {
   return execLaunch(profile, attempt, o).argv;
 }
@@ -619,7 +619,7 @@ export function spawnLaunch(
  * shortened for the agent.
  */
 export async function runExec(
-  attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>,
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox' | 'projectId'>,
   o: { tree: string; command: string[]; out: string; timeoutMs?: number; profile?: SandboxProfile; artifacts?: ArtifactStore; limits?: SandboxLimits },
 ): Promise<ExecResult> {
   const launch = execLaunch(o.profile ?? detectSandbox(), attempt, o);
@@ -647,7 +647,7 @@ export async function runExec(
 export function registerRunTool(
   server: McpServer,
   ctx: {
-    attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; out: string;
+    attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox' | 'projectId'>; tree: string; out: string;
     profile?: SandboxProfile; artifacts?: ArtifactStore; onRun?: (r: ExecResult, command: string[]) => void;
   },
 ): void {

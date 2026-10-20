@@ -24,7 +24,7 @@ import { noCargoTestsReported } from '../experiment/runner.ts';
 import { checkAllowlist, DEFAULT_LIMITS, detectSandbox, sandboxCommand } from '../experiment/sandbox.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import {
-  cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, lockDigestOf, manifestRefusal, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
+  authorCacheDir, cargoConfigRefusal, cargoMounts, CargoRefused, createSnapshot, gateCacheDir, gateCacheKey, lockDigestOf, manifestRefusal, readSnapshot, snapshotDigest, snapshotDir, snapshotFile, snapshotRefusal,
   snapshotStatus, targetDir, wipeAuthorCache,
 } from '../forge/cargo.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
@@ -175,24 +175,31 @@ section('the snapshot digest and the author cache wipe, on a synthetic <out>');
   check('cargoMounts refuses an <out> with no recorded snapshot, naming the command',
     (() => { try { cargoMounts('gate', out); return ''; } catch (err) { return err instanceof CargoRefused ? err.message : ''; } })().includes('daylight deps snapshot'));
   check('cargoMounts refuses a relative <out>', (() => { try { cargoMounts('gate', 'rel/out'); return false; } catch (err) { return err instanceof CargoRefused; } })());
-  fs.mkdirSync(path.join(targetDir(out, 'author'), 'debug'), { recursive: true });
-  fs.writeFileSync(path.join(targetDir(out, 'author'), 'debug', 'x'), 'x');
+  check('cargoMounts refuses an author cache without a mission id (review L4)',
+    /per mission/.test((() => { try { cargoMounts('author', out); return ''; } catch (err) { return (err as Error).message; } })()));
+  fs.mkdirSync(path.join(authorCacheDir(out, 'm_a'), 'debug'), { recursive: true });
+  fs.writeFileSync(path.join(authorCacheDir(out, 'm_a'), 'debug', 'x'), 'x');
+  fs.mkdirSync(path.join(authorCacheDir(out, 'm_b'), 'debug'), { recursive: true });
+  fs.writeFileSync(path.join(authorCacheDir(out, 'm_b'), 'debug', 'x'), 'x');
   fs.mkdirSync(targetDir(out, 'gate'), { recursive: true });
   fs.writeFileSync(path.join(targetDir(out, 'gate'), 'y'), 'y');
   fs.writeFileSync(path.join(out, 'daylight.db'), 'not touched');
-  check('wipeAuthorCache says it removed something', wipeAuthorCache(out) === true);
-  check('the author cache is gone', !fs.existsSync(targetDir(out, 'author')));
-  check('the gate cache, the snapshot and the rest of <out> are not',
-    fs.readFileSync(path.join(targetDir(out, 'gate'), 'y'), 'utf8') === 'y' && fs.existsSync(path.join(snap, 'registry', 'cache', 'a.crate'))
+  check('wipeAuthorCache says it removed something', wipeAuthorCache(out, 'm_a') === true);
+  check('that mission\'s author cache is gone', !fs.existsSync(authorCacheDir(out, 'm_a')));
+  check('another mission\'s author cache, the gate cache, the snapshot and the rest of <out> are not',
+    fs.existsSync(path.join(authorCacheDir(out, 'm_b'), 'debug', 'x'))
+    && fs.readFileSync(path.join(targetDir(out, 'gate'), 'y'), 'utf8') === 'y' && fs.existsSync(path.join(snap, 'registry', 'cache', 'a.crate'))
     && fs.readFileSync(path.join(out, 'daylight.db'), 'utf8') === 'not touched');
-  check('wiping again is a no-op', wipeAuthorCache(out) === false);
+  check('wiping again is a no-op', wipeAuthorCache(out, 'm_a') === false);
+  check('a mission id that is not one is never a path', wipeAuthorCache(out, '..') === false && wipeAuthorCache(out, '') === false
+    && fs.existsSync(path.join(authorCacheDir(out, 'm_b'), 'debug', 'x')));
   const victim = path.join(tmp, 'victim');
   fs.mkdirSync(victim);
   fs.writeFileSync(path.join(victim, 'keep'), 'keep');
-  fs.symlinkSync(victim, targetDir(out, 'author'));
-  wipeAuthorCache(out);
+  fs.symlinkSync(victim, authorCacheDir(out, 'm_a'));
+  wipeAuthorCache(out, 'm_a');
   check('an author cache that is a symlink is removed as a link; what it pointed at is kept',
-    !fs.existsSync(targetDir(out, 'author')) && fs.readFileSync(path.join(victim, 'keep'), 'utf8') === 'keep');
+    !fs.existsSync(authorCacheDir(out, 'm_a')) && fs.readFileSync(path.join(victim, 'keep'), 'utf8') === 'keep');
 }
 
 section('deps snapshot reads no ancestor config and refuses what would leave the repository (P2-R29); no network');
@@ -407,8 +414,8 @@ section('map the fixture, then NETWORK: deps snapshot fetches itoa 1.0.11 from c
 
 // ---- the author's exec tool -----------------------------------------------------------------
 
-const execAttempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'> = {
-  id: 'a_cargo', projectId: 'git:cargo',
+const execAttempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox' | 'projectId'> = {
+  id: 'a_cargo', missionId: 'm_cargo', projectId: 'git:cargo',
   sandbox: { profile: 'author', network: 'none', write: true, exec: true, authorizeDecisionId: 'd_cargo' },
 };
 const home = os.homedir();
@@ -429,7 +436,7 @@ section('the author exec tool builds against the snapshot, into the author cache
     const l = execLaunch(live, execAttempt, { tree: ws.tree, out, command: ['/usr/bin/cargo', 'build', '--offline'] });
     const binds = bindsOf(l.argv);
     check('the snapshot is bound read-only at /cargo-home', binds.some((b) => b.flag === '--ro-bind' && b.src === fs.realpathSync(snapshotDir(out)) && b.dest === '/cargo-home'));
-    check('the author cache read-write at /cargo-target', binds.some((b) => b.flag === '--bind' && b.src === fs.realpathSync(targetDir(out, 'author')) && b.dest === '/cargo-target'));
+    check('the mission\'s author cache read-write at /cargo-target', binds.some((b) => b.flag === '--bind' && b.src === fs.realpathSync(authorCacheDir(out, 'm_cargo')) && b.dest === '/cargo-target'));
     check('the gate cache is never bound into it', !l.argv.some((a) => a.startsWith(targetDir(out, 'gate'))));
     check('CARGO_HOME, CARGO_TARGET_DIR and CARGO_NET_OFFLINE are set; HOME stays /tmp', (() => {
       const env = (k: string) => l.argv[l.argv.findIndex((a, i) => a === '--setenv' && l.argv[i + 1] === k) + 2];
@@ -439,9 +446,16 @@ section('the author exec tool builds against the snapshot, into the author cache
     check('no mount is $HOME, <out> or an ancestor of either', noHomeNoOut(l.argv), JSON.stringify(binds));
     const r = await runExec(execAttempt, { tree: ws.tree, out, command: ['/usr/bin/cargo', 'build', '--offline'], timeoutMs: 300_000, profile: live });
     check('cargo build --offline succeeds in the author profile', r.exitCode === 0, r.stderr.slice(-600));
-    check('it built into the author cache', listing(targetDir(out, 'author')).some((f) => f.includes('fixture')), listing(targetDir(out, 'author')).slice(0, 5).join(','));
+    check('it built into the mission\'s author cache', listing(authorCacheDir(out, 'm_cargo')).some((f) => f.includes('fixture')), listing(authorCacheDir(out, 'm_cargo')).slice(0, 5).join(','));
     check('the gate cache stays empty', listing(targetDir(out, 'gate')).length === 0, listing(targetDir(out, 'gate')).slice(0, 5).join(','));
     check('and the snapshot is unchanged by the build', snapshotDigest(snapshotDir(out)).digest === readSnapshot(out)?.digest);
+    // Review L4: what one mission's author leaves in its cache, another mission's author never sees.
+    const planted = await runExec(execAttempt, { tree: ws.tree, out, command: ['/usr/bin/sh', '-c', 'echo planted > /cargo-target/planted-by-a.rlib'], timeoutMs: 60_000, profile: live });
+    const other = { ...execAttempt, id: 'a_other', missionId: 'm_other' };
+    const seen = await runExec(other, { tree: ws.tree, out, command: ['/usr/bin/sh', '-c', 'ls -A /cargo-target; test -e /cargo-target/planted-by-a.rlib && echo PRESENT || echo ABSENT'], timeoutMs: 60_000, profile: live });
+    check('mission A\'s planted artifact is invisible to mission B\'s exec', planted.exitCode === 0 && seen.exitCode === 0
+      && seen.stdout.trim() === 'ABSENT', `${planted.stderr} | ${seen.stdout}`);
+    check('and is still in mission A\'s own cache', fs.existsSync(path.join(authorCacheDir(out, 'm_cargo'), 'planted-by-a.rlib')));
     fs.appendFileSync(path.join(ws.tree, 'Cargo.lock'), '\n');
     const refused = await throws(() => execLaunch(live, execAttempt, { tree: ws.tree, out, command: ['/usr/bin/cargo', 'build', '--offline'] }));
     check('a tree whose Cargo.lock is not the snapshot\'s is refused in one line naming the command',
@@ -815,8 +829,8 @@ dctx.close();
 
 section('forge run wipes the author cache when a candidate breaks policy');
 {
-  const marker = path.join(targetDir(out, 'author'), 'debug', 'left-by-an-earlier-author');
-  check('the author cache holds an earlier build', listing(targetDir(out, 'author')).length > 0);
+  const marker = path.join(authorCacheDir(out, 'm_cargo'), 'debug', 'left-by-an-earlier-author');
+  check('another mission\'s author cache holds an earlier build', listing(authorCacheDir(out, 'm_cargo')).length > 0);
   fs.mkdirSync(path.dirname(marker), { recursive: true });
   fs.writeFileSync(marker, 'x');
   const confirmOf = (op: string, subject: string, extra: string[] = []) =>
@@ -825,6 +839,9 @@ section('forge run wipes the author cache when a candidate breaks policy');
   const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective,
     '--rationale', 'r', '--confirm', confirmOf('adhoc-mission', objective).digest8, '--out', out, '--format', 'json']));
   run(['mission', 'authorize', m.id, '--out', out, '--write', '--rationale', 'r', '--confirm', confirmOf('authorize-mission', m.id, ['--write']).digest8]);
+  const own = path.join(authorCacheDir(out, m.id), 'debug', 'left-by-this-mission');
+  fs.mkdirSync(path.dirname(own), { recursive: true });
+  fs.writeFileSync(own, 'x');
   const testFile = path.join(tmp, 'padded.rs');
   fs.writeFileSync(testFile, PADDED_GATE);
   const added = run(['gate', 'add', m.id, '--role', 'gate', '--harness', 'cargo', '--crate', 'crates/core', '--test', testFile,
@@ -847,7 +864,7 @@ console.log('done');
   const res = r.code === 0 ? json<{ candidate: Candidate | null }>(r) : null;
   check('the run produced a candidate with a lockfile violation',
     !!res?.candidate && res.candidate.policyViolations.some((v) => v.path === 'Cargo.lock'), `${r.code} ${r.err.slice(-400)} ${JSON.stringify(res?.candidate?.policyViolations)}`);
-  check('the author cache is gone', !fs.existsSync(targetDir(out, 'author')));
+  check('the mission\'s author cache is gone; another mission\'s is kept', !fs.existsSync(authorCacheDir(out, m.id)) && fs.existsSync(marker));
   check('the gate cache and the snapshot are untouched', JSON.stringify(listing(targetDir(out, 'gate'))) === JSON.stringify(gateBefore)
     && snapshotDigest(snapshotDir(out)).digest === snapBefore && !!readSnapshot(out));
   const view = json<{ events: Array<{ name: string; payload: Record<string, unknown> }> }>(run(['mission', 'inspect', m.id, '--out', out, '--format', 'json']));
@@ -864,6 +881,9 @@ console.log('done');
   const m2 = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective2,
     '--rationale', 'r', '--confirm', confirmOf('adhoc-mission', objective2).digest8, '--out', out, '--format', 'json']));
   run(['mission', 'authorize', m2.id, '--out', out, '--write', '--rationale', 'r', '--confirm', confirmOf('authorize-mission', m2.id, ['--write']).digest8]);
+  const own2 = path.join(authorCacheDir(out, m2.id), 'debug', 'left-by-this-mission');
+  fs.mkdirSync(path.dirname(own2), { recursive: true });
+  fs.writeFileSync(own2, 'x');
   run(['gate', 'add', m2.id, '--role', 'gate', '--harness', 'cargo', '--crate', 'crates/core', '--test', testFile,
     '--expect-exit', '0', '--expect-stdout', 'test result: ok.', '--out', out]);
   run(['gate', 'baseline', m2.id, repo, '--out', out]);
@@ -871,7 +891,7 @@ console.log('done');
   const r2 = run(['forge', 'run', m2.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: clean });
   const res2 = r2.code === 0 ? json<{ candidate: Candidate | null; verdict: string }>(r2) : null;
   check('a clean candidate is accepted by its cargo gate', res2?.verdict === 'accepted-by-gates', `${res2?.verdict} ${r2.err.slice(-300)}`);
-  check('and leaves the author cache alone', fs.existsSync(marker));
+  check('and leaves the author caches alone', fs.existsSync(marker) && fs.existsSync(own2));
 
   fs.appendFileSync(path.join(repo, 'Cargo.lock'), '\n');
   const refused = run(['forge', 'run', m2.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: clean });

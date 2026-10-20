@@ -65,6 +65,14 @@ export const targetDir = (out: string, kind: CargoProfile): string => path.join(
 export const gateCacheDir = (out: string, key: string): string => path.join(targetDir(out, 'gate'), key);
 const GATE_CACHE_KEY = /^(base|[0-9a-f]{16})$/;
 
+/**
+ * One mission's author build cache (review L4): every author of that mission builds here, and no
+ * author of any other mission sees it. Cargo trusts the fingerprints and artifacts it finds in a
+ * target directory, so a cache shared across missions would run one author's code in another's.
+ */
+export const authorCacheDir = (out: string, missionId: string): string => path.join(targetDir(out, 'author'), missionId);
+const MISSION_KEY = /^[A-Za-z0-9_-]{1,80}$/;
+
 /** The cache key of a candidate's gate runs: its diff digest, shortened. */
 export const gateCacheKey = (diffDigest: string): string => diffDigest.replace(/^sha256:/, '').slice(0, 16);
 
@@ -600,11 +608,12 @@ export function snapshotStatus(repo: string, out: string, o: { verify?: boolean 
  * and incremental state is one more thing carried from one candidate's build into the next.
  */
 export function cargoMounts(
-  kind: CargoProfile, outIn: string, o: { gateCache?: string } = {},
+  kind: CargoProfile, outIn: string, o: { gateCache?: string; mission?: string } = {},
 ): { binds: SandboxBind[]; env: Record<string, string> } {
   if (kind !== 'author' && kind !== 'gate') throw new CargoRefused(`unknown cargo profile ${String(kind)}`);
   const key = o.gateCache ?? 'base';
   if (kind === 'gate' && !GATE_CACHE_KEY.test(key)) throw new CargoRefused(`${key} is not a gate cache name`);
+  if (kind === 'author' && !MISSION_KEY.test(o.mission ?? '')) throw new CargoRefused('the author build cache is per mission; no mission id was given');
   const out = requireAbsoluteOut(outIn);
   if (!fs.lstatSync(out, { throwIfNoEntry: false })?.isDirectory()) throw new CargoRefused(`${out} is not a directory`);
   const home = snapshotDir(out);
@@ -629,7 +638,7 @@ export function cargoMounts(
     throw new CargoRefused(`the crate snapshot no longer hashes to its recorded digest: run \`${snapshotCommand(recorded.repo, out)}\``);
   }
   if (kind === 'gate' && key !== 'base') seedGateCache(out, key);
-  const target = kind === 'gate' ? gateCacheDir(out, key) : targetDir(out, kind);
+  const target = kind === 'gate' ? gateCacheDir(out, key) : authorCacheDir(out, o.mission!);
   const bad = realDirUnder(out, target, true);
   if (bad) throw new CargoRefused(`refusing the ${kind} build cache: ${bad}`);
   return {
@@ -645,16 +654,18 @@ export function cargoMounts(
 }
 
 /**
- * Remove the author build cache and nothing else. Called whenever a candidate has a policy
- * violation: whatever that attempt's builds left there is not carried into the next author's.
- * A link in its place is removed as a link, never followed.
+ * Remove one mission's author build cache and nothing else. Called whenever a candidate of that
+ * mission has a policy violation: whatever that attempt's builds left there is not carried into
+ * the mission's next author. A link in its place is removed as a link, never followed.
  */
-export function wipeAuthorCache(outIn: string): boolean {
+export function wipeAuthorCache(outIn: string, missionId: string): boolean {
   const out = requireAbsoluteOut(outIn);
-  const target = targetDir(out, 'author');
-  const parent = path.dirname(target);
-  const pst = fs.lstatSync(parent, { throwIfNoEntry: false });
-  if (!pst || pst.isSymbolicLink() || !pst.isDirectory()) return false;
+  if (!MISSION_KEY.test(missionId)) return false;
+  const target = authorCacheDir(out, missionId);
+  for (const dir of [path.dirname(path.dirname(target)), path.dirname(target)]) {
+    const st = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) return false;
+  }
   if (!fs.lstatSync(target, { throwIfNoEntry: false })) return false;
   fs.rmSync(target, { recursive: true, force: true });
   return true;
