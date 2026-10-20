@@ -37,6 +37,9 @@ function readVerified(dir: string, name: keyof typeof GRAMMAR_FILES): Uint8Array
 const loading = new Map<string, Promise<TreeSitter>>();
 const ready = new Map<string, TreeSitter>();
 const failed = new Map<string, Error>();
+/** Wall clock one file's parse may take (review L5); a file over the extract size cap never gets here. */
+export const PARSE_BUDGET_MS = 10_000;
+
 /** The runtime is an Emscripten module: initialised once per process, whatever the directory. */
 let runtimeReady: Promise<void> | null = null;
 
@@ -127,30 +130,44 @@ function typeName(n: Node | null): string | undefined {
  */
 function bodySignature(body: Node): { sig: number[]; tokens: number } | null {
   const tokens: string[] = [];
-  const walk = (n: Node): void => {
-    if (COMMENT_TYPES.has(n.type)) return;
+  // Pre-order with an explicit stack: a body nested ten thousand deep is ordinary input.
+  const stack: Node[] = [];
+  pushReversed(stack, body.namedChildren);
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (COMMENT_TYPES.has(n.type)) continue;
     if (IDENTIFIER_TYPES.has(n.type)) tokens.push('id');
-    else if (STRING_TYPES.has(n.type) || n.type === 'char_literal') return void tokens.push('str');
-    else if (n.type === 'integer_literal' || n.type === 'float_literal') tokens.push('num');
+    else if (STRING_TYPES.has(n.type) || n.type === 'char_literal') {
+      tokens.push('str');
+      continue;
+    } else if (n.type === 'integer_literal' || n.type === 'float_literal') tokens.push('num');
     else tokens.push(n.type);
-    for (const c of n.namedChildren) if (c) walk(c);
-  };
-  for (const c of body.namedChildren) if (c) walk(c);
+    pushReversed(stack, n.namedChildren);
+  }
   return minhashSignature(tokens);
+}
+
+/** Push `items` last first, so a stack pops them in order. No spread: a node can have 10^5 children. */
+function pushReversed<T>(stack: T[], items: ReadonlyArray<T | null>): void {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const x = items[i];
+    if (x) stack.push(x);
+  }
 }
 
 /** Where syntax errors are, for diagnostics. Capped: one broken file should not flood the list. */
 function syntaxErrors(root: Node, limit = 5): string[] {
   const out: string[] = [];
-  const walk = (n: Node): void => {
-    if (out.length >= limit || !n.hasError) return;
+  const stack = [root];
+  while (stack.length && out.length < limit) {
+    const n = stack.pop()!;
+    if (!n.hasError) continue;
     if (n.isError || n.isMissing) {
       out.push(`syntax error at line ${lineOf(n)}${n.isMissing ? `: missing ${n.type}` : ''}`);
-      return;
+      continue;
     }
-    for (const c of n.children) if (c) walk(c);
-  };
-  walk(root);
+    pushReversed(stack, n.children);
+  }
   return out;
 }
 
@@ -166,10 +183,15 @@ export class RustParser implements Parser {
   name = 'rust';
   extensions = ['.rs'];
   private readonly grammarDir: string;
+  private readonly budgetMs: number;
 
-  /** `grammarDir` exists so a test can hand it tampered bytes; nothing else should pass it. */
-  constructor(grammarDir: string = GRAMMAR_DIR) {
+  /**
+   * `grammarDir` exists so a test can hand it tampered bytes; nothing else should pass it.
+   * `budgetMs` is the wall clock one file's parse may take before it is cancelled (review L5).
+   */
+  constructor(grammarDir: string = GRAMMAR_DIR, o: { budgetMs?: number } = {}) {
     this.grammarDir = grammarDir;
+    this.budgetMs = o.budgetMs ?? PARSE_BUDGET_MS;
   }
 
   async init(): Promise<void> {
@@ -194,8 +216,15 @@ export class RustParser implements Parser {
       const why = failed.get(this.grammarDir)?.message ?? 'init() was never awaited — call loadParsers() or initParsers() first';
       throw new Error(`rust provider not initialised: ${why}`);
     }
-    const tree = parser.parse(source);
-    if (!tree) throw new Error('tree-sitter returned no tree');
+    const deadline = performance.now() + this.budgetMs;
+    let over = false;
+    // Returning true cancels the parse; tree-sitter asks every few hundred operations.
+    const tree = parser.parse(source, null, { progressCallback: () => (over = performance.now() > deadline) });
+    if (!tree) {
+      // A cancelled parse otherwise resumes, on the next file's text, where this one stopped.
+      parser.reset();
+      throw new Error(over ? `parse cancelled after ${this.budgetMs} ms; the file is skipped` : 'tree-sitter returned no tree');
+    }
     try {
       return this.walk(tree.rootNode, relPath, contentHash);
     } finally {
@@ -289,35 +318,39 @@ export class RustParser implements Parser {
     };
 
     /** Flatten a use tree into one path per leaf: `a::{b, c::d as e}` → `a::b`, `a::c::d`. */
-    const expandUse = (n: Node, prefix: string[]): void => {
-      switch (n.type) {
-        case 'use_as_clause': {
-          const p = n.childForFieldName('path');
-          if (p) recordUse([...prefix, ...pathSegments(p)], n.childForFieldName('alias')?.text);
-          return;
+    const expandUse = (top: Node): void => {
+      const stack: Array<[Node, string[]]> = [[top, []]];
+      const later = (nodes: ReadonlyArray<Node | null>, prefix: string[]) => {
+        for (let i = nodes.length - 1; i >= 0; i--) if (nodes[i]) stack.push([nodes[i]!, prefix]);
+      };
+      while (stack.length) {
+        const [n, prefix] = stack.pop()!;
+        switch (n.type) {
+          case 'use_as_clause': {
+            const p = n.childForFieldName('path');
+            if (p) recordUse([...prefix, ...pathSegments(p)], n.childForFieldName('alias')?.text);
+            break;
+          }
+          case 'scoped_use_list': {
+            const p = n.childForFieldName('path');
+            later(n.childForFieldName('list')?.namedChildren ?? [], p ? [...prefix, ...pathSegments(p)] : prefix);
+            break;
+          }
+          case 'use_list':
+            later(n.namedChildren, prefix);
+            break;
+          case 'use_wildcard': {
+            const p = n.namedChildren.find((c) => !!c);
+            recordUse([...prefix, ...(p ? pathSegments(p) : []), '*']);
+            break;
+          }
+          case 'self':
+            // `use a::b::{self}` imports `b` itself.
+            if (prefix.length) recordUse(prefix);
+            break;
+          default:
+            if (!COMMENT_TYPES.has(n.type)) recordUse([...prefix, ...pathSegments(n)]);
         }
-        case 'scoped_use_list': {
-          const p = n.childForFieldName('path');
-          const next = p ? [...prefix, ...pathSegments(p)] : prefix;
-          const list = n.childForFieldName('list');
-          for (const c of list?.namedChildren ?? []) if (c) expandUse(c, next);
-          return;
-        }
-        case 'use_list':
-          for (const c of n.namedChildren) if (c) expandUse(c, prefix);
-          return;
-        case 'use_wildcard': {
-          const p = n.namedChildren.find((c) => !!c);
-          recordUse([...prefix, ...(p ? pathSegments(p) : []), '*']);
-          return;
-        }
-        case 'self':
-          // `use a::b::{self}` imports `b` itself.
-          if (prefix.length) recordUse(prefix);
-          return;
-        default:
-          if (COMMENT_TYPES.has(n.type)) return;
-          recordUse([...prefix, ...pathSegments(n)]);
       }
     };
 
@@ -347,45 +380,56 @@ export class RustParser implements Parser {
       return [];
     };
 
-    const visitChildren = (n: Node) => {
-      for (const c of n.namedChildren) if (c) visit(c);
+    /*
+     * The walk is recursion without the call stack (review L5): a step does its own work, then
+     * hands `then` what a recursive version would have done next, in order. `then` pushes those
+     * tasks last first, so each one runs after everything the one before it scheduled, and the
+     * records come out in exactly the order the recursive walk produced them.
+     */
+    const tasks: Array<() => void> = [];
+    const then = (steps: Array<() => void>) => pushReversed(tasks, steps);
+    const children = (n: Node): Array<() => void> => {
+      const out: Array<() => void> = [];
+      for (const c of n.namedChildren) if (c) out.push(() => visit(c));
+      return out;
     };
 
-    /** Methods, associated consts and types of an `impl` or `trait`, hung off its node id. */
-    const visitMembers = (container: Node, ownerId: string, kind: 'impl' | 'trait'): ShapeRecord['fields'] => {
-      const fields: ShapeRecord['fields'] = [];
+    /** Methods, associated consts and types of an `impl` or `trait`, hung off its node id; into `fields`. */
+    const visitMembers = (container: Node, ownerId: string, kind: 'impl' | 'trait', fields: ShapeRecord['fields']): Array<() => void> => {
+      const steps: Array<() => void> = [];
       for (const m of container.childForFieldName('body')?.namedChildren ?? []) {
         if (!m) continue;
-        const name = m.childForFieldName('name')?.text;
-        if ((m.type === 'function_item' || m.type === 'function_signature_item') && name) {
-          // Methods are not exported, as in the TypeScript provider: reachability treats an
-          // exported symbol nobody references as dead, and method calls resolve by receiver
-          // type, which a syntactic pass cannot see.
-          const id = uniq(`${ownerId}.${name}`, m);
-          push(id, 'method', name, m, false);
-          fields.push({ name, type: `fn(${params(m).map((p) => p.type).join(', ')}) -> ${returnType(m)}` });
-          if (m.type === 'function_item') {
-            recordFunction(m, id, name, 'method', false);
-            scope.push(id);
-            visitChildren(m);
-            scope.pop();
+        steps.push(() => {
+          const name = m.childForFieldName('name')?.text;
+          if ((m.type === 'function_item' || m.type === 'function_signature_item') && name) {
+            // Methods are not exported, as in the TypeScript provider: reachability treats an
+            // exported symbol nobody references as dead, and method calls resolve by receiver
+            // type, which a syntactic pass cannot see.
+            const id = uniq(`${ownerId}.${name}`, m);
+            push(id, 'method', name, m, false);
+            fields.push({ name, type: `fn(${params(m).map((p) => p.type).join(', ')}) -> ${returnType(m)}` });
+            if (m.type === 'function_item') {
+              recordFunction(m, id, name, 'method', false);
+              scope.push(id);
+              then([...children(m), () => scope.pop()]);
+            }
+          } else if ((m.type === 'const_item' || m.type === 'associated_type' || m.type === 'type_item') && name) {
+            const id = uniq(`${ownerId}.${name}`, m);
+            push(id, m.type === 'const_item' ? 'variable' : 'typeAlias', name, m, kind === 'impl' && isPublic(m));
+            then(children(m));
+          } else {
+            visit(m);
           }
-        } else if ((m.type === 'const_item' || m.type === 'associated_type' || m.type === 'type_item') && name) {
-          const id = uniq(`${ownerId}.${name}`, m);
-          push(id, m.type === 'const_item' ? 'variable' : 'typeAlias', name, m, kind === 'impl' && isPublic(m));
-          visitChildren(m);
-        } else {
-          visit(m);
-        }
+        });
       }
-      return fields;
+      return steps;
     };
 
     const visit = (n: Node): void => {
       switch (n.type) {
         case 'use_declaration': {
           const arg = n.childForFieldName('argument');
-          if (arg) expandUse(arg, []);
+          if (arg) expandUse(arg);
           return;
         }
         case 'extern_crate_declaration': {
@@ -405,7 +449,7 @@ export class RustParser implements Parser {
             calls.push({ from: here(), file: relPath, callee, base: leftmost(fn), member, line });
             recordCallLiterals(n.childForFieldName('arguments'), callee, member, line);
           }
-          visitChildren(n);
+          then(children(n));
           return;
         }
         case 'macro_invocation': {
@@ -425,8 +469,7 @@ export class RustParser implements Parser {
           push(id, 'function', name, n, isPublic(n));
           recordFunction(n, id, name, 'function', isPublic(n));
           scope.push(id);
-          visitChildren(n);
-          scope.pop();
+          then([...children(n), () => scope.pop()]);
           return;
         }
         case 'struct_item':
@@ -463,11 +506,11 @@ export class RustParser implements Parser {
             if (to) heritage.push({ from: id, to, kind: 'extends' });
           }
           scope.push(id);
-          const fields = visitMembers(n, id, 'trait');
-          scope.pop();
-          if (fields.length) {
-            shapes.push({ nodeId: id, name, file: relPath, line: lineOf(n), kind: 'interface', fields });
-          }
+          const fields: ShapeRecord['fields'] = [];
+          then([...visitMembers(n, id, 'trait', fields), () => {
+            scope.pop();
+            if (fields.length) shapes.push({ nodeId: id, name, file: relPath, line: lineOf(n), kind: 'interface', fields });
+          }]);
           return;
         }
         case 'impl_item': {
@@ -482,8 +525,7 @@ export class RustParser implements Parser {
           const to = negative ? undefined : typeName(trait);
           if (to) heritage.push({ from: id, to, kind: 'implements' });
           scope.push(id);
-          visitMembers(n, id, 'impl');
-          scope.pop();
+          then([...visitMembers(n, id, 'impl', []), () => scope.pop()]);
           return;
         }
         case 'const_item':
@@ -499,7 +541,7 @@ export class RustParser implements Parser {
             ? attributesOf(n).some((a) => /^#\[\s*macro_export\b/.test(a))
             : isPublic(n);
           push(idFor(name, n), kind, name, n, exported);
-          if (n.type !== 'macro_definition') visitChildren(n);
+          if (n.type !== 'macro_definition') then(children(n));
           return;
         }
         case 'mod_item': {
@@ -516,15 +558,15 @@ export class RustParser implements Parser {
             return;
           }
           modPath.push(name);
-          visitChildren(body);
-          modPath.pop();
+          then([...children(body), () => modPath.pop()]);
           return;
         }
       }
-      visitChildren(n);
+      then(children(n));
     };
 
-    visitChildren(root);
+    then(children(root));
+    while (tasks.length) tasks.pop()!();
     const diagnostics = root.hasError ? syntaxErrors(root) : [];
 
     return {

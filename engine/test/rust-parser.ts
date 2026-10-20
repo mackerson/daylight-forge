@@ -233,6 +233,62 @@ console.log('\na syntax error is a diagnostic, not a throw');
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+console.log('\nsize, depth and time bounds (review L5)');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-rust-bounds-'));
+  fs.mkdirSync(path.join(tmp, 'src'));
+  fs.writeFileSync(path.join(tmp, 'src/lib.rs'), 'pub fn small() {}\n');
+  fs.writeFileSync(path.join(tmp, 'src/huge.rs'), 'pub fn f(x: i32) -> i32 { let y = g(x); y + 1 }\n'.repeat(65_000));
+  fs.writeFileSync(path.join(tmp, 'src/huge.ts'), 'export const a = 1;\n'.repeat(160_000));
+  check('the fixtures are over 3 MB', fs.statSync(path.join(tmp, 'src/huge.rs')).size > 3e6 && fs.statSync(path.join(tmp, 'src/huge.ts')).size > 3e6);
+  const t0 = performance.now();
+  const g = extract({ root: tmp });
+  const ms = performance.now() - t0;
+  for (const f of ['src/huge.rs', 'src/huge.ts']) {
+    check(`${f} is skipped with a diagnostic naming the 2 MB cap`,
+      g.diagnostics.some((d) => d.file === f && /over the 2 MB per-file cap/.test(d.message)) && !g.nodes.some((n) => n.file === f), JSON.stringify(g.diagnostics));
+  }
+  check('the small file beside them is mapped', g.nodes.some((n) => n.id === 'src/lib.rs#small'));
+  check('and skipping is cheap (under 2 s)', ms < 2000, `${ms.toFixed(0)} ms`);
+
+  const p = new RustParser();
+  await p.init();
+  const deep = 10_000;
+  let deepResult: ReturnType<RustParser['parse']> | undefined;
+  let deepErr = '';
+  try {
+    deepResult = p.parse('deep.rs', 'pub fn f() { ' + '{'.repeat(deep) + 'g();' + '}'.repeat(deep) + ' }\nfn after() {}\n', 'h');
+  } catch (err) {
+    deepErr = `${(err as Error).constructor.name}: ${(err as Error).message}`;
+  }
+  check(`a body nested ${deep} deep walks without a stack overflow`, !!deepResult && !deepErr, deepErr);
+  check('and yields its items and the call inside', !!deepResult?.nodes.some((n) => n.name === 'after') && !!deepResult?.calls.some((c) => c.callee === 'g'));
+  const useDeep = 'use a::' + '{b::'.repeat(5_000) + 'c' + '}'.repeat(5_000) + ';\n';
+  let useErr = '';
+  try {
+    p.parse('use.rs', useDeep, 'h');
+  } catch (err) {
+    useErr = (err as Error).message;
+  }
+  check('a use tree nested 5000 deep does not overflow either', !useErr, useErr);
+
+  const slow = new RustParser(GRAMMAR_DIR, { budgetMs: 50 });
+  await slow.init();
+  const t1 = performance.now();
+  let budgetErr = '';
+  try {
+    slow.parse('slow.rs', 'fn f() { ' + 'a();'.repeat(400_000) + ' }', 'h');
+  } catch (err) {
+    budgetErr = (err as Error).message;
+  }
+  const slowMs = performance.now() - t1;
+  check('a parse over its wall-clock budget is cancelled and says so', /parse cancelled after 50 ms/.test(budgetErr) && slowMs < 1000, `${budgetErr} after ${slowMs.toFixed(0)} ms`);
+  const next = slow.parse('next.rs', 'pub fn fresh() {}\n', 'h');
+  check('and the next file parses from its own start, not where the cancelled one stopped',
+    next.nodes.length === 1 && next.nodes[0].name === 'fresh' && !next.diagnostics, JSON.stringify(next.nodes.map((n) => n.name)));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 console.log('\nthe fixture workspace');
 const graph = extract({ root: FIXTURE });
 {
