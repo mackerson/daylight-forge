@@ -25,12 +25,13 @@ export const DEPS_REQUESTS_SUBCOMMANDS = ['requests', 'resolve'] as const;
 
 class Usage extends Error {}
 
-interface Parsed {
+export interface Parsed {
   positionals: string[];
   flags: Map<string, string>;
 }
 
-function parse(argv: string[]): Parsed {
+/** The `deps` noun's argv: `--k v`, `--k=v`, a bare `--k` as `'true'`, the rest positional. Shared with commands-deps.ts. */
+export function parse(argv: string[]): Parsed {
   const positionals: string[] = [];
   const flags = new Map<string, string>();
   for (let i = 0; i < argv.length; i++) {

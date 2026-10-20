@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { defaultOut } from '../paths.ts';
 import { CargoRefused, createSnapshot, snapshotStatus } from './cargo.ts';
-import { runDepsRequestsCommand } from './commands-deps-requests.ts';
+import { parse, runDepsRequestsCommand } from './commands-deps-requests.ts';
 
 /**
  * `daylight deps snapshot|status`: the crate snapshot a Rust repository's gates and author
@@ -20,23 +20,6 @@ class Usage extends Error {}
 
 const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 const say = (line: string) => process.stdout.write(`${line}\n`);
-
-function parse(argv: string[]): { positionals: string[]; flags: Map<string, string> } {
-  const positionals: string[] = [];
-  const flags = new Map<string, string>();
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith('--')) {
-      positionals.push(a);
-      continue;
-    }
-    const eq = a.indexOf('=');
-    if (eq >= 0) flags.set(a.slice(2, eq), a.slice(eq + 1));
-    else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) flags.set(a.slice(2), argv[++i]);
-    else flags.set(a.slice(2), 'true');
-  }
-  return { positionals, flags };
-}
 
 const mib = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 
