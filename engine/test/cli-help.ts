@@ -13,6 +13,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { COMMANDS } from '../cli-usage.ts';
+import { ASSUMPTION_SUBCOMMANDS, CAMPAIGN_SUBCOMMANDS } from '../forge/commands-campaign.ts';
+import { CAMPAIGN_RUN_SUBCOMMANDS } from '../forge/commands-campaign-run.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -101,6 +103,24 @@ check('no provider binary was spawned', !fs.existsSync(marker), fs.existsSync(ma
 const after = snapshot();
 check('no tracked file changed (bytes and mtime), nothing new in the repo or XDG_DATA_HOME', after === before, after.slice(0, 600));
 check('the --out a help form named was never created', !fs.existsSync(path.join(tmp, 'never')));
+
+section('--help on every campaign and assumption subcommand: usage, exit 0, nothing written');
+{
+  const before = snapshot();
+  const never = path.join(tmp, 'never-campaign');
+  const forms = [
+    ...[...CAMPAIGN_SUBCOMMANDS, ...CAMPAIGN_RUN_SUBCOMMANDS].map((sub) => ['campaign', sub, 'm_00000000000000000000000000000000', repo, '--out', never, '--help']),
+    ['campaign', 'gate', 'register', 'm_00000000000000000000000000000000', '--out', never, '-h'],
+    ['campaign', 'run', 'm_00000000000000000000000000000000', repo, '--dry-run', '--out', never, '--help'],
+    ...ASSUMPTION_SUBCOMMANDS.map((sub) => ['assumption', sub, 'u_00000000000000000000000000000000', '--out', never, '--help']),
+  ];
+  for (const form of forms) {
+    const r = cli(form);
+    check(`${form.slice(0, 3).join(' ')} --help prints the campaign usage and exits 0`, r.code === 0 && /usage/i.test(r.out) && r.out.includes(form[0]),
+      `${r.code} ${r.out.slice(0, 120)} ${r.err.slice(-200)}`);
+  }
+  check('no campaign help form created its --out or changed the repo', !fs.existsSync(never) && snapshot() === before);
+}
 
 section('help itself, and a leading --help');
 for (const form of [['help'], ['--help'], ['-h']]) {
