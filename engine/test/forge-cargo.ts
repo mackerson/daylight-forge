@@ -735,6 +735,36 @@ section('a resource limit hit while building the gate is invalid, never falsifie
     && recordsOf(ok).every((r) => r.sandboxArgv.includes('--cpu=900') && r.sandboxArgv.includes(`--fsize=${2 * 1024 ** 3}`)), ok.conclusion);
 }
 
+section('a gate that runs cargo itself: captured, it reads; echoed, it is invalid by design (CARGO.md, P2-R30)');
+{
+  const CI_GATE = fs.readFileSync(path.join(FIXTURE, 'gates', 'workspace_tests.rs'), 'utf8');
+  const ECHO_GATE = CI_GATE.replace('summary(&o.stdout, &o.stderr)', 'format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))');
+  check('the echoing variant differs from the fixture only in what it prints', ECHO_GATE !== CI_GATE);
+  const gateFor = (objective: string, testSource: string, base = commit) => {
+    const m = newMission(objective, base);
+    registerGate(ctx, { missionId: m.id, role: 'gate', testSource, basename: 'workspace_tests.rs', prediction: PASS, harness: 'cargo', crate: 'crates/app' });
+    return m;
+  };
+  const [ok] = await baseline(ctx, gateFor('the workspace still tests', CI_GATE).id);
+  check('fixtures/cargo-workspace/gates/workspace_tests.rs baselines supported at the base', ok.conclusion === 'supported',
+    `${ok.conclusion} ${recordsOf(ok)[0]?.why ?? ''} ${stdoutOf(recordsOf(ok)[0] ?? ({} as ExecutionRecord)).slice(-400)}`);
+  check('its nested run printed no second result line', recordsOf(ok).every((r) => (stdoutOf(r).match(/^test result:/gm) ?? []).length === 1));
+
+  const lib = path.join(repo, 'crates', 'core', 'src', 'lib.rs');
+  fs.writeFileSync(lib, fs.readFileSync(lib, 'utf8').replace('"42"', '"43"'));
+  git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@daylight.invalid', 'commit', '-q', '-am', 'break a unit test']);
+  const broken = git(['rev-parse', 'HEAD']);
+  try {
+    const [falsified] = await baseline(ctx, gateFor('the workspace breaks', CI_GATE, broken).id);
+    check('with a failing workspace test the captured gate is falsified, not invalid', falsified.conclusion === 'falsified'
+      && recordsOf(falsified).every((r) => /decimal_formats/.test(stdoutOf(r))), `${falsified.conclusion} ${recordsOf(falsified)[0]?.why ?? ''}`);
+    const [echoed] = await baseline(ctx, gateFor('the workspace breaks, echoed', ECHO_GATE, broken).id);
+    check('the gate that echoes the nested run reads as invalid', echoed.conclusion === 'invalid', `${echoed.conclusion} ${recordsOf(echoed)[0]?.why ?? ''}`);
+  } finally {
+    git(['reset', '-q', '--hard', commit]);
+  }
+}
+
 section('a Cargo.lock change refuses the run, in one line naming the command');
 {
   fs.appendFileSync(path.join(repo, 'Cargo.lock'), '\n# a hand edit\n');

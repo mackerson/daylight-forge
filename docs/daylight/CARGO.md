@@ -198,6 +198,56 @@ The prediction is the exit code plus the `test result: ok.` marker.
 
 The second row is what "the base lacks the function" looks like in Rust.
 
+### Gates that run cargo
+
+A regression gate sometimes has to run a cargo subcommand itself, for example to check that
+`cargo test --workspace`, `cargo fmt --check` or `cargo clippy` still passes (P2-R16: a cargo
+gate's test invokes what it needs). Such a gate is one integration test that spawns cargo.
+
+**Echoing the nested output makes the gate `invalid`, by design.** The result is read only when
+stderr shows exactly one `Running tests/daylight_<x_id>.rs (` line and stdout exactly one
+`test result:` line (P2-R30). A nested `cargo test` prints its own `Running …` and
+`test result: …` lines. If the gate prints them (through `--nocapture`, or by putting the nested
+output in a panic message, which libtest prints when the test fails), the outer run shows more
+than one of each and cannot be read. A failing step then reads as `invalid` instead of
+`falsified`. This stays strict: a reader that guessed which line was the gate's own would also
+accept a forged one.
+
+Write the gate so that it captures the nested run and summarises it:
+
+- spawn cargo with `Command::output()`, never inheriting stdout or stderr;
+- assert on the exit status, and on failure print a summary: the failing test names and cargo's
+  `error` lines, without any `Running` or `test result:` line;
+- give the nested run its own target directory under `CARGO_TARGET_DIR`, because the outer
+  `cargo test` holds the lock on its own;
+- set an environment variable on the nested run and return at once when it is set, because the
+  nested `cargo test --workspace` builds and runs the gate's own placed test too;
+- pass `--offline`. Inside the sandbox `CARGO_HOME` is the read-only snapshot and there is no
+  network.
+
+The worked example is `fixtures/cargo-workspace/gates/workspace_tests.rs`, a regression gate over
+`cargo test --workspace`. `engine/test/forge-cargo.ts` baselines it as `supported` at the
+fixture's base, `falsified` once a unit test in the workspace fails, and shows that the same gate
+reads as `invalid` when it echoes the nested output instead. The core of it:
+
+```rust
+let out = Command::new(env!("CARGO"))
+    .args(["test", "--offline", "--workspace"])
+    .current_dir(root)
+    .env(NESTED, "1")
+    .env("CARGO_TARGET_DIR", &target)
+    .output();
+match out {
+    Ok(o) if o.status.success() => {}
+    Ok(o) => panic!("nested cargo test failed ({}):\n{}", o.status, summary(&o.stdout, &o.stderr)),
+    Err(e) => panic!("could not start cargo: {e}"),
+}
+```
+
+Each `cargo fmt --check` or `cargo clippy` step follows the same pattern, one gate per step, so
+that a failure names the step. A tool that is not in the sandbox (`/usr` is the host's, read-only)
+fails to start, and the gate reports that as a failure.
+
 ## Limitations
 
 - A gate's test calls the candidate's code in its own process. That code can write to the real
