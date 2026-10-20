@@ -19,7 +19,7 @@ import { baselineCampaign, campaignVerdictRows, lockableIds, lockCampaign, regis
 import { campaignVerdict } from '../forge/campaign-verdict.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { runCampaign } from '../forge/director.ts';
-import { findingOutboxFile } from '../forge/finding.ts';
+import { findingIdOf, findingOutboxFile, validateFinding } from '../forge/finding.ts';
 import type { GateContext } from '../forge/gate.ts';
 import { integrationTip } from '../forge/integrate.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
@@ -204,6 +204,18 @@ section('a wave whose review never ran is reviewed by the next run (L4)');
   check('wave 2 got its review, closed, under a reservation', !!w2.reviewMissionId && ctx.store.mission(w2.reviewMissionId)!.state === 'closed'
     && ctx.store.tasks(w2.reviewMissionId).flatMap((t) => ctx.store.attempts(t.id)).every((a) => (a.maxCostUsd ?? 0) > 0), JSON.stringify(r2.statuses));
   check('and nothing was dispatched (--max-waves 0)', !ctx.store.missions(campaign.projectId).some((m) => m.parentId === campaign.id && m.kind === 'implement' && m.objective.startsWith('ticket FIX')));
+}
+
+section('finding titles and statements lose tabs, CR and zero-width characters (review I6)');
+{
+  const paths = new Set(['src/a.js']);
+  const v = validateFinding({ path: 'src/a.js', severity: 'low', title: 'a\tb\u200bc\u200cd\u200de\ufeff\r', statement: 'one\r\ntwo\u200b\tthree\ufeff' }, { paths });
+  check('the title is one plain line: tab to space, CR and U+200B-U+200D, U+FEFF removed',
+    !('refused' in v) && v.title === 'a bcde', JSON.stringify(v));
+  check('so is the statement, its line breaks kept', !('refused' in v) && v.statement === 'one\ntwo three', JSON.stringify(v));
+  const same = validateFinding({ path: 'src/a.js', severity: 'low', title: 'a bcde', statement: 'one\ntwo three' }, { paths });
+  check('and both id the same finding as the plain text', !('refused' in v) && !('refused' in same) && findingIdOf('at_1', v) === findingIdOf('at_1', same));
+  check('a title of only invisible characters is empty', JSON.stringify(validateFinding({ path: 'src/a.js', severity: 'low', title: '\u200b\ufeff\r', statement: 's' }, { paths })) === '{"field":"title","refused":"empty"}');
 }
 
 ctx.close();
