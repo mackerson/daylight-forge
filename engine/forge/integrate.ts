@@ -371,7 +371,7 @@ export function landingRefusal(store: MissionStore, i: Integration): string | nu
  */
 export function landIntegration(ctx: IntegrateContext, integrationId: string, o: IntegrateOptions): { decision: Decision; application: Application } {
   const deps = o.deps ?? R5_INTEGRATE_DEPS;
-  return ctx.store.immediate(() => {
+  return ctx.store.tx(() => {
     const i = ctx.store.integration(integrationId);
     if (!i || i.state !== 'evaluating' || !i.integratedCommit || !i.integratedTree || !i.integratedDiffDigest) {
       throw new IntegrationRefused(`integration ${integrationId} is not being landed`);

@@ -235,7 +235,7 @@ section('resume: the rows the table names that no crash above leaves');
   landCandidate(w.ictx, accept(w.ctx, i2).id, { ticketId: 'T2', deps });
   w.ctx.store.updateIntegration(i.id, 'integrated', { applicationId: w.ctx.store.application(t.c.id)!.id });
   check('a later repair of an older landing\'s row does not make it look like the tip (L5)', reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T1', deps }).moved === null);
-  check('immediate joins a transaction already open instead of nesting BEGIN (L7)', w.ctx.store.immediate(() => w.ctx.store.immediate(() => 7)) === 7);
+  check('tx joins a transaction already open instead of nesting BEGIN (L7)', w.ctx.store.tx(() => w.ctx.store.tx(() => 7)) === 7);
   const stray = makeTicketMission(w.ctx, w.campaign, 'T9', w.base);
   const strayCommit = commitOn(w.repo, w.base, { 'src/z.js': 'z\n' });
   git(w.repo, ['update-ref', applyRefFor(stray.id), strayCommit]);

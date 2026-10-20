@@ -1,6 +1,7 @@
 import type { DaylightContext } from '../mission/context.ts';
 import type { CampaignEnvelope, Mission, Need } from '../mission/types.ts';
 import { assumptionNeeds } from './assumptions.ts';
+import { campaignRunNeeds } from './director.ts';
 
 /**
  * What a person has to do for a campaign to move (§2.4), derived from rows on every read: approve
@@ -33,7 +34,7 @@ export function campaignNeeds(ctx: DaylightContext, campaign: Mission): Need[] {
       out.push({ kind: 'work-item-undecided', ref: t.workItemId, why: `${t.origin} ticket ${t.ticketId} is proposed; a person approves or rejects it` });
     }
   }
-  return [...out, ...assumptionNeeds(ctx, campaign)];
+  return [...out, ...assumptionNeeds(ctx, campaign), ...campaignRunNeeds(ctx, campaign)];
 }
 
 /** True when a campaign's director owns its children's candidate and apply needs. */

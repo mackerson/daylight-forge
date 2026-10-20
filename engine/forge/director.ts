@@ -3,14 +3,18 @@ import { requireMappedRepo, type DaylightContext } from '../mission/context.ts';
 import { missionSpend } from '../mission/ledger.ts';
 import { takeRunClaim } from '../mission/orchestrate.ts';
 import { redact } from '../mission/redact.ts';
-import { NotImplemented, type MissionStore } from '../mission/store.ts';
-import { isHumanActor } from '../mission/types.ts';
+import type { MissionStore } from '../mission/store.ts';
+import { campaignActorOf, isHumanActor } from '../mission/types.ts';
 import type {
   CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
   Finding, FindingSeverity, Integration, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { gitIn } from './apply.ts';
+import { waitingOwner } from './assumptions.ts';
+import {
+  admitIfWithinEnvelope, campaignAuthorizationRefusal, fileFixTicket, haltCampaign, planOf, startTicketMission,
+} from './campaign.ts';
 import { campaignLockRefusal, concludeVerdict, evaluateIntegrated } from './campaign-gates.ts';
 import { dependencyNeeds } from './dependency-requests.ts';
 import type { GateContext } from './gate.ts';
@@ -48,10 +52,7 @@ export class DirectorRefused extends Error {
 
 // ---- the WS-R5 seam ---------------------------------------------------------------------------
 
-/**
- * What the director needs of WS-R5's rows and acts (§8.2). The defaults (`r5Host`) are R5's
- * functions; until those bodies land they throw `NotImplemented`, and tests supply their own.
- */
+/** What the director needs of WS-R5's rows and acts (§8.2). `r5Host` is R5's; tests supply their own. */
 export interface CampaignHost {
   /** Every ticket row of the campaign, plan order first (R5 `campaignTickets`). */
   tickets(campaignId: string): CampaignTicket[];
@@ -75,23 +76,18 @@ export interface CampaignHost {
   integrate: IntegrateDeps;
 }
 
-const notYet = (what: string) => (): never => {
-  throw new NotImplemented(what);
-};
-
-/** WS-R5's functions over `ctx`. The merge wires each to its body (see the R6 hand-off). */
+/** WS-R5's functions over `ctx`: the director's host outside tests (§8.5 step 1). */
 export function r5Host(ctx: DaylightContext): CampaignHost {
-  void ctx;
   return {
-    tickets: notYet('campaignTickets'),
-    plan: notYet('readPlanBlob/parsePlan'),
-    openOwnerDecisions: notYet('assumptions'),
-    authorizationRefusal: notYet('campaignAuthorizationRefusal'),
-    startTicketMission: notYet('startTicketMission'),
-    halt: notYet('haltCampaign'),
-    fileFixTicket: notYet('insertCampaignTickets'),
-    admitIfWithinEnvelope: notYet('admitIfWithinEnvelope'),
-    admitted: notYet('admission'),
+    tickets: (campaignId) => ctx.store.campaignTickets(campaignId),
+    plan: (campaignId) => planOf(ctx, campaignId).plan,
+    openOwnerDecisions: (campaignId) => new Set([...waitingOwner(ctx, campaignId).values()].flat()),
+    authorizationRefusal: (campaignId, at) => campaignAuthorizationRefusal(ctx, campaignId, at),
+    startTicketMission: (campaignId, ticketId, base) => startTicketMission(ctx, { campaignId, ticketId, base }),
+    halt: (campaignId, reason) => haltCampaign(ctx, campaignId, campaignActorOf(campaignId), reason),
+    fileFixTicket: (campaignId, { waveSeq, finding }) => fileFixTicket(ctx, { campaignId, waveSeq, finding }),
+    admitIfWithinEnvelope: (campaignId, workItemId, wave) => ({ admitted: admitIfWithinEnvelope(ctx, campaignId, workItemId, wave).admitted }),
+    admitted: (campaignId, workItemId) => ctx.store.admission(campaignId, workItemId) !== null,
     integrate: R5_INTEGRATE_DEPS,
   };
 }
@@ -381,14 +377,7 @@ function captureRefusedBrief(attempt: number, why: string): RepairBrief {
 /** The director's needs on a campaign: tickets closed before an author ran, which nothing else lists (P2-R23). */
 export function campaignRunNeeds(ctx: DaylightContext, campaign: Mission, host: CampaignHost = r5Host(ctx)): Need[] {
   const out: Need[] = [];
-  let tickets: CampaignTicket[];
-  try {
-    tickets = host.tickets(campaign.id);
-  } catch (err) {
-    if (err instanceof NotImplemented) return out;
-    throw err;
-  }
-  for (const t of tickets) {
+  for (const t of host.tickets(campaign.id)) {
     const m = missionsOf(ctx, campaign, t).at(-1);
     if (m?.state === 'closed' && (m.outcome === 'inconclusive' || m.outcome === 'failed')) {
       out.push({ kind: 'blocked', ref: m.id, why: `ticket ${t.ticketId}: ${m.outcomeReason ?? m.outcome}; a person retries it with \`daylight campaign retry\`` });

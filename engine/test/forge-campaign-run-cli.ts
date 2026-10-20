@@ -130,11 +130,18 @@ section('status: derived, written under <out> only');
 
 section('halt, resume, adopt-tip');
 {
-  const h = await cli(['halt', campaign.id, '--rationale', 'r']);
-  check('halt and resume are WS-R5\'s acts: without them wired, a clear error (waiting on the R5 merge)', h.code === 1 && /haltCampaign: not implemented/.test(h.err), h.err);
+  const h = await cli(['halt', campaign.id, '--rationale', 'r', '--format', 'json']);
+  const halt = h.code === 0 ? (JSON.parse(h.out) as { id: string; scope: { operation: string; reason: string } }) : null;
+  check('halt is WS-R5\'s haltCampaign: a person\'s operator halt', halt?.scope.operation === 'halt-campaign' && halt.scope.reason === 'operator', h.err);
   const rp = await cli(['resume', campaign.id, '--halt', 'd_00000000000000000000000000000000', '--rationale', 'r']);
-  check('resume without --confirm reaches WS-R5\'s resume-campaign digest, which refuses a decision that is not a halt',
-    rp.code !== 0 && /is not a halt of campaign/.test(rp.err) && !/resumeCampaign: not implemented/.test(rp.err), rp.err);
+  check('resume naming a decision that is not a halt is refused by WS-R5\'s resume-campaign digest', rp.code !== 0 && /is not a halt of campaign/.test(rp.err), rp.err);
+  const pv = await cli(['resume', campaign.id, '--halt', halt!.id, '--rationale', 'r', '--format', 'json']);
+  const code8 = pv.code === 2 ? (JSON.parse(pv.out) as { digest: string }).digest.replace(/^sha256:/, '').slice(0, 8) : '';
+  check('resume without --confirm shows the resume-campaign digest and exits 2', pv.code === 2 && code8.length === 8, pv.err);
+  const agentResume = await cli(['resume', campaign.id, '--halt', halt!.id, '--rationale', 'r', '--confirm', code8], { ...human, CLAUDECODE: '1' });
+  check('resume under CLAUDECODE is refused by the guard', agentResume.code === 1 && ctx.store.campaignHalts(campaign.id).length === 1, agentResume.err);
+  const resumed = await cli(['resume', campaign.id, '--halt', halt!.id, '--rationale', 'r', '--confirm', code8]);
+  check('resume with the digest answers the halt', resumed.code === 0 && ctx.store.campaignHalts(campaign.id).length === 0, resumed.err);
   const a = await cli(['adopt-tip', campaign.id, repo, '--halt', 'd_00000000000000000000000000000000', '--rationale', 'r']);
   check('adopt-tip with no integration ref says there is nothing to adopt', a.code === 1 && /nothing to adopt/.test(a.err), a.err);
 }

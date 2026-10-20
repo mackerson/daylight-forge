@@ -7,9 +7,11 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { mappedRoot, openDaylight, type DaylightContext } from '../mission/context.ts';
 import type { Decision, PlanFileV1 } from '../mission/types.ts';
-import { approvePlan, authorizeCampaign, buildEnvelope, importPlan, type EnvelopeFlags, type ImportedPlan } from '../forge/campaign.ts';
+import { approvePlan, authorizeCampaign, buildEnvelope, importPlan, planOf, type EnvelopeFlags, type ImportedPlan } from '../forge/campaign.ts';
+import { lockableIds, lockCampaign, registerPlanGates } from '../forge/campaign-gates.ts';
+import type { GateContext } from '../forge/gate.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 
 export const HUMAN = `human:${os.userInfo().username.replace(/\s+/g, '_') || 'unknown'}`;
@@ -40,7 +42,7 @@ export const throws = (fn: () => unknown): Error | null => {
 export function samplePlan(): PlanFileV1 {
   return {
     kind: 'daylight-plan', version: 1, title: 'Widen the decimal API',
-    campaignGates: [{ id: 'core-regress', role: 'regression', harness: 'cargo', crate: 'crates/core', path: 'crates/core/tests/regress.rs', expect: { exitCode: 0 } }],
+    campaignGates: [{ id: 'core-regress', role: 'regression', harness: 'cargo', crate: 'crates/core', path: 'crates/core/tests/regress.rs', expect: { exitCode: 0, stdoutIncludes: ['test result: ok.'] } }],
     lanes: [
       { id: 'CORE', title: 'Core crate', owns: ['crates/core/src', 'crates/core/tests'] },
       { id: 'APP', title: 'App crate', owns: ['crates/app/src', 'crates/app/tests'] },
@@ -55,9 +57,9 @@ export function samplePlan(): PlanFileV1 {
       { id: 'C2', lane: 'CORE', title: 'Reject negatives on request', statement: 'A checked variant.', dependsOn: ['C1'], blocksOn: ['O1'],
         scope: ['crates/core/src/'] },
       { id: 'A1', lane: 'APP', title: 'Print a signed value', statement: 'main prints -7.', dependsOn: ['C1'], scope: ['crates/app/src/main.rs'],
-        acceptance: { kind: 'gate', tests: [{ path: 'crates/app/tests/app_gate.rs', harness: 'cargo', crate: 'crates/app', expect: { exitCode: 0 } }] } },
+        acceptance: { kind: 'gate', tests: [{ path: 'crates/app/tests/app_gate.rs', harness: 'cargo', crate: 'crates/app', expect: { exitCode: 0, stdoutIncludes: ['test result: ok.'] } }] } },
       { id: 'A2', lane: 'APP', title: 'App tests', statement: 'The author writes its tests.', dependsOn: ['A1'], scope: ['crates/app/tests/'],
-        acceptance: { kind: 'writer-authored', harness: 'cargo', crate: 'crates/app', testPaths: ['crates/app/tests/new/'], expect: { exitCode: 0 } } },
+        acceptance: { kind: 'writer-authored', harness: 'cargo', crate: 'crates/app', testPaths: ['crates/app/tests/new/'], expect: { exitCode: 0, stdoutIncludes: ['test result: ok.'] } } },
     ],
   };
 }
@@ -101,15 +103,26 @@ export function approve(ctx: DaylightContext, campaignId: string): Decision {
   });
 }
 
-/** A `lock-campaign-gates` decision by hand: R6 owns the real lock; R5 only compares its digest. */
-export function lockByHand(ctx: DaylightContext, campaignId: string, gateSetDigest = GATE_SET): Decision {
+/**
+ * The real `campaign lock` (WS-R6) over the plan's gates, unratcheted. Baselines are recorded as
+ * rows, as forge-campaign-run-cli.ts does (no sandbox here): the regression gate passes at the
+ * base, each acceptance gate fails there.
+ */
+export function lock(ctx: DaylightContext, campaignId: string): Decision {
   const c = ctx.store.mission(campaignId)!;
-  return ctx.store.recordDecision({
-    missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: HUMAN, kind: 'approve', rationale: 'locked by hand',
-    scope: { operation: 'lock-campaign-gates', experimentIds: [], harnessDigests: {}, vacuousOverrides: [], bindings: {}, roles: {}, ratchet: false, gateSetDigest },
-    artifactIds: [],
-  });
+  const g: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: mappedRoot(ctx.out)!, out: ctx.out, env: CLEAN_ENV };
+  registerPlanGates(g, campaignId, planOf(ctx, campaignId).plan);
+  for (const x of ctx.store.experimentsFor(campaignId)) {
+    ctx.store.recordGateEvaluation({ missionId: c.id, projectId: c.projectId, revision: c.baseRevision, experimentId: x.id, target: 'base', diffDigest: null,
+      harnessDigest: x.harnessDigest, executions: [], conclusion: x.role === 'regression' ? 'supported' : 'falsified' });
+  }
+  const confirm = code(confirmDigest(g, 'lock-campaign-gates', campaignId, { experimentIds: lockableIds(g, campaignId), ratchet: false }).digest);
+  return lockCampaign(g, { campaignId, actor: HUMAN, rationale: 'gates read', ratchet: false, confirm, env: CLEAN_ENV });
 }
+
+/** The gate-set digest of the campaign's current lock, if any. */
+export const lockedGateSet = (ctx: DaylightContext, campaignId: string): string | undefined =>
+  ctx.store.latestDecision(campaignId, 'lock-campaign-gates')?.scope.gateSetDigest as string | undefined;
 
 export const FLAGS: EnvelopeFlags = {
   expectedGateSetDigest: GATE_SET, roster: ['mock'], maxUsdTotal: 40, maxUsdPerMission: 2, maxTurns: 60, timeoutSeconds: 600,
@@ -118,7 +131,7 @@ export const FLAGS: EnvelopeFlags = {
 };
 
 export function authorize(ctx: DaylightContext, campaignId: string, flags: Partial<EnvelopeFlags> = {}): Decision {
-  const f = { ...FLAGS, ...flags };
+  const f = { ...FLAGS, expectedGateSetDigest: lockedGateSet(ctx, campaignId) ?? GATE_SET, ...flags };
   const envelope = buildEnvelope(ctx, campaignId, f);
   return authorizeCampaign(ctx, {
     campaignId, actor: HUMAN, rationale: 'go', env: CLEAN_ENV, flags: f,
@@ -136,11 +149,11 @@ export function imported(name: string, plan: unknown = samplePlan(), now?: () =>
   return { ...r, ctx, imp };
 }
 
-/** Imported, approved, locked by hand and authorized. */
+/** Imported, approved, locked and authorized. */
 export function authorized(name: string, flags: Partial<EnvelopeFlags> = {}, now?: () => number) {
   const s = imported(name, samplePlan(), now);
   approve(s.ctx, s.imp.campaign.id);
-  lockByHand(s.ctx, s.imp.campaign.id);
+  lock(s.ctx, s.imp.campaign.id);
   const auth = authorize(s.ctx, s.imp.campaign.id, flags);
   return { ...s, auth };
 }

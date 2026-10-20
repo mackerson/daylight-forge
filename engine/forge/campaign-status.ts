@@ -1,7 +1,8 @@
 import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
-import { campaignRunNeeds, campaignSpend, haltOf, ticketStates, type CampaignHost } from './director.ts';
+import { campaignNeeds } from './campaign-needs.ts';
+import { campaignRunNeeds, campaignSpend, haltOf, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
 /**
@@ -18,6 +19,21 @@ export type StatusHost = CampaignHost & Partial<{
   assumptions(campaignId: string): CampaignStatusReport['assumptions']['items'];
   needs(campaignId: string): Need[];
 }>;
+
+/** R5's host with the plan revision, assumptions and needs `campaign status` shows. */
+export function r5StatusHost(ctx: DaylightContext): StatusHost {
+  const campaign = (id: string) => {
+    const m = ctx.store.mission(id);
+    if (!m || m.kind !== 'campaign') throw new Error(`${id} is not a campaign`);
+    return m;
+  };
+  return {
+    ...r5Host(ctx),
+    planRevision: (id) => ctx.store.currentPlan(id)?.planRevision ?? campaign(id).baseRevision,
+    assumptions: (id) => ctx.store.assumptions(id),
+    needs: (id) => campaignNeeds(ctx, campaign(id)),
+  };
+}
 
 export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: string, host: StatusHost): CampaignStatusReport {
   const campaign = ctx.store.mission(campaignId);
@@ -48,7 +64,8 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
       ...(s.commit ? { commit: s.commit } : {}), ...(s.reason ? { reason: s.reason } : {}),
     })),
     assumptions: { open: count('open'), pending: count('pending'), confirmed: count('confirmed'), overturned: count('overturned'), items },
-    needs: [...(host.needs?.(campaignId) ?? []), ...campaignRunNeeds(ctx, campaign, host)],
+    // R5's campaignNeeds already holds the director's (§8.5 step 1); without it, the director's alone.
+    needs: host.needs ? host.needs(campaignId) : campaignRunNeeds(ctx, campaign, host),
     spend: campaignSpend(ctx, campaignId),
     waves: ctx.store.waves(campaignId).map((w) => {
       const fs = findings.filter((f) => f.waveSeq === w.seq);

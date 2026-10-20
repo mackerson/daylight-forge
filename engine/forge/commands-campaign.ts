@@ -11,6 +11,7 @@ import {
   type EnvelopeFlags,
 } from './campaign.ts';
 import { actorFor } from './commands.ts';
+import { CAMPAIGN_RUN_SUBCOMMANDS, runCampaignRunCommand } from './commands-campaign-run.ts';
 import { confirmDigest } from './confirm.ts';
 import { topoOrder, validatePlanAt, wavesPreview } from './plan.ts';
 import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
@@ -42,6 +43,7 @@ import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
  * arguments or a missing `--confirm` (the digest is printed), 1 for a refusal or a failure.
  */
 
+/** R5's own; WS-R6's `CAMPAIGN_RUN_SUBCOMMANDS` are joined at dispatch (a top-level spread would read it inside an import cycle). */
 export const CAMPAIGN_SUBCOMMANDS = ['validate', 'import', 'show', 'retry', 'approve-plan', 'authorize'] as const;
 export const ASSUMPTION_SUBCOMMANDS = ['list', 'record', 'confirm', 'decide', 'overturn'] as const;
 
@@ -290,7 +292,9 @@ export async function runCampaignCommand(argv: string[], env: NodeJS.ProcessEnv 
         });
       }
       default:
-        throw new Usage(`campaign needs one of: ${CAMPAIGN_SUBCOMMANDS.join(', ')}`);
+        // WS-R6's subcommands, behind the same session refusal (`campaignReadOnly` above).
+        if (sub && (CAMPAIGN_RUN_SUBCOMMANDS as readonly string[]).includes(sub)) return runCampaignRunCommand(argv, env);
+        throw new Usage(`campaign needs one of: ${[...CAMPAIGN_SUBCOMMANDS, ...CAMPAIGN_RUN_SUBCOMMANDS].join(', ')}`);
     }
   }, campaignReadOnly);
 }

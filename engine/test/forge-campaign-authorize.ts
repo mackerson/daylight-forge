@@ -27,7 +27,7 @@ import { needsOf } from '../mission/needs.ts';
 import { decisionRefusal, envelopeShapeRefusal, movesWorkItem, newId } from '../mission/store.ts';
 import { campaignActorOf, type CampaignEnvelope } from '../mission/types.ts';
 import {
-  approve, authorize, authorized, CLEAN_ENV, code, FLAGS, HUMAN, imported, lockByHand, makeRepo, revisePlan, ROOT, samplePlan, throws, tmp,
+  approve, authorize, authorized, CLEAN_ENV, code, FLAGS, GATE_SET, HUMAN, imported, lock, makeRepo, revisePlan, ROOT, samplePlan, throws, tmp,
 } from './forge-campaign-fixture.ts';
 import { harness } from './harness.ts';
 
@@ -160,9 +160,8 @@ section('authorize-campaign');
   check('refused without approve-plan', /approved/.test(throws(() => authorize(s.ctx, id))?.message ?? ''), throws(() => authorize(s.ctx, id))?.message);
   approve(s.ctx, id);
   check('refused without a gate lock', /gate lock/.test(throws(() => authorize(s.ctx, id))?.message ?? ''));
-  lockByHand(s.ctx, id, `sha256:${'b'.repeat(64)}`);
-  check('refused when --expected-gate-set is not the lock\'s digest', /gate lock/.test(throws(() => authorize(s.ctx, id))?.message ?? ''));
-  lockByHand(s.ctx, id);
+  lock(s.ctx, id);
+  check('refused when --expected-gate-set is not the lock\'s digest', /gate lock/.test(throws(() => authorize(s.ctx, id, { expectedGateSetDigest: GATE_SET }))?.message ?? ''));
   const env = buildEnvelope(s.ctx, id, FLAGS);
   const digest = confirmDigest(s.ctx, 'authorize-campaign', id, { envelope: env }).digest;
   const changed: Array<[string, Partial<CampaignEnvelope>]> = [
@@ -565,7 +564,7 @@ section('the campaign needs before and after');
   check('an imported plan needs approval', kinds().includes('plan-approval'));
   approve(s.ctx, id);
   check('an approved plan with no authorization needs one', kinds().includes('campaign-authorize') && !kinds().includes('plan-approval'));
-  lockByHand(s.ctx, id);
+  lock(s.ctx, id);
   authorize(s.ctx, id);
   check('an authorized campaign does not', !kinds().includes('campaign-authorize'), kinds().join());
   s.ctx.close();

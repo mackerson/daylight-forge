@@ -1,17 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mappedRoot, openDaylight, type DaylightContext } from '../mission/context.ts';
-import { NotImplemented } from '../mission/store.ts';
 import type { CampaignHaltReason, Decision, ExpectedObservation, GateHarness } from '../mission/types.ts';
 import { defaultOut } from '../paths.ts';
 import type { SandboxProfile } from '../experiment/sandbox.ts';
 import {
   baselineCampaign, listCampaignGates, lockableIds, lockCampaign, registerCampaignGate, registerPlanGates,
 } from './campaign-gates.ts';
-import { campaignStatus, renderCampaignStatus, type StatusHost } from './campaign-status.ts';
+import { haltCampaign, resumeCampaign } from './campaign.ts';
+import { campaignStatus, r5StatusHost, renderCampaignStatus, type StatusHost } from './campaign-status.ts';
 import { actorFor, parse, Usage } from './commands.ts';
-import { confirmDigest, type ConfirmOptions } from './confirm.ts';
-import { DirectorRefused, r5Host, runCampaign } from './director.ts';
+import { confirmDigest } from './confirm.ts';
+import { DirectorRefused, runCampaign } from './director.ts';
 import { GateRefused, type GateContext } from './gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, IntegrationRefused } from './integrate.ts';
 import { DecisionRefused } from './policy.ts';
@@ -37,7 +37,7 @@ import { DecisionRefused } from './policy.ts';
 
 export const CAMPAIGN_RUN_SUBCOMMANDS = ['gate', 'baseline', 'lock', 'run', 'status', 'halt', 'resume', 'adopt-tip'] as const;
 
-/** WS-R5's guarded halt and resume, and the director's host; tests and the merge supply them. */
+/** The director's host and WS-R5's halt and resume; WS-R5's by default, tests supply their own. */
 export interface CampaignRunDeps {
   /** The director's host over the command's own context; WS-R5's by default. */
   host?: (ctx: DaylightContext) => StatusHost;
@@ -72,7 +72,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
   const asJson = last(p, 'format') === 'json';
   const json = (d: unknown) => stdout(`${JSON.stringify(d, null, 2)}\n`);
   const say = (l: string) => stdout(`${l}\n`);
-  const hostOf = (ctx: DaylightContext): StatusHost => (deps.host ?? r5Host)(ctx);
+  const hostOf = (ctx: DaylightContext): StatusHost => (deps.host ?? r5StatusHost)(ctx);
   const repoArg = sub === 'baseline' || sub === 'run' || sub === 'adopt-tip' ? p.positionals[1] : sub === 'status' ? p.positionals[1] : undefined;
   const explicit = last(p, 'out');
   const out = explicit && explicit !== 'true' ? path.resolve(explicit) : defaultOut(repoArg ?? process.cwd());
@@ -195,22 +195,18 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
         return 0;
       }
       case 'halt': {
-        const halt = deps.halt ?? ((): never => {
-          throw new NotImplemented('haltCampaign');
-        });
+        const halt = deps.halt ?? haltCampaign;
         const d = await withCtx((ctx) => halt(ctx, campaignId, actorFor(last(p, 'actor')), 'operator'));
         if (asJson) json(d);
         else say(`halted campaign ${campaignId} (${d.id}); \`campaign resume ${campaignId} --halt ${d.id}\` resumes it`);
         return 0;
       }
       case 'resume': {
-        const resume = deps.resume ?? ((): never => {
-          throw new NotImplemented('resumeCampaign');
-        });
+        const resume = deps.resume ?? resumeCampaign;
         const haltDecisionId = need(p, 'halt');
         if (last(p, 'confirm') === undefined) {
-          // The digest is shown, not the code, as for every guarded act. WS-R5 defines it (`resume-campaign`).
-          const preview = await withCtx((ctx) => confirmDigest(ctx, 'resume-campaign', campaignId, { haltDecisionId } as unknown as ConfirmOptions));
+          // The digest is shown, not the code, as for every guarded act.
+          const preview = await withCtx((ctx) => confirmDigest(ctx, 'resume-campaign', campaignId, { haltDecisionId }));
           if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
           else for (const l of [...preview.lines, `digest ${preview.digest}`]) say(l);
           stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');

@@ -22,7 +22,7 @@ import { newId, workItemContentDigest } from '../mission/store.ts';
 import type { Assumption } from '../mission/types.ts';
 import { campaignActorOf } from '../mission/types.ts';
 import { policyAt, ticketWorkItemId } from '../forge/plan.ts';
-import { approve, authorize, authorized, CLEAN_ENV, code, HUMAN, imported, lockByHand, makeRepo, samplePlan, throws } from './forge-campaign-fixture.ts';
+import { approve, authorize, authorized, CLEAN_ENV, code, HUMAN, imported, lock, makeRepo, samplePlan, throws } from './forge-campaign-fixture.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -325,7 +325,7 @@ section('the store enforces the fix lane itself (P2-R34, review M1)');
   const ctx = openDaylight(r.out);
   const imp = importPlan(ctx, r.root, 'daylight.plan.json');
   approve(ctx, imp.campaign.id);
-  lockByHand(ctx, imp.campaign.id);
+  lock(ctx, imp.campaign.id);
   const auth = authorize(ctx, imp.campaign.id);
   const p = fileFix(ctx, imp.campaign.id, 1, ['crates/core/src/secret.rs']);
   const viaForge = admitIfWithinEnvelope(ctx, imp.campaign.id, p.w, { seq: 1, admitted: 0, severity: 'high' });

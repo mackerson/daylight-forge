@@ -1535,8 +1535,11 @@ export class MissionStore {
   // children are implement missions naming it as parent. Everything the director process may
   // do without a person is a derived decision, and `recordDerivedDecision` is its one writer.
 
-  /** Run `fn` in the caller's transaction, or in its own `BEGIN IMMEDIATE` when there is none. */
-  private tx<T>(fn: () => T): T {
+  /**
+   * Run `fn` in the caller's transaction, or in its own `BEGIN IMMEDIATE` when there is none, so
+   * the write lock is held before anything is read (SQLite does not nest BEGIN).
+   */
+  tx<T>(fn: () => T): T {
     if (this.db.isTransaction) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -2498,24 +2501,6 @@ export class MissionStore {
   // campaign gate lock, waves and wave-review findings. Refs live in git; these say why each
   // one moved, and nothing here touches git.
 
-  /**
-   * Run `fn` inside `BEGIN IMMEDIATE`: the write lock is held before anything is read. Inside a
-   * transaction already open on this connection it joins it (SQLite does not nest BEGIN); the same
-   * contract as WS-R5's `tx`, which replaces this at the merge.
-   */
-  immediate<T>(fn: () => T): T {
-    if (this.db.isTransaction) return fn();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const out = fn();
-      this.db.exec('COMMIT');
-      return out;
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
-  }
-
   recordIntegration(input: {
     id?: string; campaignId: string; missionId: string; candidateId: string; ref: string; onto: string; candidateBase: string;
   }): Integration {
@@ -2632,7 +2617,7 @@ export class MissionStore {
     if (typeof input.expectedGateSetDigest !== 'string' || !input.expectedGateSetDigest) {
       throw new Error(`campaign ${m.id}: a gate lock names the gate-set digest the human confirmed`);
     }
-    return this.immediate(() => {
+    return this.tx(() => {
       const set = this.campaignGateSet(m.id, input.experimentIds, input.ratchet);
       if (set.gateSetDigest !== input.expectedGateSetDigest) {
         throw new GateSetMoved(
