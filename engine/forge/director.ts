@@ -555,6 +555,8 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         }
       }
       const after = campaignSpend(ctx, campaign.id);
+      // P2-R11, P2-R35: checked as the attempt ends, before its candidate may land.
+      if (after.unknownCount > 0) halt('spend-unknown');
       if (after.spentUsd > envelope.maxUsdTotal) {
         emit(campaign, 'cost', 'campaign.spend.breached', { spent: after.spentUsd, reserved: after.reservedUsd, cap: after.capUsd, unknownCount: after.unknownCount });
         halt('spend-breach');

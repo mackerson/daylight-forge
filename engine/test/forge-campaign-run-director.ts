@@ -333,6 +333,8 @@ section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');
   });
   const r = await run(w, author, { concurrency: 1 });
   check('halted spend-unknown', r.halted === 'spend-unknown', JSON.stringify({ halted: r.halted, refused: r.refused }));
+  check('the unknown-cost attempt\'s own candidate did not land (review B2)', r.landed.length === 0 && w.ctx.store.integrations(w.campaign.id, { state: 'integrated' }).length === 0
+    && integrationTip(w.repo, w.campaign.id) === w.base, JSON.stringify(r.landed));
   check('B was never dispatched', !w.ctx.store.missions(w.campaign.projectId).some((m) => m.objective === 'ticket B'));
   const halt = w.ctx.store.decisions(w.campaign.id).find((d) => d.scope.operation === 'halt-campaign');
   check('a derived halt-campaign decision names the reason, as the campaign', halt?.scope.reason === 'spend-unknown' && halt.actor === `campaign:${w.campaign.id}`);
