@@ -10,7 +10,7 @@ import type { GateHarness } from '../mission/types.ts';
  *
  * It can only tighten what an author may touch (P2-R32): every built-in set applies whatever
  * the file says, and `protectedPaths` only adds. `languages` only chooses which sets the author
- * prompt lists first (and, later, the default gate harness); it never unprotects anything.
+ * prompt lists first and, without `gate.harness`, the default gate harness; it never unprotects anything.
  *
  * The protected sets are data (`PROTECTED_SETS`) so that the matcher, the author prompt and
  * docs/daylight/POLICY.md are all read off one list.
@@ -87,8 +87,11 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     // Hook code a person's next commit would run (P2-R32).
     { kind: 'segment', values: ['.husky'], label: 'anything under .husky/' },
     {
-      kind: 'basename', values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', 'lefthook.yaml', 'lefthook-local.yml'],
-      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml, lefthook.yaml, lefthook-local.yml) at any depth',
+      kind: 'basename',
+      values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', 'lefthook.yaml', '.lefthook.yaml', 'lefthook-local.yml', 'lefthook-local.yaml',
+        '.lefthook-local.yml', '.lefthook-local.yaml'],
+      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml, lefthook.yaml, .lefthook.yaml, lefthook-local.yml, '
+        + 'lefthook-local.yaml, .lefthook-local.yml, .lefthook-local.yaml) at any depth',
     },
   ] satisfies ProtectedRule[]),
   node: Object.freeze([
@@ -109,7 +112,7 @@ export interface ProjectPolicy {
   languages: Language[];
   /** Repo-relative globs the project adds; `**` and `*` only. */
   protectedPaths: string[];
-  /** Read by nobody this wave but tests; the director wires it to the gate after merge. */
+  /** The default harness when set; read through `defaultGateHarness`. */
   gate: { harness: GateHarness; command?: string[] } | null;
   /** Already clamped to `MAX_AUTHOR_TURNS` and `MAX_AUTHOR_TIMEOUT_SECONDS`. */
   author: { maxTurns?: number; timeoutSeconds?: number };
@@ -159,6 +162,13 @@ function globMatches(pattern: readonly string[], parts: readonly string[]): bool
 }
 
 export const languagesOf = (policy: ProjectPolicy | null | undefined): Language[] => policy?.languages ?? ['node'];
+
+/**
+ * The gate harness when none is named (P2-R32): `gate.harness` if the policy says one, else
+ * `cargo` for a rust-only project and `node` for anything else, a project of both included.
+ */
+export const defaultGateHarness = (policy: ProjectPolicy | null | undefined): GateHarness =>
+  policy?.gate?.harness ?? (languagesOf(policy).includes('node') ? 'node' : 'cargo');
 
 /**
  * Which sets protect `p`: `always`, `node`, `rust`, or `project` for one of the policy's globs.

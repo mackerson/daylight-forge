@@ -757,6 +757,14 @@ section('a project policy (P2-R6): the rust set and the author limits come from 
       '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out, '--format', 'json']));
     check('gate add takes the policy\'s gate.harness when --harness is not given, and the flag wins over it',
       fromPolicy.harness === 'cargo' && (fromFlag.harness ?? 'node') === 'node', `${fromPolicy.harness} ${fromFlag.harness}`);
+    const addRs = () => json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--test', rsTest, '--expect-exit', '0',
+      '--expect-stdout', 'test result: ok.', '--out', out, '--format', 'json']));
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust'] }));
+    check('with no gate.harness, languages ["rust"] makes gate add default to cargo (P2-R32, P2-R37)', addRs().harness === 'cargo');
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust', 'node'] }));
+    const both = json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--test', path.join(tmp, 'add.test.js'),
+      '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out, '--format', 'json']));
+    check('and ["rust", "node"] to node', (both.harness ?? 'node') === 'node' && both.testArtifact.path?.endsWith('add.test.js') === true);
   } finally {
     fs.rmSync(policyFile, { force: true });
   }

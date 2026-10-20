@@ -8,7 +8,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { importPlan } from '../forge/campaign.ts';
+import { importPlan, planOf } from '../forge/campaign.ts';
+import { registerPlanGates } from '../forge/campaign-gates.ts';
 import {
   isPlanRefusals, parsePlan, readPlanBlob, PlanRefused, ticketDigestOf, ticketWorkItemId, topoOrder, validatePlanAt, wavesPreview,
   MAX_TICKETS, MAX_PLAN_BYTES,
@@ -62,6 +63,12 @@ const GATE_LINK = v('gate-link', (p) => { p.campaignGates[0].path = 'crates/core
 const NO_CRATE = v('no-crate', (p) => { p.campaignGates[0].crate = 'crates/none'; });
 const HARNESS = v('harness', (p) => { (p.campaignGates[0] as { harness: string }).harness = 'python'; });
 const CRATE_NODE = v('crate-node', (p) => { p.campaignGates[0].harness = 'node'; });
+const NO_MARKER = v('no-marker', (p) => { p.campaignGates[0].expect = { exitCode: 0 }; });
+const NO_EXIT = v('no-exit', (p) => { p.campaignGates[0].expect = { stdoutIncludes: ['test result: ok.'] }; });
+const TICKET_NO_MARKER = v('ticket-no-marker', (p) => {
+  (p.tickets[2].acceptance as { tests: Array<{ expect: unknown }> }).tests[0].expect = { exitCode: 0, stderrIncludes: ['ok'] };
+});
+const WA_NO_MARKER = v('wa-no-marker', (p) => { (p.tickets[3].acceptance as { expect: unknown }).expect = { exitCode: 0 }; });
 const WA_OUT = v('wa-out', (p) => {
   const acc = p.tickets[3].acceptance as { testPaths: string[] };
   acc.testPaths = ['crates/core/tests/x.rs'];
@@ -135,6 +142,10 @@ section('every PlanRule, with its path');
     ['a crate with no Cargo.toml', NO_CRATE, 'acceptance-path', '$.campaignGates[0].path'],
     ['an unknown harness', HARNESS, 'acceptance-harness', '$.campaignGates[0].harness'],
     ['a crate on the node harness', CRATE_NODE, 'acceptance-harness', '$.campaignGates[0].crate'],
+    ['a campaign gate with no stdout marker', NO_MARKER, 'gate-expectation', '$.campaignGates[0].expect'],
+    ['a campaign gate with no exit code', NO_EXIT, 'gate-expectation', '$.campaignGates[0].expect'],
+    ['a ticket gate test with no stdout marker', TICKET_NO_MARKER, 'gate-expectation', '$.tickets[2].acceptance.tests[0].expect'],
+    ['writer-authored tests with no stdout marker', WA_NO_MARKER, 'gate-expectation', '$.tickets[3].acceptance.expect'],
     ['writer-authored test paths outside the ticket scope', WA_OUT, 'acceptance-path', '$.tickets[3].acceptance.testPaths[0]'],
     ['cargo writer-authored tests outside <crate>/tests', WA_NOT_TESTS, 'acceptance-path', '$.tickets[3].acceptance.testPaths[0]'],
     ['the FIX lane is reserved', RESERVED_LANE, 'shape', '$.lanes[0].id'],
@@ -152,6 +163,11 @@ section('every PlanRule, with its path');
     check(`${name}: ${rule}`, r.plan === null && has(r.refusals, rule, path), show(r.refusals.slice(0, 4)));
   }
   const cyc = at(CYCLE).refusals.find((r) => r.rule === 'cycle');
+  const marker = at(NO_MARKER).refusals.find((r) => r.rule === 'gate-expectation');
+  check('a gate-expectation refusal names the gate id', marker?.detail.startsWith('gate core-regress ') === true, marker?.detail);
+  const ticketMarker = at(TICKET_NO_MARKER).refusals.find((r) => r.rule === 'gate-expectation');
+  check('and a ticket gate\'s names the ticket', ticketMarker?.detail.startsWith('ticket A1\'s gate 0 ') === true, ticketMarker?.detail);
+  check('the sample plan\'s gates all carry a marker', !at(OK).refusals.some((r) => r.rule === 'gate-expectation'));
   check('the cycle is reported as its id path', cyc?.detail === 'C1 → C2 → C1', cyc?.detail);
 }
 
@@ -202,6 +218,32 @@ section('bytes come from git objects at one commit');
     check('a symlinked policy at the plan commit refuses the plan, as R4\'s loader does (review L2)', r.plan === null && has(r.refusals, 'policy'), show(r.refusals));
   }
   check('a policy glob at the plan commit protects a scope', has(at(OK).refusals, 'scope-protected', '$.tickets[0].scope[0]'), show(at(OK).refusals));
+}
+
+section('a plan gate with no harness takes the policy\'s default at the plan commit (P2-R32, P2-R37)');
+{
+  const noHarness = (): PlanFileV1 => {
+    const p = clone();
+    delete p.campaignGates[0].harness;
+    delete p.campaignGates[0].crate;
+    return p;
+  };
+  const harnessFor = (name: string, policy: Record<string, unknown> | null): string | undefined => {
+    const r = makeRepo(name, noHarness(), policy ? { 'daylight.policy.json': JSON.stringify({ schema: 'daylight.policy/v1', ...policy }) } : {});
+    const ctx = openDaylight(r.out);
+    try {
+      const { campaign } = importPlan(ctx, r.root, 'daylight.plan.json');
+      const [x] = registerPlanGates({ store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: r.root, out: r.out }, campaign.id, planOf(ctx, campaign.id).plan)
+        .filter((g) => g.role === 'regression');
+      return x?.harness ?? 'node';
+    } finally {
+      ctx.close();
+    }
+  };
+  check('no policy: node', harnessFor('h-none', null) === 'node');
+  check('languages ["rust"]: cargo', harnessFor('h-rust', { languages: ['rust'] }) === 'cargo');
+  check('languages ["rust", "node"]: node', harnessFor('h-both', { languages: ['rust', 'node'] }) === 'node');
+  check('gate.harness wins over languages', harnessFor('h-gate', { languages: ['rust'], gate: { harness: 'node' } }) === 'node');
 }
 
 section('order and digests');

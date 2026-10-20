@@ -1016,7 +1016,7 @@ export interface PlanFileV1 {
 export interface PlanCampaignGateV1 {   // an ordinary R2 gate (P2-R16)
   id: string;                    // /^[a-z][a-z0-9-]{0,31}$/
   role: 'regression';            // must pass at base and on every integrated tree
-  harness?: GateHarness; path: string; crate?: string;  // test file at the plan commit; harness defaults to policy.gate?.harness ?? 'node'
+  harness?: GateHarness; path: string; crate?: string;  // test file at the plan commit; harness defaults to defaultGateHarness(policy)
   expect: ExpectedObservation; timeoutSeconds?: number;
 }
 export interface PlanGateTestV1 { path: string; harness?: GateHarness; crate?: string; expect: ExpectedObservation }
@@ -1050,7 +1050,7 @@ export interface TicketBudget { maxUsd?: number; maxTurns?: number; timeoutSecon
 export interface PlanRefusal { path: string; rule: PlanRule; detail: string }
 export type PlanRule = 'shape' | 'version' | 'duplicate-id' | 'unknown-lane' | 'unknown-dependency' | 'self-dependency' | 'cycle'
   | 'scope-path' | 'scope-protected' | 'scope-outside-lane' | 'lane-overlap' | 'unknown-owner-decision' | 'owner-default-missing'
-  | 'acceptance-path' | 'acceptance-harness' | 'policy' | 'text' | 'too-many' | 'too-large';
+  | 'acceptance-path' | 'acceptance-harness' | 'gate-expectation' | 'policy' | 'text' | 'too-many' | 'too-large';
 
 /** Where a campaign ticket came from: the approved plan, a wave-review finding, or an overturned assumption. */
 export type TicketOrigin = 'plan' | 'fix' | 'follow-up';
