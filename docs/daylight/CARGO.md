@@ -105,12 +105,14 @@ Each cache is bound read-write at `/cargo-target` (`CARGO_TARGET_DIR`) into its 
 
 | Cache | Path | Written by | Lifetime |
 | --- | --- | --- | --- |
-| Author | `<out>/cargo/target/author/` | the author's `run` tool | wiped by `forge run` whenever the candidate it records has a policy violation (`forge.cargo.author-cache.wiped` event) |
+| Author | `<out>/cargo/target/author/<missionId>/` | the `run` tool of that mission's authors | wiped by `forge run` whenever a candidate of that mission has a policy violation (`forge.cargo.author-cache.wiped` event); kept otherwise, so it grows with the number of missions until removed by hand |
 | Gate base | `<out>/cargo/target/gate/base/` | baseline runs only | removed on snapshot refresh |
 | Gate candidate | `<out>/cargo/target/gate/<diffDigest16>/` | one candidate's gate runs | created at the start of `evaluate` as a copy of `gate/base/` (`cp -a --reflink=auto`: metadata-only on btrfs/XFS, a plain copy elsewhere); removed when `evaluate` ends |
 
 Nothing one candidate's build writes is visible to another candidate or to the next baseline.
-Gate runs also set `CARGO_INCREMENTAL=0`. A gate never sees the author cache, and the author never
+An author of one mission never sees another mission's author cache: cargo trusts the fingerprints
+and artifacts it finds in a target directory, so a shared cache would run one author's planted
+`.rlib` inside the next author's build. Gate runs also set `CARGO_INCREMENTAL=0`. A gate never sees an author cache, and the author never
 sees a gate cache. Every bind passes `mountRefusal` with exactly that directory in `outAllow`.
 `outAllow` passes over only Daylight's own home directories (`~/.local/share/daylight`,
 `~/.config/daylight`), never an `<out>` under `~/.ssh` or another credential store, and never an
