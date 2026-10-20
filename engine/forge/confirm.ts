@@ -65,6 +65,9 @@ export interface ConfirmOptions {
   /** `decide-assumption` / `overturn-assumption`: the value decided; overturn's follow-up statement. */
   value?: string;
   followUp?: string;
+  /** `overturn-assumption`: the follow-up's lane and scope, as given (absent: the held ticket's). */
+  followUpLane?: string;
+  followUpScope?: readonly string[];
   /** `record-assumption`: the row that will be recorded (the subject is the campaign). */
   assumption?: { question: string; default: string; ticketId?: string };
 }
@@ -195,11 +198,16 @@ export function confirmDigest(
       if (!a) throw new Error(`unknown assumption ${subjectId}`);
       const value = operation === 'confirm-assumption' ? a.default : opts.value;
       if (value === undefined) throw new Error(`${operation} confirms a value; pass it`);
-      const id = { operation, assumptionId: a.id, question: a.question, default: a.default, status: a.status, value, followUp: opts.followUp ?? null };
+      const id = {
+        operation, assumptionId: a.id, question: a.question, default: a.default, status: a.status, value, followUp: opts.followUp ?? null,
+        ...(opts.followUpLane || opts.followUpScope?.length ? { followUpLane: opts.followUpLane ?? null, followUpScope: [...(opts.followUpScope ?? [])] } : {}),
+      };
       return out(digestOf(canonicalJson(id)), [
         `${operation.replace('-assumption', '')} assumption ${a.id} (${a.status}) of campaign ${a.campaignId}`,
         `question: ${a.question}`, `default: ${a.default || '(none)'}`, `value: ${value}`,
         ...(opts.followUp ? [`follow-up: ${opts.followUp}`] : []),
+        ...(opts.followUpLane ? [`follow-up lane: ${opts.followUpLane}`] : []),
+        ...(opts.followUpScope?.length ? [`follow-up scope: ${opts.followUpScope.join(', ')}`] : []),
       ]);
     }
     default:

@@ -3,7 +3,7 @@ import { workItemContentDigest } from '../mission/store.ts';
 import type { Assumption, AssumptionDecisionScope, AssumptionStatus, Decision, Mission, Need, PlanFileV1 } from '../mission/types.ts';
 import { confirmDigest } from './confirm.ts';
 import { prefixOf, ticketWorkItemId } from './plan.ts';
-import { assertHumanDecision, DecisionRefused } from './policy.ts';
+import { assertHumanDecision, DecisionRefused, pathViolations } from './policy.ts';
 import { MAX_EXAMPLE_BYTES, MAX_STATEMENT_BYTES, repoPathRefusal, textRefusal } from './proposal.ts';
 
 /**
@@ -110,7 +110,9 @@ export function decideAssumption(ctx: DaylightContext, input: DecideAssumptionIn
   if (!a) throw new Error(`unknown assumption ${input.id}`);
   const value = input.operation === 'confirm-assumption' ? a.default : input.value;
   if (value === undefined) throw new DecisionRefused(`refused: ${input.operation} needs --value`);
-  assertHumanDecision(input.env, input.actor, input.confirm, confirmDigest(ctx, input.operation, a.id, { value, followUp: input.followUp?.statement }).digest);
+  assertHumanDecision(input.env, input.actor, input.confirm, confirmDigest(ctx, input.operation, a.id, {
+    value, followUp: input.followUp?.statement, followUpLane: input.followUp?.lane, followUpScope: input.followUp?.scope,
+  }).digest);
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: an assumption decision needs a rationale');
   if (input.operation !== 'confirm-assumption' && textRefusal(value, MAX_EXAMPLE_BYTES, true)) {
     throw new DecisionRefused('refused: the value is not plain text within its cap');
@@ -141,6 +143,11 @@ function followUpOf(
   const scope = (f.scope?.length ? f.scope : from?.scope ?? []).map(prefixOf);
   if (!lane || !/^[A-Z][A-Z0-9]{0,7}$/.test(lane)) throw new DecisionRefused('refused: a follow-up names its lane (--lane) when the assumption holds no ticket');
   if (!scope.length || scope.some((s) => repoPathRefusal(s))) throw new DecisionRefused('refused: a follow-up names a repo-relative scope (--scope)');
+  const fenced = ctx.store.mission(a.campaignId)?.scope.paths ?? [];
+  for (const s of scope) {
+    const rules = [s, `${s}/x`].flatMap((p) => pathViolations({ path: p, change: 'modified', insertions: 0, deletions: 0, mode: 'file' }, {}));
+    if (fenced.includes(s) || rules.some((r) => r === 'protected-path' || r === 'gate-path')) throw new DecisionRefused('refused: a follow-up\'s scope is protected');
+  }
   const n = ctx.store.campaignTickets(a.campaignId).filter((t) => t.origin === 'follow-up').length + 1;
   const ticketId = `FU.${n}`;
   const plan = ctx.store.currentPlan(a.campaignId);

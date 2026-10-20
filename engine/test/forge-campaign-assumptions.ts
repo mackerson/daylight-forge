@@ -69,15 +69,26 @@ section('a non-human row is never pending (P2-R12)');
   const err = throws(() => s.ctx.store.recordAssumption({
     campaignId: id, question: 'q', default: 'd', rationale: 'r', status: 'pending', blocking: false, source: 'operator', recordedBy: 'agent:mock',
   }));
-  check('the store refuses a pending row recorded by an agent (the CHECK)', /CHECK/.test(err?.message ?? ''), err?.message);
+  check('the store refuses a pending row recorded by an agent', /never pending/.test(err?.message ?? ''), err?.message);
   const err2 = throws(() => s.ctx.store.recordAssumption({
     campaignId: id, question: 'q', default: 'd', rationale: 'r', status: 'pending', blocking: false, source: 'plan-default', recordedBy: 'daylight',
   }));
-  check('nor a plan default the plan approval did not move', /CHECK/.test(err2?.message ?? ''), err2?.message);
+  check('nor a plan default the plan approval did not move', /never pending/.test(err2?.message ?? ''), err2?.message);
   const db = new DatabaseSync(path.join(s.out, DAYLIGHT_DB));
   const raw = throws(() => db.prepare("UPDATE assumptions SET status='pending' WHERE campaign_id=? AND owner_decision_id='O1'").run(id));
   db.close();
   check('raw SQL cannot make a daylight-recorded row pending either', /CHECK/.test(raw?.message ?? ''), raw?.message);
+  const lock = s.ctx.store.decisions(id)[0];
+  check('nor a non-human plan default naming some decision (review L4)', /never pending/.test(throws(() => s.ctx.store.recordAssumption({
+    campaignId: id, question: 'q', default: 'd', rationale: 'r', status: 'pending', blocking: false, source: 'plan-default', recordedBy: 'agent:mock',
+    ...(lock ? { decisionId: lock.id } : {}),
+  }))?.message ?? ''));
+  const db2 = new DatabaseSync(path.join(s.out, DAYLIGHT_DB));
+  const someDecision = db2.prepare('SELECT id FROM decisions LIMIT 1').get() as { id: string } | undefined;
+  const emptyConfirmed = throws(() => db2.prepare("UPDATE assumptions SET status='confirmed', default_value='', decision_id=? WHERE campaign_id=? AND owner_decision_id='O1'")
+    .run(someDecision?.id ?? null, id));
+  db2.close();
+  check('the CHECK refuses a confirmed row with an empty default (review L8)', /CHECK/.test(emptyConfirmed?.message ?? ''), emptyConfirmed?.message);
   check('an open row without a decision is allowed', s.ctx.store.recordAssumption({
     campaignId: id, question: 'q', default: '', rationale: 'r', status: 'open', blocking: false, source: 'operator', recordedBy: 'agent:mock',
   }).status === 'open');
@@ -99,6 +110,9 @@ section('assumption record is a guarded human act');
   check('refused for a question with a bidi control', /bidirectional/.test(throws(() => recordAssumption(s.ctx, {
     ...input, ...bidi, confirm: code(confirmDigest(s.ctx, 'record-assumption', id, { assumption: bidi }).digest),
   }))?.message ?? ''));
+  const bare = { question: 'Who owns the API?', default: '' };
+  const open = recordAssumption(s.ctx, { ...input, ...bare, confirm: code(confirmDigest(s.ctx, 'record-assumption', id, { assumption: bare }).digest) });
+  check('an operator row with no default is open (review L8)', open.status === 'open' && open.source === 'operator');
   const a = recordAssumption(s.ctx, input);
   check('a person\'s row with a default is pending', a.status === 'pending' && a.recordedBy === HUMAN && a.source === 'operator');
   s.ctx.close();
@@ -137,6 +151,29 @@ section('confirm, decide and overturn are guarded decisions');
   s.ctx.close();
 }
 
+section('overturn: the store needs a follow-up, the digest covers its lane and scope (review L4, L5)');
+{
+  const s = imported('overturn-guard');
+  const id = s.imp.campaign.id;
+  approve(s.ctx, id);
+  const o2 = byOwner(s.ctx, id, 'O2');
+  check('the store refuses an overturn with no follow-up', /exactly one follow-up/.test(throws(() => s.ctx.store.decideAssumption(o2.id, {
+    actor: HUMAN, rationale: 'x', scope: { operation: 'overturn-assumption', assumptionId: o2.id, value: 'u128' },
+  }))?.message ?? ''));
+  const statement = 'Widen it.';
+  const without = code(confirmDigest(s.ctx, 'overturn-assumption', o2.id, { value: 'u128', followUp: statement }).digest);
+  const base = { id: o2.id, operation: 'overturn-assumption' as const, value: 'u128', actor: HUMAN, rationale: 'x', env: CLEAN_ENV };
+  check('a code read without --scope does not confirm an overturn with one', /--confirm/.test(throws(() => decideAssumption(s.ctx, {
+    ...base, followUp: { statement, scope: ['crates/core/src/lib.rs'] }, confirm: without,
+  }))?.message ?? ''));
+  const gh = { statement, lane: 'CORE', scope: ['.github/workflows'] };
+  check('a follow-up scope on a protected path is refused', /protected/.test(throws(() => decideAssumption(s.ctx, {
+    ...base, followUp: gh, confirm: code(confirmDigest(s.ctx, 'overturn-assumption', o2.id, { value: 'u128', followUp: statement, followUpLane: 'CORE', followUpScope: gh.scope }).digest),
+  }))?.message ?? ''));
+  check('nothing was overturned', s.ctx.store.assumption(o2.id)!.status === 'pending');
+  s.ctx.close();
+}
+
 section('overturn creates exactly one proposed follow-up and changes no other row');
 {
   const s = imported('overturn');
@@ -144,7 +181,7 @@ section('overturn creates exactly one proposed follow-up and changes no other ro
   approve(s.ctx, id);
   const o2 = byOwner(s.ctx, id, 'O2');
   const statement = 'Widen decimal to u128 where the owner needs it.';
-  const oc = code(confirmDigest(s.ctx, 'overturn-assumption', o2.id, { value: 'u128', followUp: statement }).digest);
+  const oc = code(confirmDigest(s.ctx, 'overturn-assumption', o2.id, { value: 'u128', followUp: statement, followUpLane: 'CORE', followUpScope: ['crates/core/src/lib.rs'] }).digest);
   const before = snapshot(s.out);
   const r = decideAssumption(s.ctx, {
     id: o2.id, operation: 'overturn-assumption', value: 'u128', followUp: { statement, lane: 'CORE', scope: ['crates/core/src/lib.rs'] },

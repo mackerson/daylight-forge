@@ -2177,6 +2177,8 @@ export class MissionStore {
   recordAssumption(input: Omit<Assumption, 'id' | 'createdAt' | 'updatedAt' | 'projectId' | 'decisionId' | 'followUpWorkItemId'> & { decisionId?: string }): Assumption {
     const c = this.requireCampaign(input.campaignId);
     if (input.status !== 'open' && input.status !== 'pending') throw new Error('an assumption is recorded open or pending');
+    // P2-R12: only a person's row is recorded pending; a plan default becomes pending only by approve-plan.
+    if (input.status === 'pending' && !isHumanActor(input.recordedBy)) throw new Error(`refused: a row recorded by ${input.recordedBy} is open, never pending`);
     for (const [k, v] of [['question', input.question], ['rationale', input.rationale]] as const) {
       if (typeof v !== 'string' || !v.trim()) throw new Error(`an assumption needs a ${k}`);
     }
@@ -2229,6 +2231,7 @@ export class MissionStore {
       if (op === 'confirm-assumption' && input.scope.value !== a.default) throw new Error(`refused: confirm names the default assumption ${a.id} proceeds on`);
       if (op !== 'confirm-assumption' && !input.scope.value.trim()) throw new Error(`refused: ${op} needs a value`);
       let followUpWorkItemId: string | undefined;
+      if (op === 'overturn-assumption' && !input.followUp) throw new Error('refused: an overturn creates exactly one follow-up');
       if (input.followUp) {
         if (op !== 'overturn-assumption') throw new Error('only an overturn creates a follow-up');
         const w = this.createWorkItem(input.followUp.workItem);
