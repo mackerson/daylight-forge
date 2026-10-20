@@ -299,6 +299,22 @@ section('deriveAuthorizeMission stays inside the envelope');
   s.ctx.close();
 }
 
+section('a newer authorization supersedes the older one (review M6)');
+{
+  const s = authorized('superseded');
+  const id = s.imp.campaign.id;
+  const newer = authorize(s.ctx, id, { tickets: ['C1'] });
+  const a1 = s.ctx.store.campaignTicket(id, 'A1')!;
+  const c = s.ctx.store.mission(id)!;
+  const input = { projectId: c.projectId, kind: 'implement' as const, parentId: id, objective: 'a1', baseRevision: s.commit, workItemId: a1.workItemId };
+  const err = throws(() => s.ctx.store.createTicketMission(input, s.auth.id));
+  check('a grant derived from the superseded authorization is refused', /not campaign .* current authorization/.test(err?.message ?? ''), err?.message);
+  check('and leaves no mission behind', !s.ctx.store.missions().some((m) => m.workItemId === a1.workItemId));
+  check('the newer one, which narrowed the tickets, refuses A1 too', /outside authorization/.test(throws(() => s.ctx.store.createTicketMission(input, newer.id))?.message ?? ''));
+  check('the newer one admits C1', s.ctx.store.createTicketMission({ ...input, objective: 'c1', workItemId: s.ctx.store.campaignTicket(id, 'C1')!.workItemId }, newer.id).mission.state === 'ready');
+  s.ctx.close();
+}
+
 section('a forged derived grant is caught and refused');
 {
   const s = authorized('forged');
