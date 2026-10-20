@@ -35,6 +35,7 @@ import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import type { CampaignTicket, Mission, PlanFileV1 } from '../mission/types.ts';
 import { DecisionRefused } from '../forge/policy.ts';
+import { parseProjectPolicy } from '../forge/project-policy.ts';
 import { harness } from './harness.ts';
 import {
   ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, tempDir, testHost, ticketRow,
@@ -583,6 +584,38 @@ section('a refused integration and the derived STATUS path (L1, L3)');
   check('the plan\'s statusPath is protected for authors: editing it is a policy violation', sc.verdict === 'policy-violation'
     && sc.policyViolations.some((v) => v.path === 'STATUS.md'), JSON.stringify(sc.policyViolations));
   w.ctx.close();
+}
+
+section('campaign authors are judged by the policy at the plan commit, never the working tree (review L3)');
+{
+  const committed = '{ "schema": "daylight.policy/v1", "protectedPaths": ["src/d.js"] }\n';
+  const digest = parseProjectPolicy(committed).digest;
+  const world = (name: string) => {
+    const w = nodeWorld(name, [{ id: 'D', lane: 'LA', scope: ['src/d.js'] }], { 'daylight.policy.json': committed });
+    // The operator's checkout has dropped the protection; the plan commit still has it.
+    fs.writeFileSync(path.join(w.repo, 'daylight.policy.json'), '{ "schema": "daylight.policy/v1" }\n');
+    return w;
+  };
+  const author = (w: World) => mockAuthor(path.join(w.dir, 'author.cjs'), { D: { first: { 'src/d.js': "module.exports = () => 'D';\n" } } });
+
+  const w = world('l3-policy');
+  await lockAndAuthorize(w, { concurrency: 1, policyDigest: digest });
+  const r = await run(w, author(w), { concurrency: 1 });
+  const dm = w.ctx.store.missions(w.campaign.projectId).find((m) => m.objective === 'ticket D')!;
+  const dc = dm ? w.ctx.store.candidates(dm.id).at(-1) : undefined;
+  check('editing a path the plan-commit policy protects is a policy violation, though the working tree no longer protects it',
+    dc?.verdict === 'policy-violation' && dc.policyViolations.some((v) => v.rule === 'protected-path' && v.path === 'src/d.js') && r.statuses.D !== 'landed',
+    JSON.stringify([r.statuses, dc?.verdict, dc?.policyViolations]));
+  w.ctx.close();
+
+  const v = world('l3-digest');
+  await lockAndAuthorize(v, { concurrency: 1, policyDigest: `sha256:${'0'.repeat(64)}` });
+  const rv = await run(v, author(v), { concurrency: 1 });
+  const vm = v.ctx.store.missions(v.campaign.projectId).find((m) => m.objective === 'ticket D');
+  check('a plan-commit policy whose digest is not the envelope\'s refuses the run, and nothing lands',
+    !!vm && vm.outcome === 'inconclusive' && /not the one the campaign authorization confirmed/.test(vm.outcomeReason ?? '') && rv.statuses.D !== 'landed'
+    && !v.ctx.store.candidates(vm.id).length, JSON.stringify([rv.statuses, vm?.outcome, vm?.outcomeReason]));
+  v.ctx.close();
 }
 
 // ---- cargo ------------------------------------------------------------------------------------
