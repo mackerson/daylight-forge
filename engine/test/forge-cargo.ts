@@ -241,6 +241,25 @@ section('deps snapshot reads no ancestor config and refuses what would leave the
   const r4 = await throws(() => createSnapshot(withPatch, path.join(tmp, 'patch-out')));
   check('a [patch] is refused', r4 instanceof CargoRefused && /\[patch\]/.test(r4.message), r4?.message);
 
+  const quoted = path.join(tmp, 'repo-patch-quoted');
+  crate(quoted, 'patchedq');
+  fs.appendFileSync(path.join(quoted, 'Cargo.toml'), '\n["patch".crates-io]\nitoa = { path = "vendor/itoa" }\n');
+  const r4q = await throws(() => createSnapshot(quoted, path.join(tmp, 'patchq-out')));
+  check('a quoted ["patch".crates-io] header is refused too (review L2)', r4q instanceof CargoRefused && /\[patch\]/.test(r4q.message), r4q?.message);
+  const virtualRoot = path.join(tmp, 'repo-patch-virtual');
+  crate(path.join(virtualRoot, 'm'), 'member');
+  fs.renameSync(path.join(virtualRoot, 'm', 'Cargo.lock'), path.join(virtualRoot, 'Cargo.lock'));
+  fs.writeFileSync(path.join(virtualRoot, 'Cargo.toml'), '[workspace]\nmembers = ["m"]\nresolver = "2"\n\n[patch.crates-io]\nitoa = { path = "vendor/itoa" }\n');
+  const r4v = await throws(() => createSnapshot(virtualRoot, path.join(tmp, 'patchv-out')));
+  check('a [patch] in a virtual workspace root, which is no package, is refused', r4v instanceof CargoRefused && /^Cargo\.toml has a \[patch\]/.test(r4v.message), r4v?.message);
+  const namedPatch = path.join(tmp, 'repo-dep-named-patch');
+  crate(namedPatch, 'usespatch', 'patch = { path = "patch", features = ["a", "b"] }\n', 'dependencies = [\n "patch",\n]\n\n[[package]]\nname = "patch"\nversion = "0.1.0"\n');
+  crate(path.join(namedPatch, 'patch'), 'patch');
+  fs.appendFileSync(path.join(namedPatch, 'patch', 'Cargo.toml'), '\n[features]\na = []\nb = []\n');
+  fs.rmSync(path.join(namedPatch, 'patch', 'Cargo.lock'));
+  const r4n = await throws(() => createSnapshot(namedPatch, path.join(tmp, 'named-patch-out')));
+  check('a dependency named patch is not a [patch] (review L2): the snapshot is made', r4n === null && readSnapshot(path.join(tmp, 'named-patch-out')) !== null, r4n?.message);
+
   const withGit = path.join(tmp, 'repo-git');
   crate(withGit, 'gitdep', '', 'dependencies = [\n "x",\n]\n\n[[package]]\nname = "x"\nversion = "0.1.0"\nsource = "git+https://example.invalid/x#0000"\n');
   const r5 = await throws(() => createSnapshot(withGit, path.join(tmp, 'git-out')));

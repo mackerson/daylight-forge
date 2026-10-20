@@ -219,6 +219,33 @@ function arrayDepth(line: string, depth: number): number | null {
 }
 
 /**
+ * The `key = value` pairs of one inline table's body, split on the commas outside strings and
+ * arrays (`features = ["a", "b"]` is one pair). Null when a string or an array does not close.
+ */
+function splitInline(body: string): string[] | null {
+  const pairs: string[] = [];
+  let q: string | null = null;
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (q) {
+      if (c === '\\' && q === '"') i++;
+      else if (c === q) q = null;
+    } else if (c === '"' || c === "'") q = c;
+    else if (c === '[') depth++;
+    else if (c === ']') depth--;
+    else if (c === ',' && depth === 0) {
+      pairs.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (q || depth !== 0) return null;
+  pairs.push(body.slice(start));
+  return pairs;
+}
+
+/**
  * Every key a cargo config file sets, as dotted paths, or why it cannot be read. A small reader,
  * not a TOML parser: tables, dotted keys and one level of inline table. Multi-line strings and
  * arrays are skipped over by bracket depth; anything it does not understand is a refusal.
@@ -246,7 +273,9 @@ export function cargoConfigKeys(text: string): { keys: string[][] } | { error: s
     keys.push(full);
     if (value.startsWith('{')) {
       if (!value.endsWith('}') || value.slice(1, -1).includes('{')) return { error: `line ${n + 1}: nested or multi-line inline tables are not read` };
-      for (const pair of value.slice(1, -1).split(',')) {
+      const pairs = splitInline(value.slice(1, -1));
+      if (!pairs) return { error: `line ${n + 1}: unreadable inline table` };
+      for (const pair of pairs) {
         if (!pair.trim()) continue;
         const e = pair.indexOf('=');
         const sub = e > 0 ? keyParts(pair.slice(0, e)) : null;
@@ -267,6 +296,19 @@ export function cargoConfigKeys(text: string): { keys: string[][] } | { error: s
     }
   }
   return { keys };
+}
+
+/**
+ * Why a `Cargo.toml` may not be snapshotted, or null: a `[patch]` or `[replace]` table, in any
+ * spelling cargo honours (`[patch.crates-io]`, `["patch".crates-io]`, `patch.crates-io.x = …`),
+ * or a manifest the key reader cannot read. A dependency that happens to be named `patch` is a
+ * key under `[dependencies]` and is not one of them.
+ */
+export function manifestRefusal(text: string): string | null {
+  const r = cargoConfigKeys(text);
+  if ('error' in r) return `${r.error}; a manifest that cannot be read is not snapshotted`;
+  const table = r.keys.find((k) => k[0] === 'patch' || k[0] === 'replace')?.[0];
+  return table ? `has a [${table}]; patched crates are not snapshotted` : null;
 }
 
 /**
@@ -372,11 +414,15 @@ function workspaceRefusal(root: string, realRoot: string, cargo: string): void {
     }
     return within(real, realRoot);
   };
+  const manifest = (file: string) => {
+    const why = manifestRefusal(fs.readFileSync(file, 'utf8'));
+    if (why) throw new CargoRefused(`${path.relative(root, file)} ${why}`);
+  };
+  // The root may be a virtual manifest, which is no package but is where cargo reads [patch].
+  manifest(path.join(root, 'Cargo.toml'));
   for (const pkg of meta.packages) {
     if (!inside(pkg.manifest_path)) throw new CargoRefused(`workspace member ${pkg.name} is outside ${root} (${pkg.manifest_path}); a snapshot covers one repository`);
-    if (/^\s*\[\s*patch[\s.\]]|^\s*patch\s*[.=]/m.test(fs.readFileSync(pkg.manifest_path, 'utf8'))) {
-      throw new CargoRefused(`${path.relative(root, pkg.manifest_path)} has a [patch]; patched crates are not snapshotted`);
-    }
+    manifest(pkg.manifest_path);
     for (const d of pkg.dependencies) {
       if (d.path && !inside(d.path)) throw new CargoRefused(`${pkg.name} depends on ${d.name} at ${d.path}, outside ${root}; path dependencies must be inside the repository`);
       if (d.source?.startsWith('git+')) throw new CargoRefused(`${pkg.name} depends on ${d.name} from git (${d.source}); git dependencies are not snapshotted`);
