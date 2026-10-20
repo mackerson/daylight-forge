@@ -392,7 +392,9 @@ const SYNTHETIC = { change: 'modified', insertions: 0, deletions: 0, mode: 'file
 
 /** Why a scope prefix is one no author may be given, or null: protected, a gate path, an escape. */
 function protectedScope(p: string, policy: ProjectPolicy | null): boolean {
-  return pathViolations({ path: p, ...SYNTHETIC }, { policy }).some((r) => r === 'protected-path' || r === 'gate-path' || r === 'path-escape');
+  // A directory prefix is protected when anything under it is by its place alone (`.yarn/releases`).
+  return [p, `${p}/x`].some((x) => pathViolations({ path: x, ...SYNTHETIC }, { policy })
+    .some((r) => r === 'protected-path' || r === 'gate-path' || r === 'path-escape'));
 }
 
 /**

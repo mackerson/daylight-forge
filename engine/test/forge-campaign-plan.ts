@@ -82,6 +82,7 @@ const P_GITHUB = PROTECT('p-github', '.github/x.yml', '.github');
 const P_GATES = PROTECT('p-gates', '.daylight-gates/', '.daylight-gates');
 const P_MANIFEST = PROTECT('p-manifest', 'crates/core/Cargo.toml', 'crates/core');
 const P_PLAN = PROTECT('p-plan', 'plans/p-plan.json', 'plans');
+const P_YARN = PROTECT('p-yarn', '.yarn/releases/', '.yarn');
 const P_STATUS = PROTECT('p-status', 'crates/core/src/STATUS.md', undefined, (p) => { p.statusPath = 'crates/core/src/STATUS.md'; p.derivedStatus = true; });
 const TEXT = v('text', (p) => { p.tickets[0].title = `${SENTINEL}‮ line`; });
 const STATEMENT = v('statement', (p) => { p.tickets[0].statement = [SENTINEL, 'x'.repeat(5000)]; });
@@ -157,7 +158,7 @@ section('every PlanRule, with its path');
 section('protected scopes');
 {
   for (const [name, rel] of [['Cargo.lock', P_LOCK], ['.github/x', P_GITHUB], ['.daylight-gates/', P_GATES], ['a crate manifest', P_MANIFEST],
-    ['the plan file itself', P_PLAN], ['statusPath', P_STATUS]] as const) {
+    ['the plan file itself', P_PLAN], ['a directory over a protected subtree (.yarn/releases/, review L9)', P_YARN], ['statusPath', P_STATUS]] as const) {
     const r = at(rel);
     check(`${name} is scope-protected`, has(r.refusals, 'scope-protected', '$.tickets[0].scope[0]'), show(r.refusals));
   }
