@@ -18,12 +18,14 @@ import {
   MAX_DEPENDENCY_REQUESTS_PER_ATTEMPT, readRequestOutbox, registerRequestDependencyTool, requestOutboxFile, resolveConfirm, resolveDependencyRequest, validateDependencyRequest,
 } from '../forge/dependency-requests.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
+import { captureCandidate } from '../forge/diff.ts';
 import { checkPolicy, DecisionRefused, pathViolations } from '../forge/policy.ts';
+import { createWorkspace } from '../forge/workspace.ts';
 import { createDecomposeServer } from '../mcp/server.ts';
 import { openDaylight } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import {
-  authorLimits, defaultGateHarness, loadProjectPolicy, MAX_AUTHOR_TIMEOUT_SECONDS, MAX_AUTHOR_TURNS, MAX_POLICY_BYTES, parseProjectPolicy,
+  authorLimits, crateLayoutOf, defaultGateHarness, loadProjectPolicy, MAX_AUTHOR_TIMEOUT_SECONDS, MAX_AUTHOR_TURNS, MAX_POLICY_BYTES, parseProjectPolicy,
   POLICY_FILE, PROTECTED_SETS, protectedBy, ProjectPolicyError, type ProjectPolicy,
 } from '../forge/project-policy.ts';
 import type { CandidateFile } from '../mission/types.ts';
@@ -129,6 +131,60 @@ section('the rust set (P2-R4)');
   check('under a policy the violation says which set matched', v[0]?.rule === 'protected-path' && v[0]?.why === 'protected by the rust set', JSON.stringify(v));
   check('the protected sets are data: rust names Cargo.toml and build.rs',
     PROTECTED_SETS.rust.some((r) => r.values.includes('Cargo.toml')) && PROTECTED_SETS.rust.some((r) => r.values.includes('build.rs')));
+}
+
+section('build.rs only at a crate root (P2-R41)');
+{
+  const rust = policy({ languages: ['rust'] });
+  const tree = ['Cargo.toml', 'src/lib.rs', 'crates/x/Cargo.toml', 'crates/pack/Cargo.toml', 'crates/pack/src/lib.rs', 'crates/odd/Cargo.toml'];
+  const manifests: Record<string, string> = {
+    'Cargo.toml': '[workspace]\nmembers = ["crates/*"]\n',
+    'crates/x/Cargo.toml': '[package]\nname = "x"\nbuild = true\n',
+    'crates/pack/Cargo.toml': '[package]\nname = "pack"\n\n[features]\nbuild = ["x"]\n',
+    'crates/odd/Cargo.toml': '[package]\nname = "odd"\nbuild = "tools/gen.rs" # custom\n',
+  };
+  const crates = crateLayoutOf(tree, (p) => manifests[p] ?? null);
+  const under = (p: string) => pathViolations(file(p), { policy: rust, crates }).includes('protected-path');
+  check('the layout reads every manifest', crates !== null && [...crates.roots].sort().join() === ',crates/odd,crates/pack,crates/x', JSON.stringify(crates && [...crates.roots]));
+  check('build.rs and crates/x/build.rs (crate roots) are protected', under('build.rs') && under('crates/x/build.rs'));
+  check('crates/pack/src/build.rs and src/build/mod.rs are not', !under('crates/pack/src/build.rs') && !under('src/build/mod.rs'));
+  check('nor is build.rs in a directory with no Cargo.toml', !under('crates/build.rs') && !under('src/build.rs'));
+  check('a build script a manifest names is protected wherever it sits', under('crates/odd/tools/gen.rs'));
+  check('a feature called build is not read as the build key', crates?.buildScripts.size === 1, JSON.stringify(crates && [...crates.buildScripts]));
+  check('without a layout every build.rs stays protected (fail-closed)',
+    pathViolations(file('crates/pack/src/build.rs'), { policy: rust }).includes('protected-path')
+    && pathViolations(file('crates/pack/src/build.rs'), { policy: rust, crates: null }).includes('protected-path'));
+  const one = (text: string) => crateLayoutOf(['Cargo.toml'], () => text);
+  check('a manifest the reader cannot follow gives no layout', one('[package]\nbuild = """\nx"""\n') === null
+    && one('package = { build = "x.rs" }\n') === null && one('[package]\nbuild = "../out.rs"\n') === null);
+  check('an unreadable manifest gives no layout', crateLayoutOf(['Cargo.toml'], () => null) === null
+    && crateLayoutOf(['Cargo.toml'], () => { throw new Error('gone'); }) === null);
+  check('the top-level dotted form is read', one('package.build = "gen.rs"\n')?.buildScripts.has('gen.rs') === true);
+  check('the author prompt label says crate root', PROTECTED_SETS.rust.some((r) => r.kind === 'crate-root-file' && /beside a Cargo\.toml/.test(r.label)));
+
+  // The capture reads the layout from the base tree itself.
+  const repo = path.join(tmp, 'crates-repo');
+  for (const [rel, text] of Object.entries({ ...manifests, 'src/lib.rs': '', 'crates/pack/src/lib.rs': '' })) {
+    fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    fs.writeFileSync(path.join(repo, rel), text);
+  }
+  const g = (...args: string[]) => spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-C', repo, ...args],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  g('init', '-q');
+  g('add', '-A');
+  g('commit', '-q', '-m', 'crates');
+  const ws = createWorkspace(repo, g('rev-parse', 'HEAD').stdout.trim());
+  try {
+    for (const rel of ['crates/pack/src/build.rs', 'crates/x/build.rs', 'src/build/mod.rs']) {
+      fs.mkdirSync(path.dirname(path.join(ws.tree, rel)), { recursive: true });
+      fs.writeFileSync(path.join(ws.tree, rel), 'fn main() {}\n');
+    }
+    const d = captureCandidate(ws, { policy: rust });
+    const flagged = 'flags' in d ? d.flags.filter((f) => f.rules.includes('protected-path')).map((f) => f.path) : ['refused'];
+    check('a captured candidate flags crates/x/build.rs only', JSON.stringify(flagged) === '["crates/x/build.rs"]', JSON.stringify(flagged));
+  } finally {
+    ws.dispose();
+  }
 }
 
 section('project globs add, never remove');

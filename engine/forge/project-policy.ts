@@ -39,10 +39,13 @@ export const GATE_HARNESSES = ['cargo', 'node'] as const satisfies readonly Gate
  * - `segment-prefix`: any component starts with one of `values`;
  * - `root-dir`: the first component is one of `values`;
  * - `suffix`: the path ends with one of `values`, a multi-component path, at any depth;
- * - `subtree`: anything under one of `values`, a multi-component directory, at any depth.
+ * - `subtree`: anything under one of `values`, a multi-component directory, at any depth;
+ * - `crate-root-file`: the last component is one of `values` and its directory holds a
+ *   `Cargo.toml`, or the path is a build script a `Cargo.toml` names (`build = "<path>"`). Read
+ *   against a `CrateLayout`; without one it matches the basename at any depth (fail-closed).
  */
 export interface ProtectedRule {
-  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir' | 'suffix' | 'subtree';
+  kind: 'basename' | 'segment' | 'segment-prefix' | 'root-dir' | 'suffix' | 'subtree' | 'crate-root-file';
   values: readonly string[];
   /** How the author prompt and POLICY.md name it. */
   label: string;
@@ -103,7 +106,8 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     { kind: 'basename', values: ['Cargo.lock'], label: 'every Cargo.lock' },
     { kind: 'segment', values: ['.cargo'], label: 'anything under a .cargo/ directory' },
     { kind: 'basename', values: ['rust-toolchain.toml', 'rust-toolchain'], label: 'rust-toolchain.toml (and the older rust-toolchain)' },
-    { kind: 'basename', values: ['build.rs'], label: 'build.rs at any depth' },
+    // Cargo runs `build.rs` only from a package root (P2-R41); `src/build.rs` is an ordinary module.
+    { kind: 'crate-root-file', values: ['build.rs'], label: 'build.rs beside a Cargo.toml (a crate\'s build script), and any build script a Cargo.toml names' },
   ] satisfies ProtectedRule[]),
 });
 
@@ -132,8 +136,82 @@ export class ProjectPolicyError extends Error {
 
 // ---- matching ------------------------------------------------------------------
 
-function ruleMatches(rule: ProtectedRule, parts: readonly string[]): boolean {
+/**
+ * What a check knows of the repository's crates (P2-R41): the directories holding a
+ * `Cargo.toml` (`''` for the root) and every build script a manifest names with
+ * `build = "<path>"`. A check without one cannot tell a crate root, so `crate-root-file`
+ * protects its basename at any depth.
+ */
+export interface CrateLayout {
+  roots: ReadonlySet<string>;
+  buildScripts: ReadonlySet<string>;
+}
+
+/**
+ * The `build` value of a manifest's `[package]`: a path, `null` for none (or `true`/`false`,
+ * which name no other file), or `undefined` when it is written in a form this reader does not
+ * follow (a multi-line string, an inline `package = { … }`), which the caller treats as unknown.
+ */
+function declaredBuildScript(toml: string): string | null | undefined {
+  let section = '';
+  let found: string | null = null;
+  for (const raw of toml.split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = /^\[\[?([^\]]*)\]\]?/.exec(line);
+    if (header) {
+      section = header[1].replace(/\s/g, '');
+      continue;
+    }
+    let value: string | undefined;
+    if (section === 'package') value = /^["']?build["']?\s*=\s*(.*)$/.exec(line)?.[1];
+    else if (section === '') {
+      if (/^["']?package["']?\s*=/.test(line)) return undefined;
+      value = /^["']?package["']?\s*\.\s*["']?build["']?\s*=\s*(.*)$/.exec(line)?.[1];
+    }
+    if (value === undefined) continue;
+    const m = /^(?:"([^"\\]*)"|'([^']*)'|(true|false))\s*(?:#.*)?$/.exec(value);
+    if (!m) return undefined;
+    found = m[3] ? null : (m[1] ?? m[2]);
+  }
+  return found;
+}
+
+/**
+ * The crate layout of a tree listed as `files`, reading each `Cargo.toml` through `manifest`.
+ * Null (the check protects every `build.rs`) when a manifest cannot be read, names its build
+ * script in a form `declaredBuildScript` does not follow, or names one outside the repository.
+ */
+export function crateLayoutOf(files: Iterable<string>, manifest: (p: string) => string | null): CrateLayout | null {
+  const roots = new Set<string>();
+  const buildScripts = new Set<string>();
+  for (const f of files) {
+    if (f !== 'Cargo.toml' && !f.endsWith('/Cargo.toml')) continue;
+    const dir = f.slice(0, -'Cargo.toml'.length).replace(/\/$/, '');
+    roots.add(dir);
+    let text: string | null;
+    try {
+      text = manifest(f);
+    } catch {
+      return null;
+    }
+    if (text === null) return null;
+    const build = declaredBuildScript(text);
+    if (build === undefined) return null;
+    if (build === null) continue;
+    const p = path.posix.normalize(dir ? `${dir}/${build}` : build);
+    if (!p || p === '.' || p.startsWith('../') || p === '..' || path.posix.isAbsolute(p)) return null;
+    buildScripts.add(p);
+  }
+  return { roots, buildScripts };
+}
+
+function ruleMatches(rule: ProtectedRule, parts: readonly string[], crates?: CrateLayout | null): boolean {
   switch (rule.kind) {
+    case 'crate-root-file': {
+      if (crates?.buildScripts.has(parts.join('/'))) return true;
+      if (!rule.values.includes(parts.at(-1) ?? '')) return false;
+      return !crates || crates.roots.has(parts.slice(0, -1).join('/'));
+    }
     case 'basename': return rule.values.includes(parts.at(-1) ?? '');
     case 'segment': return parts.some((s) => rule.values.includes(s));
     case 'segment-prefix': return parts.some((s) => rule.values.some((v) => s.startsWith(v)));
@@ -172,13 +250,14 @@ export const defaultGateHarness = (policy: ProjectPolicy | null | undefined): Ga
 
 /**
  * Which sets protect `p`: `always`, `node`, `rust`, or `project` for one of the policy's globs.
- * Empty when nothing does. Every built-in set is checked whatever `languages` says.
+ * Empty when nothing does. Every built-in set is checked whatever `languages` says. `crates`,
+ * when the caller knows the tree, narrows `build.rs` to crate roots (P2-R41).
  */
-export function protectedBy(p: string, policy?: ProjectPolicy | null): string[] {
+export function protectedBy(p: string, policy?: ProjectPolicy | null, crates?: CrateLayout | null): string[] {
   const parts = p.split('/');
   const out: string[] = [];
   for (const name of Object.keys(PROTECTED_SETS) as ProtectedSetName[]) {
-    if (PROTECTED_SETS[name].some((r) => ruleMatches(r, parts))) out.push(name);
+    if (PROTECTED_SETS[name].some((r) => ruleMatches(r, parts, crates))) out.push(name);
   }
   if (policy?.protectedPaths.some((g) => globMatches(g.split('/'), parts))) out.push('project');
   return out;

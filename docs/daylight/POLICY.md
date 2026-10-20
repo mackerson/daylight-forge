@@ -85,7 +85,14 @@ policy, by tightening only: an author that edits one of them now produces an unc
 - every `Cargo.lock`;
 - anything under a `.cargo` directory, at any depth (cargo reads config from every parent);
 - `rust-toolchain.toml`, and the older `rust-toolchain`;
-- `build.rs` at any depth.
+- `build.rs` beside a `Cargo.toml` (a crate root, the only place cargo runs it from), and any
+  build script a `Cargo.toml` names with `build = "<path>"` (P2-R41). `crates/pack/src/build.rs`
+  or `src/build/mod.rs` is an ordinary module an author may edit. The check reads the crate
+  roots from the tree it judges against: plan validation from the plan commit, candidate capture
+  from the base commit plus any manifest the candidate adds. A check that has no tree to hand
+  (the fix lane and follow-up scope checks), or a manifest whose `build` key it cannot read (a
+  multi-line string, an inline `package = { … }`, a path outside the repository), protects every
+  `build.rs` instead.
 
 Independently of the policy, the gate directory `.daylight-gates/`, the registered spec, paths
 outside the mission's scope, symlinks, gitlinks and new executables are refused as before

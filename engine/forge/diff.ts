@@ -5,6 +5,7 @@ import type {
   ArtifactRef, CandidateFile, FileMode, PolicyRule, PolicyViolation,
 } from '../mission/types.ts';
 import { checkPolicy, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
+import { crateLayoutOf, type CrateLayout } from './project-policy.ts';
 import { siblingGit, walkTree, type Workspace } from './workspace.ts';
 
 /**
@@ -144,6 +145,22 @@ export interface CaptureOptions {
 }
 
 /**
+ * The crates of the base tree plus any manifest the candidate adds (P2-R41), each manifest read
+ * from the staged index when the candidate touched it and from the base commit otherwise. Null
+ * when git cannot answer, so every `build.rs` stays protected.
+ */
+function candidateCrateLayout(ws: Workspace, files: readonly CandidateFile[]): CrateLayout | null {
+  try {
+    const base = siblingGit(ws, ['ls-tree', '-r', '-z', '--name-only', '--full-tree', ws.commit]).toString('utf8').split('\0').filter(Boolean);
+    const touched = new Set(files.filter((f) => f.change !== 'deleted').map((f) => f.path));
+    const listed = [...new Set([...base, ...touched])];
+    return crateLayoutOf(listed, (p) => siblingGit(ws, ['cat-file', 'blob', touched.has(p) ? `:${p}` : `${ws.commit}:${p}`]).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Stage the tree into the sibling, diff it against the base, and judge the result: the path
  * policy (resolution 14) per file and for the whole diff, and a secret scan whose any hit is
  * an uncurable `secret-in-diff` with only the redacted copy kept.
@@ -198,6 +215,7 @@ export function captureCandidate(
 
   const policyCtx: PolicyContext = {
     maxBytes: MAX_DIFF_BYTES, maxFiles: MAX_DIFF_FILES, ...ctx, diffBytes: patch.length,
+    crates: ctx.crates !== undefined ? ctx.crates : candidateCrateLayout(ws, files),
   };
   const violations = checkPolicy(files, policyCtx);
   if (secretHits) {

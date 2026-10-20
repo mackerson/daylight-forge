@@ -7,7 +7,7 @@ import type {
 } from '../mission/types.ts';
 import { PLAN_KIND, PLAN_VERSION } from '../mission/types.ts';
 import { pathViolations } from './policy.ts';
-import { parseProjectPolicy, POLICY_FILE, ProjectPolicyError, type ProjectPolicy } from './project-policy.ts';
+import { crateLayoutOf, parseProjectPolicy, POLICY_FILE, ProjectPolicyError, type CrateLayout, type ProjectPolicy } from './project-policy.ts';
 import {
   MAX_EXAMPLE_BYTES, MAX_EXAMPLES, MAX_STATEMENT_BYTES, MAX_TITLE_CHARS, repoPathRefusal, textRefusal,
 } from './proposal.ts';
@@ -391,9 +391,9 @@ function findCycle(tickets: readonly PlanTicketV1[]): string[] | null {
 const SYNTHETIC = { change: 'modified', insertions: 0, deletions: 0, mode: 'file' } as const;
 
 /** Why a scope prefix is one no author may be given, or null: protected, a gate path, an escape. */
-function protectedScope(p: string, policy: ProjectPolicy | null): boolean {
+function protectedScope(p: string, policy: ProjectPolicy | null, crates: CrateLayout | null): boolean {
   // A directory prefix is protected when anything under it is by its place alone (`.yarn/releases`).
-  return [p, `${p}/x`].some((x) => pathViolations({ path: x, ...SYNTHETIC }, { policy })
+  return [p, `${p}/x`].some((x) => pathViolations({ path: x, ...SYNTHETIC }, { policy, crates })
     .some((r) => r === 'protected-path' || r === 'gate-path' || r === 'path-escape'));
 }
 
@@ -426,6 +426,7 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
   for (const f of ctx.tree) for (let i = f.indexOf('/'); i > 0; i = f.indexOf('/', i + 1)) dirs.add(f.slice(0, i));
   const exists = (p: string) => isFile(p) || dirs.has(p);
   const isCrate = (c: string) => isFile(`${prefixOf(c)}/Cargo.toml`);
+  const crates = crateLayoutOf(ctx.tree, (p) => ctx.blobAt(p)?.toString('utf8') ?? null);
 
   (plan.ownerDecisions ?? []).forEach((o, i) => {
     if (!o.blocking && !o.default?.trim()) r.add(`$.ownerDecisions[${i}].default`, 'owner-default-missing', 'a non-blocking owner decision names its default');
@@ -474,7 +475,7 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
     t.scope.forEach((raw, k) => {
       const s = prefixOf(raw);
       const sat = `${at}.scope[${k}]`;
-      if (protectedPaths.has(s) || protectedScope(s, ctx.policy)) r.add(sat, 'scope-protected', 'an author may not be given this path');
+      if (protectedPaths.has(s) || protectedScope(s, ctx.policy, crates)) r.add(sat, 'scope-protected', 'an author may not be given this path');
       const planned = raw.endsWith('/') && owns.some((o) => under(s, o));
       if (!exists(s) && !planned) r.add(sat, 'scope-path', 'not a file or directory at the plan commit');
       if (lane && !owns.some((o) => under(s, o))) r.add(sat, 'scope-outside-lane', `not inside lane ${lane.id}'s prefixes`);
