@@ -341,6 +341,24 @@ export function prepareIntegration(ctx: IntegrateContext, candidateId: string, o
 }
 
 /**
+ * Why this integration's candidate may not land, or null (P2-R35): it must be `accepted-by-gates`
+ * on this integration's tree (the verdict names the integrated digest), against the campaign's
+ * current gate lock. Whatever the caller: the director, a resume, or a test.
+ */
+export function landingRefusal(store: MissionStore, i: Integration): string | null {
+  const c = store.candidate(i.candidateId);
+  if (!c) return `candidate ${i.candidateId} does not exist`;
+  if (c.verdict !== 'accepted-by-gates' || !i.integratedDiffDigest || !c.verdictReasons.some((r) => r.includes(i.integratedDiffDigest!))) {
+    return `candidate ${c.id} is ${c.verdict} on integration ${i.id}'s tree, not accepted-by-gates there; it is not landed`;
+  }
+  const lock = store.campaignLockDecision(i.campaignId);
+  if (!lock || lock.scope.gateSetDigest !== c.gateSetDigest) {
+    return `candidate ${c.id} was judged against gate set ${c.gateSetDigest}, not the campaign's current lock; it is not landed`;
+  }
+  return null;
+}
+
+/**
  * The landing transaction (P2-R22): inside one `BEGIN IMMEDIATE`, R5's envelope check, the
  * derived `integrate-candidate` decision on the ticket mission, the application row (`appliedBy
  * = campaign:<id>`, base = the tip) and the integration's move to `integrated`. All or nothing.
@@ -352,6 +370,8 @@ export function landIntegration(ctx: IntegrateContext, integrationId: string, o:
     if (!i || i.state !== 'evaluating' || !i.integratedCommit || !i.integratedTree || !i.integratedDiffDigest) {
       throw new IntegrationRefused(`integration ${integrationId} is not being landed`);
     }
+    const refused = landingRefusal(ctx.store, i);
+    if (refused) throw new IntegrationRefused(refused);
     const c = ctx.store.candidate(i.candidateId)!;
     const m = ctx.store.mission(i.missionId)!;
     const auth = authorizationOf(ctx.store, i.campaignId);
@@ -400,6 +420,8 @@ export function landCandidate(ctx: IntegrateContext, integrationId: string, o: I
     emit(ctx, campaign, 'process', 'campaign.integration.refused', { integrationId: i.id, candidateId: i.candidateId, onto: i.onto, method: i.method });
     return { refused: why, integration: after };
   };
+  const unaccepted = landingRefusal(ctx.store, i);
+  if (unaccepted) return abandon(unaccepted);
   const madeMissionRef = succeeds(() => gitIn({ repo }, ['update-ref', '-m', `daylight campaign ${i.campaignId} ${i.id}`, missionRef, commit, '']));
   if (!madeMissionRef && refTarget(repo, missionRef) !== commit) return abandon(`${missionRef} already exists; it is never overwritten`);
   crash(o, 'mission-ref');

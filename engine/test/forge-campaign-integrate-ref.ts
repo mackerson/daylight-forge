@@ -22,7 +22,7 @@ import { digestOf } from '../mission/artifacts.ts';
 import type { Candidate, Mission } from '../mission/types.ts';
 import { harness } from './harness.ts';
 import {
-  ACTOR, commitOn, diffOf, fakeDeps, filesOf, git, makeCampaign, makeCandidate, makeRepo, makeTicketMission, openCtx, repoState, tempDir,
+  accept, ACTOR, commitOn, diffOf, fakeDeps, filesOf, git, makeCampaign, makeCandidate, makeRepo, makeTicketMission, openCtx, repoState, tempDir,
 } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
@@ -100,7 +100,7 @@ section('landing: the ref moves by compare-and-swap; hooks and fsmonitor never r
   const deps = fakeDeps();
   const i1 = prepareIntegration(w.ictx, t1.c.id, { ticketId: 'T1', deps });
   check('integration 1 is evaluating, applied onto the base', i1.state === 'evaluating' && i1.method === 'apply' && i1.onto === w.base, JSON.stringify(i1));
-  const l1 = landCandidate(w.ictx, i1.id, { ticketId: 'T1', deps });
+  const l1 = landCandidate(w.ictx, accept(w.ctx, i1).id, { ticketId: 'T1', deps });
   check('it lands: the ref is its commit', 'landed' in l1 && integrationTip(w.repo, w.campaign.id) === i1.integratedCommit, JSON.stringify(l1).slice(0, 300));
   check('its per-mission ref names the same commit', refTarget(w.repo, applyRefFor(t1.m.id)) === i1.integratedCommit);
   if ('landed' in l1) {
@@ -111,7 +111,7 @@ section('landing: the ref moves by compare-and-swap; hooks and fsmonitor never r
 
   const i2 = prepareIntegration(w.ictx, t2.c.id, { ticketId: 'T2', deps });
   check('integration 2 is three-way onto the first landing', i2.method === 'three-way' && i2.onto === i1.integratedCommit, JSON.stringify(i2));
-  const l2 = landCandidate(w.ictx, i2.id, { ticketId: 'T2', deps });
+  const l2 = landCandidate(w.ictx, accept(w.ctx, i2).id, { ticketId: 'T2', deps });
   check('and lands on top of it', 'landed' in l2 && integrationTip(w.repo, w.campaign.id) === i2.integratedCommit);
   const commitMsg = git(w.repo, ['log', '-1', '--format=%B', i2.integratedCommit!]);
   check('the commit carries the campaign trailers, ids only', /Daylight-Campaign: m_[0-9a-f]{32}/.test(commitMsg) && /Daylight-Ticket: T2/.test(commitMsg)
@@ -128,7 +128,7 @@ section('landing: the ref moves by compare-and-swap; hooks and fsmonitor never r
   const i3 = prepareIntegration(w.ictx, t3.c.id, { ticketId: 'T3', deps });
   const foreign = commitOn(w.repo, i2.integratedCommit!, { 'README': 'someone else\n' });
   git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), foreign]);
-  const l3 = landCandidate(w.ictx, i3.id, { ticketId: 'T3', deps });
+  const l3 = landCandidate(w.ictx, accept(w.ctx, i3).id, { ticketId: 'T3', deps });
   check('refused', 'refused' in l3 && /no longer at/.test(l3.refused), JSON.stringify(l3).slice(0, 200));
   check('the ref was not touched', integrationTip(w.repo, w.campaign.id) === foreign);
   check('the per-mission ref was removed', refTarget(w.repo, applyRefFor(t3.m.id)) === null);
@@ -139,14 +139,14 @@ section('landing: the ref moves by compare-and-swap; hooks and fsmonitor never r
   section('the per-mission ref is create-only');
   const i3b = prepareIntegration(w.ictx, t3.c.id, { ticketId: 'T3', deps });
   git(w.repo, ['update-ref', applyRefFor(t3.m.id), foreign]);
-  const l3b = landCandidate(w.ictx, i3b.id, { ticketId: 'T3', deps });
+  const l3b = landCandidate(w.ictx, accept(w.ctx, i3b).id, { ticketId: 'T3', deps });
   check('a per-mission ref that already names something else refuses the landing', 'refused' in l3b && /never overwritten/.test(l3b.refused));
   check('and is left as it was; the integration ref did not move', refTarget(w.repo, applyRefFor(t3.m.id)) === foreign && integrationTip(w.repo, w.campaign.id) === i2.integratedCommit);
   git(w.repo, ['update-ref', '-d', applyRefFor(t3.m.id), foreign]);
 
   section('a store refusal inside the transaction undoes both refs (P2-R22)');
   const i3c = prepareIntegration(w.ictx, t3.c.id, { ticketId: 'T3', deps });
-  const refused = landCandidate(w.ictx, i3c.id, { ticketId: 'T3', deps: fakeDeps({ refuse: 'halted' }) });
+  const refused = landCandidate(w.ictx, accept(w.ctx, i3c).id, { ticketId: 'T3', deps: fakeDeps({ refuse: 'halted' }) });
   check('the envelope refusal is reported', 'refused' in refused && /halted/.test(refused.refused));
   check('the integration ref is back at the tip, by compare-and-swap', integrationTip(w.repo, w.campaign.id) === i2.integratedCommit);
   check('the per-mission ref is gone', refTarget(w.repo, applyRefFor(t3.m.id)) === null);
@@ -169,7 +169,7 @@ for (const step of STEPS) {
   let crashed = false;
   try {
     const i = prepareIntegration(w.ictx, t.c.id, { ticketId: 'T1', deps, crashAfter: step });
-    landCandidate(w.ictx, i.id, { ticketId: 'T1', deps, crashAfter: step });
+    landCandidate(w.ictx, accept(w.ctx, i).id, { ticketId: 'T1', deps, crashAfter: step });
   } catch (err) {
     crashed = err instanceof InjectedCrash;
   }
@@ -177,7 +177,7 @@ for (const step of STEPS) {
   const r = reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf, deps });
   if (r.requeue.includes(t.c.id)) {
     const i = prepareIntegration(w.ictx, t.c.id, { ticketId: 'T1', deps });
-    landCandidate(w.ictx, i.id, { ticketId: 'T1', deps });
+    landCandidate(w.ictx, accept(w.ctx, i).id, { ticketId: 'T1', deps });
   }
   const again = reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf, deps });
   const landed = w.ctx.store.integrations(w.campaign.id, { state: 'integrated' });
@@ -190,13 +190,36 @@ for (const step of STEPS) {
   w.ctx.close();
 }
 
+section('a candidate that is not accepted-by-gates on the integrated tree never lands (P2-R35)');
+{
+  const w = world();
+  const deps = fakeDeps();
+  const t = w.ticket('T1', w.base, { 'src/a.js': 'module.exports = 10;\n' });
+  const i = prepareIntegration(w.ictx, t.c.id, { ticketId: 'T1', deps });
+  accept(w.ctx, i);
+  w.ctx.store.updateCandidateVerdict(t.c.id, 'rejected-by-gates', ['gate x: falsified on the integrated tree']);
+  const r = landCandidate(w.ictx, i.id, { ticketId: 'T1', deps });
+  check('a rejected-by-gates candidate is refused, naming its verdict', 'refused' in r && /rejected-by-gates/.test(r.refused), JSON.stringify(r).slice(0, 200));
+  check('nothing moved and nothing was recorded', integrationTip(w.repo, w.campaign.id) === w.base && !w.ctx.store.application(t.c.id));
+  const i2 = prepareIntegration(w.ictx, t.c.id, { ticketId: 'T1', deps });
+  w.ctx.store.updateCandidateVerdict(t.c.id, 'accepted-by-gates', [`accepted on another tree ${'sha256:' + '0'.repeat(64)}`]);
+  check('accepted on another integration\'s tree is not accepted on this one', 'refused' in landCandidate(w.ictx, i2.id, { ticketId: 'T1', deps }));
+  const i3 = prepareIntegration(w.ictx, t.c.id, { ticketId: 'T1', deps });
+  w.ctx.store.updateCandidateVerdict(t.c.id, 'rejected-by-gates', ['x']);
+  git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), i3.integratedCommit!, w.base]);
+  reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T1', deps });
+  check('the resume path refuses it too: the ref goes back and the row is abandoned', integrationTip(w.repo, w.campaign.id) === w.base
+    && w.ctx.store.integration(i3.id)!.state === 'abandoned' && !w.ctx.store.application(t.c.id));
+  w.ctx.close();
+}
+
 section('resume: the rows the table names that no crash above leaves');
 {
   const w = world();
   const deps = fakeDeps();
   const t = w.ticket('T1', w.base, { 'src/a.js': 'module.exports = 10;\n' });
   const i = prepareIntegration(w.ictx, t.c.id, { ticketId: 'T1', deps });
-  landCandidate(w.ictx, i.id, { ticketId: 'T1', deps });
+  landCandidate(w.ictx, accept(w.ctx, i).id, { ticketId: 'T1', deps });
   // integrated, no application: only a hand-written row can say this; the ref contains the commit.
   const db = (w.ctx.store as unknown as { db: DatabaseSync }).db;
   db.exec('PRAGMA foreign_keys = OFF');

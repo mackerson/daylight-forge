@@ -16,7 +16,7 @@ import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { identifyProject } from '../mission/project.ts';
 import { newId, type CreateDecisionInput, type MissionStore } from '../mission/store.ts';
 import type {
-  AuthorizeCampaignScope, Candidate, CandidateFile, CampaignEnvelope, CampaignTicket, Decision, EnvelopeRequest, Mission, PlanFileV1,
+  AuthorizeCampaignScope, Candidate, CandidateFile, CampaignEnvelope, CampaignTicket, Decision, EnvelopeRequest, Integration, Mission, PlanFileV1,
 } from '../mission/types.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
 import type { IntegrateDeps } from '../forge/integrate.ts';
@@ -253,4 +253,22 @@ export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFile
     },
     integrate: o.deps ?? fakeDeps(),
   };
+}
+
+/**
+ * The verdict the director records when every check passed on an integration's tree, and the
+ * campaign lock it names: what `landIntegration` requires before anything lands (P2-R35).
+ */
+export function accept(ctx: DaylightContext, i: Integration): Integration {
+  const c = ctx.store.candidate(i.candidateId)!;
+  if (!ctx.store.campaignLockDecision(i.campaignId)) {
+    const campaign = ctx.store.mission(i.campaignId)!;
+    ctx.store.recordDecision({
+      missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: ACTOR, kind: 'approve', rationale: 'fixture lock',
+      scope: { operation: 'lock-campaign-gates', experimentIds: [], harnessDigests: {}, vacuousOverrides: [], bindings: {}, roles: {}, ratchet: false, gateSetDigest: c.gateSetDigest },
+      artifactIds: [],
+    });
+  }
+  ctx.store.updateCandidateVerdict(c.id, 'accepted-by-gates', [`all required checks supported on the integrated tree ${i.integratedDiffDigest}`]);
+  return i;
 }
