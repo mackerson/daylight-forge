@@ -450,6 +450,14 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
     }
   };
   plan.campaignGates.forEach((g, i) => gatePath(`$.campaignGates[${i}].path`, g.path, g.harness, g.crate));
+  // Every plan gate is registered through `registerGate`, which refuses an expectation without
+  // an exit code and a stdout marker; a plan that would fail there is refused here, before approval.
+  const gateExpect = (at: string, e: { exitCode?: number; stdoutIncludes?: string[] }, who: string) => {
+    if (typeof e.exitCode !== 'number' || !e.stdoutIncludes?.some((s) => s.length > 0)) {
+      r.add(at, 'gate-expectation', `${who} predicts an exit code and a stdout marker (e.g. "test result: ok." or "# fail 0")`);
+    }
+  };
+  plan.campaignGates.forEach((g, i) => gateExpect(`$.campaignGates[${i}].expect`, g.expect, `gate ${g.id}`));
 
   plan.tickets.forEach((t, i) => {
     const at = `$.tickets[${i}]`;
@@ -473,6 +481,8 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
     });
     const acc = t.acceptance;
     if (acc?.kind === 'gate') acc.tests.forEach((g, k) => gatePath(`${at}.acceptance.tests[${k}].path`, g.path, g.harness, g.crate));
+    if (acc?.kind === 'gate') acc.tests.forEach((g, k) => gateExpect(`${at}.acceptance.tests[${k}].expect`, g.expect, `ticket ${t.id}'s gate ${k}`));
+    if (acc?.kind === 'writer-authored') gateExpect(`${at}.acceptance.expect`, acc.expect, `ticket ${t.id}'s writer-authored tests`);
     if (acc?.kind === 'writer-authored') {
       if (acc.crate !== undefined && !isCrate(acc.crate)) r.add(`${at}.acceptance.crate`, 'acceptance-path', 'the crate has no Cargo.toml at the plan commit');
       acc.testPaths.forEach((p, k) => {

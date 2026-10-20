@@ -1050,7 +1050,7 @@ export interface TicketBudget { maxUsd?: number; maxTurns?: number; timeoutSecon
 export interface PlanRefusal { path: string; rule: PlanRule; detail: string }
 export type PlanRule = 'shape' | 'version' | 'duplicate-id' | 'unknown-lane' | 'unknown-dependency' | 'self-dependency' | 'cycle'
   | 'scope-path' | 'scope-protected' | 'scope-outside-lane' | 'lane-overlap' | 'unknown-owner-decision' | 'owner-default-missing'
-  | 'acceptance-path' | 'acceptance-harness' | 'policy' | 'text' | 'too-many' | 'too-large';
+  | 'acceptance-path' | 'acceptance-harness' | 'gate-expectation' | 'policy' | 'text' | 'too-many' | 'too-large';
 
 /** Where a campaign ticket came from: the approved plan, a wave-review finding, or an overturned assumption. */
 export type TicketOrigin = 'plan' | 'fix' | 'follow-up';
