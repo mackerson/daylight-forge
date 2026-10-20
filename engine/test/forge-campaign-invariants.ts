@@ -19,7 +19,7 @@ const CLI = path.join(ROOT, 'engine', 'cli.ts');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-campaign-inv-'));
 process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 
-interface Inv { id: string; prose: string; predicate: Record<string, unknown> }
+interface Inv { id: string; prose: string; rationale?: string; predicate: Record<string, unknown> }
 const all = JSON.parse(fs.readFileSync(path.join(ROOT, 'daylight.invariants.json'), 'utf8')) as Inv[];
 const entry = (id: string): Inv => {
   const e = all.find((x) => x.id === id);
@@ -73,9 +73,38 @@ section('derived-writer-callers (P2-R26)');
   check('a fourth caller, engine/forge/x.ts, turns it red', red.code === 1 && /RED\s+derived-writer-callers/.test(red.out) && red.out.includes('engine/forge/x.ts'), red.out);
   const aside = checkRepo('aside', { ...WRITERS, 'engine/forge/campaign-other.ts': CALLER }, [inv]);
   check('a file whose name only starts like an allowed one is still a fourth caller', aside.code === 1, aside.out);
+  const store = `import { MissionStore } from '../mission/store.ts';\n`;
+  const forms: Array<[string, string]> = [
+    ['.bind', 'export const f = (s: MissionStore) => s.recordDerivedDecision.bind(s)(\'d\');\n'],
+    ['.call', 'export const f = (s: MissionStore) => s.recordDerivedDecision.call(s, \'d\');\n'],
+    ['.apply', 'export const f = (s: MissionStore) => s.recordDerivedDecision.apply(s, [\'d\']);\n'],
+    ['a literal bracket key', 'export const f = (s: MissionStore) => s[\'recordDerivedDecision\'](\'d\');\n'],
+  ];
+  for (const [name, body] of forms) {
+    const r = checkRepo(`form-${name.replace(/\W/g, '')}`, { ...WRITERS, 'engine/forge/x.ts': store + body }, [inv]);
+    check(`a fourth caller through ${name} turns it red`, r.code === 1 && r.out.includes('engine/forge/x.ts'), r.out);
+  }
+  const computed = checkRepo('form-computed', { ...WRITERS, 'engine/forge/x.ts': `${store}export const f = (s: MissionStore) => (s as never as Record<string, (d: string) => string>)['recordDerived' + 'Decision']('d');\n` }, [inv]);
+  check('a computed key is not seen: the known limit the invariant states', computed.code === 0 && /computed key/.test(inv.rationale ?? ''), computed.out);
+  const testCaller = checkRepo('test-caller', { ...WRITERS, 'engine/test/forge-campaign-x.ts': CALLER.replace('../mission', '../mission') }, [inv]);
+  check('a forge-campaign test may call it', testCaller.code === 0, testCaller.out);
+  const otherTest = checkRepo('other-test', { ...WRITERS, 'engine/test/zz-launder.ts': CALLER }, [inv]);
+  check('any other test file may not', otherTest.code === 1 && otherTest.out.includes('engine/test/zz-launder.ts'), otherTest.out);
   const design: Inv = { ...inv, id: 'as-designed', predicate: { type: 'forbidden-call', from: inv.predicate.within as object, to: { name: '^recordDerivedDecision$' } } };
   const vacuous = checkRepo('designed', { ...WRITERS, 'engine/forge/x.ts': CALLER }, [design]);
   check('the forbidden-call form the design named does not see the fourth caller (why this is a forbidden-callee)', vacuous.code === 0, vacuous.out);
+}
+
+section('tests-are-never-imported (review M5)');
+{
+  const inv = entry('tests-are-never-imported');
+  const helper = 'export function launder(): number { return 1; }\n';
+  const user = "import { launder } from '../test/forge-campaign-helper.ts';\nexport const go = () => launder();\n";
+  check('green while only tests call test code', checkRepo('imp-ok', {
+    'engine/test/forge-campaign-helper.ts': helper, 'engine/test/forge-campaign-y.ts': "import { launder } from './forge-campaign-helper.ts';\nexport const t = () => launder();\n",
+  }, [inv]).code === 0);
+  const red = checkRepo('imp-bad', { 'engine/test/forge-campaign-helper.ts': helper, 'engine/forge/use.ts': user }, [inv]);
+  check('red when product code calls into engine/test/', red.code === 1 && red.out.includes('engine/forge/use.ts'), red.out);
 }
 
 section('no-derived-human-ops');

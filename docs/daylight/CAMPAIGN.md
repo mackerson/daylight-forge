@@ -147,7 +147,11 @@ A derived decision is an ordinary `authorize-mission` decision on the ticket mis
 write without an authorize decision referencing its mission") holds literally. `recordDecision`
 refuses every `campaign:` actor; only `recordDerivedDecision` writes one, after re-checking the
 envelope against rows, and only `mission/store.ts`, `forge/campaign.ts` and `forge/integrate.ts`
-may call it (the `derived-writer-callers` invariant). A forged derived grant is refused by
+may call it (the `derived-writer-callers` invariant). The check sees direct calls, `.bind`,
+`.call`, `.apply` and a literal bracket key. It cannot see a computed key
+(`store['recordDerived' + 'Decision']`) or a method reference taken without a call: a known limit,
+outside ADR-37's threat model like raw SQL. Only `engine/test/forge-campaign-*.ts` is exempt, and
+`tests-are-never-imported` keeps product code from calling into `engine/test/`. A forged derived grant is refused by
 `startAttempt` and reported by `unauthorizedWriteAttempts` and `derivationRefusals`. An attempt
 under a derived grant is refused once the authorization has expired or the campaign is halted.
 

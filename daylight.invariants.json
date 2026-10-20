@@ -242,13 +242,13 @@
   {
     "id": "derived-writer-callers",
     "prose": "Only the mission store, engine/forge/campaign.ts and engine/forge/integrate.ts call recordDerivedDecision, the one writer of a campaign: actor's decision.",
-    "rationale": "P2-R19, P2-R26: a derived write grant is written only after its envelope is re-checked, and recordDerivedDecision cannot be TS-private because two modules call it. A fourth caller is a new path to a write grant nobody reviewed. forbidden-callee, not the forbidden-call the design named: the graph has no call edge for a method reached through ctx.store, so forbidden-call to name ^recordDerivedDecision$ is green whatever calls it (engine/test/forge-campaign-invariants.ts shows both). engine/test/ is exempt: the refusal tests call the writer directly to show what it refuses.",
+    "rationale": "P2-R19, P2-R26: a derived write grant is written only after its envelope is re-checked, and recordDerivedDecision cannot be TS-private because two modules call it. A fourth caller is a new path to a write grant nobody reviewed. forbidden-callee, not the forbidden-call the design named: the graph has no call edge for a method reached through ctx.store, so forbidden-call to name ^recordDerivedDecision$ is green whatever calls it (engine/test/forge-campaign-invariants.ts shows both). It sees direct calls, .bind/.call/.apply and a literal bracket key. Known limit: it cannot see a computed key (store['recordDerived' + 'Decision']) or a method reference taken without a call; those are outside ADR-37's threat model, like raw SQL. Only engine/test/forge-campaign-*.ts is exempt (its refusal tests call the writer directly), and tests-are-never-imported keeps a test helper from laundering a call into product code.",
     "predicate": {
       "type": "forbidden-callee",
       "within": {
-        "file": "^(?!engine/(mission/store|forge/campaign|forge/integrate)\\.ts$)(?!engine/test/).*\\.ts$"
+        "file": "^(?!engine/(mission/store|forge/campaign|forge/integrate)\\.ts$)(?!engine/test/forge-campaign-[a-z-]+\\.ts$).*\\.ts$"
       },
-      "callee": "(^|\\.)recordDerivedDecision$"
+      "callee": "(^|[.'\"\\[])recordDerivedDecision(['\"]\\])?(\\.(bind|call|apply)(\\(.*\\))?)?$"
     }
   },
   {
@@ -288,6 +288,20 @@
       },
       "callee": "^assertHumanDecision$",
       "min": 6
+    }
+  },
+  {
+    "id": "tests-are-never-imported",
+    "prose": "No product file calls into engine/test/. Test code is never a runtime dependency.",
+    "rationale": "Review M5 of WS-R5: a call exemption for test files is only safe if nothing outside the tests can reach them. The renderer's *.test.mjs files may import the shared harness; nothing else may.",
+    "predicate": {
+      "type": "forbidden-call",
+      "from": {
+        "file": "^(?!engine/test/|app/.*\\.test\\.)"
+      },
+      "to": {
+        "file": "^engine/test/"
+      }
     }
   }
 ]
