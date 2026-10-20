@@ -491,11 +491,15 @@ export function validatePlan(plan: PlanFileV1, ctx: PlanValidationContext): Plan
 
 /**
  * `daylight.policy.json` at `commit`, from its blob, never the working tree (P2-R20), or null
- * when there is none. Throws `ProjectPolicyError` when it does not parse.
+ * when there is none. Throws `ProjectPolicyError` when it does not parse or is not a regular file.
  */
 export function policyAt(root: string, commit: string): ProjectPolicy | null {
   const blob = blobAt(root, commit, POLICY_FILE, 64 * 1024);
-  return blob ? parseProjectPolicy(blob) : null;
+  if (blob) return parseProjectPolicy(blob);
+  // Present but not a regular file (a symlink, a directory): refused, as R4's loader refuses it.
+  const entry = git(root, ['ls-tree', '-z', '--full-tree', commit, '--', POLICY_FILE]).toString('utf8');
+  if (entry) throw new ProjectPolicyError('not a regular file');
+  return null;
 }
 
 /** The plan file at `rev` (default HEAD) of `root`, parsed and validated. Opens no store. */

@@ -192,6 +192,14 @@ section('bytes come from git objects at one commit');
   fs.writeFileSync(path.join(repo.root, 'daylight.policy.json'), JSON.stringify({ schema: 'daylight.policy/v1', protectedPaths: ['crates/core/src/lib.rs'] }));
   git(repo.root, 'add', 'daylight.policy.json');
   git(repo.root, 'commit', '-q', '-m', 'policy protects lib.rs');
+  {
+    const link = makeRepo('policy-link', samplePlan(), { 'policy-broken.json': '{ not json' });
+    fs.symlinkSync('policy-broken.json', path.join(link.root, 'daylight.policy.json'));
+    git(link.root, 'add', '-A');
+    git(link.root, 'commit', '-q', '-m', 'symlinked policy');
+    const r = validatePlanAt(link.root, 'daylight.plan.json');
+    check('a symlinked policy at the plan commit refuses the plan, as R4\'s loader does (review L2)', r.plan === null && has(r.refusals, 'policy'), show(r.refusals));
+  }
   check('a policy glob at the plan commit protects a scope', has(at(OK).refusals, 'scope-protected', '$.tickets[0].scope[0]'), show(at(OK).refusals));
 }
 
