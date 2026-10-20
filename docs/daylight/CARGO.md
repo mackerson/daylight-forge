@@ -124,6 +124,24 @@ daylight gate add <mission> --role gate|holdout --harness cargo --crate <dir> --
 `--harness` defaults to the project policy's `gate.harness`, else `cargo` when its `languages` is `["rust"]`, else `node` ([POLICY.md](POLICY.md)). It is stored on the experiment row and in the gate's expectation,
 so it is covered by the harness digest: changing it makes a new harness.
 
+### Trying a test before registering it
+
+```
+daylight gate try <repo> --harness node|cargo --test <file> [--crate <dir>] \
+  [--expect-exit 0 --expect-stdout 'test result: ok.'] [--rev HEAD] [--out <dir>] [--format json]
+```
+
+`gate try` baselines one test at one revision exactly as `gate baseline` runs a gate: the same
+registration checks, the same placement, the same bwrap sandbox, the same cargo snapshot and the
+same reading of the result. It prints what each run showed and what a baseline would conclude
+(`falsified`, `supported` or `invalid`). It opens no store, needs no mission and writes no row
+or artifact under `<out>`; the registered test lives in a scratch directory under the system
+temp dir for the length of the run. A cargo try builds into its own gate cache under
+`<out>/cargo/target/gate/`, seeded from `gate/base/` and removed afterwards, so neither the base
+cache nor a candidate's is touched. Because it decides nothing, an agent session may run it
+(P2-R41). Without `--expect-exit` and `--expect-stdout` it predicts exit 0 and the harness's
+pass marker. Without bwrap it fails closed: the run is `denied` and the command exits 1.
+
 ### Where the test goes
 
 The registered file is one Rust integration test. It is placed in two places, from the same

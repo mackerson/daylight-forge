@@ -765,6 +765,40 @@ section('a gate that runs cargo itself: captured, it reads; echoed, it is invali
   }
 }
 
+section('gate try --harness cargo: baselined in the sandbox against the snapshot, writing no row (P2-R41)');
+{
+  // A fresh <out> holding only the crate snapshot: whatever the try leaves is the try's.
+  const tryOut = path.join(tmp, 'try-out');
+  fs.mkdirSync(path.join(tryOut, 'cargo'), { recursive: true });
+  fs.cpSync(snapshotDir(out), snapshotDir(tryOut), { recursive: true, verbatimSymlinks: true, preserveTimestamps: true });
+  fs.copyFileSync(snapshotFile(out), snapshotFile(tryOut));
+  const baseCache = listing(gateCacheDir(out, 'base'));
+  const file = (name: string, text: string) => {
+    const f = path.join(tmp, name);
+    fs.writeFileSync(f, text);
+    return f;
+  };
+  const tryCli = (args: string[]) => run(['gate', 'try', repo, '--harness', 'cargo', '--crate', 'crates/core', ...args, '--out', tryOut, '--format', 'json'], { CLAUDECODE: '1' });
+  const passing = tryCli(['--test', file('try_decimal.rs', '#[test]\nfn dec() { assert_eq!(fixture_core::decimal(7), "7"); }\n')]);
+  const p = passing.code === 0 ? json<{ conclusion: string; runs: Array<{ status: string; stdout: string; stderr: string }> }>(passing) : null;
+  check('under CLAUDECODE a passing cargo test would be supported, its result line in the observation',
+    p?.conclusion === 'supported' && p.runs.length === 2 && p.runs.every((r) => r.status === 'ran' && /test result: ok\. 1 passed/.test(r.stdout)),
+    `${passing.code} ${passing.err.slice(-300)} ${p?.conclusion}`);
+  const failing = tryCli(['--test', file('try_padded.rs', PADDED_GATE)]);
+  const f = failing.code === 0 ? json<{ conclusion: string; runs: Array<{ stderr: string }> }>(failing) : null;
+  check('the padded gate, whose function the base lacks, would be falsified', f?.conclusion === 'falsified' && /error\[E0425\]|cannot find function|unresolved/.test(f.runs[0]?.stderr ?? ''),
+    `${failing.code} ${failing.err.slice(-300)} ${f?.conclusion}`);
+  const leftover = fs.readdirSync(path.join(tryOut), { recursive: true }).map(String);
+  check('no database or artifact was written under <out>', !leftover.some((x) => /\.db$|^artifacts/.test(x)), leftover.filter((x) => !x.startsWith('cargo/snapshot')).join());
+  check('the try\'s own gate cache is gone afterwards', listing(targetDir(tryOut, 'gate')).length === 0, listing(targetDir(tryOut, 'gate')).slice(0, 5).join());
+  check('and no other <out>\'s base cache was touched', JSON.stringify(listing(gateCacheDir(out, 'base'))) === JSON.stringify(baseCache));
+  fs.mkdirSync(path.join(tmp, 'try-empty'));
+  const noSnap = run(['gate', 'try', repo, '--harness', 'cargo', '--crate', 'crates/core', '--test', path.join(tmp, 'try_decimal.rs'), '--out', path.join(tmp, 'try-empty'), '--format', 'json'], { CLAUDECODE: '1' });
+  check('without a snapshot the cargo try is invalid and names the command, never run unsandboxed or online',
+    noSnap.code === 0 && json<{ conclusion: string; runs: Array<{ why?: string }> }>(noSnap).conclusion === 'invalid'
+    && /deps snapshot/.test(json<{ runs: Array<{ why?: string }> }>(noSnap).runs[0]?.why ?? ''), noSnap.out.slice(0, 400) + noSnap.err.slice(-200));
+}
+
 section('a Cargo.lock change refuses the run, in one line naming the command');
 {
   fs.appendFileSync(path.join(repo, 'Cargo.lock'), '\n# a hand edit\n');

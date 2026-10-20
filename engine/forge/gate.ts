@@ -1,21 +1,26 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type ArtifactStore, digestOf } from '../mission/artifacts.ts';
+import { ArtifactStore, digestOf } from '../mission/artifacts.ts';
 import { GateSetMoved, newId, type MissionStore } from '../mission/store.ts';
 import type {
-  Candidate, Decision, ExpectedObservation, Experiment, ExperimentRole, GateEvaluation, GateHarness, LockGatesScope, Mission,
+  Candidate, Decision, ExpectedObservation, Experiment, ExperimentConclusion, ExperimentRole, GateEvaluation, GateHarness, LockGatesScope, Mission,
+  NewExperiment,
 } from '../mission/types.ts';
 import {
   commitOf, HARDENED_GIT_CONFIG, hardenedGitEnv, harnessHolds, MIN_GATE_RUNS, registerExperiment, runGate,
-  type EventSink, type GateRunContext, type GateRunResult,
+  type EventSink, type ExperimentStoreLike, type GateRunContext, type GateRunResult,
 } from '../experiment/runner.ts';
+import type { ExecutionRecord } from '../experiment/types.ts';
 import { DEFAULT_LIMITS, type SandboxLimits, type SandboxProfile } from '../experiment/sandbox.ts';
 import { cargoConfigRefusal, cargoMounts, CargoRefused, gateCacheKey, removeGateCache, snapshotRefusal } from './cargo.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, GATE_DIR } from './policy.ts';
 import { mountRefusal } from './sandbox.ts';
 import { candidateVerdict, type VerdictRows } from './verdict.ts';
+import { resolveCommit as resolveRevision } from './spec.ts';
 import { applyDiff, createWorkspace } from './workspace.ts';
 
 /**
@@ -108,14 +113,15 @@ export interface RegisterGateInput {
 /** The cargo integration-test target a gate's test becomes: a name nothing in a repository already uses. */
 export const cargoTargetOf = (experimentId: string): string => `daylight_${experimentId.replace(/[^A-Za-z0-9_]/g, '_')}`;
 
-export function registerGate(ctx: GateContext, input: RegisterGateInput): Experiment {
-  const campaign = ctx.store.mission(input.missionId)?.kind === 'campaign';
-  if (input.role === undefined || !(campaign ? CAMPAIGN_ROLES : GATE_ROLES).includes(input.role)) {
-    throw new GateRefused(`--role ${(campaign ? CAMPAIGN_ROLES : GATE_ROLES).join('|')} is required and has no default (got ${String(input.role)})`);
-  }
+/**
+ * What a gate's test and command are, from its file name, harness, crate and prediction, or a
+ * `GateRefused`: the rules `registerGate` holds a registration to, and `tryGate` a try.
+ */
+function gateHarnessOf(
+  input: Pick<RegisterGateInput, 'basename' | 'prediction' | 'harness' | 'crate' | 'command'>, id: string,
+): { harness: GateHarness; testPath: string; command: string[]; cargoTestPath?: string } {
   const harness = input.harness ?? 'node';
   if (harness !== 'node' && harness !== 'cargo') throw new GateRefused(`--harness is node or cargo, not ${String(harness)}`);
-  const m = campaign ? ctx.store.mission(input.missionId)! : requireMission(ctx, input.missionId);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.basename)) {
     throw new GateRefused(`${input.basename} is not a plain file name; a gate's test lives directly in its own directory`);
   }
@@ -125,7 +131,6 @@ export function registerGate(ctx: GateContext, input: RegisterGateInput): Experi
       ? 'a cargo gate predicts an exit code and the result marker on stdout (e.g. --expect-exit 0 --expect-stdout "test result: ok.")'
       : 'a gate predicts an exit code and a reporter marker on stdout (e.g. --expect-exit 0 --expect-stdout "# fail 0")');
   }
-  const id = newId('experiment');
   const testPath = `${GATE_DIR}/${id}/${input.basename}`;
   if (harness === 'node' && input.crate !== undefined) throw new GateRefused('--crate is for a cargo gate (--harness cargo)');
   const template = input.command ?? (harness === 'cargo' ? DEFAULT_CARGO_GATE_COMMAND : DEFAULT_GATE_COMMAND);
@@ -155,6 +160,18 @@ export function registerGate(ctx: GateContext, input: RegisterGateInput): Experi
       throw new GateRefused('a gate uses the tap or spec reporter; only those print the tests summary a result is read from');
     }
   }
+  return { harness, testPath, command, ...(cargoTestPath !== undefined ? { cargoTestPath } : {}) };
+}
+
+export function registerGate(ctx: GateContext, input: RegisterGateInput): Experiment {
+  const campaign = ctx.store.mission(input.missionId)?.kind === 'campaign';
+  if (input.role === undefined || !(campaign ? CAMPAIGN_ROLES : GATE_ROLES).includes(input.role)) {
+    throw new GateRefused(`--role ${(campaign ? CAMPAIGN_ROLES : GATE_ROLES).join('|')} is required and has no default (got ${String(input.role)})`);
+  }
+  const m = campaign ? ctx.store.mission(input.missionId)! : requireMission(ctx, input.missionId);
+  const id = newId('experiment');
+  const { harness, testPath, command, cargoTestPath } = gateHarnessOf(input, id);
+  const p = input.prediction;
   const x = registerExperiment({
     store: ctx.store, artifacts: ctx.artifacts, events: ctx.events,
     missionId: m.id, projectId: m.projectId, baseRevision: m.baseRevision,
@@ -179,8 +196,11 @@ export const CARGO_GATE_LIMITS: SandboxLimits = {
 };
 export const CARGO_GATE_TIMEOUT_MS = 600_000;
 
+/** What `runContext` reads of a gate context; a try supplies it without a mission store. */
+type RunContextSource = Omit<GateContext, 'store'> & { store: ExperimentStoreLike };
+
 /** `cache` is the gate build cache: `base` for a baseline, the candidate's key at evaluate. */
-export function runContext(ctx: GateContext, x: Experiment, cache: string) {
+export function runContext(ctx: RunContextSource, x: Experiment, cache: string) {
   const cargo = x.harness === 'cargo';
   return {
     repoRoot: ctx.repoRoot, store: ctx.store, artifacts: ctx.artifacts, events: ctx.events,
@@ -196,7 +216,7 @@ export function runContext(ctx: GateContext, x: Experiment, cache: string) {
  * with only itself allowed under `<out>`; the tree under test must carry the `Cargo.lock` the
  * snapshot was fetched for.
  */
-function gateCargo(ctx: GateContext, cache: string): NonNullable<GateRunContext['cargo']> {
+function gateCargo(ctx: Pick<GateContext, 'out' | 'repoRoot'>, cache: string): NonNullable<GateRunContext['cargo']> {
   const out = ctx.out;
   if (!out) return { refused: 'a cargo gate needs the mission\'s <out>, where its crate snapshot and build cache are' };
   let m: ReturnType<typeof cargoMounts>;
@@ -302,6 +322,110 @@ export async function baseline(
 function baselineOf(ctx: GateContext, m: Mission, x: Experiment): GateEvaluation | undefined {
   return ctx.store.gateEvaluations({ missionId: m.id, target: 'base' })
     .filter((g) => g.experimentId === x.id && g.harnessDigest === x.harnessDigest).at(-1);
+}
+
+// ---- try ----------------------------------------------------------------------------------
+
+export interface TryGateInput {
+  repoRoot: string;
+  /** A commit-ish of `repoRoot`; the tree the test runs in. */
+  revision: string;
+  harness: GateHarness;
+  testSource: string;
+  basename: string;
+  crate?: string;
+  /** Defaults to exit 0 and the harness's pass marker (`# fail 0`, `test result: ok.`). */
+  prediction?: ExpectedObservation;
+  /** Cargo only: where the crate snapshot is. A temporary gate cache is made under it and removed. */
+  out?: string;
+  runs?: number;
+  timeoutMs?: number;
+  limits?: SandboxLimits;
+  sandbox?: SandboxProfile;
+}
+
+export interface TryGateResult {
+  commit: string;
+  harness: GateHarness;
+  prediction: ExpectedObservation;
+  /** What a baseline of this gate at `commit` would conclude: `falsified`, `supported` or `invalid`. */
+  conclusion: ExperimentConclusion;
+  runs: Array<Pick<ExecutionRecord, 'runIndex' | 'status' | 'why' | 'exitCode' | 'signal' | 'timedOut' | 'durationMs' | 'matchesPrediction'> & {
+    stdout: string; stderr: string;
+  }>;
+  limitations: string[];
+}
+
+export const DEFAULT_TRY_PREDICTION: Readonly<Record<GateHarness, ExpectedObservation>> = {
+  node: { exitCode: 0, stdoutIncludes: ['# fail 0'] },
+  cargo: { exitCode: 0, stdoutIncludes: ['test result: ok.'] },
+};
+
+/** The experiment rows a try would write, kept in memory: a try writes no row (P2-R41). */
+function memoryExperiments(): ExperimentStoreLike {
+  const rows = new Map<string, Experiment>();
+  return {
+    createExperiment: (input: NewExperiment) => {
+      const at = Date.now();
+      const x: Experiment = { ...input, id: input.id ?? newId('experiment'), role: input.role ?? 'probe', executions: [], conclusion: 'pending', createdAt: at, updatedAt: at };
+      rows.set(x.id, x);
+      return x;
+    },
+    updateExperiment: (id, patch) => {
+      const x = { ...rows.get(id)!, ...patch, updatedAt: Date.now() };
+      rows.set(id, x);
+      return x;
+    },
+    experiment: (id) => rows.get(id) ?? null,
+  };
+}
+
+/**
+ * `gate try` (P2-R41 F6): a test baselined at one revision exactly as `baseline` runs a gate,
+ * through the same `registerExperiment` checks and the same `runGate` sandbox, with no store,
+ * no mission and no row. The registered test and the run records live in a scratch artifact
+ * directory under the system temp dir that is removed before this returns; a cargo try builds
+ * into its own gate cache under `<out>`, seeded from the base cache and removed after, so
+ * neither `gate/base/` nor any candidate's cache is touched (P2-R28). An agent session may run
+ * it: it decides nothing.
+ */
+export async function tryGate(o: TryGateInput): Promise<TryGateResult> {
+  let commit: string;
+  try {
+    commit = resolveRevision(o.repoRoot, o.revision);
+  } catch (err) {
+    throw new GateRefused((err as Error).message);
+  }
+  const prediction = o.prediction ?? DEFAULT_TRY_PREDICTION[o.harness];
+  const id = newId('experiment');
+  const h = gateHarnessOf({ basename: o.basename, prediction, harness: o.harness, ...(o.crate !== undefined ? { crate: o.crate } : {}) }, id);
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-gate-try-'));
+  const cache = h.harness === 'cargo' ? randomBytes(8).toString('hex') : 'base';
+  try {
+    const artifacts = new ArtifactStore(scratch);
+    const store = memoryExperiments();
+    const x = registerExperiment({
+      store, artifacts, missionId: 'try', projectId: 'try', baseRevision: commit, subject: h.testPath, predicate: 'gate', claimIds: [],
+      hypothesis: 'a gate tried at one revision', prediction, testSource: o.testSource, testPath: h.testPath, command: h.command, role: 'gate', id,
+      ...(h.harness === 'cargo' ? { harness: h.harness, cargoTestPath: h.cargoTestPath } : {}),
+    });
+    const r = await runGate(x, {
+      ...runContext({ store, artifacts, repoRoot: o.repoRoot, out: o.out, runs: o.runs, timeoutMs: o.timeoutMs, limits: o.limits, sandbox: o.sandbox }, x, cache),
+      target: { kind: 'base', diffDigest: null },
+      materialise: () => createWorkspace(o.repoRoot, commit),
+    });
+    const text = (ref: ExecutionRecord['stdoutRef']) => (ref ? artifacts.text(ref) : '');
+    return {
+      commit, harness: h.harness, prediction, conclusion: r.conclusion, limitations: r.limitations,
+      runs: r.records.map((e) => ({
+        runIndex: e.runIndex, status: e.status, ...(e.why !== undefined ? { why: e.why } : {}), exitCode: e.exitCode, signal: e.signal,
+        timedOut: e.timedOut, durationMs: e.durationMs, matchesPrediction: e.matchesPrediction, stdout: text(e.stdoutRef), stderr: text(e.stderrRef),
+      })),
+    };
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+    if (h.harness === 'cargo' && o.out) removeGateCache(o.out, cache);
+  }
 }
 
 // ---- lock --------------------------------------------------------------------------------
