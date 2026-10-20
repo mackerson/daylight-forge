@@ -12,7 +12,7 @@ import type {
   Application, ArtifactRef, Attempt, Candidate, DaylightEvent, Decision, Experiment, GateEvaluation,
   IngestSource, Mission, ProjectIdentity, Task, UsageTurn, WorkItem,
 } from './types.ts';
-import { EXPORT_SCHEMA_VERSION } from './types.ts';
+import { EXPORT_SCHEMA_VERSION, isCampaignActor } from './types.ts';
 
 /**
  * A mission, whole, as one file — and the same mission back again.
@@ -106,6 +106,10 @@ function collectArtifactRefs(ctx: DaylightContext, parts: Omit<MissionExport, 'a
 export function exportMission(ctx: DaylightContext, missionId: string): MissionExport {
   const mission = ctx.store.mission(missionId);
   if (!mission) throw new Error(`unknown mission ${missionId}`);
+  // P2-R14: a derived write grant never travels without the campaign it derives from.
+  if (mission.kind === 'campaign' || (mission.parentId !== undefined && ctx.store.mission(mission.parentId)?.kind === 'campaign')) {
+    throw new Error(`mission ${missionId} is ${mission.kind === 'campaign' ? 'a campaign' : 'a campaign\'s child'}; campaign missions are not exported`);
+  }
   const project = ctx.store.project(mission.projectId);
   if (!project) throw new Error(`mission ${missionId} names project ${mission.projectId}, which is not recorded`);
   const tasks = ctx.store.tasks(missionId);
@@ -271,6 +275,10 @@ function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
  */
 function forgedRowRefusal(ctx: DaylightContext, file: MissionExport): string | null {
   const m = file.mission;
+  // P2-R14, the other way: no campaign, campaign child or campaign actor arrives by file.
+  if (m.kind === 'campaign' || m.parentId !== undefined) return `mission ${m.id} belongs to a campaign; campaign missions are not imported`;
+  const derived = file.decisions.find((d) => isCampaignActor(d.actor));
+  if (derived) return `decision ${derived.id} is a campaign actor's; derived decisions are not imported`;
   const inFile = new Map(file.decisions.map((d) => [d.id, d]));
   for (const d of file.decisions) {
     if (d.missionId !== m.id) return `decision ${d.id} belongs to ${d.missionId}, not mission ${m.id}`;

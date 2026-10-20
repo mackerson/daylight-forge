@@ -407,6 +407,61 @@ rulings.
   no `run` tool.
 - **Status.** Decided (a), 2026-10-16.
 
+### ADR-36 — Plan as data (P2, WS-R5)
+
+- **Context.** P2's building pass runs many tickets from one plan. A spec decomposed by agents
+  (WS7) needs a person to approve each work item; a campaign of hundreds of tickets cannot.
+- **Decision.**
+  - A campaign's plan is JSON (`daylight.plan.json`, `kind: daylight-plan`, version 1), read from
+    git objects at a named commit, never the working tree. JSON, not TOML: no parser dependency,
+    and it is canonicalised for digests already.
+  - It is validated like a proposal: caps, id grammars, refusals that name a JSON path and never
+    echo the refused text; scopes inside their lane, not protected, existing at the commit; an
+    acyclic DAG; gate and acceptance paths that are regular files there. The project policy is
+    read from its blob at the plan commit (P2-R20).
+  - A campaign is a mission of kind `campaign` (decisions need a mission). Its tickets are
+    `campaign_tickets` rows bound to work items; its ticket missions name it as `parentId`, which
+    the store now validates.
+  - `campaign import` is not a decision. `approve-plan` is: one guarded human act whose digest
+    lists every plan ticket's work item at its content digest, approving them all at once.
+  - Holdouts never sit in the plan, which authors can read.
+- **Consequences.** Plan revisions keep unchanged tickets' work items and supersede changed ones at
+  the next `approve-plan`; any revision invalidates the campaign authorization. docs/daylight/CAMPAIGN.md.
+- **Status.** Decided (P2-R15, P2-R16, P2-R20).
+
+### ADR-37 — Campaign authorization and derived decisions (P2, WS-R5)
+
+- **Context.** ADR-9 and ADR-34 need a `human:` decision for every write. A campaign runs
+  unattended, so the per-ticket grant must come from one human decision without weakening R7.
+- **Decision.**
+  - `authorize-campaign` is a guarded human decision recording an envelope: plan and gate-set
+    digests, the tickets, rosters, spend caps, author bounds within `authorLimits` at the plan
+    commit, attempts, concurrency, execute, auto-apply, the fix lane (High findings, at most 5 a
+    wave), the committer identity and `notAfter`.
+  - Inside it, the director process records **derived decisions** as `campaign:<m_id>`:
+    `authorize-mission` on a ticket mission, `integrate-candidate`, `admit-work-item`,
+    `halt-campaign`. Each names the human grant as `derivedFrom`. The derived `authorize-mission`
+    is an ordinary grant on the ticket mission, so R7 holds literally.
+  - `recordDecision` refuses every campaign actor (P2-R19). `recordDerivedDecision` is the one
+    writer and re-checks the envelope against rows (current authorization, window, not halted,
+    plan and lock current, ticket covered, execute and budget within it, one mission a ticket).
+    Only the store, `forge/campaign.ts` and `forge/integrate.ts` may call it: the
+    `derived-writer-callers` invariant, a `forbidden-callee` over a negative-lookahead file regex
+    (the `forbidden-call` form named in the design sees no edge for a method reached through
+    `ctx.store`, so it would be green with any caller).
+  - Grants, `attemptRefusal`, `startAttempt` and `unauthorizedWriteAttempts` resolve a derived
+    grant's parent; a forged one is refused and reported. `startAttempt` re-checks the envelope,
+    so nothing starts after `notAfter` or a halt.
+  - Every campaign command that writes a row or moves a ref is refused under `CLAUDECODE` and
+    `DAYLIGHT_SESSION`, at the CLI (P2-R9, P2-R24). The store never reads the environment. This is
+    ADR-20's heuristic: a session importing the engine from `node -e` is outside the threat
+    model, like raw SQL.
+  - Campaign missions are never exported or imported (P2-R14). A preflight-refused ticket is
+    released only by a guarded `campaign retry` (P2-R25, P2-R27).
+- **Consequences.** What stays a human act is listed in docs/daylight/CAMPAIGN.md. The final
+  merge of the integration ref into `main` is plain git, by a person (ADR-17).
+- **Status.** Decided (P2-R9, R10, R12, R14, R19, R22–R27).
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required

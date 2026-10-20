@@ -995,4 +995,6 @@ export interface CampaignAuthorizedPayload {
 export interface EnvelopeRequest {
   missionId: string; operation: DecisionOperation; ticketId: string; permissions?: MissionPermissions; maxUsd?: number | null;
   at: number;
+  /** `admit-work-item` of a fix ticket: the wave it is admitted in, for the per-wave cap (P2-R10). */
+  waveSeq?: number;
 }
