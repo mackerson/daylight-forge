@@ -505,6 +505,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
   const running = new Map<string, string>();
   const inflight = new Map<string, Promise<void>>();
   const reviews = new Set<Promise<void>>();
+  const reviewing = new Set<number>();
   const queue: Array<{ candidateId: string; ticketId: string }> = [];
   const parked = new Set<string>();
 
@@ -633,21 +634,47 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       }
     };
 
+    /**
+     * A wave's review, under a reservation like any attempt (P2-R35): checked against the cap and
+     * the halt first, its reviewers' shares recorded on their attempt rows, its spend checked after.
+     */
+    const review = (seq: number) => {
+      if (!envelope.reviewRoster.length || halted || stopped || reviewing.has(seq)) return;
+      const spend = campaignSpend(ctx, campaign.id);
+      const reserve = Math.round(Math.min(envelope.maxUsdPerMission, envelope.maxUsdTotal - spend.spentUsd - spend.reservedUsd) * 1e6) / 1e6;
+      const no = campaignSpendRefusal(spend, envelope, reserve);
+      if (no) {
+        emit(campaign, 'cost', 'campaign.spend.refused', { spent: spend.spentUsd, reserved: spend.reservedUsd, cap: spend.capUsd, unknownCount: spend.unknownCount, waveSeq: seq });
+        if (no.halt) halt(no.halt);
+        return;
+      }
+      reviewing.add(seq);
+      const p = (async () => {
+        await runWaveReview(ctx, campaign.id, seq, { repo: root, roster: envelope.reviewRoster, sandbox, env: o.env, reserveUsd: reserve });
+        fixTicketsFrom(ctx, campaign.id, seq, host);
+        const after = campaignSpend(ctx, campaign.id);
+        if (after.unknownCount > 0) halt('spend-unknown');
+        else if (after.spentUsd > envelope.maxUsdTotal) halt('spend-breach');
+      })().finally(() => reviews.delete(p));
+      reviews.add(p);
+    };
+
     const closeIfDue = (quiescent: boolean) => {
-      if (o.maxWaves !== undefined && wavesClosed >= o.maxWaves) return;
+      if (halted || stopped || (o.maxWaves !== undefined && wavesClosed >= o.maxWaves)) return;
       const due = waveDue(ctx, campaign.id, envelope.waveSize);
       if (!(due.due || (quiescent && due.landed > 0))) return;
       const w = closeWave(ctx, campaign.id, { ticketOf });
       if (!w) return;
       wavesClosed++;
       emit(campaign, 'lifecycle', 'campaign.wave.closed', { seq: w.seq, fromCommit: w.fromCommit, toCommit: w.toCommit, tickets: w.ticketIds.length });
-      if (!envelope.reviewRoster.length) return;
-      const p = (async () => {
-        await runWaveReview(ctx, campaign.id, w.seq, { repo: root, roster: envelope.reviewRoster, sandbox, env: o.env });
-        fixTicketsFrom(ctx, campaign.id, w.seq, host);
-      })().finally(() => reviews.delete(p));
-      reviews.add(p);
+      review(w.seq);
     };
+
+    // A wave whose review a crash interrupted, or never started, is reviewed now (L4).
+    for (const w of ctx.store.waves(campaign.id)) {
+      const m = w.reviewMissionId ? ctx.store.mission(w.reviewMissionId) : null;
+      if (!m || (m.state !== 'closed' && m.state !== 'blocked')) review(w.seq);
+    }
 
     for (const id of rec.requeue) {
       const c = ctx.store.candidate(id);

@@ -13,6 +13,7 @@ import {
   type FindingOutboxLine,
 } from './finding.ts';
 import { authorizationOf, envelopeOf } from './integrate.ts';
+import { holdoutPaths } from './campaign-gates.ts';
 import { createWorkspace } from './workspace.ts';
 
 /**
@@ -82,6 +83,8 @@ export interface WaveReviewOptions {
   sandbox?: SandboxProfile;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** The campaign's reservation for the whole review: the audit mission's budget, shared by its reviewers (P2-R35). */
+  reserveUsd?: number;
 }
 
 /**
@@ -99,18 +102,22 @@ export async function runWaveReview(ctx: DaylightContext, campaignId: string, se
   if (!review) {
     review = ctx.store.createMission({
       projectId: campaign.projectId, kind: 'audit', parentId: campaign.id, baseRevision: w.toCommit, scope: { paths: files },
+      ...(o.reserveUsd !== undefined ? { budget: { maxUsd: o.reserveUsd } } : {}),
       objective: `wave ${seq} review of campaign ${campaign.id}: ${w.fromCommit.slice(0, 12)}..${w.toCommit.slice(0, 12)}`,
     });
     review = ctx.store.transitionMission(review.id, 'ready');
     ctx.store.setWaveReview(campaignId, seq, review.id);
   }
   if (review.state === 'closed') return { reviewMission: review, findings: ctx.store.findings(campaignId, { waveSeq: seq }) };
-  const tree = createWorkspace(o.repo, w.toCommit);
+  const tree = createWorkspace(o.repo, w.toCommit, { hidden: holdoutPaths(ctx, campaignId) });
   try {
     const serve = (attempt: Attempt): McpServer => createWaveReviewServer({ dir: ctx.out, attemptId: attempt.id, paths: files }).server;
     await runMission(ctx, {
       missionId: review.id, repo: o.repo, tools: o.roster, role: 'review', prompt: buildWaveReviewPrompt(w, files), sandbox: o.sandbox,
       tree: tree.tree, reviewServer: { serve, allowedTools: roleAllowlist('waveReview') }, timeoutMs: o.timeoutMs,
+      // All reviewers at once, each reserving its share of the review's budget.
+      concurrency: o.roster.length,
+      ...(o.reserveUsd !== undefined ? { maxCost: o.reserveUsd, raiseBudget: true, reserve: true } : {}),
     });
   } finally {
     tree.dispose();

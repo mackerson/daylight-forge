@@ -344,6 +344,23 @@ section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');
   w.ctx.close();
 }
 
+section('spend: after a spend halt no wave review launches (P2-R35, review H1)');
+{
+  const w = nodeWorld('reviewhalt', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1, waveSize: 5, reviewRoster: ['mock'] });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } }, B: { first: { 'src/b.js': "module.exports = () => 'B';\n" }, cost: null },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('A landed, then B\'s unknown cost halted the campaign', r.statuses.A === 'landed' && r.halted === 'spend-unknown', JSON.stringify(r));
+  check('no wave closed and no review mission exists, though a landing waits for review', w.ctx.store.waves(w.campaign.id).length === 0
+    && !w.ctx.store.missions(w.campaign.projectId).some((m) => m.kind === 'audit'));
+  w.ctx.close();
+}
+
 section('spend: the refusal rule, as arithmetic');
 {
   const s = { spentUsd: 0.5, knownUsd: 0.5, unknownCount: 0, scannedCount: 0, runningCount: 1, reservedUsd: 1, capUsd: 2 };

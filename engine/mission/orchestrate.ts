@@ -292,6 +292,8 @@ export interface RunMissionOptions {
    * attempts may call. Sandboxed only; no compare step follows (a wave review files findings).
    */
   reviewServer?: { serve: (attempt: Attempt) => McpServer; allowedTools: string[] };
+  /** Record each attempt's share of the ceiling on `attempts.max_cost_usd`: a campaign's reservation (P2-R18, P2-R35). */
+  reserve?: boolean;
 }
 
 export interface ReviewPlan {
@@ -595,6 +597,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     const token = sandboxed ? newMcpToken() : undefined;
     const attempt = ctx.store.startAttempt({
       taskId: task.id, runnerId, sessionId: session, credential,
+      ...(opts.reserve && share !== undefined ? { maxCostUsd: share } : {}),
       ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : declined ? { sandbox: { reason: declined } } : {}),
     });
     open.add(attempt.id);
