@@ -87,8 +87,11 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     // Hook code a person's next commit would run (P2-R32).
     { kind: 'segment', values: ['.husky'], label: 'anything under .husky/' },
     {
-      kind: 'basename', values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', 'lefthook.yaml', 'lefthook-local.yml'],
-      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml, lefthook.yaml, lefthook-local.yml) at any depth',
+      kind: 'basename',
+      values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', 'lefthook.yaml', '.lefthook.yaml', 'lefthook-local.yml', 'lefthook-local.yaml',
+        '.lefthook-local.yml', '.lefthook-local.yaml'],
+      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml, lefthook.yaml, .lefthook.yaml, lefthook-local.yml, '
+        + 'lefthook-local.yaml, .lefthook-local.yml, .lefthook-local.yaml) at any depth',
     },
   ] satisfies ProtectedRule[]),
   node: Object.freeze([

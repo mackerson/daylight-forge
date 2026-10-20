@@ -64,8 +64,9 @@ project nothing it uses.
   `.pnpmfile.mjs`, `pnpm-workspace.yaml`, `.yarnrc.yml`, `.yarnrc`, `bunfig.toml`, and anything
   under `.yarn/releases` or `.yarn/plugins` (the code `yarnPath` and yarn's plugins run);
 - hook code a person's next commit would run: anything under `.husky`, and
-  `.pre-commit-config.yaml`, `lefthook.yml`, `.lefthook.yml`, `lefthook.yaml` and
-  `lefthook-local.yml` at any depth.
+  `.pre-commit-config.yaml`, `lefthook.yml`, `.lefthook.yml`, `lefthook.yaml`, `.lefthook.yaml`,
+  `lefthook-local.yml`, `lefthook-local.yaml`, `.lefthook-local.yml` and `.lefthook-local.yaml`
+  at any depth.
 
 The last three groups were added by P2-R32 and widened at the P2 merge. They change behaviour for a repository without a
 policy, by tightening only: an author that edits one of them now produces an uncurable
