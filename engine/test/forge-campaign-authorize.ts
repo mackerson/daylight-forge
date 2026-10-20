@@ -169,7 +169,16 @@ section('authorize-campaign');
   check('--not-after 721h is refused', /not-after/.test(throws(() => buildEnvelope(s.ctx, id, { ...FLAGS, notAfter: '721h' }))?.message ?? ''));
   const past = { ...buildEnvelope(s.ctx, id, FLAGS), notAfter: s.ctx.store.clock() - 1000 };
   check('the store refuses a notAfter in the past (review L8)', /not-after/.test(throws(() => s.ctx.store.authorizeCampaign(id, {
-    actor: HUMAN, rationale: 'x', expectedGateSetDigest: past.gateSetDigest, scope: { operation: 'authorize-campaign', ...past },
+    actor: HUMAN, rationale: 'x', expectedGateSetDigest: past.gateSetDigest, policy: null, scope: { operation: 'authorize-campaign', ...past },
+  }))?.message ?? ''));
+  const big = { ...buildEnvelope(s.ctx, id, FLAGS), maxTurns: 5000 };
+  check('the store applies authorLimits itself (review L3)', /turns and timeout/.test(throws(() => s.ctx.store.authorizeCampaign(id, {
+    actor: HUMAN, rationale: 'x', expectedGateSetDigest: big.gateSetDigest, policy: null, scope: { operation: 'authorize-campaign', ...big },
+  }))?.message ?? ''));
+  const cc = s.ctx.store.mission(id)!;
+  check('recordDecision refuses a raw authorize-campaign scope (review L3)', /authorizeCampaign only/.test(throws(() => s.ctx.store.recordDecision({
+    missionId: id, projectId: cc.projectId, revision: cc.baseRevision, actor: HUMAN, kind: 'approve', rationale: 'x', artifactIds: [],
+    scope: { operation: 'authorize-campaign', ...buildEnvelope(s.ctx, id, FLAGS), maxTurns: 99999 },
   }))?.message ?? ''));
   const e0 = buildEnvelope(s.ctx, id, FLAGS);
   check('refused for a non-human actor', /human/.test(throws(() => authorizeCampaign(s.ctx, {

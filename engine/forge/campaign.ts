@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { requireMappedRepo, mappedRoot, type DaylightContext } from '../mission/context.ts';
-import { grantsWrite } from '../mission/store.ts';
+import { CAMPAIGN_AUTHOR_DEFAULTS, grantsWrite } from '../mission/store.ts';
 import type { MissionStore } from '../mission/store.ts';
 import type {
   ArtifactRef, CampaignAuthorizedPayload, CampaignEnvelope, CampaignHaltReason, Decision, EnvelopeRequest, Mission, MissionPermissions,
@@ -31,7 +31,7 @@ export type { EnvelopeRequest };
 type Env = Readonly<Record<string, string | undefined>>;
 
 /** The author defaults `forge run` uses (forge/orchestrate.ts), which a campaign may only lower. */
-export const AUTHOR_DEFAULTS = { maxTurns: 60, timeoutMs: 600_000 } as const;
+export const AUTHOR_DEFAULTS = CAMPAIGN_AUTHOR_DEFAULTS;
 const HOUR_MS = 60 * 60 * 1000;
 const MAX_NOT_AFTER_MS = 30 * 24 * HOUR_MS;
 const ROSTER_ENTRY = /^[a-z][a-z0-9-]{0,31}(:[A-Za-z0-9._-]{1,64})?$/;
@@ -263,6 +263,7 @@ export function authorizeCampaign(ctx: DaylightContext, input: GuardedInput & { 
   if (bounds) throw new DecisionRefused(`refused: ${bounds}`);
   const decision = ctx.store.authorizeCampaign(c.id, {
     actor: input.actor, rationale: input.rationale.trim(), expectedGateSetDigest: input.flags.expectedGateSetDigest,
+    policy: policyAtPlan(ctx, planOf(ctx, c.id).commit),
     scope: { operation: 'authorize-campaign', ...envelope },
   });
   const payload: CampaignAuthorizedPayload = {

@@ -5,7 +5,10 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonicalJson, digestOf } from './artifacts.ts';
 import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
 import { pathViolations } from '../forge/policy.ts';
-import type { ProjectPolicy } from '../forge/project-policy.ts';
+import { authorLimits, type ProjectPolicy } from '../forge/project-policy.ts';
+
+/** The author defaults `forge run` uses, which a campaign may only lower (P2-R20). */
+export const CAMPAIGN_AUTHOR_DEFAULTS = { maxTurns: 60, timeoutMs: 600_000 } as const;
 import {
   ATTEMPT_TRANSITIONS, campaignActorOf, canTransition, DECISION_OPERATIONS, DERIVED_OPERATIONS, ID_PREFIX, isCampaignActor,
   isEntityId, isHumanActor, MISSION_TRANSITIONS,
@@ -392,6 +395,8 @@ export class MissionStore {
   private db: DatabaseSync;
   /** Injected so restart tests can assert timestamps survive, not just ids. */
   private now: () => number;
+  /** Set only while authorizeCampaign records its decision. */
+  private authorizingCampaign = false;
 
   constructor(outDir: string, now: () => number = () => Date.now()) {
     // The output directory usually exists by the time anyone has a mission to record, but
@@ -1728,11 +1733,13 @@ export class MissionStore {
    * `authorize-campaign`, as one transaction. Refused unless the latest `approve-plan` names the
    * current plan and the envelope does too; the latest `lock-campaign-gates` names the gate set
    * the human confirmed (`expectedGateSetDigest`, a string compare); every ticket is an approved
-   * plan ticket; and the caps are ordered and bounded. Author turn and time bounds against the
-   * policy are the caller's (`forge/campaign.ts`), which has the policy blob.
+   * plan ticket; the caps are ordered and bounded; and turns and timeout are within
+   * `authorLimits` of `policy`, the parsed policy at the plan commit, which must be the one the
+   * envelope names (P2-R20). The only writer of an `authorize-campaign` decision.
    */
   authorizeCampaign(
-    campaignId: string, input: { actor: string; rationale: string; scope: AuthorizeCampaignScope; expectedGateSetDigest: string; artifactIds?: string[] },
+    campaignId: string,
+    input: { actor: string; rationale: string; scope: AuthorizeCampaignScope; expectedGateSetDigest: string; policy: ProjectPolicy | null; artifactIds?: string[] },
   ): Decision {
     return this.tx(() => {
       const c = this.requireCampaign(campaignId);
@@ -1740,6 +1747,11 @@ export class MissionStore {
       const e = input.scope;
       const why = envelopeShapeRefusal(e, this.now());
       if (why) throw new Error(`refused: ${why}`);
+      if ((input.policy?.digest ?? null) !== (e.policyDigest ?? null)) throw new Error('refused: the policy given is not the one the envelope names');
+      const limits = authorLimits(input.policy, CAMPAIGN_AUTHOR_DEFAULTS);
+      if (e.maxTurns > limits.maxTurns || e.timeoutSeconds * 1000 > limits.timeoutMs) {
+        throw new Error(`refused: turns and timeout are at most ${limits.maxTurns} and ${limits.timeoutMs / 1000}s under the policy at the plan commit`);
+      }
       const plan = this.currentPlan(c.id);
       const approve = this.latestDecision(c.id, 'approve-plan');
       if (!plan || !approve || approve.scope.planDigest !== plan.planDigest) throw new Error(`refused: campaign ${c.id}'s current plan is not approved`);
@@ -1754,10 +1766,15 @@ export class MissionStore {
           throw new Error(`refused: ticket ${id} is not an approved plan ticket of campaign ${c.id}`);
         }
       }
-      return this.recordDecision({
-        missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor, kind: 'approve',
-        rationale: input.rationale, scope: { ...e }, artifactIds: input.artifactIds ?? [],
-      });
+      this.authorizingCampaign = true;
+      try {
+        return this.recordDecision({
+          missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: input.actor, kind: 'approve',
+          rationale: input.rationale, scope: { ...e }, artifactIds: input.artifactIds ?? [],
+        });
+      } finally {
+        this.authorizingCampaign = false;
+      }
     });
   }
 
@@ -1850,6 +1867,8 @@ export class MissionStore {
     if (this.campaignAuthorization(campaign.id)?.id !== parent.id) return `decision ${parent.id} is not campaign ${campaign.id}'s current authorization`;
     if (req.operation === 'halt-campaign') return null;
     const env = parent.scope as unknown as CampaignEnvelope;
+    const shape = envelopeShapeRefusal(env, parent.at);
+    if (shape) return `authorization ${parent.id} is malformed: ${shape}`;
     if (!(req.at >= parent.at && req.at <= env.notAfter)) return `authorization ${parent.id} is not in force at ${req.at} (until ${env.notAfter})`;
     const halt = this.campaignHalts(campaign.id)[0];
     if (halt) return `campaign ${campaign.id} is halted (${String(halt.scope.reason)}, ${halt.id})`;
@@ -2472,6 +2491,10 @@ export class MissionStore {
     }
     if (!input.rationale || !input.rationale.trim()) {
       throw new Error(`decision on mission ${m.id} needs a rationale`);
+    }
+    // An envelope is recorded by authorizeCampaign only, after its plan, lock, shape and bounds.
+    if (input.scope.operation === 'authorize-campaign' && !this.authorizingCampaign) {
+      throw new Error('an authorize-campaign decision is recorded by authorizeCampaign only');
     }
     // P2-R19: a campaign actor's decision is written by recordDerivedDecision only, after its envelope.
     if (isCampaignActor(input.actor)) {
