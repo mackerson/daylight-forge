@@ -10,7 +10,7 @@ import {
 } from './campaign-gates.ts';
 import { campaignStatus, renderCampaignStatus, type StatusHost } from './campaign-status.ts';
 import { actorFor, parse, Usage } from './commands.ts';
-import { confirmDigest } from './confirm.ts';
+import { confirmDigest, type ConfirmOptions } from './confirm.ts';
 import { DirectorRefused, r5Host, runCampaign } from './director.ts';
 import { GateRefused, type GateContext } from './gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, IntegrationRefused } from './integrate.ts';
@@ -207,6 +207,15 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
         const resume = deps.resume ?? ((): never => {
           throw new NotImplemented('resumeCampaign');
         });
+        const haltDecisionId = need(p, 'halt');
+        if (last(p, 'confirm') === undefined) {
+          // The digest is shown, not the code, as for every guarded act. WS-R5 defines it (`resume-campaign`).
+          const preview = await withCtx((ctx) => confirmDigest(ctx, 'resume-campaign', campaignId, { haltDecisionId } as unknown as ConfirmOptions));
+          if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
+          else for (const l of [...preview.lines, `digest ${preview.digest}`]) say(l);
+          stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
+          return 2;
+        }
         const d = await withCtx((ctx) => resume(ctx, {
           campaignId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm: last(p, 'confirm'), env, haltDecisionId: need(p, 'halt'),
         }));

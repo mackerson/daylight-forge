@@ -132,6 +132,9 @@ section('halt, resume, adopt-tip');
 {
   const h = await cli(['halt', campaign.id, '--rationale', 'r']);
   check('halt and resume are WS-R5\'s acts: without them wired, a clear error (waiting on the R5 merge)', h.code === 1 && /haltCampaign: not implemented/.test(h.err), h.err);
+  const rp = await cli(['resume', campaign.id, '--halt', 'd_00000000000000000000000000000000', '--rationale', 'r']);
+  check('resume without --confirm asks for the resume-campaign digest, never resumes (WS-R5 defines it; until the merge it is undefined here)',
+    rp.code !== 0 && /resume-campaign/.test(rp.err) && !/resumeCampaign: not implemented/.test(rp.err), rp.err);
   const a = await cli(['adopt-tip', campaign.id, repo, '--halt', 'd_00000000000000000000000000000000', '--rationale', 'r']);
   check('adopt-tip with no integration ref says there is nothing to adopt', a.code === 1 && /nothing to adopt/.test(a.err), a.err);
 }
