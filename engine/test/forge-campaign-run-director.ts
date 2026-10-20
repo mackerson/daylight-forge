@@ -30,13 +30,13 @@ import { confirmDigest } from '../forge/confirm.ts';
 import { requestOutboxFile } from '../forge/dependency-requests.ts';
 import { campaignRunNeeds, campaignSpend, campaignSpendRefusal, runCampaign, ticketStates, type DirectorOptions } from '../forge/director.ts';
 import type { GateContext } from '../forge/gate.ts';
-import { InjectedCrash, integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
+import { adoptIntegrationTip, adoptScopeOf, InjectedCrash, integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import type { CampaignTicket, Mission, PlanFileV1 } from '../mission/types.ts';
 import { harness } from './harness.ts';
 import {
-  ACTOR, authorizeCampaign, git, makeCampaign, makeCandidate, makeWorkItem, repoState, tempDir, testHost, ticketRow,
+  ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, tempDir, testHost, ticketRow,
 } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
@@ -281,6 +281,41 @@ section('resume: a director killed after the compare-and-swap of the second land
   check('no attempt was run twice for it', w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id)
     .every((m) => w.ctx.store.tasks(m.id).flatMap((t) => w.ctx.store.attempts(t.id)).length === 1));
   check('the invariants hold', integrationRefusals({ store: w.ctx.store, repoRoot: w.repo }, w.campaign.id).length === 0 && applicationRefusals({ store: w.ctx.store, repoRoot: w.repo }).length === 0);
+  w.ctx.close();
+}
+
+section('a halt keeps accepted work: re-evaluated on the adopted tip, not re-authored (P2-R35, review B1)');
+{
+  const w = nodeWorld('moved', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1, maxAttemptsPerTicket: 3 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  let crashed = false;
+  try {
+    await run(w, author, { concurrency: 1, crashLanding: { n: 1, step: 'mission-ref' } });
+  } catch (err) {
+    crashed = err instanceof InjectedCrash;
+  }
+  check('the director died after the per-mission ref of an accepted candidate', crashed);
+  const foreign = commitOn(w.repo, w.base, { README: 'foreign\n' });
+  git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), foreign, w.base]);
+  const r = await run(w, author, { concurrency: 1 });
+  check('the next run halts integration-moved', r.halted === 'integration-moved', JSON.stringify({ halted: r.halted, refused: r.refused }));
+  const ms = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id);
+  const cands = ms.flatMap((m) => w.ctx.store.candidates(m.id));
+  check('the candidate is still accepted-by-gates', cands.length === 1 && cands[0].verdict === 'accepted-by-gates', JSON.stringify(cands.map((c) => c.verdict)));
+  check('no integration row was rejected; none was evaluated on the unexplained tip', w.ctx.store.integrations(w.campaign.id).every((i) => i.state === 'abandoned')
+    && !w.ctx.store.integrations(w.campaign.id).some((i) => i.onto === foreign), JSON.stringify(w.ctx.store.integrations(w.campaign.id).map((i) => [i.state, i.onto === foreign])));
+  check('the ticket reads integrating (pending), not ready', r.statuses.A === 'integrating', JSON.stringify(r.statuses));
+  const halt = w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').at(-1)!;
+  const ictx = { store: w.ctx.store, events: w.ctx.events, artifacts: w.ctx.artifacts, repoRoot: w.repo };
+  const sc = adoptScopeOf(ictx, w.campaign.id, halt.id);
+  adoptIntegrationTip(ictx, { campaignId: w.campaign.id, haltDecisionId: halt.id, actor: ACTOR, rationale: 'reviewed the foreign commit', env: humanEnv,
+    confirm: confirmDigest(w.ctx, 'adopt-integration-tip', w.campaign.id, { adopt: { ref: sc.ref, from: sc.from, to: sc.to, haltDecisionId: halt.id } }).digest8 });
+  const again = await run(w, author, { concurrency: 1 });
+  check('after adopt-tip the accepted candidate lands on the adopted tip', again.statuses.A === 'landed' && again.halted === null, JSON.stringify(again.statuses));
+  const landed = w.ctx.store.integrations(w.campaign.id, { state: 'integrated' });
+  check('re-evaluated three-way onto the foreign commit', landed.length === 1 && landed[0].onto === foreign && landed[0].method === 'three-way' && landed[0].candidateId === cands[0].id);
+  check('not re-authored: still one author attempt', ms.flatMap((m) => w.ctx.store.tasks(m.id).flatMap((t) => w.ctx.store.attempts(t.id))).length === 1);
   w.ctx.close();
 }
 

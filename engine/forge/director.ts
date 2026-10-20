@@ -201,12 +201,12 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
     }
     const c = latestCandidate(ctx.store, m);
     const last = attempts.at(-1);
-    if (c && last && c.attemptId === last.id && !ctx.store.integrations(campaignId, { missionId: m.id }).some((i) => i.candidateId === c.id && i.state !== 'abandoned')) {
-      set('integrating', { queued: c });
-      continue;
-    }
     if (env?.autoApply === 'none' && c?.verdict === 'accepted-by-gates') {
       set('blocked', { reason: `candidate ${c.id} is accepted; with autoApply none a person approves and applies it` });
+      continue;
+    }
+    if (c && last && c.attemptId === last.id && !ctx.store.integrations(campaignId, { missionId: m.id }).some((i) => i.candidateId === c.id && i.state !== 'abandoned')) {
+      set('integrating', { queued: c });
       continue;
     }
     if (attempts.length >= k) {
@@ -570,7 +570,13 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       }
       const v = concludeVerdict(gctx, i.id, t);
       const m = ctx.store.mission(i.missionId)!;
-      if (v.verdict === 'accepted-by-gates' && envelope.autoApply === 'integration-ref' && !halted) {
+      if (v.verdict === 'accepted-by-gates' && (halted || stopped || envelope.autoApply !== 'integration-ref')) {
+        // P2-R35: accepted work found during a halt is kept, not rejected. The row is abandoned, so the
+        // candidate is integrated again, onto whatever the tip is, once the campaign runs again.
+        if (i.state === 'evaluating') ctx.store.updateIntegration(i.id, 'evaluating', { state: 'abandoned' });
+        return;
+      }
+      if (v.verdict === 'accepted-by-gates') {
         const nth = landings + 1;
         const crashAfter = o.crashLanding?.n === nth ? o.crashLanding.step : undefined;
         const r = landCandidate(ictx, i.id, { ticketId: t.ticketId, deps: host.integrate, ...(crashAfter ? { crashAfter } : {}) });
@@ -663,16 +669,22 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         else if (h) halted = h.reason;
         else if (now() > envelope.notAfter) halt('authorization-expired');
       }
-      if (queue.length) {
+      // Nothing is integrated while halted or stopped: a candidate waits, accepted or not yet judged.
+      const mayIntegrate = !halted && !stopped;
+      if (queue.length && mayIntegrate) {
         await integrate(queue.shift()!);
         continue;
       }
       const states = ticketStates(ctx, campaign.id, root, host);
       settle(states);
-      for (const s of states.values()) {
-        if (s.queued && !running.has(s.ticket.ticketId)) queue.push({ candidateId: s.queued.id, ticketId: s.ticket.ticketId });
+      if (mayIntegrate) {
+        for (const s of states.values()) {
+          if (s.queued && !running.has(s.ticket.ticketId) && !queue.some((q) => q.candidateId === s.queued!.id)) {
+            queue.push({ candidateId: s.queued.id, ticketId: s.ticket.ticketId });
+          }
+        }
+        if (queue.length) continue;
       }
-      if (queue.length) continue;
       if (mayDispatch()) launch(states);
       closeIfDue(false);
       if (inflight.size) {
