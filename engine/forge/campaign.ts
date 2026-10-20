@@ -355,19 +355,20 @@ export function admitIfWithinEnvelope(
   const counted = ctx.store.decisions(c.id).filter((d) => d.scope.operation === 'admit-work-item' && d.scope.waveSeq === wave.seq).length;
   if (Math.max(counted, wave.admitted) >= e.fixLane.maxTicketsPerWave) return { admitted: false, why: `wave ${wave.seq} already admitted ${e.fixLane.maxTicketsPerWave}` };
   if (e.fixLane.maxUsdPerTicket > e.maxUsdPerMission) return { admitted: false, why: 'the fix lane\'s cap is above the per-mission cap' };
-  const { plan, path: planPath } = planOf(ctx, c.id);
+  const { plan, path: planPath, commit } = planOf(ctx, c.id);
+  const policy = policyAtPlan(ctx, commit);
   const owns = plan.lanes.flatMap((l) => l.owns.map(prefixOf));
   const fenced = new Set([planPath, plan.statusPath].filter((p): p is string => !!p));
   for (const s of t.scope) {
     if (!owns.some((o) => s === o || s.startsWith(`${o}/`))) return { admitted: false, why: 'its scope is outside every lane' };
-    const v = pathViolations({ path: s, change: 'modified', insertions: 0, deletions: 0, mode: 'file' }, {});
+    const v = pathViolations({ path: s, change: 'modified', insertions: 0, deletions: 0, mode: 'file' }, { policy });
     if (fenced.has(s) || v.some((r) => r === 'protected-path' || r === 'gate-path' || r === 'path-escape')) {
       return { admitted: false, why: 'its scope is protected' };
     }
   }
   const outside = campaignAuthorizationRefusal(ctx, c.id);
   if (outside) return { admitted: false, why: outside };
-  const decision = ctx.store.admitWorkItem(workItemId, parent.id, { ticketId: t.ticketId, findingId: wave.findingId, waveSeq: wave.seq });
+  const decision = ctx.store.admitWorkItem(workItemId, parent.id, { ticketId: t.ticketId, findingId: wave.findingId, waveSeq: wave.seq }, policy);
   emit(ctx, c, 'approval', 'campaign.work-item.admitted', campaignActorOf(c.id), {
     decisionId: decision.id, workItemId, ticketId: t.ticketId, ...(wave.findingId ? { findingId: wave.findingId } : {}),
   });

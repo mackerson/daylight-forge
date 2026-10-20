@@ -4,6 +4,8 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonicalJson, digestOf } from './artifacts.ts';
 import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
+import { pathViolations } from '../forge/policy.ts';
+import type { ProjectPolicy } from '../forge/project-policy.ts';
 import {
   ATTEMPT_TRANSITIONS, campaignActorOf, canTransition, DECISION_OPERATIONS, DERIVED_OPERATIONS, ID_PREFIX, isCampaignActor,
   isEntityId, isHumanActor, MISSION_TRANSITIONS,
@@ -1858,7 +1860,13 @@ export class MissionStore {
     if (this.latestDecision(campaign.id, 'lock-campaign-gates')?.scope.gateSetDigest !== env.gateSetDigest) {
       return `campaign ${campaign.id}'s gate lock moved since authorization ${parent.id}`;
     }
-    if (req.operation === 'admit-work-item') return null;
+    if (req.operation === 'admit-work-item') {
+      // An empty ticket id asks only whether the authorization is in force.
+      if (!req.ticketId) return null;
+      const fix = this.campaignTicket(campaign.id, req.ticketId);
+      if (!fix) return `campaign ${campaign.id} has no ticket ${req.ticketId}`;
+      return this.fixLaneRefusal(campaign, env, fix, req.waveSeq, null, this.admissionsInWave(campaign.id, req.waveSeq));
+    }
     const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
     if (!t || t.campaignId !== campaign.id) return `mission ${m.id} builds no ticket of campaign ${campaign.id}`;
     if (req.ticketId && req.ticketId !== t.ticketId) return `mission ${m.id} builds ticket ${t.ticketId}, not ${req.ticketId}`;
@@ -1872,6 +1880,7 @@ export class MissionStore {
       if (typeof req.maxUsd !== 'number' || !(req.maxUsd > 0 && req.maxUsd <= env.maxUsdPerMission)) {
         return `a derived grant's budget is at most $${env.maxUsdPerMission} per mission`;
       }
+      if (t.origin === 'fix' && req.maxUsd > env.fixLane.maxUsdPerTicket) return `a fix ticket's budget is at most $${env.fixLane.maxUsdPerTicket}`;
       const released = this.releasedMissions(campaign.projectId);
       const others = this.missions(campaign.projectId)
         .filter((o) => o.id !== m.id && o.kind === 'implement' && o.workItemId === t.workItemId && !released.has(o.id));
@@ -1898,10 +1907,15 @@ export class MissionStore {
     if (!input.rationale?.trim()) throw new Error(`refused: decision on mission ${m.id} needs a rationale`);
     const refusal = decisionRefusal({ ...input, id: `on mission ${m.id}` });
     if (refusal) throw new Error(`refused: ${refusal}`);
-    const scope = input.scope as { permissions?: MissionPermissions; maxUsd?: number | null; ticketId?: unknown };
+    const scope = input.scope as { permissions?: MissionPermissions; maxUsd?: number | null; ticketId?: unknown; waveSeq?: unknown; workItemId?: unknown };
+    if (operation === 'admit-work-item') {
+      const t = typeof scope.workItemId === 'string' ? this.campaignTicketByWorkItem(scope.workItemId) : null;
+      if (!t || t.campaignId !== parent.missionId || t.ticketId !== scope.ticketId) throw new Error('refused: an admission names its fix ticket and its work item');
+    }
     const why = this.envelopeRefusal(parent.id, {
       missionId: m.id, operation, ticketId: typeof scope.ticketId === 'string' ? scope.ticketId : '',
       permissions: scope.permissions, maxUsd: scope.maxUsd ?? null, at: this.now(),
+      ...(typeof scope.waveSeq === 'number' ? { waveSeq: scope.waveSeq } : {}),
     });
     if (why) throw new Error(`refused: ${why}`);
     const d: Decision = { ...input, id: newId('decision'), at: this.now() };
@@ -1927,7 +1941,9 @@ export class MissionStore {
       const env = parent.scope as unknown as CampaignEnvelope;
       const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
       if (!t) throw new Error(`mission ${m.id} builds no campaign ticket`);
-      const maxUsd = Math.min(t.budget.maxUsd ?? Number.POSITIVE_INFINITY, env.maxUsdPerMission);
+      // An admitted fix ticket runs at the fix lane's per-ticket cap (P2-R10).
+      const maxUsd = Math.min(t.budget.maxUsd ?? Number.POSITIVE_INFINITY, env.maxUsdPerMission,
+        t.origin === 'fix' ? env.fixLane.maxUsdPerTicket : Number.POSITIVE_INFINITY);
       const permissions: MissionPermissions = { read: true, write: true, execute: env.execute === true, deploy: false };
       const admittedBy = env.ticketIds?.includes(t.ticketId) ? undefined : this.admission(parent.missionId, t.workItemId)?.id;
       const decision = this.recordDerivedDecision(parent.id, {
@@ -1948,12 +1964,50 @@ export class MissionStore {
     return this.tx(() => this.deriveAuthorizeMission(this.createMission(input).id, campaignDecisionId));
   }
 
+  /** Derived admissions recorded in wave `seq` of the campaign, the first `before` decisions only when given. */
+  private admissionsInWave(campaignId: string, seq: unknown, before?: string): number {
+    let n = 0;
+    for (const d of this.decisions(campaignId)) {
+      if (d.id === before) break;
+      if (d.scope.operation === 'admit-work-item' && isCampaignActor(d.actor) && d.scope.waveSeq === seq) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Why admitting fix ticket `t` in wave `waveSeq` is outside the envelope's fix lane, or null
+   * (P2-R10, P2-R34): the lane is on, fewer than `maxTicketsPerWave` were admitted in the wave,
+   * and no scope path is protected (the built-in sets, the policy when given, the plan and status
+   * paths). Whether the finding is High is the caller's; the findings rows are WS-R6's.
+   */
+  private fixLaneRefusal(
+    campaign: Mission, env: CampaignEnvelope, t: CampaignTicket, waveSeq: unknown, policy: ProjectPolicy | null, admitted: number,
+  ): string | null {
+    if (t.origin !== 'fix') return `ticket ${t.ticketId} is not a fix ticket; only those are admitted`;
+    if (!env.fixLane?.enabled) return 'the fix lane is off';
+    if (!Number.isInteger(waveSeq) || (waveSeq as number) < 1) return 'an admission names the wave it is admitted in';
+    if (admitted >= env.fixLane.maxTicketsPerWave) return `wave ${String(waveSeq)} already admitted ${env.fixLane.maxTicketsPerWave}`;
+    const fenced = campaign.scope.paths ?? [];
+    for (const p of t.scope) {
+      const child = `${p}/x`;
+      const rules = [p, child].flatMap((x) => pathViolations({ path: x, change: 'modified', insertions: 0, deletions: 0, mode: 'file' }, { policy }));
+      if (fenced.includes(p) || rules.some((r) => r === 'protected-path' || r === 'gate-path' || r === 'path-escape')) {
+        return `ticket ${t.ticketId}'s scope is protected`;
+      }
+    }
+    return null;
+  }
+
   /**
    * The director admits a generated (fix) ticket's proposed work item within the envelope: the
-   * derived `admit-work-item` and `proposed → approved`, together. Whether the finding and the
-   * wave allow it is `admitIfWithinEnvelope`'s question.
+   * derived `admit-work-item` and `proposed → approved`, together. The fix lane is checked here
+   * against `policy`, the parsed policy at the plan commit (it must be the one the authorization
+   * names), and again by `recordDerivedDecision` against the built-in sets. Whether the finding is
+   * High is `admitIfWithinEnvelope`'s question.
    */
-  admitWorkItem(workItemId: string, campaignDecisionId: string, scope: { ticketId: string; findingId?: string; waveSeq: number }): Decision {
+  admitWorkItem(
+    workItemId: string, campaignDecisionId: string, scope: { ticketId: string; findingId?: string; waveSeq: number }, policy: ProjectPolicy | null,
+  ): Decision {
     return this.tx(() => {
       const w = this.workItem(workItemId);
       if (!w || w.status !== 'proposed') throw new Error(`work item ${workItemId} is not a proposed work item`);
@@ -1962,6 +2016,10 @@ export class MissionStore {
       const parent = this.decision(campaignDecisionId);
       if (!parent || parent.missionId !== t.campaignId) throw new Error(`decision ${campaignDecisionId} is not on campaign ${t.campaignId}`);
       const c = this.requireCampaign(t.campaignId);
+      const env = parent.scope as unknown as CampaignEnvelope;
+      if ((policy?.digest ?? null) !== (env.policyDigest ?? null)) throw new Error(`refused: the policy given is not the one authorization ${parent.id} names`);
+      const lane = this.fixLaneRefusal(c, env, t, scope.waveSeq, policy, this.admissionsInWave(c.id, scope.waveSeq));
+      if (lane) throw new Error(`refused: ${lane}`);
       const d = this.recordDerivedDecision(parent.id, {
         missionId: c.id, projectId: c.projectId, revision: c.baseRevision, actor: campaignActorOf(c.id), kind: 'approve',
         rationale: `admitted under ${parent.id}: fix ticket ${t.ticketId}`,
@@ -2036,6 +2094,10 @@ export class MissionStore {
       if (d.scope.operation === 'authorize-mission' && m) {
         const grant = campaignGrantRefusal(d, parent, m);
         if (grant) out.push(grant);
+        const built = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
+        if (built?.origin === 'fix' && !((d.scope.maxUsd as number) <= env.fixLane.maxUsdPerTicket)) {
+          out.push(`derived grant ${d.id} gives fix ticket ${built.ticketId} more than the fix lane's $${env.fixLane.maxUsdPerTicket}`);
+        }
         const by = d.scope.admittedBy;
         if (!grant && typeof by === 'string') {
           const a = this.decision(by);
@@ -2047,7 +2109,12 @@ export class MissionStore {
       }
       if (d.scope.operation === 'admit-work-item') {
         const t = typeof d.scope.workItemId === 'string' ? this.campaignTicketByWorkItem(d.scope.workItemId) : null;
-        if (!t || t.campaignId !== parent.missionId || t.origin === 'plan') out.push(`derived admission ${d.id} names no generated ticket of campaign ${parent.missionId}`);
+        const c = this.mission(parent.missionId);
+        if (!t || !c || t.campaignId !== parent.missionId || t.origin === 'plan') out.push(`derived admission ${d.id} names no generated ticket of campaign ${parent.missionId}`);
+        else {
+          const lane = this.fixLaneRefusal(c, env, t, d.scope.waveSeq, null, this.admissionsInWave(c.id, d.scope.waveSeq, d.id));
+          if (lane) out.push(`derived admission ${d.id} is outside authorization ${parent.id}'s fix lane: ${lane}`);
+        }
       }
     }
     return out;

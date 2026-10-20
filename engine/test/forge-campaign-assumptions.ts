@@ -11,17 +11,17 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { decideAssumption, recordAssumption, waitingOwner } from '../forge/assumptions.ts';
-import { admitIfWithinEnvelope, campaignViolations, haltCampaign } from '../forge/campaign.ts';
+import { admitIfWithinEnvelope, campaignViolations, haltCampaign, importPlan, startTicketMission } from '../forge/campaign.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { assertImplementable, specIntakeViolations } from '../forge/work-items.ts';
-import type { DaylightContext } from '../mission/context.ts';
+import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { DAYLIGHT_DB } from '../mission/db.ts';
 import { needsOf } from '../mission/needs.ts';
-import { workItemContentDigest } from '../mission/store.ts';
+import { newId, workItemContentDigest } from '../mission/store.ts';
 import type { Assumption } from '../mission/types.ts';
 import { campaignActorOf } from '../mission/types.ts';
-import { ticketWorkItemId } from '../forge/plan.ts';
-import { approve, authorized, CLEAN_ENV, code, HUMAN, imported, throws } from './forge-campaign-fixture.ts';
+import { policyAt, ticketWorkItemId } from '../forge/plan.ts';
+import { approve, authorize, authorized, CLEAN_ENV, code, HUMAN, imported, lockByHand, makeRepo, samplePlan, throws } from './forge-campaign-fixture.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -227,6 +227,77 @@ section('admitIfWithinEnvelope (P2-R10)');
     dependsOn: [], scope: ['crates/core/src/lib.rs'], acceptance: { kind: 'ci-only' }, budget: {}, blocksOn: [], ticketDigest: w.contentDigest }]);
   check('with the fix lane off, a high finding stays proposed', !admitIfWithinEnvelope(off.ctx, oc.id, w.id, { seq: 1, admitted: 0, severity: 'high' }).admitted);
   off.ctx.close();
+}
+
+section('the store enforces the fix lane itself (P2-R34, review M1)');
+{
+  /** A proposed fix ticket filed as R6's wave would file it. */
+  const fileFix = (ctx: DaylightContext, id: string, n: number, scope = ['crates/core/src/lib.rs'], budget: { maxUsd?: number } = {}) => {
+    const c = ctx.store.mission(id)!;
+    const plan = ctx.store.currentPlan(id)!;
+    const ticketId = `FIX.9.${n}`;
+    const base = {
+      projectId: c.projectId, missionId: id, specArtifact: ctx.store.artifact(plan.planArtifact)!, specRevision: plan.planRevision,
+      anchor: `ticket:${ticketId}`, title: `Fix ${n}`, statement: 's', examples: [], negativeExamples: [], proposedBy: 'campaign',
+    };
+    const w = ctx.store.createWorkItem({ ...base, id: ticketWorkItemId(id, ticketId, workItemContentDigest(base)) });
+    ctx.store.insertCampaignTickets([{ campaignId: id, ticketId, projectId: c.projectId, workItemId: w.id, origin: 'fix', lane: 'FIX', dependsOn: [],
+      scope, acceptance: { kind: 'ci-only' }, budget, blocksOn: [], ticketDigest: w.contentDigest }]);
+    return { ticketId, w: w.id };
+  };
+  const off = authorized('lane-off', { fixLane: { enabled: false, maxTicketsPerWave: 5, maxUsdPerTicket: 1 } });
+  const offId = off.imp.campaign.id;
+  const f = fileFix(off.ctx, offId, 1);
+  const err = throws(() => off.ctx.store.admitWorkItem(f.w, off.auth.id, { ticketId: f.ticketId, waveSeq: 1 }, null));
+  check('store.admitWorkItem refuses with the fix lane off, whatever its cap', /fix lane is off/.test(err?.message ?? ''), err?.message);
+  check('and the item stays proposed', off.ctx.store.workItem(f.w)!.status === 'proposed');
+  // A raw admission past the store is caught by the row invariant.
+  const c = off.ctx.store.mission(offId)!;
+  const db = new DatabaseSync(path.join(off.out, DAYLIGHT_DB));
+  const forged = newId('decision');
+  db.prepare('INSERT INTO decisions (id, mission_id, project_id, revision, actor, kind, rationale, scope, artifact_ids, at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(
+    forged, offId, c.projectId, c.baseRevision, campaignActorOf(offId), 'approve', 'raw',
+    JSON.stringify({ operation: 'admit-work-item', derivedFrom: off.auth.id, workItemId: f.w, contentDigest: 'x', ticketId: f.ticketId, waveSeq: 1 }), '[]', Date.now(),
+  );
+  db.close();
+  check('derivationRefusals reports an admission outside the fix lane', off.ctx.store.derivationRefusals().some((r) => r.includes(forged) && /fix lane/.test(r)),
+    off.ctx.store.derivationRefusals().join('; '));
+  check('campaignViolations reports it too', campaignViolations(off.ctx, c.projectId).some((r) => r.includes(forged)));
+  off.ctx.close();
+
+  const on = authorized('lane-cap', { fixLane: { enabled: true, maxTicketsPerWave: 2, maxUsdPerTicket: 0.5 } });
+  const onId = on.imp.campaign.id;
+  const a = fileFix(on.ctx, onId, 1);
+  const b = fileFix(on.ctx, onId, 2);
+  const x = fileFix(on.ctx, onId, 3);
+  on.ctx.store.admitWorkItem(a.w, on.auth.id, { ticketId: a.ticketId, waveSeq: 1 }, null);
+  on.ctx.store.admitWorkItem(b.w, on.auth.id, { ticketId: b.ticketId, waveSeq: 1 }, null);
+  check('the store refuses a third admission in one wave', /already admitted 2/.test(throws(() => on.ctx.store.admitWorkItem(x.w, on.auth.id, { ticketId: x.ticketId, waveSeq: 1 }, null))?.message ?? ''));
+  check('and refuses one that names no wave', /names the wave/.test(throws(() => on.ctx.store.admitWorkItem(x.w, on.auth.id, { ticketId: x.ticketId, waveSeq: 0 }, null))?.message ?? ''));
+  const m = startTicketMission(on.ctx, { campaignId: onId, ticketId: a.ticketId, base: on.commit });
+  check('an admitted fix ticket with no budget runs at the fix lane\'s per-ticket cap', m.budget.maxUsd === 0.5, String(m.budget.maxUsd));
+  check('derivationRefusals stays empty for admissions inside the lane', on.ctx.store.derivationRefusals().length === 0, on.ctx.store.derivationRefusals().join('; '));
+  on.ctx.close();
+
+  // A scope the policy at the plan commit protects (review P13).
+  const r = makeRepo('lane-policy', samplePlan(), {
+    'daylight.policy.json': JSON.stringify({ schema: 'daylight.policy/v1', protectedPaths: ['crates/core/src/secret.rs'] }),
+    'crates/core/src/secret.rs': '// secret\n',
+  });
+  const ctx = openDaylight(r.out);
+  const imp = importPlan(ctx, r.root, 'daylight.plan.json');
+  approve(ctx, imp.campaign.id);
+  lockByHand(ctx, imp.campaign.id);
+  const auth = authorize(ctx, imp.campaign.id);
+  const p = fileFix(ctx, imp.campaign.id, 1, ['crates/core/src/secret.rs']);
+  const viaForge = admitIfWithinEnvelope(ctx, imp.campaign.id, p.w, { seq: 1, admitted: 0, severity: 'high' });
+  check('a High fix on a path the plan-commit policy protects is not admitted', !viaForge.admitted, JSON.stringify(viaForge));
+  const policy = policyAt(r.root, r.commit);
+  check('the store refuses it under the policy the authorization names', /protected/.test(throws(() => ctx.store.admitWorkItem(p.w, auth.id, { ticketId: p.ticketId, waveSeq: 1 }, policy))?.message ?? ''));
+  check('the store refuses a policy other than the one the authorization names', /not the one/.test(throws(() => ctx.store.admitWorkItem(p.w, auth.id, { ticketId: p.ticketId, waveSeq: 1 }, null))?.message ?? ''));
+  const yarn = fileFix(ctx, imp.campaign.id, 2, ['.yarn/releases']);
+  check('a directory scope over a protected subtree is refused (.yarn/releases)', /protected/.test(throws(() => ctx.store.admitWorkItem(yarn.w, auth.id, { ticketId: yarn.ticketId, waveSeq: 1 }, policy))?.message ?? ''));
+  ctx.close();
 }
 
 done();
