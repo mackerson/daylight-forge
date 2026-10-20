@@ -1581,6 +1581,16 @@ export class MissionStore {
     }));
   }
 
+  /** A generated ticket's proposed work item and its row, together (a fix ticket from a finding). */
+  insertGeneratedTicket(workItem: CreateWorkItemInput & { id: string }, ticket: Omit<CampaignTicket, 'createdAt' | 'workItemId'>): CampaignTicket {
+    return this.tx(() => {
+      if (ticket.origin === 'plan') throw new Error('a plan ticket comes from a plan import');
+      if (this.campaignTicket(ticket.campaignId, ticket.ticketId)) throw new Error(`campaign ${ticket.campaignId} already has ticket ${ticket.ticketId}`);
+      const w = this.createWorkItem(workItem);
+      return this.writeTicket({ ...ticket, workItemId: w.id });
+    });
+  }
+
   private writeTicket(r: Omit<CampaignTicket, 'createdAt'>): CampaignTicket {
     const c = this.requireCampaign(r.campaignId);
     const w = this.workItem(r.workItemId);
@@ -1822,9 +1832,24 @@ export class MissionStore {
   }
 
   /** The derived `admit-work-item` that admitted this work item into its campaign, or null. */
-  admission(campaignId: string, workItemId: string): Decision | null {
+  private derivedAdmission(campaignId: string, workItemId: string): Decision | null {
     return this.decisions(campaignId)
       .filter((d) => d.scope.operation === 'admit-work-item' && isCampaignActor(d.actor) && d.scope.workItemId === workItemId).at(-1) ?? null;
+  }
+
+  /**
+   * What admitted a generated (fix or follow-up) ticket's work item into its campaign, or null: a
+   * derived `admit-work-item`, or a person's `approve-work-item` (`work-item approve`, P2-R36). A
+   * plan ticket is never admitted this way; the envelope names it.
+   */
+  admission(campaignId: string, workItemId: string): Decision | null {
+    const derived = this.derivedAdmission(campaignId, workItemId);
+    if (derived) return derived;
+    const t = this.campaignTicketByWorkItem(workItemId);
+    const w = this.workItem(workItemId);
+    if (!t || t.campaignId !== campaignId || t.origin === 'plan' || w?.status !== 'approved' || !w.decisionId) return null;
+    const d = this.decision(w.decisionId);
+    return d && d.scope.operation === 'approve-work-item' && isHumanActor(d.actor) && movesWorkItem(d, w, 'approved') ? d : null;
   }
 
   /** Implement missions released by a `retry-ticket` decision (P2-R25, P2-R27): closed inconclusive or cancelled. */
@@ -1904,7 +1929,7 @@ export class MissionStore {
       if (typeof req.maxUsd !== 'number' || !(req.maxUsd > 0 && req.maxUsd <= env.maxUsdPerMission)) {
         return `a derived grant's budget is at most $${env.maxUsdPerMission} per mission`;
       }
-      if (t.origin === 'fix' && req.maxUsd > env.fixLane.maxUsdPerTicket) return `a fix ticket's budget is at most $${env.fixLane.maxUsdPerTicket}`;
+      if (t.origin === 'fix' && this.derivedAdmission(campaign.id, t.workItemId) && req.maxUsd > env.fixLane.maxUsdPerTicket) return `a fix ticket's budget is at most $${env.fixLane.maxUsdPerTicket}`;
       const released = this.releasedMissions(campaign.projectId);
       const others = this.missions(campaign.projectId)
         .filter((o) => o.id !== m.id && o.kind === 'implement' && o.workItemId === t.workItemId && !released.has(o.id));
@@ -1971,7 +1996,7 @@ export class MissionStore {
       if (!t) throw new Error(`mission ${m.id} builds no campaign ticket`);
       // An admitted fix ticket runs at the fix lane's per-ticket cap (P2-R10).
       const maxUsd = Math.min(t.budget.maxUsd ?? Number.POSITIVE_INFINITY, env.maxUsdPerMission,
-        t.origin === 'fix' ? env.fixLane.maxUsdPerTicket : Number.POSITIVE_INFINITY);
+        t.origin === 'fix' && this.derivedAdmission(parent.missionId, t.workItemId) ? env.fixLane.maxUsdPerTicket : Number.POSITIVE_INFINITY);
       const permissions: MissionPermissions = { read: true, write: true, execute: env.execute === true, deploy: false };
       const admittedBy = env.ticketIds?.includes(t.ticketId) ? undefined : this.admission(parent.missionId, t.workItemId)?.id;
       const decision = this.recordDerivedDecision(parent.id, {
@@ -2142,14 +2167,14 @@ export class MissionStore {
         const named = this.grantTicketRefusal(d, m);
         if (named) out.push(named);
         const built = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
-        if (built?.origin === 'fix' && !((d.scope.maxUsd as number) <= env.fixLane.maxUsdPerTicket)) {
+        if (built?.origin === 'fix' && this.derivedAdmission(parent.missionId, built.workItemId) && !((d.scope.maxUsd as number) <= env.fixLane.maxUsdPerTicket)) {
           out.push(`derived grant ${d.id} gives fix ticket ${built.ticketId} more than the fix lane's $${env.fixLane.maxUsdPerTicket}`);
         }
         const by = d.scope.admittedBy;
         if (!grant && typeof by === 'string') {
           const a = this.decision(by);
           const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
-          if (!a || a.scope.operation !== 'admit-work-item' || !isCampaignActor(a.actor) || !t || a.scope.workItemId !== t.workItemId) {
+          if (!a || !t || this.admission(parent.missionId, t.workItemId)?.id !== a.id) {
             out.push(`derived grant ${d.id} names admission ${by}, which admitted nothing it builds`);
           }
         }

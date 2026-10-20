@@ -11,7 +11,8 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { decideAssumption, recordAssumption, waitingOwner } from '../forge/assumptions.ts';
-import { admitIfWithinEnvelope, campaignViolations, haltCampaign, importPlan, startTicketMission } from '../forge/campaign.ts';
+import { admitIfWithinEnvelope, campaignViolations, fileFixTicket, haltCampaign, importPlan, startTicketMission } from '../forge/campaign.ts';
+import { decideWorkItem } from '../forge/work-items.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { assertImplementable, specIntakeViolations } from '../forge/work-items.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
@@ -335,6 +336,63 @@ section('the store enforces the fix lane itself (P2-R34, review M1)');
   const yarn = fileFix(ctx, imp.campaign.id, 2, ['.yarn/releases']);
   check('a directory scope over a protected subtree is refused (.yarn/releases)', /protected/.test(throws(() => ctx.store.admitWorkItem(yarn.w, auth.id, { ticketId: yarn.ticketId, waveSeq: 1 }, policy))?.message ?? ''));
   ctx.close();
+}
+
+section('fileFixTicket files a proposed fix ticket from a finding (P2-R36)');
+{
+  const s = authorized('file-fix', { fixLane: { enabled: true, maxTicketsPerWave: 2, maxUsdPerTicket: 0.75 } });
+  const id = s.imp.campaign.id;
+  const finding = { id: 'f_1', path: 'crates/core/src/lib.rs', title: 'Off-by-one in decimal', statement: 'decimal(10) drops a digit.' };
+  const t1 = fileFixTicket(s.ctx, { campaignId: id, waveSeq: 1, finding });
+  const row = s.ctx.store.campaignTicket(id, t1)!;
+  const w = s.ctx.store.workItem(row.workItemId)!;
+  check('a FIX.<wave>.<n> ticket in the FIX lane, scoped to the finding\'s path', t1 === 'FIX.1.1' && row.origin === 'fix' && row.lane === 'FIX'
+    && row.scope.join() === 'crates/core/src/lib.rs' && row.sourceRef === 'f_1');
+  check('its work item is proposed, carrying the finding as data', w.status === 'proposed' && w.title === 'Fix: Off-by-one in decimal' && w.statement === finding.statement);
+  check('its budget is the fix lane\'s per-ticket cap', row.budget.maxUsd === 0.75);
+  check('filing the same finding again returns the same ticket', fileFixTicket(s.ctx, { campaignId: id, waveSeq: 1, finding }) === t1
+    && s.ctx.store.campaignTickets(id).filter((t) => t.origin === 'fix').length === 1);
+  check('the next finding in the wave is FIX.1.2', fileFixTicket(s.ctx, { campaignId: id, waveSeq: 1, finding: { ...finding, id: 'f_2' } }) === 'FIX.1.2');
+  const bad: Array<[string, Partial<typeof finding>, RegExp]> = [
+    ['a bidi control in the title', { title: 'ok\u202e evil' }, /bidirectional/],
+    ['a title over its cap', { title: 'x'.repeat(200) }, /characters/],
+    ['a path that leaves the repository', { path: '../etc/passwd' }, /path/],
+    ['an empty statement', { statement: '  ' }, /empty/],
+  ];
+  for (const [name, patch, re] of bad) {
+    const err = throws(() => fileFixTicket(s.ctx, { campaignId: id, waveSeq: 2, finding: { ...finding, id: `f_${name.length}`, ...patch } }));
+    check(`refused: ${name}, and nothing is filed`, re.test(err?.message ?? '') && !s.ctx.store.campaignTickets(id).some((t) => t.ticketId.startsWith('FIX.2.')), err?.message);
+  }
+  const secret = `token ghp_${'a'.repeat(36)} leaked`;
+  const ts = fileFixTicket(s.ctx, { campaignId: id, waveSeq: 3, finding: { ...finding, id: 'f_secret', statement: secret } });
+  check('a secret-shaped statement is redacted before it is filed', !s.ctx.store.workItem(s.ctx.store.campaignTicket(id, ts)!.workItemId)!.statement.includes('ghp_'));
+  const admitted = admitIfWithinEnvelope(s.ctx, id, row.workItemId, { seq: 1, admitted: 0, severity: 'high', findingId: 'f_1' });
+  check('admission is the caller\'s next step, and returns { admitted }', admitted.admitted === true && s.ctx.store.workItem(row.workItemId)!.status === 'approved');
+  s.ctx.close();
+}
+
+section('a person\'s work-item approve admits a generated ticket (P2-R36)');
+{
+  const s = authorized('human-fu');
+  const id = s.imp.campaign.id;
+  const o2 = byOwner(s.ctx, id, 'O2');
+  const statement = 'Widen decimal to u128.';
+  const fu = { statement, lane: 'CORE', scope: ['crates/core/src/lib.rs'] };
+  decideAssumption(s.ctx, {
+    id: o2.id, operation: 'overturn-assumption', value: 'u128', followUp: fu, actor: HUMAN, rationale: 'owner', env: CLEAN_ENV,
+    confirm: code(confirmDigest(s.ctx, 'overturn-assumption', o2.id, { value: 'u128', followUp: statement, followUpLane: 'CORE', followUpScope: fu.scope }).digest),
+  });
+  const t = s.ctx.store.campaignTicket(id, 'FU.1')!;
+  check('before approval the follow-up is outside the envelope', /outside authorization|not an approved|approved one/.test(throws(() => startTicketMission(s.ctx, { campaignId: id, ticketId: 'FU.1', base: s.commit }))?.message ?? ''));
+  decideWorkItem(s.ctx, { id: t.workItemId, kind: 'approve', actor: HUMAN, rationale: 'go', env: CLEAN_ENV, confirm: code(s.ctx.store.workItem(t.workItemId)!.contentDigest) });
+  check('admission() counts the person\'s approval', s.ctx.store.admission(id, t.workItemId)?.scope.operation === 'approve-work-item');
+  const m = startTicketMission(s.ctx, { campaignId: id, ticketId: 'FU.1', base: s.commit });
+  check('startTicketMission builds the human-approved follow-up', m.state === 'ready' && m.workItemId === t.workItemId);
+  check('the derived grant names the person\'s approval as admittedBy, and the invariants hold', s.ctx.store.authorizeDecision(m.id)!.scope.admittedBy === s.ctx.store.admission(id, t.workItemId)!.id
+    && s.ctx.store.derivationRefusals().length === 0 && campaignViolations(s.ctx, m.projectId).length === 0,
+    [...s.ctx.store.derivationRefusals(), ...campaignViolations(s.ctx, m.projectId)].join('; '));
+  check('a plan ticket outside the envelope is still refused', /outside authorization/.test(throws(() => startTicketMission(s.ctx, { campaignId: id, ticketId: 'A2', base: s.commit }))?.message ?? ''));
+  s.ctx.close();
 }
 
 done();

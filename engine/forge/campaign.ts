@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { requireMappedRepo, mappedRoot, type DaylightContext } from '../mission/context.ts';
-import { CAMPAIGN_AUTHOR_DEFAULTS, grantsWrite } from '../mission/store.ts';
+import { CAMPAIGN_AUTHOR_DEFAULTS, grantsWrite, workItemContentDigest } from '../mission/store.ts';
+import { redact } from '../mission/redact.ts';
 import type { MissionStore } from '../mission/store.ts';
 import type {
   ArtifactRef, CampaignAuthorizedPayload, CampaignEnvelope, CampaignHaltReason, Decision, EnvelopeRequest, Mission, MissionPermissions,
@@ -9,8 +10,9 @@ import type {
 import { campaignActorOf, isCampaignActor, isHumanActor } from '../mission/types.ts';
 import { confirmDigest } from './confirm.ts';
 import {
-  acceptanceOf, budgetOf, isPlanRefusals, parsePlan, planTicketToWorkItem, policyAt, prefixOf, ticketDigestOf, validatePlanAt,
+  acceptanceOf, budgetOf, isPlanRefusals, parsePlan, planTicketToWorkItem, policyAt, prefixOf, ticketDigestOf, ticketWorkItemId, validatePlanAt,
 } from './plan.ts';
+import { MAX_STATEMENT_BYTES, MAX_TITLE_CHARS, repoPathRefusal, textRefusal } from './proposal.ts';
 import { assertHumanDecision, DecisionRefused, pathViolations } from './policy.ts';
 import { authorLimits, ProjectPolicyError } from './project-policy.ts';
 import { specRevisionOf } from './spec.ts';
@@ -374,6 +376,49 @@ export function admitIfWithinEnvelope(
     decisionId: decision.id, workItemId, ticketId: t.ticketId, ...(wave.findingId ? { findingId: wave.findingId } : {}),
   });
   return { admitted: true, decision };
+}
+
+/** What `fileFixTicket` reads of a wave-review finding (WS-R6's `Finding`). */
+export interface FixFinding { id: string; path: string; title: string; statement: string }
+
+/**
+ * A wave finding's fix ticket, filed **proposed** (§6.3, P2-R36): `FIX.<wave>.<n>` in the `FIX`
+ * lane, scope the finding's path, budget the fix lane's per-ticket cap, acceptance the plan's
+ * default. The finding's words are a reviewer's text: checked like a proposal (caps, no control
+ * or bidi characters, a repo-relative path), redacted, and carried only as the work item's data,
+ * which the author brief fences. Idempotent on the finding id. Admission is the caller's next
+ * step (`admitIfWithinEnvelope`).
+ */
+export function fileFixTicket(ctx: DaylightContext, o: { campaignId: string; waveSeq: number; finding: FixFinding }): string {
+  const c = requireCampaign(ctx, o.campaignId);
+  const f = o.finding;
+  if (!Number.isInteger(o.waveSeq) || o.waveSeq < 1) throw new DecisionRefused('refused: a fix ticket names the wave its finding came from');
+  if (typeof f.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(f.id)) throw new DecisionRefused('refused: a finding id is a plain id');
+  const had = ctx.store.campaignTickets(c.id).find((t) => t.origin === 'fix' && t.sourceRef === f.id);
+  if (had) return had.ticketId;
+  const pathWhy = repoPathRefusal(f.path);
+  if (pathWhy) throw new DecisionRefused(`refused: the finding's path is refused: ${pathWhy}`);
+  const title = `Fix: ${redact(String(f.title)).text}`;
+  const titleWhy = textRefusal(title, MAX_TITLE_CHARS * 4, false) ?? (title.length > MAX_TITLE_CHARS ? `over ${MAX_TITLE_CHARS} characters` : null);
+  if (titleWhy) throw new DecisionRefused(`refused: the finding's title is ${titleWhy}`);
+  const statement = redact(String(f.statement)).text;
+  const statementWhy = textRefusal(statement, MAX_STATEMENT_BYTES, true);
+  if (statementWhy) throw new DecisionRefused(`refused: the finding's statement is ${statementWhy}`);
+  const { plan, planArtifact, planRevision } = planOf(ctx, c.id);
+  const env = ctx.store.campaignAuthorization(c.id)?.scope as unknown as CampaignEnvelope | undefined;
+  const n = ctx.store.campaignTickets(c.id).filter((t) => t.origin === 'fix' && t.ticketId.startsWith(`FIX.${o.waveSeq}.`)).length + 1;
+  const ticketId = `FIX.${o.waveSeq}.${n}`;
+  const base = {
+    projectId: c.projectId, missionId: c.id, specArtifact: planArtifact, specRevision: planRevision, anchor: `ticket:${ticketId}`,
+    title, statement, examples: [], negativeExamples: [], proposedBy: 'wave-review',
+  };
+  const contentDigest = workItemContentDigest(base);
+  const t = ctx.store.insertGeneratedTicket({ ...base, id: ticketWorkItemId(c.id, ticketId, contentDigest) }, {
+    campaignId: c.id, ticketId, projectId: c.projectId, origin: 'fix', lane: 'FIX', dependsOn: [], scope: [f.path],
+    acceptance: plan.defaults?.acceptance ?? { kind: 'ci-only' }, budget: env ? { maxUsd: env.fixLane.maxUsdPerTicket } : {}, blocksOn: [],
+    ticketDigest: contentDigest, sourceRef: f.id,
+  });
+  return t.ticketId;
 }
 
 /** Halt the campaign: a person's halt, or the director's derived one (fail closed). */
