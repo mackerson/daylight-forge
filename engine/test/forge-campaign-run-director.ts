@@ -375,6 +375,29 @@ section('spend: a reservation holds a second launch until the cap allows it (P2-
   w.ctx.close();
 }
 
+section('a ticket that used its own budget is blocked; the campaign goes on (P2-R35, review B3)');
+{
+  const w = nodeWorld('ticketbudget', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));`, budget: { maxUsd: 0.05 } },
+    { id: 'B', lane: 'LB', scope: ['src/b.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1, maxAttemptsPerTicket: 3 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'no';\n" }, repair: { 'src/a.js': "module.exports = () => 'A';\n" } },
+    B: { first: { 'src/b.js': "module.exports = () => 'B';\n" } },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('the campaign is not halted', r.halted === null && r.refused === null, JSON.stringify({ halted: r.halted, refused: r.refused }));
+  check('A is blocked after one attempt at $0.05 of its $0.05; B landed', r.statuses.A === 'blocked' && r.statuses.B === 'landed', JSON.stringify(r.statuses));
+  const am = w.ctx.store.missions(w.campaign.projectId).find((m) => m.objective === 'ticket A')!;
+  check('A\'s mission is blocked with a blocked need naming its budget', am.state === 'blocked' && needsOf(w.ctx, am).some((n) => n.kind === 'blocked' && /ticket budget exhausted/.test(n.why)));
+  check('one ticket-budget-exhausted event', w.ctx.events.forMission(w.campaign.id).concat(w.ctx.events.forMission(am.id))
+    .filter((e) => e.name === 'campaign.ticket.blocked' && e.payload.reason === 'ticket-budget-exhausted').length === 1);
+  check('no spend refusal and no halt decision', !namesOf(w).includes('campaign.spend.refused') && !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
+  check('a second run neither halts nor redispatches A', await run(w, author, { concurrency: 1 }).then((x) => x.halted === null && x.statuses.A === 'blocked'));
+  w.ctx.close();
+}
+
 // ---- refusals, exhaustion, parking ----------------------------------------------------------
 
 section('a ready ticket refused at preflight closes inconclusive once, with a blocked need (P2-R23)');

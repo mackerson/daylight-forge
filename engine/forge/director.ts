@@ -213,6 +213,11 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
       set('blocked', { reason: `${attempts.length} attempt(s) of ${k} used; the last ended ${c?.verdict ?? 'without a candidate'}` });
       continue;
     }
+    if (env && ticketBudgetLeft(ctx, env, t, m) <= 1e-9) {
+      // P2-R35: a ticket that used its own budget is blocked, with a need; the campaign goes on.
+      set('blocked', { reason: `${TICKET_BUDGET_EXHAUSTED}: spent $${missionSpend(ctx, m.id).spentUsd.toFixed(2)} of its $${Math.min(t.budget.maxUsd ?? Infinity, env.maxUsdPerMission).toFixed(2)}` });
+      continue;
+    }
     if (c && (c.verdict === 'gates-invalid' || c.verdict === 'no-diff') && c.attemptId === last?.id) {
       set('blocked', { reason: `candidate ${c.id} is ${c.verdict}: ${c.verdictReasons[0] ?? ''}`.trim() });
       continue;
@@ -276,6 +281,13 @@ export function campaignSpendRefusal(spend: CampaignSpend, envelope: Pick<Campai
     return { refuse: why, halt: spend.runningCount === 0 ? 'spend-cap' : null };
   }
   return null;
+}
+
+export const TICKET_BUDGET_EXHAUSTED = 'ticket budget exhausted';
+
+/** What is left of `t`'s own budget: `min(ticket.maxUsd, maxUsdPerMission)` less what its mission spent. */
+export function ticketBudgetLeft(ctx: Pick<DaylightContext, 'store'>, env: CampaignEnvelope, t: CampaignTicket, m: Mission | undefined): number {
+  return Math.min(t.budget.maxUsd ?? Infinity, env.maxUsdPerMission) - (m ? missionSpend(ctx, m.id).spentUsd : 0);
 }
 
 /** What the next attempt of `t` may spend: the mission's remaining budget, within the campaign's remaining cap. */
@@ -609,7 +621,10 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         if (!m) continue;
         if (s.status === 'blocked' && m.state === 'running') {
           ctx.store.transitionMission(m.id, 'blocked', s.reason ?? 'blocked');
-          emit(m, 'lifecycle', 'campaign.ticket.blocked', { ticketId: s.ticket.ticketId, missionId: m.id, reason: s.attempts >= s.maxAttempts ? 'attempts-exhausted' : 'unrepairable' });
+          emit(m, 'lifecycle', 'campaign.ticket.blocked', {
+            ticketId: s.ticket.ticketId, missionId: m.id,
+            reason: s.attempts >= s.maxAttempts ? 'attempts-exhausted' : s.reason?.startsWith(TICKET_BUDGET_EXHAUSTED) ? 'ticket-budget-exhausted' : 'unrepairable',
+          });
         }
         if (s.status === 'waiting-dependency' && !parked.has(m.id)) {
           parked.add(m.id);
@@ -642,6 +657,8 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     /** Launch what is ready, each under a reservation the cap still allows; stop at the first it does not. */
     const launch = (states: Map<string, TicketState>) => {
       for (const s of schedule(states, running, concurrency - running.size)) {
+        // A ticket's own budget is never a campaign refusal (P2-R35); ticketStates blocks it.
+        if (ticketBudgetLeft(ctx, envelope, s.ticket, s.mission) <= 1e-9) continue;
         const spend = campaignSpend(ctx, campaign.id);
         const reserve = nextReservation(ctx, spend, envelope, s.ticket, s.mission);
         const no = campaignSpendRefusal(spend, envelope, reserve);
