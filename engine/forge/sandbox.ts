@@ -431,6 +431,12 @@ export function execRefusal(attempt: Pick<Attempt, 'id' | 'sandbox'>): string | 
 const MAX_EXEC_ARGS = 64;
 const MAX_EXEC_ARG = 4096;
 
+/**
+ * Refused by name (review I3). bwrap's no_new_privs already makes setuid inert; naming them keeps
+ * an author from spending its turns on them and the transcript from reading as if it could.
+ */
+const PRIVILEGE_BINARIES = new Set(['sudo', 'su', 'doas', 'pkexec', 'mount', 'chroot', 'nsenter', 'unshare', 'setpriv']);
+
 /** `node` (ours) or a system binary by absolute path; no shell string, ever. */
 export function checkExecCommand(command: unknown): { ok: true; argv: string[] } | { ok: false; why: string } {
   if (!Array.isArray(command) || !command.length) return { ok: false, why: 'the command is a non-empty argv array' };
@@ -440,7 +446,11 @@ export function checkExecCommand(command: unknown): { ok: true; argv: string[] }
   }
   const head = command[0] as string;
   if (head === 'node') return { ok: true, argv: [nodeBinary(), ...command.slice(1)] };
-  if (/^\/usr\/bin\/[A-Za-z0-9._+-]+$/.test(head)) return { ok: true, argv: command as string[] };
+  if (/^\/usr\/bin\/[A-Za-z0-9._+-]+$/.test(head)) {
+    const base = head.slice('/usr/bin/'.length);
+    if (PRIVILEGE_BINARIES.has(base)) return { ok: false, why: `\`${base}\` changes privileges or namespaces and is never run` };
+    return { ok: true, argv: command as string[] };
+  }
   return { ok: false, why: `\`${head}\` is neither \`node\` nor a binary under /usr/bin` };
 }
 
