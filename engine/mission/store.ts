@@ -876,7 +876,8 @@ export class MissionStore {
       const grantId = a.sandbox?.authorizeDecisionId ?? null;
       const mission = this.mission(a.missionId);
       const grant = grantId !== null ? this.decision(grantId) : null;
-      return !mission || attemptRefusal(a, mission, grant, this.grantParent(grant)) !== null;
+      return !mission || attemptRefusal(a, mission, grant, this.grantParent(grant)) !== null
+        || (!!grant && isCampaignActor(grant.actor) && this.grantTicketRefusal(grant, mission) !== null);
     });
   }
 
@@ -1972,6 +1973,15 @@ export class MissionStore {
     return this.tx(() => this.deriveAuthorizeMission(this.createMission(input).id, campaignDecisionId));
   }
 
+  /** Why a derived grant names a ticket other than the one its mission builds, or null (the audit half of R7). */
+  private grantTicketRefusal(d: Decision, m: Mission): string | null {
+    const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
+    if (!t || t.ticketId !== d.scope.ticketId) {
+      return `derived grant ${d.id} names ticket ${String(d.scope.ticketId)}, but mission ${m.id} builds ${t ? `ticket ${t.ticketId}` : 'no ticket'}`;
+    }
+    return null;
+  }
+
   /** Why an `integrate-candidate` scope does not name a candidate of `missionId` at its diff, or null. */
   private integrateScopeRefusal(scope: Record<string, unknown>, missionId: string): string | null {
     const c = typeof scope.candidateId === 'string' ? this.candidate(scope.candidateId) : null;
@@ -2110,6 +2120,8 @@ export class MissionStore {
       if (d.scope.operation === 'authorize-mission' && m) {
         const grant = campaignGrantRefusal(d, parent, m);
         if (grant) out.push(grant);
+        const named = this.grantTicketRefusal(d, m);
+        if (named) out.push(named);
         const built = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
         if (built?.origin === 'fix' && !((d.scope.maxUsd as number) <= env.fixLane.maxUsdPerTicket)) {
           out.push(`derived grant ${d.id} gives fix ticket ${built.ticketId} more than the fix lane's $${env.fixLane.maxUsdPerTicket}`);

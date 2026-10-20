@@ -325,6 +325,34 @@ section('a forged derived grant is caught and refused');
     taskId: s.ctx.store.createTask({ missionId: m.id, role: 'author', objective: 'b' }).id, runnerId: 'agent:mock:x', sandbox: author(m.id, forged).sandbox,
   }))?.message ?? ''));
   check('campaignViolations reports it', campaignViolations(s.ctx, m.projectId).some((r) => r.includes(forged)));
+
+  // Review P12a: a well-formed grant from the real authorization, naming an envelope ticket (C1),
+  // on a mission that holds write and builds A2, outside the envelope.
+  const a2 = s.ctx.store.createMission({
+    projectId: m.projectId, kind: 'implement', parentId: id, objective: 'a2', baseRevision: s.commit, workItemId: s.ctx.store.campaignTicket(id, 'A2')!.workItemId,
+  });
+  const t2 = s.ctx.store.createTask({ missionId: a2.id, role: 'author', objective: 'a' });
+  const db2 = new DatabaseSync(path.join(s.out, DAYLIGHT_DB));
+  const mismatched = newId('decision');
+  db2.prepare(`INSERT INTO decisions (id, mission_id, project_id, revision, actor, kind, rationale, scope, artifact_ids, at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    mismatched, a2.id, a2.projectId, a2.baseRevision, campaignActorOf(id), 'approve', 'forged',
+    JSON.stringify({ operation: 'authorize-mission', permissions: { read: true, write: true, execute: false, deploy: false }, maxUsd: 1, derivedFrom: s.auth.id, ticketId: 'C1' }),
+    '[]', Date.now(),
+  );
+  db2.prepare(`UPDATE missions SET permissions=? WHERE id=?`).run(JSON.stringify({ read: true, write: true, execute: false, deploy: false }), a2.id);
+  const att2 = newId('attempt');
+  db2.prepare(`INSERT INTO attempts (id, mission_id, task_id, project_id, runner_id, state, started_at, artifacts, origin, sandbox_profile, sandbox_network,
+    sandbox_write, sandbox_exec, authorize_decision_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    att2, a2.id, t2.id, a2.projectId, 'agent:mock:x', 'completed', Date.now(), '[]', 'daylight', 'author', 'none', 1, 0, mismatched,
+  );
+  db2.close();
+  check('unauthorizedWriteAttempts names an attempt under a grant for another ticket', s.ctx.store.unauthorizedWriteAttempts().some((a) => a.id === att2));
+  check('derivationRefusals names that grant', s.ctx.store.derivationRefusals().some((r) => r.includes(mismatched) && /builds ticket A2/.test(r)),
+    s.ctx.store.derivationRefusals().join('; '));
+  check('campaignViolations reports it', campaignViolations(s.ctx, m.projectId).some((r) => r.includes(mismatched)));
+  check('startAttempt refuses it', /builds ticket A2, not C1/.test(throws(() => s.ctx.store.startAttempt({
+    taskId: s.ctx.store.createTask({ missionId: a2.id, role: 'author', objective: 'c' }).id, runnerId: 'agent:mock:x', sandbox: author(a2.id, mismatched).sandbox,
+  }))?.message ?? ''));
   s.ctx.close();
 }
 
