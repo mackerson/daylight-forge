@@ -7,7 +7,7 @@ further human act per ticket. Every director act is a **derived decision** recor
 
 This page covers the WS-R5 half: the plan file, `approve-plan`, `authorize`, assumptions,
 `retry`, and which commands an agent session may run. The integration ref, gates, the run loop,
-wave review and `status` are WS-R6's.
+wave review and `status` are WS-R6's, in [Running campaigns](CAMPAIGN-RUN.md).
 
 A campaign is a mission of kind `campaign`. Its ticket missions are implement missions whose
 `parentId` is the campaign. It never holds write, execute or deploy.
