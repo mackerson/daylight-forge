@@ -34,6 +34,7 @@ import { adoptIntegrationTip, adoptScopeOf, InjectedCrash, integrationRefFor, in
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { needsOf } from '../mission/needs.ts';
 import type { CampaignTicket, Mission, PlanFileV1 } from '../mission/types.ts';
+import { DecisionRefused } from '../forge/policy.ts';
 import { harness } from './harness.ts';
 import {
   ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, tempDir, testHost, ticketRow,
@@ -474,6 +475,38 @@ section('a dependency request parks its ticket; the loop goes on (P2-R21)');
   check('it is parked and not dispatched; Q lands', r.statuses.P === 'waiting-dependency' && r.statuses.Q === 'landed'
     && !w.ctx.events.forMission(m.id).some((e) => e.name === 'campaign.ticket.dispatched'), JSON.stringify(r.statuses));
   check('one parked event, on the ticket mission', w.ctx.events.forMission(m.id).filter((e) => e.name === 'campaign.ticket.parked').length === 1);
+  w.ctx.close();
+}
+
+section('generated tickets and refused grants (P2-R36)');
+{
+  const w = nodeWorld('generated', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'FU.1', lane: 'LB', scope: ['src/b.js'] },
+    { id: 'R', lane: 'LC', scope: ['src/c.js'] },
+  ]);
+  w.tickets[1] = { ...w.tickets[1], origin: 'follow-up' };
+  const proposed = makeWorkItem(w.ctx, w.campaign, 'FU.2', { approve: false });
+  w.tickets.push(ticketRow(w.campaign, proposed, { id: 'FU.2', lane: 'LD', scope: ['src/d.js'], origin: 'follow-up' }));
+  await lockAndAuthorize(w, { concurrency: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } }, 'FU.1': { first: { 'src/b.js': "module.exports = () => 'follow-up';\n" } },
+    R: { first: { 'src/c.js': "module.exports = () => 'R';\n" } }, 'FU.2': { first: { 'src/d.js': "module.exports = () => 'no';\n" } },
+  });
+  const base = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const host = {
+    ...base,
+    startTicketMission: (c: string, ticketId: string, tip: string) => {
+      if (ticketId === 'R') throw new DecisionRefused('refused: ticket R is outside the envelope');
+      return base.startTicketMission(c, ticketId, tip);
+    },
+  };
+  const r = await run(w, author, { concurrency: 1, host });
+  check('the run does not throw, and is not halted', r.halted === null, JSON.stringify(r));
+  check('a follow-up ticket a person approved is admitted and lands', r.statuses['FU.1'] === 'landed', JSON.stringify(r.statuses));
+  check('a proposed follow-up waits for a person', r.statuses['FU.2'] === 'waiting-owner');
+  check('a ticket whose grant R5 refuses is blocked for the run, with an event; the others landed', r.statuses.A === 'landed'
+    && w.ctx.events.forMission(w.campaign.id).some((e) => e.name === 'campaign.ticket.blocked' && e.payload.ticketId === 'R' && e.payload.reason === 'grant-refused'));
   w.ctx.close();
 }
 

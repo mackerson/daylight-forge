@@ -239,18 +239,24 @@ export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFile
         payload: { decisionId: d.id, reason } });
       return d;
     },
-    fileFixTicket: (_c, t) => {
-      const workItemId = makeWorkItem(ctx, campaign, t.ticketId, { approve: false, title: t.title, statement: t.statement });
-      const row = ticketRow(campaign, workItemId, { id: t.ticketId, lane: t.lane, scope: t.scope, acceptance: t.acceptance, budget: t.budget, origin: 'fix' });
-      tickets.push({ ...row, sourceRef: t.sourceRef });
-      return row;
+    fileFixTicket: (_c, { waveSeq, finding }) => {
+      const env = auth().scope as unknown as CampaignEnvelope;
+      const ticketId = `FIX.${waveSeq}.${tickets.filter((x) => x.ticketId.startsWith(`FIX.${waveSeq}.`)).length + 1}`;
+      const workItemId = makeWorkItem(ctx, campaign, ticketId, { approve: false, title: `Fix: ${finding.title}`.slice(0, 120), statement: finding.statement });
+      const row = ticketRow(campaign, workItemId, {
+        id: ticketId, lane: 'FIX', scope: [finding.path], acceptance: plan.defaults?.acceptance, budget: { maxUsd: env.fixLane.maxUsdPerTicket }, origin: 'fix',
+      });
+      tickets.push({ ...row, sourceRef: finding.id });
+      return ticketId;
     },
     admitIfWithinEnvelope: (_c, workItemId, wave) => {
       const env = auth().scope as unknown as CampaignEnvelope;
-      if (wave.severity !== 'high' || !env.fixLane.enabled || wave.admitted >= Math.min(5, env.fixLane.maxTicketsPerWave)) return false;
+      if (wave.severity !== 'high' || !env.fixLane.enabled || wave.admitted >= Math.min(5, env.fixLane.maxTicketsPerWave)) return { admitted: false };
       approveWorkItem(ctx, campaign, workItemId);
-      return true;
+      return { admitted: true };
     },
+    // R5's admission() counts a derived admission and a person's approval alike (P2-R36).
+    admitted: (_c, workItemId) => ctx.store.workItem(workItemId)?.status === 'approved',
     integrate: o.deps ?? fakeDeps(),
   };
 }

@@ -7,7 +7,7 @@ import { NotImplemented, type MissionStore } from '../mission/store.ts';
 import { isHumanActor } from '../mission/types.ts';
 import type {
   CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
-  FindingSeverity, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
+  Finding, FindingSeverity, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { gitIn } from './apply.ts';
@@ -19,6 +19,7 @@ import {
   R5_INTEGRATE_DEPS, reconcileIntegrations, refTarget, type IntegrateDeps, type IntegrationStep,
 } from './integrate.ts';
 import { ImplementRefused, runImplement } from './orchestrate.ts';
+import { DecisionRefused } from './policy.ts';
 import { closeWave, fixTicketsFrom, runWaveReview, waveDue } from './wave.ts';
 
 /**
@@ -64,10 +65,12 @@ export interface CampaignHost {
   startTicketMission(campaignId: string, ticketId: string, base: string): Mission;
   /** A derived `halt-campaign`; emits `campaign.halted` (R5 `haltCampaign`, derived branch). */
   halt(campaignId: string, reason: CampaignHaltReason): Decision;
-  /** A wave finding's fix ticket, filed proposed (R5 `insertCampaignTickets` + a proposed work item). */
-  fileFixTicket(campaignId: string, ticket: Omit<CampaignTicket, 'campaignId' | 'projectId' | 'workItemId' | 'ticketDigest' | 'createdAt'> & { title: string; statement: string }): CampaignTicket;
+  /** A wave finding's fix ticket, filed proposed; its id (R5 `fileFixTicket`, P2-R36). */
+  fileFixTicket(campaignId: string, input: { waveSeq: number; finding: Finding }): string;
   /** A derived `admit-work-item` when the envelope allows (R5 `admitIfWithinEnvelope`, P2-R10): High only, a per-wave cap. */
-  admitIfWithinEnvelope(campaignId: string, workItemId: string, wave: { seq: number; admitted: number; severity: FindingSeverity; findingId?: string }): boolean;
+  admitIfWithinEnvelope(campaignId: string, workItemId: string, wave: { seq: number; admitted: number; severity: FindingSeverity; findingId?: string }): { admitted: boolean };
+  /** A generated (fix or follow-up) ticket's work item is admitted: a derived admission or a person's approval (R5 `admission`, P2-R36). */
+  admitted(campaignId: string, workItemId: string): boolean;
   /** R5's envelope check and derived writer, called inside `landIntegration` (P2-R22). */
   integrate: IntegrateDeps;
 }
@@ -88,6 +91,7 @@ export function r5Host(ctx: DaylightContext): CampaignHost {
     halt: notYet('haltCampaign'),
     fileFixTicket: notYet('insertCampaignTickets'),
     admitIfWithinEnvelope: notYet('admitIfWithinEnvelope'),
+    admitted: notYet('admission'),
     integrate: R5_INTEGRATE_DEPS,
   };
 }
@@ -171,7 +175,8 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
       set('superseded', { reason: `work item ${t.workItemId} is ${w?.status ?? 'missing'}` });
       continue;
     }
-    const outside = w.status !== 'approved' || (t.origin === 'plan' && env && !env.ticketIds.includes(t.ticketId));
+    // A plan ticket is the envelope's when it names it; a generated one when R5 says it was admitted (P2-R36).
+    const outside = w.status !== 'approved' || (t.origin === 'plan' ? !!env && !env.ticketIds.includes(t.ticketId) : !host.admitted(campaignId, t.workItemId));
     if (outside || t.blocksOn.some((o) => open.has(o))) {
       set('waiting-owner', { reason: outside ? 'outside the authorized set; a person approves or authorizes it' : `waits on owner decision ${t.blocksOn.filter((o) => open.has(o)).join(', ')}` });
       continue;
@@ -454,9 +459,11 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
   const plan = host.plan(campaign.id);
   const laneCap = (lane: string) => (lane === 'FIX' ? 1 : plan.lanes.find((l) => l.id === lane)?.maxParallel ?? 1);
 
+  /** Tickets whose grant WS-R5 refused in this run: not dispatched again until the next. */
+  const refusedTickets = new Set<string>();
   /** Ready tickets in dispatch order: plan order, round-robin by lane, within each lane's cap. */
   const schedule = (states: Map<string, TicketState>, running: Map<string, string>, room: number): TicketState[] => {
-    const ready = [...states.values()].filter((s) => s.status === 'ready' && !running.has(s.ticket.ticketId));
+    const ready = [...states.values()].filter((s) => s.status === 'ready' && !running.has(s.ticket.ticketId) && !refusedTickets.has(s.ticket.ticketId));
     const busy = new Map<string, number>();
     for (const t of running.values()) busy.set(t, (busy.get(t) ?? 0) + 1);
     const lanes = [...new Set(ready.map((s) => s.ticket.lane))];
@@ -537,7 +544,17 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const t = s.ticket;
       let m = s.mission;
       const tipNow = integrationTip(root, campaign.id)!;
-      if (!m) m = host.startTicketMission(campaign.id, t.ticketId, tipNow);
+      if (!m) {
+        try {
+          m = host.startTicketMission(campaign.id, t.ticketId, tipNow);
+        } catch (err) {
+          // P2-R36: R5 refusing the grant blocks this ticket for the run; the loop goes on.
+          if (!(err instanceof DecisionRefused)) throw err;
+          refusedTickets.add(t.ticketId);
+          emit(campaign, 'lifecycle', 'campaign.ticket.blocked', { ticketId: t.ticketId, reason: 'grant-refused' });
+          return;
+        }
+      }
       const attempt = s.attempts + 1;
       const tool = envelope.roster[(attempt - 1) % envelope.roster.length];
       const prior = latestCandidate(ctx.store, m);
@@ -555,7 +572,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         });
         if (r.candidate) queue.push({ candidateId: r.candidate.id, ticketId: t.ticketId });
       } catch (err) {
-        if (!(err instanceof ImplementRefused)) throw err;
+        if (!(err instanceof ImplementRefused) && !(err instanceof DecisionRefused)) throw err;
         const now = ctx.store.mission(m.id)!;
         const why = err.message.replace(/^forge run refused:\s*/, '').split('\n').map((l) => l.trim()).filter(Boolean).join('; ').slice(0, 500);
         if (now.state === 'ready') {

@@ -12,7 +12,6 @@ import {
   findingIdOf, findingOutboxFile, isFindingRefusal, MAX_FINDING_BYTES, MAX_FINDINGS_PER_ATTEMPT, redactFinding, validateFinding,
   type FindingOutboxLine,
 } from './finding.ts';
-import { authorizationOf, envelopeOf } from './integrate.ts';
 import { holdoutPaths } from './campaign-gates.ts';
 import { createWorkspace } from './workspace.ts';
 
@@ -206,33 +205,25 @@ const rank = (s: Finding['severity']) => FINDING_SEVERITIES.indexOf(s);
 
 /**
  * One proposed fix ticket per finding of wave `seq` (corroborated duplicates are one), most
- * severe first (§6.3). A High one is offered to the envelope for admission; anything else, or
- * one over the wave's cap, stays proposed and waits for a person.
+ * severe first (§6.3), filed by WS-R5 (`fileFixTicket`, P2-R36). Each is offered to the
+ * envelope; R5 admits a High one up to the wave's cap, and anything else waits for a person.
  */
 export function fixTicketsFrom(ctx: Pick<DaylightContext, 'store'>, campaignId: string, seq: number, host: CampaignHost): { filed: CampaignTicket[]; admitted: string[] } {
-  const auth = authorizationOf(ctx.store, campaignId);
-  const env = auth ? envelopeOf(auth) : null;
-  const plan = host.plan(campaignId);
   const findings = ctx.store.findings(campaignId, { waveSeq: seq })
     .sort((a, b) => rank(b.severity) - rank(a.severity) || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
   const filed: CampaignTicket[] = [];
   const admitted: string[] = [];
   const done = new Set<string>();
-  let n = 0;
   for (const f of findings) {
     if (f.fixTicketId || done.has(f.id)) continue;
     for (const g of f.corroboratedBy) done.add(g);
-    n++;
-    const ticketId = `FIX.${seq}.${n}`;
-    const t = host.fileFixTicket(campaignId, {
-      ticketId, origin: 'fix', lane: 'FIX', dependsOn: [], blocksOn: [], scope: [f.path], sourceRef: f.id,
-      acceptance: plan.defaults?.acceptance ?? { kind: 'ci-only' }, budget: { maxUsd: env?.fixLane.maxUsdPerTicket },
-      title: `Fix: ${f.title}`.slice(0, 120), statement: f.statement,
-    });
+    const ticketId = host.fileFixTicket(campaignId, { waveSeq: seq, finding: f });
+    const t = host.tickets(campaignId).find((x) => x.ticketId === ticketId);
+    if (!t) throw new Error(`fix ticket ${ticketId} of finding ${f.id} was not filed`);
     ctx.store.updateFinding(f.id, { fixTicketId: t.ticketId });
     filed.push(t);
     // Every finding is offered; the envelope admits a High one only, at most its per-wave cap (P2-R10).
-    if (host.admitIfWithinEnvelope(campaignId, t.workItemId, { seq, admitted: admitted.length, severity: f.severity, findingId: f.id })) admitted.push(t.ticketId);
+    if (host.admitIfWithinEnvelope(campaignId, t.workItemId, { seq, admitted: admitted.length, severity: f.severity, findingId: f.id }).admitted) admitted.push(t.ticketId);
   }
   return { filed, admitted };
 }
