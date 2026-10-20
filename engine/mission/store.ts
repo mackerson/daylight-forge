@@ -1867,6 +1867,10 @@ export class MissionStore {
       if (!fix) return `campaign ${campaign.id} has no ticket ${req.ticketId}`;
       return this.fixLaneRefusal(campaign, env, fix, req.waveSeq, null, this.admissionsInWave(campaign.id, req.waveSeq));
     }
+    // §2.2(4): the director integrates only under auto-apply to the integration ref.
+    if (req.operation === 'integrate-candidate' && env.autoApply !== 'integration-ref') {
+      return `authorization ${parent.id} does not auto-apply (${String(env.autoApply)}); a person decides each candidate`;
+    }
     const t = m.workItemId ? this.campaignTicketByWorkItem(m.workItemId) : null;
     if (!t || t.campaignId !== campaign.id) return `mission ${m.id} builds no ticket of campaign ${campaign.id}`;
     if (req.ticketId && req.ticketId !== t.ticketId) return `mission ${m.id} builds ticket ${t.ticketId}, not ${req.ticketId}`;
@@ -1908,6 +1912,10 @@ export class MissionStore {
     const refusal = decisionRefusal({ ...input, id: `on mission ${m.id}` });
     if (refusal) throw new Error(`refused: ${refusal}`);
     const scope = input.scope as { permissions?: MissionPermissions; maxUsd?: number | null; ticketId?: unknown; waveSeq?: unknown; workItemId?: unknown };
+    if (operation === 'integrate-candidate') {
+      const why = this.integrateScopeRefusal(input.scope, m.id);
+      if (why) throw new Error(`refused: ${why}`);
+    }
     if (operation === 'admit-work-item') {
       const t = typeof scope.workItemId === 'string' ? this.campaignTicketByWorkItem(scope.workItemId) : null;
       if (!t || t.campaignId !== parent.missionId || t.ticketId !== scope.ticketId) throw new Error('refused: an admission names its fix ticket and its work item');
@@ -1962,6 +1970,14 @@ export class MissionStore {
   /** A ticket's implement mission and its derived grant, together: a refused grant leaves no mission. */
   createTicketMission(input: CreateMissionInput, campaignDecisionId: string): { mission: Mission; decision: Decision } {
     return this.tx(() => this.deriveAuthorizeMission(this.createMission(input).id, campaignDecisionId));
+  }
+
+  /** Why an `integrate-candidate` scope does not name a candidate of `missionId` at its diff, or null. */
+  private integrateScopeRefusal(scope: Record<string, unknown>, missionId: string): string | null {
+    const c = typeof scope.candidateId === 'string' ? this.candidate(scope.candidateId) : null;
+    if (!c || c.missionId !== missionId) return `integrate-candidate names ${String(scope.candidateId)}, which is not a candidate of mission ${missionId}`;
+    if (scope.diffDigest !== c.diffArtifact.digest) return `integrate-candidate names candidate ${c.id} at another diff`;
+    return null;
   }
 
   /** Derived admissions recorded in wave `seq` of the campaign, the first `before` decisions only when given. */
@@ -2106,6 +2122,11 @@ export class MissionStore {
             out.push(`derived grant ${d.id} names admission ${by}, which admitted nothing it builds`);
           }
         }
+      }
+      if (d.scope.operation === 'integrate-candidate') {
+        if (env.autoApply !== 'integration-ref') out.push(`derived integration ${d.id} was recorded under authorization ${parent.id}, which does not auto-apply`);
+        const why = this.integrateScopeRefusal(d.scope, d.missionId);
+        if (why) out.push(`derived integration ${d.id}: ${why}`);
       }
       if (d.scope.operation === 'admit-work-item') {
         const t = typeof d.scope.workItemId === 'string' ? this.campaignTicketByWorkItem(d.scope.workItemId) : null;

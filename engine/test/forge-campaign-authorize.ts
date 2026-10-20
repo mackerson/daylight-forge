@@ -328,6 +328,53 @@ section('a forged derived grant is caught and refused');
   s.ctx.close();
 }
 
+section('integrate-candidate needs auto-apply and a real candidate (review M2)');
+{
+  /** A ticket mission with one captured candidate, as R6's capture would leave it. */
+  const withCandidate = (name: string, autoApply: 'integration-ref' | 'none') => {
+    const s = authorized(name, { autoApply });
+    const id = s.imp.campaign.id;
+    const m = startTicketMission(s.ctx, { campaignId: id, ticketId: 'C1', base: s.commit });
+    const task = s.ctx.store.createTask({ missionId: m.id, role: 'author', objective: 'a' });
+    const a = s.ctx.store.startAttempt({ taskId: task.id, runnerId: 'agent:mock:x', sandbox: author(m.id, s.ctx.store.authorizeDecision(m.id)!.id).sandbox });
+    s.ctx.store.finishAttempt(a.id, { state: 'completed', costUsd: null });
+    const put = (text: string, kind: 'diff' | 'summary') => s.ctx.artifacts.put(text, { kind, projectId: m.projectId });
+    const c = s.ctx.store.createCandidate({
+      missionId: m.id, attemptId: a.id, projectId: m.projectId, baseCommit: s.commit, diffArtifact: put('diff --git a b', 'diff'),
+      summaryArtifact: put('{}', 'summary'), files: [], policyViolations: [], secretHits: 0, gateSetDigest: 'x',
+      profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed',
+    });
+    const input = (scope: Record<string, unknown>) => ({
+      missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: campaignActorOf(id), kind: 'approve' as const, rationale: 'land', artifactIds: [],
+      scope: { operation: 'integrate-candidate', derivedFrom: s.auth.id, candidateId: c.id, diffDigest: c.diffArtifact.digest, gateSetDigest: 'x',
+        baseCommit: s.commit, integrationId: 'i_1', onto: s.commit, integratedCommit: s.commit, integratedDiffDigest: c.diffArtifact.digest, ...scope },
+    });
+    return { s, id, m, c, input };
+  };
+  const none = withCandidate('integrate-none', 'none');
+  check('envelopeRefusal refuses integrate-candidate under auto-apply none', /does not auto-apply/.test(envelopeRefusal(none.s.ctx.store, none.s.auth.id, {
+    missionId: none.m.id, operation: 'integrate-candidate', ticketId: 'C1', at: Date.now(),
+  }) ?? ''));
+  check('recordDerivedDecision refuses it', /does not auto-apply/.test(throws(() => none.s.ctx.store.recordDerivedDecision(none.s.auth.id, none.input({})))?.message ?? ''));
+  const db = new DatabaseSync(path.join(none.s.out, DAYLIGHT_DB));
+  const raw = newId('decision');
+  const ri = none.input({});
+  db.prepare('INSERT INTO decisions (id, mission_id, project_id, revision, actor, kind, rationale, scope, artifact_ids, at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(
+    raw, ri.missionId, ri.projectId, ri.revision, ri.actor, 'approve', 'raw', JSON.stringify(ri.scope), '[]', Date.now(),
+  );
+  db.close();
+  check('derivationRefusals reports a raw one', none.s.ctx.store.derivationRefusals().some((r) => r.includes(raw) && /auto-apply/.test(r)), none.s.ctx.store.derivationRefusals().join('; '));
+  none.s.ctx.close();
+
+  const ref = withCandidate('integrate-ref', 'integration-ref');
+  check('a candidate id that names no candidate is refused', /not a candidate/.test(throws(() => ref.s.ctx.store.recordDerivedDecision(ref.s.auth.id, ref.input({ candidateId: newId('candidate') })))?.message ?? ''));
+  check('a diff digest that is not the candidate\'s is refused', /another diff/.test(throws(() => ref.s.ctx.store.recordDerivedDecision(ref.s.auth.id, ref.input({ diffDigest: 'sha256:00' })))?.message ?? ''));
+  const ok = ref.s.ctx.store.recordDerivedDecision(ref.s.auth.id, ref.input({}));
+  check('a real candidate under integration-ref is recorded', ok.scope.operation === 'integrate-candidate' && ref.s.ctx.store.derivationRefusals().length === 0,
+    ref.s.ctx.store.derivationRefusals().join('; '));
+  ref.s.ctx.close();
+}
+
 section('campaign missions never travel by file (P2-R14)');
 {
   const s = authorized('export');
