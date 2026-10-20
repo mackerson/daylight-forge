@@ -55,7 +55,7 @@ export interface GateContext {
 }
 
 const GATE_ROLES: readonly ExperimentRole[] = ['gate', 'holdout'];
-/** A campaign mission's experiments (docs/daylight/CAMPAIGN.md): registered here, locked by `campaign lock`. */
+/** A campaign mission's experiments (docs/daylight/CAMPAIGN-RUN.md): registered here, locked by `campaign lock`. */
 const CAMPAIGN_ROLES: readonly ExperimentRole[] = ['regression', 'gate', 'holdout', 'acceptance'];
 const TEST_TOKEN = '{test}';
 /** `node --test` prints a `tests N` summary under tap and spec; the dot reporter does not. */

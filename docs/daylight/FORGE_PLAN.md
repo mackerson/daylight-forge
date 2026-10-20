@@ -407,47 +407,6 @@ rulings.
   no `run` tool.
 - **Status.** Decided (a), 2026-10-16.
 
-### ADR-38 — Integration ref, rebase by plumbing, repair loops (P2, WS-R6)
-
-- **Context.** A campaign lands hundreds of tickets with no per-ticket human act. P1's apply
-  writes one branch per mission from a human approval and refuses a base that is not HEAD's.
-- **Decision.**
-  - Accepted campaign candidates land on `refs/heads/daylight/campaign/<id>`, moved only by
-    compare-and-swap; each landing also writes the per-mission ref, create-only. Nothing outside
-    `refs/heads/daylight/**` moves; HEAD, the index and the working tree are never touched; no
-    hook runs. A person merges the integration ref.
-  - A candidate on the tip is applied with its own digest; one on an older tip is merged with
-    `git merge-tree --write-tree --merge-base` in a scratch bare repository, and a conflict is the
-    verdict `rebase-conflict`. The commit is rebuilt in the real store object by object, as ADR-17.
-  - Checks run on the integrated tree (`gate_evaluations.target = 'integrated'`, naming the
-    integration). `campaignVerdict` is pure over rows; `stale-base` never fires in a campaign.
-  - The landing's rows (derived `integrate-candidate`, application, integration) are one
-    transaction R6 owns, calling R5's envelope check inside it (P2-R22).
-  - Failures are repaired with the failure fenced into the next brief, holdouts counted only,
-    up to the ticket's attempts; spend is reserved on the attempt row and unknown cost halts.
-  - Every state is derived from rows; a crash resumes by the table in docs/daylight/CAMPAIGN.md.
-- **Consequences.** `integration-ref-moves-by-cas`, `director-spawns-nothing`,
-  `campaign-spend-within-cap`, `no-holdout-in-repair` and `campaign-verdict-is-pure`; the row
-  halves are `integrationRefusals` and `applicationRefusals`. A ref moved by hand halts the
-  campaign until a person adopts the tip.
-- **Status.** Decided (P2-R11, P2-R17, P2-R18, P2-R22, P2-R23).
-
-### ADR-39 — Wave review and the fix lane (P2, WS-R6)
-
-- **Context.** Gates say a ticket does what its tests say; nobody reads the code that landed. A
-  review per ticket would cost as much as the authoring.
-- **Decision.**
-  - Every `waveSize` landings, blind reviewers under the `review` profile read a materialised tree
-    of the wave's last commit and file findings through one MCP tool, `report_finding`, that reads
-    nothing back. Findings are re-validated and redacted on the host.
-  - Each finding becomes a proposed fix ticket; only a High one is admitted by the envelope, at
-    most five a wave (P2-R10). Lower severities wait for a person.
-  - A finding never touches a verdict or a landed commit (ADR-19).
-- **Consequences.** A reviewer's text becomes an author's brief, fenced, redacted and capped, and
-  the result must pass the same gates: the same posture as spec → author. `reviewRoster: []`
-  turns it off without touching anything else.
-- **Status.** Decided (P2-R10).
-
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required

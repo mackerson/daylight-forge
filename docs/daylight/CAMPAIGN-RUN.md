@@ -1,7 +1,7 @@
-# Campaigns
+# Running campaigns
 
-<!-- WS-R6 sections. WS-R5's (the plan file, approve-plan, authorize-campaign, assumptions, retry,
-agent sessions) come first when the two branches merge; these follow them. -->
+How a campaign runs once its plan is approved and it is authorized (WS-R6). The plan file,
+`approve-plan`, `authorize-campaign`, assumptions and `retry` are in docs/daylight/CAMPAIGN.md.
 
 ## Campaign gates and the lock
 
@@ -55,15 +55,25 @@ Each pass derives every ticket's status from rows (never stored): `superseded`, 
 (its author asked for a dependency; the ticket is parked and the loop goes on), `landed`
 (integrated and reachable from the integration ref), `blocked`. Ready tickets are dispatched in
 plan order, round-robin across lanes, within the concurrency and each lane's `maxParallel`
-(the FIX lane: one at a time). Every attempt starts from the current integration tip, not the
-ticket mission's first base, which keeps conflicts small.
+(the FIX lane: one at a time). A plan ticket runs when the authorization names it; a generated one
+(a fix or a follow-up) when WS-R5 says its work item was admitted, by the envelope or by a person.
+Every attempt starts from the current integration tip, not the ticket mission's first base,
+which keeps conflicts small. If WS-R5 refuses a ticket's grant, that ticket is blocked for the
+run and the others go on.
 
-Spend is reserved before launch: the attempt's ceiling, `min(the mission's remaining budget,
-the campaign's remaining cap)`, is handed to the runner and stored on `attempts.max_cost_usd`
-(P2-R18). A launch that would pass the cap waits for a running attempt to free its reservation;
-with nothing running, the campaign halts `spend-cap`. Any finished attempt whose cost is unknown
-halts it `spend-unknown` (P2-R11): an unknown is never charged at the cap and never summed as
-zero. Spend past the cap halts `spend-breach`.
+Spend is reserved before every launch, wave reviewers included: the attempt's ceiling,
+`min(the mission's remaining budget, the campaign's remaining cap)`, is handed to the runner and
+stored on `attempts.max_cost_usd` (P2-R18, P2-R35). A launch that would pass the cap waits for a
+running attempt to free its reservation; with nothing running, the campaign halts `spend-cap`.
+An attempt whose cost is unknown halts the campaign `spend-unknown` as it ends, before its
+candidate can land (P2-R11): an unknown is never charged at the cap and never summed as zero.
+Spend past the cap halts `spend-breach`. A ticket that has used its own budget
+(`min(ticket.maxUsd, maxUsdPerMission)`) is blocked with a need; that never halts the campaign.
+
+While a campaign is halted or stopped nothing is dispatched, integrated or reviewed. A candidate
+already accepted when a halt arrives stays accepted; its integration is abandoned, and once a
+person resumes the campaign (or adopts a moved tip) it is integrated again onto the tip and
+re-evaluated there, without a new attempt.
 
 A ready ticket whose mission is refused at preflight (no author, a stale crate snapshot, an
 invalid policy, no sandbox) is closed `inconclusive` with the refusal as its reason, once, and
@@ -106,8 +116,11 @@ An accepted candidate lands in this order: the per-mission ref
 from the tip the candidate was put onto; then one `BEGIN IMMEDIATE` holding WS-R5's envelope
 check, the derived `integrate-candidate` decision on the ticket mission, the application
 (`appliedBy = campaign:<id>`, base = the tip) and the integration's move to `integrated`
-(P2-R22). A ref that moved underneath refuses the landing and the candidate is integrated again
-onto the new tip; a store refusal puts both refs back by compare-and-swap. The ticket mission
+(P2-R22). Nothing lands that is not `accepted-by-gates` on that integration's own tree against
+the current lock, whoever calls (P2-R35). A ref that moved underneath refuses the landing and the
+candidate is integrated again onto the new tip; a store refusal puts both refs back by
+compare-and-swap. A diff that cannot be integrated at all (a mode, a size, a digest, git itself)
+becomes the candidate's `gates-invalid` verdict and blocks the ticket. The ticket mission
 then closes `succeeded` (ADR-23) and its dependents become ready.
 
 ## Repair
@@ -120,8 +133,9 @@ public checks failed with the tail of their output (redacted, at most 8 KiB each
 how many holdouts failed (a number, never an id, path or output), the conflicted paths, the
 violated policy rules, and the author's own prior diff (redacted, at most 64 KiB). Exhausted, the
 ticket mission goes `blocked` with a `blocked` need; its dependents stay `waiting` and other
-lanes carry on. A `gates-invalid` or `no-diff` candidate blocks at once: another attempt would
-not cure it.
+lanes carry on. `gates-inconclusive` is repaired once; a second one blocks, because then the
+check is unsure, not the change. A `gates-invalid` or `no-diff` candidate blocks at once: another
+attempt would not cure it.
 
 ## Wave review and the fix lane
 
@@ -132,10 +146,13 @@ materialised tree of the wave's last commit (not the checkout). A reviewer's one
 `report_finding`, which reads nothing back; findings are re-validated and redacted on the host
 (a path the wave changed, a severity, a one-line title, at most 4 KiB of statement), recorded
 once each, and marked corroborated when another reviewer filed the same path and title. Review
-runs alongside dispatch, and its spend counts against the campaign cap.
+runs alongside dispatch. It is reserved like an attempt: checked against the cap and any halt
+before it starts, its audit mission's budget is `maxUsdPerMission` within what the cap leaves,
+and each reviewer records its share on `attempts.max_cost_usd`. A wave whose review never ran or
+was cut off by a crash is reviewed by the next run.
 
-Each finding becomes one proposed fix ticket (`FIX.<wave>.<n>`, lane `FIX`, scope the finding's
-path, the plan's default acceptance). WS-R5's envelope admits a High one only, at most
+Each finding becomes one proposed fix ticket, filed by WS-R5 (`FIX.<wave>.<n>`, lane `FIX`, scope
+the finding's path, the plan's default acceptance). WS-R5's envelope admits a High one only, at most
 `fixLane.maxTicketsPerWave` (≤ 5) a wave (P2-R10); anything else waits for a person. A finding
 never changes a verdict or a landed commit (ADR-19): it only creates work that passes the same
 gates, and a reviewer's text reaches the fix author fenced, redacted and capped.
@@ -177,3 +194,11 @@ Derived from rows and the integration ref on every call: tickets by lane and sta
 how many landed, the authorization and any halt, assumptions pending the owner, needs, spend as
 `≥ $X (N unknown)` when anything is unknown, and each wave's findings. `--write` puts STATUS.md
 under `<out>/campaigns/<id>/`; nothing is ever written into the target repository (P2-R13).
+
+## Events
+
+`campaign.started`, `.resumed`, `.finished`, `.integration.*`, `.gate.evaluated`,
+`.candidate.integrated`, `.wave.closed`, `.finding.recorded`, `.spend.*` and `.ticket.landed`,
+`.blocked` and `.parked` go on the campaign mission; `campaign.ticket.dispatched`,
+`campaign.mission.authorized` and `campaign.repair.queued` on the ticket mission (§4.8). A
+derived STATUS file is the plan's `statusPath`, protected for authors when `derivedStatus` is set.

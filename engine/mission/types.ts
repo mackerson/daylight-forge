@@ -425,7 +425,7 @@ export type ExperimentConclusion =
  * `probe` is a P0 experiment about a claim. `gate` is an acceptance test the author is shown;
  * `holdout` is one it is not. `regression` is a campaign's project-wide gate, which must pass at
  * the campaign base and on every integrated tree; `acceptance` is a test a campaign author wrote
- * for its own ticket, run and recorded, never locked (docs/daylight/CAMPAIGN.md).
+ * for its own ticket, run and recorded, never locked (docs/daylight/CAMPAIGN-RUN.md).
  */
 export type ExperimentRole = 'probe' | 'gate' | 'holdout' | 'regression' | 'acceptance';
 
@@ -663,7 +663,7 @@ export interface Need {
 //
 // The director lands a campaign's tickets on its own integration ref by plumbing, judges each on
 // the integrated tree, repairs what fails, and reviews each wave of landings blind. Rows only;
-// docs/daylight/CAMPAIGN.md, ADR-38, ADR-39.
+// docs/daylight/CAMPAIGN-RUN.md, ADR-38, ADR-39.
 
 /** A candidate's diff on its way onto the integration tip. `conflict` and `rejected` are final. */
 export type IntegrationState = 'pending' | 'evaluating' | 'integrated' | 'conflict' | 'rejected' | 'abandoned';
