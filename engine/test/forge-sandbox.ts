@@ -267,6 +267,28 @@ section('exec is off by default and reachable only from the row');
   check('a binary outside /usr/bin is refused', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: [mock] })));
 }
 
+section('exec refusals name no host path (review L1, probe F)');
+{
+  const planted = path.join(tmp, 'tree-planted-git');
+  fs.mkdirSync(path.join(planted, '.git'), { recursive: true });
+  const launch = () => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: planted, out, home, command: ['/usr/bin/true'] });
+  const dirWhy = throws(launch) ?? '';
+  check('a planted /work/.git directory is refused as /work, naming no host path',
+    /^\/work has a \.git/.test(dirWhy) && !dirWhy.includes(tmp) && !dirWhy.includes(planted), dirWhy);
+  fs.rmSync(path.join(planted, '.git'), { recursive: true });
+  fs.symlinkSync('/nonexistent-target', path.join(planted, '.git'));
+  const linkWhy = throws(launch) ?? '';
+  check('so is a dangling symlink named .git (lstat, not exists)', /^\/work has a \.git/.test(linkWhy), linkWhy);
+  fs.rmSync(path.join(planted, '.git'));
+  const server = new McpServer({ name: 't', version: '0' });
+  registerRunTool(server, { attempt: attemptOf({ exec: true }), tree: planted, out, profile: AVAILABLE });
+  fs.mkdirSync(path.join(planted, '.git'));
+  const handler = (server as unknown as { _registeredTools: Record<string, { handler?: (a: unknown) => Promise<{ content: Array<{ text: string }> }>; callback?: (a: unknown) => Promise<{ content: Array<{ text: string }> }> }> })._registeredTools.run;
+  const reply = await (handler.handler ?? handler.callback)!({ argv: ['/usr/bin/true'] });
+  const text = reply.content[0].text;
+  check('the run tool\'s error reply names no host path either', /\/work has a \.git/.test(text) && !text.includes(tmp), text);
+}
+
 section('fail closed');
 {
   check('no bwrap: the review profile throws', throws(() => profileLaunch(UNAVAILABLE, optsFor('review')))?.includes('sandbox unavailable') === true);
