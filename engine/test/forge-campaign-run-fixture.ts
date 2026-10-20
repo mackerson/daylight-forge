@@ -107,10 +107,14 @@ export const ENVELOPE: Omit<CampaignEnvelope, 'notAfter'> = {
   identity: { name: 'Daylight campaign', email: 'campaign@daylight.invalid' },
 };
 
-/** A human `authorize-campaign` decision on the campaign: the envelope the director runs under. */
+/**
+ * A human `authorize-campaign` decision on the campaign: the envelope the director runs under.
+ * Written raw because the store records one through R5's authorizeCampaign only, which checks a real
+ * plan and lock; these tests run the director under a synthetic envelope.
+ */
 export function authorizeCampaign(ctx: DaylightContext, campaign: Mission, env: Partial<CampaignEnvelope> = {}): Decision {
   const scope: AuthorizeCampaignScope = { operation: 'authorize-campaign', ...ENVELOPE, notAfter: Date.now() + 3_600_000, ...env };
-  return ctx.store.recordDecision({
+  return rawDecision(ctx.store, {
     missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, actor: ACTOR, kind: 'approve', rationale: 'fixture',
     scope: scope as unknown as Record<string, unknown>, artifactIds: [],
   });
@@ -148,6 +152,7 @@ export function approveWorkItem(ctx: DaylightContext, campaign: Mission, workIte
 /** An approved work item on the campaign and its implement mission, authorized by a person (the surgical path). */
 export function makeTicketMission(ctx: DaylightContext, campaign: Mission, ticketId: string, base: string, scope?: string[]): Mission {
   const w = { id: makeWorkItem(ctx, campaign, ticketId) };
+  storeTicket(ctx, ticketRow(campaign, w.id, { id: ticketId, lane: 'A', scope: scope ?? [] }));
   const m = ctx.store.createMission({
     projectId: campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: base, parentId: campaign.id,
     workItemId: w.id, scope: { paths: scope ?? [] },
@@ -194,6 +199,11 @@ export function fakeDeps(o: { refuse?: string; seen?: EnvelopeRequest[] } = {}):
   };
 }
 
+/** Writes `t`'s campaign_tickets row unless it is there: the store builds a campaign's child only for a stored ticket. */
+export function storeTicket(ctx: DaylightContext, t: CampaignTicket): void {
+  if (!ctx.store.campaignTicket(t.campaignId, t.ticketId)) ctx.store.insertCampaignTickets([t]);
+}
+
 /** A plan ticket row as R5 will store it. */
 export function ticketRow(campaign: Mission, workItemId: string, t: { id: string; lane: string; dependsOn?: string[]; scope: string[]; acceptance?: CampaignTicket['acceptance']; budget?: CampaignTicket['budget']; origin?: CampaignTicket['origin']; blocksOn?: string[] }): CampaignTicket {
   return {
@@ -217,6 +227,7 @@ export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFile
     authorizationRefusal: () => null,
     startTicketMission: (_c, ticketId, base) => {
       const t = tickets.find((x) => x.ticketId === ticketId)!;
+      storeTicket(ctx, t);
       const env = auth().scope as unknown as CampaignEnvelope;
       const m = ctx.store.createMission({
         projectId: campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: base, parentId: campaign.id,
@@ -247,6 +258,7 @@ export function testHost(ctx: DaylightContext, campaign: Mission, plan: PlanFile
         id: ticketId, lane: 'FIX', scope: [finding.path], acceptance: plan.defaults?.acceptance, budget: { maxUsd: env.fixLane.maxUsdPerTicket }, origin: 'fix',
       });
       tickets.push({ ...row, sourceRef: finding.id });
+      storeTicket(ctx, tickets.at(-1)!);
       return ticketId;
     },
     admitIfWithinEnvelope: (_c, workItemId, wave) => {
