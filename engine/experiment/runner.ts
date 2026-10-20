@@ -148,6 +148,23 @@ export function harnessHolds(
   return { ok: true, legacy: false, ...(typeof cargoTestPath === 'string' ? { cargoTestPath } : {}) };
 }
 
+/** What stands for a holdout's test path in an event (P2-R37): its basename never leaves the gate runner. */
+export const HOLDOUT_REDACTED = '<holdout>';
+
+/**
+ * `payload` with every occurrence of a holdout's test path, in any string at any depth, replaced
+ * by `<holdout>`. Events are read outside the gate runner; the path names the holdout's file.
+ * A payload of any other role is returned as it is.
+ */
+export function withholdHoldoutPath<T>(role: ExperimentRole | undefined, testPath: string | undefined, payload: T): T {
+  if (role !== 'holdout' || !testPath) return payload;
+  const walk = (v: unknown): unknown => typeof v === 'string' ? v.split(testPath).join(HOLDOUT_REDACTED)
+    : Array.isArray(v) ? v.map(walk)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))
+    : v;
+  return walk(payload) as T;
+}
+
 export function registerExperiment(input: RegisterInput): Experiment {
   if (isEmptyPrediction(input.prediction)) {
     throw new InvalidExperiment(
@@ -218,10 +235,10 @@ export function registerExperiment(input: RegisterInput): Experiment {
     category: 'experiment',
     name: 'experiment.registered',
     artifactIds: [testArtifact.id, expectedArtifact.id],
-    payload: {
+    payload: withholdHoldoutPath(input.role, rel, {
       experimentId: experiment.id, subject: input.subject, predicate: input.predicate,
       harnessDigest: experiment.harnessDigest, command: input.command,
-    },
+    }),
   });
   return experiment;
 }
@@ -616,7 +633,9 @@ function recorder(
       category: 'experiment',
       name,
       artifactIds,
-      payload: { experimentId: experiment.id, ...(target ? { target: target.kind, diffDigest: target.diffDigest } : {}), ...payload },
+      payload: withholdHoldoutPath(experiment.role, experiment.testArtifact.path, {
+        experimentId: experiment.id, ...(target ? { target: target.kind, diffDigest: target.diffDigest } : {}), ...payload,
+      }),
     });
   const record = (r: ExecutionRecord) => {
     const full: ExecutionRecord = target ? { ...r, target } : r;

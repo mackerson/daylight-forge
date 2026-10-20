@@ -18,6 +18,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { openDaylight } from '../mission/context.ts';
+import { holdoutContent } from '../mission/orchestrate.ts';
 import type { MissionStore } from '../mission/store.ts';
 import type {
   Candidate, CandidateFile, DaylightEventInput, Experiment, GateEvaluation, LockGatesScope,
@@ -690,6 +691,32 @@ if (!live.available) {
     check('a candidate built against the earlier lock is gates-invalid', stale.verdict === 'gates-invalid'
       && stale.verdictReasons.some((r) => r.includes('gate set')), stale.verdictReasons.join());
   }
+}
+
+section('a holdout\'s basename reaches no event payload and no shared artifact (P2-R37)');
+{
+  const BASENAME = 'zz-withheld-holdout.test.js';
+  const m = newMission('holdout redaction');
+  const from = events.length;
+  const h = registerGate(ctx, { missionId: m.id, role: 'holdout', testSource: HOLDOUT_TEST, basename: BASENAME, prediction: PASS });
+  await baseline({ ...ctx, sandbox: UNAVAILABLE }, m.id, { experimentIds: [h.id] });
+  if (live.available) await baseline(ctx, m.id, { experimentIds: [h.id] });
+  const mine = events.slice(from);
+  const reg = mine.find((e) => e.name === 'experiment.registered');
+  check('experiment.registered is still written, its path redacted',
+    !!reg && reg.payload.subject === '<holdout>' && (reg.payload.command as string[]).at(-1) === '<holdout>', JSON.stringify(reg?.payload));
+  const leaks = mine.filter((e) => JSON.stringify(e.payload).includes(BASENAME));
+  check('no event payload names the basename', mine.length > 2 && leaks.length === 0, JSON.stringify(leaks.map((e) => [e.name, e.payload])).slice(0, 800));
+  const stored = dctx.events.forMission(m.id);
+  check('nor does any stored event of the mission', stored.length > 0 && !stored.some((e) => JSON.stringify(e).includes(BASENAME)));
+  const withheld = holdoutContent(dctx, [m.id]).artifacts;
+  const dir = path.join(dctx.artifacts.dir, 'sha256');
+  const shared = fs.readdirSync(dir).filter((f) => /^[0-9a-f]{64}$/.test(f) && !withheld.has(`sha256:${f}`));
+  const named = shared.filter((f) => fs.readFileSync(path.join(dir, f)).includes(BASENAME));
+  check('nor any artifact outside the holdout\'s withheld content', shared.length > 0 && named.length === 0, named.join());
+  const refs = [...new Set(mine.flatMap((e) => e.artifactIds ?? []))].map((id) => dctx.store.artifact(id)).filter((a) => !!a && !withheld.has(a.id));
+  check('and no artifact row an event names carries it as its path', refs.every((a) => !JSON.stringify(a).includes(BASENAME)));
+  check('a gate\'s path is not redacted', named.length === 0 && events.some((e) => e.name === 'experiment.registered' && e.payload.subject === gate.testArtifact.path));
 }
 
 section('nothing is left behind');

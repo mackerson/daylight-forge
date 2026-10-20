@@ -327,8 +327,8 @@ check('integrationRefusals is empty', integrationRefusals({ store: ctx.store, re
   integrationRefusals({ store: ctx.store, repoRoot: repo }, campaignId).join('; '));
 check('applicationRefusals is empty', applicationRefusals({ store: ctx.store, repoRoot: repo }).length === 0, applicationRefusals({ store: ctx.store, repoRoot: repo }).join('; '));
 const events = children().concat(ctx.store.mission(campaignId)!).flatMap((m) => ctx.events.forMission(m.id));
-const leaks = events.filter((e) => e.name.startsWith('campaign.') && (JSON.stringify(e.payload).includes(SENTINEL) || JSON.stringify(e.payload).includes('hidden.test.js')));
-check('no campaign event names the holdout', leaks.length === 0, JSON.stringify(leaks.map((e) => [e.name, e.payload])).slice(0, 1500));
+const leaks = events.filter((e) => JSON.stringify(e.payload).includes(SENTINEL) || JSON.stringify(e.payload).includes('hidden.test.js'));
+check('no event names the holdout (P2-R37: every event, not only campaign.*)', events.some((e) => e.name === 'experiment.registered') && leaks.length === 0, JSON.stringify(leaks.map((e) => [e.name, e.payload])).slice(0, 1500));
 
 ctx.close();
 done();
