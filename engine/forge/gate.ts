@@ -55,6 +55,8 @@ export interface GateContext {
 }
 
 const GATE_ROLES: readonly ExperimentRole[] = ['gate', 'holdout'];
+/** A campaign mission's experiments (docs/daylight/CAMPAIGN-RUN.md): registered here, locked by `campaign lock`. */
+const CAMPAIGN_ROLES: readonly ExperimentRole[] = ['regression', 'gate', 'holdout', 'acceptance'];
 const TEST_TOKEN = '{test}';
 /** `node --test` prints a `tests N` summary under tap and spec; the dot reporter does not. */
 export const DEFAULT_GATE_COMMAND = ['node', '--test', '--test-reporter=tap', TEST_TOKEN];
@@ -96,18 +98,24 @@ export interface RegisterGateInput {
   harness?: GateHarness;
   /** Cargo only: the repo-relative crate directory whose `tests/` the test is placed in. Defaults to `.`. */
   crate?: string;
+  /**
+   * A campaign gate's binding (`ticket:<id>`, `campaign`) or an acceptance test's candidate
+   * (`acceptance:<c_id>`). Defaults to the test path. Never rewritten after registration.
+   */
+  subject?: string;
 }
 
 /** The cargo integration-test target a gate's test becomes: a name nothing in a repository already uses. */
 export const cargoTargetOf = (experimentId: string): string => `daylight_${experimentId.replace(/[^A-Za-z0-9_]/g, '_')}`;
 
 export function registerGate(ctx: GateContext, input: RegisterGateInput): Experiment {
-  if (input.role === undefined || !GATE_ROLES.includes(input.role)) {
-    throw new GateRefused(`--role gate|holdout is required and has no default (got ${String(input.role)})`);
+  const campaign = ctx.store.mission(input.missionId)?.kind === 'campaign';
+  if (input.role === undefined || !(campaign ? CAMPAIGN_ROLES : GATE_ROLES).includes(input.role)) {
+    throw new GateRefused(`--role ${(campaign ? CAMPAIGN_ROLES : GATE_ROLES).join('|')} is required and has no default (got ${String(input.role)})`);
   }
   const harness = input.harness ?? 'node';
   if (harness !== 'node' && harness !== 'cargo') throw new GateRefused(`--harness is node or cargo, not ${String(harness)}`);
-  const m = requireMission(ctx, input.missionId);
+  const m = campaign ? ctx.store.mission(input.missionId)! : requireMission(ctx, input.missionId);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.basename)) {
     throw new GateRefused(`${input.basename} is not a plain file name; a gate's test lives directly in its own directory`);
   }
@@ -150,7 +158,7 @@ export function registerGate(ctx: GateContext, input: RegisterGateInput): Experi
   const x = registerExperiment({
     store: ctx.store, artifacts: ctx.artifacts, events: ctx.events,
     missionId: m.id, projectId: m.projectId, baseRevision: m.baseRevision,
-    subject: testPath, predicate: input.role, claimIds: [],
+    subject: input.subject ?? testPath, predicate: input.role, claimIds: [],
     hypothesis: input.hypothesis ?? `the ${input.role} fails on the base and passes on an acceptable candidate`,
     prediction: p, testSource: input.testSource, testPath, command, role: input.role, id,
     ...(harness === 'cargo' ? { harness, cargoTestPath } : {}),
@@ -172,7 +180,7 @@ export const CARGO_GATE_LIMITS: SandboxLimits = {
 export const CARGO_GATE_TIMEOUT_MS = 600_000;
 
 /** `cache` is the gate build cache: `base` for a baseline, the candidate's key at evaluate. */
-function runContext(ctx: GateContext, x: Experiment, cache: string) {
+export function runContext(ctx: GateContext, x: Experiment, cache: string) {
   const cargo = x.harness === 'cargo';
   return {
     repoRoot: ctx.repoRoot, store: ctx.store, artifacts: ctx.artifacts, events: ctx.events,
@@ -211,7 +219,7 @@ function gateCargo(ctx: GateContext, cache: string): NonNullable<GateRunContext[
   };
 }
 
-function record(
+export function record(
   ctx: GateContext, m: Mission, x: Experiment, r: GateRunResult,
   on: { target: 'base'; revision: string } | { target: 'candidate'; revision: string; candidate: Candidate },
 ): GateEvaluation {
@@ -233,6 +241,28 @@ function record(
     gateEvaluationId: g.id, experimentId: x.id, target: g.target, diffDigest: g.diffDigest,
     harnessDigest: g.harnessDigest, conclusion: g.conclusion,
   }, r.executions.map((e) => e.id));
+  return g;
+}
+
+/**
+ * One check's run on a campaign integration's tree, recorded on the campaign mission (the
+ * experiment's, H11) as an `integrated` evaluation: the integrated commit and the tip →
+ * commit digest, so what was tested is exactly what would land. A holdout's event carries its
+ * role and conclusion only.
+ */
+export function recordIntegrated(
+  ctx: GateContext, campaign: Mission, x: Experiment, r: GateRunResult,
+  i: { id: string; candidateId: string; integratedCommit: string; integratedDiffDigest: string },
+): GateEvaluation {
+  const g = ctx.store.recordGateEvaluation({
+    missionId: campaign.id, projectId: campaign.projectId, revision: i.integratedCommit, experimentId: x.id,
+    candidateId: i.candidateId, target: 'integrated', diffDigest: i.integratedDiffDigest, integrationId: i.id,
+    harnessDigest: x.harnessDigest, executions: r.executions, conclusion: r.conclusion,
+  });
+  emit(ctx, campaign, 'experiment', 'campaign.gate.evaluated', x.role === 'holdout'
+    ? { integrationId: i.id, experimentId: { role: 'holdout' }, conclusion: g.conclusion }
+    : { integrationId: i.id, experimentId: x.id, role: x.role, conclusion: g.conclusion },
+  x.role === 'holdout' ? undefined : r.executions.map((e) => e.id));
   return g;
 }
 

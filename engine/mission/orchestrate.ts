@@ -282,6 +282,18 @@ export interface RunMissionOptions {
   onProgress?: (mission: Mission, note: string) => void;
   /** Redacted console chunks from the running agent, for a live console. */
   onChunk?: (attemptId: string, stream: 'stdout' | 'stderr', text: string) => void;
+  /**
+   * Review this materialised tree instead of the checkout: a campaign's wave review reads the
+   * integration ref's commit, which is not what is checked out (§6.2). Bound read-only like the root.
+   */
+  tree?: string;
+  /**
+   * The MCP server each review attempt gets instead of the claims server, with the tools its
+   * attempts may call. Sandboxed only; no compare step follows (a wave review files findings).
+   */
+  reviewServer?: { serve: (attempt: Attempt) => McpServer; allowedTools: string[] };
+  /** Record each attempt's share of the ceiling on `attempts.max_cost_usd`: a campaign's reservation (P2-R18, P2-R35). */
+  reserve?: boolean;
 }
 
 export interface ReviewPlan {
@@ -409,6 +421,9 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     );
   }
   const sandboxed = role === 'decompose' || (!declined && detected.available);
+  if (opts.reviewServer && (!sandboxed || role !== 'review')) {
+    throw new Error('a custom review server runs only on sandboxed review attempts, over their own socket');
+  }
   const profile = sandboxed ? detected : null;
   if (profile && !profile.available) {
     throw new Error(`${role} attempts run under the bwrap review profile, which cannot be built here: ${profile.why ?? 'unavailable'}`);
@@ -472,7 +487,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   }
   const reviewTasks = ctx.store.tasks(mission.id).filter((t) => t.role === 'review');
   let compareTask = role === 'review' ? ctx.store.tasks(mission.id).find((t) => t.role === 'compare') : undefined;
-  if (role === 'review' && !compareTask && reviewTasks.length) {
+  if (role === 'review' && !opts.reviewServer && !compareTask && reviewTasks.length) {
     compareTask = ctx.store.createTask({
       missionId: mission.id,
       role: 'compare',
@@ -582,6 +597,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     const token = sandboxed ? newMcpToken() : undefined;
     const attempt = ctx.store.startAttempt({
       taskId: task.id, runnerId, sessionId: session, credential,
+      ...(opts.reserve && share !== undefined ? { maxCostUsd: share } : {}),
       ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : declined ? { sandbox: { reason: declined } } : {}),
     });
     open.add(attempt.id);
@@ -592,14 +608,14 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
 
     const run: Parameters<typeof captureRun>[1] = {
       prompt: plan.prompt,
-      cwd: root,
+      cwd: opts.tree ?? root,
       mcpConfigPath: plan.mcpConfigPath,
       session,
       model: spec.model,
       timeoutMs,
       maxTurns: 40,
       maxCost: share,
-      ...(role === 'decompose' ? { allowedTools: roleAllowlist('decompose') } : {}),
+      ...(role === 'decompose' ? { allowedTools: roleAllowlist('decompose') } : opts.reviewServer ? { allowedTools: opts.reviewServer.allowedTools } : {}),
     };
     const capture: Parameters<typeof captureRun>[2] = {
       store: ctx.store,
@@ -633,10 +649,11 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         if (mock.status !== 'available') throw new Error(mock.why);
         const serve = (): McpServer => (ctx.store.task(row.taskId)?.role === 'decompose'
           ? createDecomposeServer({ dir: ctx.out, attemptId: row.id, agentTool: spec.tool, model: spec.model, check: decomposeCheck }).server
-          : createServer({ dir: ctx.out, session, agentTool: spec.tool, model: spec.model, blindPrefix: mission.id }).server);
+          : opts.reviewServer ? opts.reviewServer.serve(row)
+            : createServer({ dir: ctx.out, session, agentTool: spec.tool, model: spec.model, blindPrefix: mission.id }).server);
         result = await withAttemptSocket(ctx, row, token!, serve, (mcp) => captureRun(mock.adapter, {
           ...run,
-          launch: reviewLauncher({ attempt: row, repo: root, mounts: mock.mounts, mcp, out: ctx.out, profile: profile! }),
+          launch: reviewLauncher({ attempt: row, repo: opts.tree ?? root, mounts: mock.mounts, mcp, out: ctx.out, profile: profile! }),
         }, capture));
       } catch (err) {
         // Fail closed: a review profile that cannot be built is a failed attempt, never an unsandboxed one.
@@ -692,7 +709,8 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     return finish(report(undefined, spent, costKnown));
   }
   // A decompose run ends when its attempts do; what they proposed is ingested by decompose().
-  if (role === 'decompose') return finish(report(undefined, spent, costKnown));
+  // So does a run with its own review server: what it filed is ingested by its caller.
+  if (role === 'decompose' || opts.reviewServer) return finish(report(undefined, spent, costKnown));
 
   if (compareTask && ctx.store.task(compareTask.id)!.state !== 'done') {
     const comparison = runCompare(ctx, ctx.store.mission(mission.id)!, compareTask.id);

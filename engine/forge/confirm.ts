@@ -50,6 +50,10 @@ type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate'
 export interface ConfirmOptions {
   /** `lock-gates`: exactly the experiments the lock will name. Required. */
   experimentIds?: readonly string[];
+  /** `lock-campaign-gates`: whether the lock ratchets (P2-R17), with `experimentIds`. Required. */
+  ratchet?: boolean;
+  /** `adopt-integration-tip`: the move being adopted and the halt it answers. Required. */
+  adopt?: { ref: string; from: string; to: string; haltDecisionId: string };
   /** `authorize-mission`: what will be granted. Required. */
   permissions?: { write: boolean; execute: boolean };
   /** `authorize-mission`: the budget that will be set, or null to leave it. Required. */
@@ -106,6 +110,31 @@ export function confirmDigest(
       return out(gateSetDigest, [
         `lock ${experiments.length} gate(s) on mission ${subjectId}`,
         ...experiments.map((x) => `${x.role} ${x.id} harness ${x.harnessDigest}`),
+      ]);
+    }
+    case 'lock-campaign-gates': {
+      // Read through a cast so `Store` stays as it is (WS-R5 widens it too).
+      const store = ctx.store as Partial<Pick<MissionStore, 'campaignGateSet'>>;
+      if (!opts.experimentIds || opts.ratchet === undefined || !store.campaignGateSet) {
+        throw new Error('lock-campaign-gates confirms a chosen set and a ratchet flag; pass the experiment ids and ratchet');
+      }
+      // The gate-set digest, which covers bindings, roles and the ratchet flag: what the lock records.
+      const { experiments, bindings, gateSetDigest } = store.campaignGateSet.call(ctx.store, subjectId, opts.experimentIds, opts.ratchet);
+      const holdouts = experiments.filter((x) => x.role === 'holdout').length;
+      return out(gateSetDigest, [
+        `lock ${experiments.length} campaign gate(s) on campaign ${subjectId}, ratchet ${opts.ratchet ? 'on' : 'off'}`,
+        ...experiments.filter((x) => x.role !== 'holdout')
+          .map((x) => `${x.role} ${x.id} ${bindings[x.id] ? `ticket ${bindings[x.id]}` : 'every ticket'} harness ${x.harnessDigest}`),
+        ...(holdouts ? [`${holdouts} holdout(s), counted, not named`] : []),
+      ]);
+    }
+    case 'adopt-integration-tip': {
+      const a = opts.adopt;
+      if (!a) throw new Error('adopt-integration-tip confirms a move of the integration ref; pass the ref, from, to and the halt');
+      return out(digestOf(canonicalJson({ operation, ...a, campaignId: subjectId })), [
+        `adopt ${a.ref} at ${a.to} for campaign ${subjectId}`,
+        `the rows explain it up to ${a.from}; everything after is recorded as adopted by you, not landed by the director`,
+        `answers halt ${a.haltDecisionId}`,
       ]);
     }
     case 'approve-work-item':

@@ -39,7 +39,7 @@ export class ApplyFailed extends Error {
 }
 
 /** Config a repository could set to make one of these commands run something or write otherwise. */
-const REAL_REPO_CONFIG = [
+export const REAL_REPO_CONFIG = [
   ...HARDENED_GIT_CONFIG,
   '-c', 'commit.gpgSign=false', '-c', 'gpg.program=false', '-c', 'i18n.commitEncoding=UTF-8',
   '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
@@ -57,7 +57,7 @@ interface GitOpts {
   env?: Record<string, string>;
 }
 
-function gitIn(where: { repo: string } | { gitDir: string }, args: string[], o: GitOpts = {}): Buffer {
+export function gitIn(where: { repo: string } | { gitDir: string }, args: string[], o: GitOpts = {}): Buffer {
   const loc = 'repo' in where ? ['-C', where.repo] : [`--git-dir=${where.gitDir}`];
   const config = 'repo' in where ? REAL_REPO_CONFIG : [...HARDENED_GIT_CONFIG, '-c', 'core.autocrlf=false'];
   return execFileSync('git', [...config, ...loc, ...args], {
@@ -78,14 +78,14 @@ function succeeds(fn: () => unknown): boolean {
 }
 
 /** A bare repository with no config, hooks or template, reading the real object store. */
-interface Scratch {
+export interface Scratch {
   gitDir: string;
   index: string;
   realIndex: string;
   dispose(): void;
 }
 
-function scratchFor(repo: string): Scratch {
+export function scratchFor(repo: string): Scratch {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-apply-'));
   const gitDir = path.join(base, 'git');
   const dispose = () => fs.rmSync(base, { recursive: true, force: true });
@@ -104,11 +104,11 @@ function scratchFor(repo: string): Scratch {
 }
 
 /** `base` → `commit` with capture's flags (`diff.ts`), from the scratch's empty config. */
-function rediff(s: Scratch, base: string, commit: string): Buffer {
+export function rediff(s: Scratch, base: string, commit: string): Buffer {
   return gitIn({ gitDir: s.gitDir }, ['diff', ...DIFF_FLAGS, base, commit, '--']);
 }
 
-interface RawEntry {
+export interface RawEntry {
   newMode: string;
   newSha: string;
   status: string;
@@ -116,7 +116,7 @@ interface RawEntry {
 }
 
 /** `diff-tree --raw -z`: `:oldmode newmode oldsha newsha status\0path\0` per file. */
-function parseRaw(raw: string): RawEntry[] {
+export function parseRaw(raw: string): RawEntry[] {
   const parts = raw.split('\0');
   const out: RawEntry[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -350,12 +350,25 @@ export function applicationRefusals(ctx: Pick<DecideContext, 'store' | 'repoRoot
         out.push(`${p.id}: candidate ${p.candidateId} does not exist`);
         continue;
       }
-      try {
-        approvingDecision(c, ctx.store.decision(p.decisionId));
-      } catch (err) {
-        out.push(`${p.id}: ${(err as Error).message}`);
+      const d = ctx.store.decision(p.decisionId);
+      // A campaign landing is onto the integration tip: its parent is that tip, and its diff is
+      // the integrated one the derived decision names (§4.3), not the candidate's own.
+      const integrated = d?.scope.operation === 'integrate-candidate' ? d.scope : null;
+      if (integrated) {
+        if (d!.kind !== 'approve' || integrated.diffDigest !== c.diffArtifact.digest || integrated.onto !== p.baseCommit
+          || integrated.integratedCommit !== p.commit || p.appliedBy !== d!.actor) {
+          out.push(`${p.id}: decision ${p.decisionId} does not integrate candidate ${c.id} as ${p.commit} onto ${p.baseCommit}`);
+        }
+      } else {
+        try {
+          approvingDecision(c, d);
+        } catch (err) {
+          out.push(`${p.id}: ${(err as Error).message}`);
+        }
       }
-      if (ctx.store.decision(p.decisionId)?.scope.candidateId !== c.id) out.push(`${p.id}: decision ${p.decisionId} is not about ${c.id}`);
+      if (d?.scope.candidateId !== c.id) out.push(`${p.id}: decision ${p.decisionId} is not about ${c.id}`);
+      const base = integrated ? p.baseCommit : c.baseCommit;
+      const expected = integrated ? String(integrated.integratedDiffDigest) : c.diffArtifact.digest;
       if (!/^[0-9a-f]{40}$/.test(p.commit) || !succeeds(() => gitIn({ gitDir: s.gitDir }, ['cat-file', '-e', `${p.commit}^{commit}`]))) {
         out.push(`${p.id}: commit ${p.commit} is not in the repository`);
         continue;
@@ -366,11 +379,11 @@ export function applicationRefusals(ctx: Pick<DecideContext, 'store' | 'repoRoot
       } catch {
         // A root commit has no parent, which is itself the breach reported below.
       }
-      if (parent !== c.baseCommit) out.push(`${p.id}: commit ${p.commit}'s parent is ${parent}, not the base ${c.baseCommit}`);
+      if (parent !== base) out.push(`${p.id}: commit ${p.commit}'s parent is ${parent}, not the base ${base}`);
       const tree = text(gitIn({ gitDir: s.gitDir }, ['rev-parse', '--verify', `${p.commit}^{tree}`]));
       if (tree !== p.tree) out.push(`${p.id}: commit ${p.commit}'s tree is ${tree}, not the recorded ${p.tree}`);
-      const digest = digestOf(rediff(s, c.baseCommit, p.commit));
-      if (digest !== c.diffArtifact.digest) out.push(`${p.id}: commit ${p.commit} diffs to ${digest}, not ${c.diffArtifact.digest}`);
+      const digest = digestOf(rediff(s, base, p.commit));
+      if (digest !== expected) out.push(`${p.id}: commit ${p.commit} diffs to ${digest}, not ${expected}`);
     }
   } finally {
     s.dispose();

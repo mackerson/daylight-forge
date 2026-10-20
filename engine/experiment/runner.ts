@@ -90,7 +90,8 @@ export interface RegisterInput {
   cargoTestPath?: string;
 }
 
-const isForgeRole = (role: ExperimentRole | undefined): boolean => role === 'gate' || role === 'holdout';
+const isForgeRole = (role: ExperimentRole | undefined): boolean =>
+  role === 'gate' || role === 'holdout' || role === 'regression' || role === 'acceptance';
 
 const isEmptyPrediction = (p: ExpectedObservation): boolean =>
   p.exitCode === undefined && !p.stdoutIncludes?.length && !p.stderrIncludes?.length;

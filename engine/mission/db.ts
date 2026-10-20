@@ -177,7 +177,7 @@ CREATE TABLE experiments (
   executions        TEXT NOT NULL,
   conclusion        TEXT NOT NULL,
   limitations       TEXT NOT NULL,
-  role              TEXT NOT NULL DEFAULT 'probe' CHECK (role IN ('probe','gate','holdout')),
+  role              TEXT NOT NULL DEFAULT 'probe' CHECK (role IN ('probe','gate','holdout','regression','acceptance')),
   locked_by         TEXT REFERENCES decisions(id),
   started_at        INTEGER,
   created_at        INTEGER NOT NULL,
@@ -313,8 +313,9 @@ CREATE TABLE gate_evaluations (
   revision       TEXT NOT NULL,
   experiment_id  TEXT NOT NULL REFERENCES experiments(id),
   candidate_id   TEXT REFERENCES candidates(id),
-  target         TEXT NOT NULL CHECK (target IN ('base','candidate')),
+  target         TEXT NOT NULL CHECK (target IN ('base','candidate','integrated')),
   diff_digest    TEXT,
+  integration_id TEXT REFERENCES integrations(id),
   harness_digest TEXT NOT NULL,
   executions     TEXT NOT NULL,
   conclusion     TEXT NOT NULL,
@@ -354,6 +355,26 @@ CREATE TABLE ingest_sources (
   PRIMARY KEY (session_id, agent_id)
 );
 CREATE INDEX ingest_sources_project ON ingest_sources(project_id, mission_id);
+
+-- A campaign candidate on its way onto the integration ref (WS-R6). An integrated row names the
+-- derived decision that landed it; a candidate lands at most once.
+CREATE TABLE integrations (
+  id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES missions(id), project_id TEXT NOT NULL, mission_id TEXT NOT NULL REFERENCES missions(id),
+  candidate_id TEXT NOT NULL REFERENCES candidates(id), ref TEXT NOT NULL, onto TEXT NOT NULL, candidate_base TEXT NOT NULL,
+  method TEXT CHECK (method IN ('apply','three-way')), integrated_commit TEXT, integrated_tree TEXT, integrated_diff_digest TEXT,
+  state TEXT NOT NULL CHECK (state IN ('pending','evaluating','integrated','conflict','rejected','abandoned')),
+  conflict_paths TEXT NOT NULL DEFAULT '[]', acceptance_vacuous INTEGER, decision_id TEXT REFERENCES decisions(id),
+  application_id TEXT REFERENCES applications(id), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (state <> 'integrated' OR (integrated_commit IS NOT NULL AND decision_id IS NOT NULL)));
+CREATE INDEX integrations_campaign ON integrations(campaign_id, created_at);
+CREATE UNIQUE INDEX integrations_landed ON integrations(candidate_id) WHERE state = 'integrated';
+CREATE TABLE campaign_waves (campaign_id TEXT NOT NULL REFERENCES missions(id), seq INTEGER NOT NULL, from_commit TEXT NOT NULL,
+  to_commit TEXT NOT NULL, ticket_ids TEXT NOT NULL, review_mission_id TEXT REFERENCES missions(id), closed_at INTEGER NOT NULL,
+  PRIMARY KEY (campaign_id, seq));
+CREATE TABLE findings (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, campaign_id TEXT NOT NULL REFERENCES missions(id),
+  wave_seq INTEGER NOT NULL, review_mission_id TEXT NOT NULL REFERENCES missions(id), attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  path TEXT NOT NULL, severity TEXT NOT NULL CHECK (severity IN ('high','medium','low')), title TEXT NOT NULL, statement TEXT NOT NULL,
+  finding_artifact TEXT NOT NULL, corroborated_by TEXT NOT NULL DEFAULT '[]', fix_ticket_id TEXT, created_at INTEGER NOT NULL);
 `;
 
 /**

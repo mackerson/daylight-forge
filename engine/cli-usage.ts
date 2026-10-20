@@ -74,6 +74,11 @@ usage:
                                   --max-turns N --timeout s --max-attempts N --concurrency N --auto-apply integration-ref|none
                                   [--execute] [--wave-size N] [--review-roster a,b] [--fix-lane 5:1.5|off] [--tickets A,B]
                                   [--not-after 72h] [--identity 'Name <email>'] --rationale '<why>' --confirm <c8>
+                                gate register <c> --role holdout|gate|regression --file <host path> [--ticket T] --expect-exit n --expect-stdout s | gate list <c>
+                                baseline <c> <repo> | lock <c> --ratchet|--no-ratchet --rationale '<why>' [--accept-vacuous x,…] --confirm <c8>
+                                run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run] | status <c> [<repo>] [--write]
+                                halt <c> --rationale '<why>' | resume <c> --halt <d> --rationale '<why>' --confirm <c8>
+                                adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
   node engine/cli.ts assumption list <c> [--status open|pending|confirmed|overturned]
                                 record <c> --question '<q>' --default '<d>' [--ticket T] --rationale '<why>' --confirm <c8>
                                 confirm <u> | decide <u> --value '<v>' | overturn <u> --value '<v>' --follow-up '<s>' [--lane L] [--scope a,b]
