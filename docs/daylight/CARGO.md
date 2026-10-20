@@ -107,9 +107,12 @@ Each cache is bound read-write at `/cargo-target` (`CARGO_TARGET_DIR`) into its 
 | --- | --- | --- | --- |
 | Author | `<out>/cargo/target/author/<missionId>/` | the `run` tool of that mission's authors | wiped by `forge run` whenever a candidate of that mission has a policy violation (`forge.cargo.author-cache.wiped` event); kept otherwise, so it grows with the number of missions until removed by hand |
 | Gate base | `<out>/cargo/target/gate/base/` | baseline runs only | removed on snapshot refresh |
-| Gate candidate | `<out>/cargo/target/gate/<diffDigest16>/` | one candidate's gate runs | created at the start of `evaluate` as a copy of `gate/base/` (`cp -a --reflink=auto`: metadata-only on btrfs/XFS, a plain copy elsewhere); removed when `evaluate` ends |
+| Gate run | `<out>/cargo/target/gate/<diffDigest16>/<runKey>/` | one run of one gate, holdout or acceptance test on a candidate or integration | created for that run alone as a copy of `gate/base/` (`cp -a --reflink=auto`: metadata-only on btrfs/XFS, a plain copy elsewhere); removed when the run ends, whatever happened; the `<diffDigest16>/` directory is removed when `evaluate` or `evaluateIntegrated` ends |
 
-Nothing one candidate's build writes is visible to another candidate or to the next baseline.
+Nothing one run writes is visible to any other run (P2-R42): not to another candidate, not to the
+next baseline, and not to the same candidate's next check. A holdout's run can read its own test
+(cargo has to compile it), and whatever it writes into its cache is gone before the next run, so
+it cannot reach a public check's output or the author's repair brief.
 An author of one mission never sees another mission's author cache: cargo trusts the fingerprints
 and artifacts it finds in a target directory, so a shared cache would run one author's planted
 `.rlib` inside the next author's build. Gate runs also set `CARGO_INCREMENTAL=0`. A gate never sees an author cache, and the author never
@@ -130,16 +133,15 @@ so it is covered by the harness digest: changing it makes a new harness.
 
 ### Where the test goes
 
-The registered file is one Rust integration test. It is placed in two places, from the same
-registered bytes and under the same rules (no symlink on the path, nothing already there):
+The registered file is one Rust integration test. It is filed under
+`.daylight-gates/<x_id>/<basename>` like any gate, but placed in the tree under test only once, at
+`<crate>/tests/daylight_<x_id>.rs`, where cargo finds it as the integration-test target
+`daylight_<x_id>` (P2-R42). `--crate` is the repo-relative directory of the crate that owns the
+test (default `.`, the root package). Nothing is placed under `.daylight-gates/` for a cargo gate.
 
-- at `.daylight-gates/<x_id>/<basename>`, as for any gate;
-- at `<crate>/tests/daylight_<x_id>.rs`, where cargo finds it as the integration-test target
-  `daylight_<x_id>`. `--crate` is the repo-relative directory of the crate that owns the test
-  (default `.`, the root package).
-
-Both copies are bound into the sandbox from the runner's memory with `--ro-bind-data`, and the
-tree-drift check ignores exactly those two paths. Neither copy is ever in an author's tree. The
+The copy is bound into the sandbox from the runner's memory with `--ro-bind-data`, under the same
+rules as any gate (no symlink on the path, nothing already there), and the tree-drift check
+ignores exactly that path. Neither copy is ever in an author's tree. The
 author brief shows the command with the target replaced by `<the gate's registered test>`.
 
 ### Command
@@ -212,8 +214,8 @@ The second row is what "the base lacks the function" looks like in Rust.
   stdout and exit 0 before the harness prints its result, which a node gate is equally exposed
   to. Policy keeps the candidate from changing manifests and cargo configuration (WS-R4); the
   harness checks above do not depend on it.
-- Build scripts run inside the sandbox with the candidate's own gate cache writable. They can
-  shape that candidate's build, and nothing beyond it.
+- Build scripts and test code run inside the sandbox with that run's own gate cache writable.
+  They can shape that run's build, and nothing beyond it: the cache is discarded when the run ends.
 - The gate sandbox's root tmpfs (`/etc`, `/`) is writable inside the sandbox. This predates
   cargo: the exec sandbox remounts `/` read-only and the gate sandbox does not. It is in-sandbox
   only, but a build script can fill it outside the `/tmp` size cap.
