@@ -1644,8 +1644,13 @@ export class MissionStore {
   // campaign gate lock, waves and wave-review findings. Refs live in git; these say why each
   // one moved, and nothing here touches git.
 
-  /** Run `fn` inside `BEGIN IMMEDIATE`: the write lock is held before anything is read. */
+  /**
+   * Run `fn` inside `BEGIN IMMEDIATE`: the write lock is held before anything is read. Inside a
+   * transaction already open on this connection it joins it (SQLite does not nest BEGIN); the same
+   * contract as WS-R5's `tx`, which replaces this at the merge.
+   */
   immediate<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const out = fn();

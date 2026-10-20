@@ -474,7 +474,8 @@ section('a dependency request parks its ticket; the loop goes on (P2-R21)');
   const r = await run(w, author, { concurrency: 2 });
   check('it is parked and not dispatched; Q lands', r.statuses.P === 'waiting-dependency' && r.statuses.Q === 'landed'
     && !w.ctx.events.forMission(m.id).some((e) => e.name === 'campaign.ticket.dispatched'), JSON.stringify(r.statuses));
-  check('one parked event, on the ticket mission', w.ctx.events.forMission(m.id).filter((e) => e.name === 'campaign.ticket.parked').length === 1);
+  check('one parked event, on the campaign mission (§4.8), naming the ticket', w.ctx.events.forMission(w.campaign.id)
+    .filter((e) => e.name === 'campaign.ticket.parked' && e.payload.missionId === m.id).length === 1);
   w.ctx.close();
 }
 
@@ -507,6 +508,80 @@ section('generated tickets and refused grants (P2-R36)');
   check('a proposed follow-up waits for a person', r.statuses['FU.2'] === 'waiting-owner');
   check('a ticket whose grant R5 refuses is blocked for the run, with an event; the others landed', r.statuses.A === 'landed'
     && w.ctx.events.forMission(w.campaign.id).some((e) => e.name === 'campaign.ticket.blocked' && e.payload.ticketId === 'R' && e.payload.reason === 'grant-refused'));
+  w.ctx.close();
+}
+
+section('a rebase conflict is repaired from the new tip (L6)');
+{
+  const two = "module.exports = () => 0;\nmodule.exports.a = () => 'a0';\nmodule.exports.b = () => 'b0';\n";
+  const w = nodeWorld('conflict', [
+    { id: 'A', lane: 'LA', scope: ['src/d.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/d.js')}.a(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/d.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/d.js')}.b(), 'B'));` },
+  ], { 'src/d.js': two });
+  await lockAndAuthorize(w, { concurrency: 2, maxAttemptsPerTicket: 3 });
+  const both = "module.exports = () => 0;\nmodule.exports.a = () => 'A';\nmodule.exports.b = () => 'B';\n";
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/d.js': two.replace("'a0'", "'A'") }, repair: { 'src/d.js': both } },
+    B: { first: { 'src/d.js': two.replace("'b0'", "'B'") }, repair: { 'src/d.js': both } },
+  });
+  const r = await run(w, author, { concurrency: 2 });
+  check('both landed', r.statuses.A === 'landed' && r.statuses.B === 'landed', JSON.stringify(r.statuses));
+  const conflicts = w.ctx.store.integrations(w.campaign.id).filter((i) => i.state === 'conflict');
+  check('the second was a rebase-conflict on src/d.js first', conflicts.length === 1 && conflicts[0].conflictPaths.join() === 'src/d.js', JSON.stringify(conflicts));
+  const loser = w.ctx.store.mission(conflicts[0]?.missionId ?? '');
+  const attempts = loser ? w.ctx.store.tasks(loser.id).flatMap((t) => w.ctx.store.attempts(t.id)).sort((a, b) => a.startedAt - b.startedAt) : [];
+  const fence = attempts[1] ? promptOf(w.ctx, attempts[1].id) : '';
+  check('its repair was briefed with the conflict and started from the new tip', attempts.length === 2 && /"outcome": "rebase-conflict"/.test(fence) && /"conflictPaths": \[\s*"src\/d.js"/.test(fence));
+  w.ctx.close();
+}
+
+section('gates-inconclusive is repaired once (L6)');
+{
+  const w = nodeWorld('inconclusive', [{ id: 'A', lane: 'LA', scope: ['src/a.js'] }]);
+  await lockAndAuthorize(w, { concurrency: 1, maxAttemptsPerTicket: 5 });
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), w.base]);
+  const m = host.startTicketMission(w.campaign.id, 'A', w.base);
+  w.ctx.store.transitionMission(m.id, 'running');
+  const c1 = makeCandidate(w.ctx, m, w.base, Buffer.from('x'), [{ path: 'src/a.js', change: 'modified', insertions: 1, deletions: 1, mode: 'file' }]);
+  w.ctx.store.updateCandidateVerdict(c1.id, 'gates-inconclusive', ['flaky']);
+  const st1 = ticketStates(w.ctx, w.campaign.id, w.repo, host).get('A');
+  check('once: ready for a repair', st1?.status === 'integrating' || st1?.status === 'ready', String(st1?.status));
+  const c2 = makeCandidate(w.ctx, m, w.base, Buffer.from('y'), [{ path: 'src/a.js', change: 'modified', insertions: 1, deletions: 1, mode: 'file' }]);
+  w.ctx.store.updateCandidateVerdict(c2.id, 'gates-inconclusive', ['flaky']);
+  for (const c of [c1, c2]) {
+    w.ctx.store.recordIntegration({ campaignId: w.campaign.id, missionId: m.id, candidateId: c.id, ref: integrationRefFor(w.campaign.id), onto: w.base, candidateBase: w.base });
+  }
+  for (const i of w.ctx.store.integrations(w.campaign.id)) w.ctx.store.updateIntegration(i.id, 'pending', { state: 'rejected' });
+  check('twice: blocked for a person', ticketStates(w.ctx, w.campaign.id, w.repo, host).get('A')?.status === 'blocked');
+  w.ctx.close();
+}
+
+section('a refused integration and the derived STATUS path (L1, L3)');
+{
+  const w = nodeWorld('l1l3', [
+    { id: 'lower', lane: 'LA', scope: ['src/a.js'], budget: { maxAttempts: 1 } },
+    { id: 'S', lane: 'LB', scope: ['src/b.js'], budget: { maxAttempts: 1 } },
+    { id: 'C', lane: 'LC', scope: ['src/c.js'] },
+  ]);
+  w.plan.derivedStatus = true;
+  w.plan.statusPath = 'STATUS.md';
+  await lockAndAuthorize(w, { concurrency: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    lower: { first: { 'src/a.js': "module.exports = () => 'x';\n" } },
+    S: { first: { 'src/b.js': "module.exports = () => 'S';\n", 'STATUS.md': '# hand-written\n' } },
+    C: { first: { 'src/c.js': "module.exports = () => 'C';\n" } },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('the run did not throw; C landed', r.statuses.C === 'landed', JSON.stringify(r.statuses));
+  const lm = w.ctx.store.missions(w.campaign.projectId).find((m) => m.objective === 'ticket lower')!;
+  const lc = w.ctx.store.candidates(lm.id).at(-1)!;
+  check('an integration refused while building is the candidate\'s verdict, and the ticket is blocked', lc.verdict === 'gates-invalid'
+    && /integration refused/.test(lc.verdictReasons[0]) && r.statuses.lower === 'blocked', JSON.stringify([lc.verdict, lc.verdictReasons]));
+  const sm = w.ctx.store.missions(w.campaign.projectId).find((m) => m.objective === 'ticket S')!;
+  const sc = w.ctx.store.candidates(sm.id).at(-1)!;
+  check('the plan\'s statusPath is protected for authors: editing it is a policy violation', sc.verdict === 'policy-violation'
+    && sc.policyViolations.some((v) => v.path === 'STATUS.md'), JSON.stringify(sc.policyViolations));
   w.ctx.close();
 }
 

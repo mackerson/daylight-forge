@@ -306,14 +306,20 @@ export function prepareIntegration(ctx: IntegrateContext, candidateId: string, o
   const diff = ctx.artifacts.get(c.diffArtifact);
   const attempt = ctx.store.attempt(c.attemptId);
   const work = m.workItemId ? ctx.store.workItem(m.workItemId) : null;
-  const message = commitMessage({
+  let message: string;
+  try {
+    message = commitMessage({
     title: work?.title ?? m.objective, fallbackTitle: `Daylight ticket ${o.ticketId}`, files: c.files, missionId: m.id, attemptId: c.attemptId,
     runnerId: attempt?.runnerId ?? 'unknown',
     campaign: {
       campaignId: campaign.id, ticketId: o.ticketId, integrationId: i.id, onto: tip, method: tip === c.baseCommit ? 'apply' : 'three-way',
       authorizationId: auth.id, authorizedBy: auth.actor,
     },
-  });
+    });
+  } catch (err) {
+    ctx.store.updateIntegration(i.id, 'pending', { state: 'rejected' });
+    throw new IntegrationRefused(`the commit message cannot be written: ${(err as Error).message}`);
+  }
   const env = envelopeOf(auth);
   let built: BuildResult;
   try {
@@ -471,10 +477,13 @@ export interface ReconcileResult {
 /** Where the integration ref should be: the latest landing, else the latest adoption, else the campaign base. */
 export function expectedTip(store: MissionStore, campaignId: string): string {
   const campaign = store.mission(campaignId)!;
-  const landed = store.integrations(campaignId, { state: 'integrated' }).sort((a, b) => a.updatedAt - b.updatedAt).at(-1);
+  // Landings are serial, so creation order is landing order; a landing's time is its decision's,
+  // which no later repair of the row moves (L5).
+  const landed = store.integrations(campaignId, { state: 'integrated' }).at(-1);
   const adopted = store.decisions(campaignId).filter((d) => d.scope.operation === 'adopt-integration-tip' && isHumanActor(d.actor)).at(-1);
   const candidates: Array<{ at: number; commit: string }> = [];
-  if (landed?.integratedCommit) candidates.push({ at: landed.updatedAt, commit: landed.integratedCommit });
+  const landedAt = landed?.decisionId ? store.decision(landed.decisionId)?.at : undefined;
+  if (landed?.integratedCommit) candidates.push({ at: landedAt ?? landed.updatedAt, commit: landed.integratedCommit });
   if (adopted && typeof adopted.scope.to === 'string') candidates.push({ at: adopted.at, commit: adopted.scope.to });
   return candidates.sort((a, b) => a.at - b.at).at(-1)?.commit ?? campaign.baseRevision;
 }

@@ -81,6 +81,8 @@ export interface ImplementOptions {
   ticket?: Pick<CampaignTicket, 'ticketId' | 'acceptance'>;
   /** The campaign's reservation for this attempt: the runner's ceiling, stored on `attempts.max_cost_usd` (P2-R18). */
   reserveUsd?: number;
+  /** The plan's derived STATUS path: protected for this author, in memory, before capture (P2-R13). */
+  statusPath?: string;
 }
 
 export interface ImplementResult {
@@ -338,7 +340,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
     .map((x) => x!.testArtifact.path)
     .filter((p): p is string => !!p);
   // A derived STATUS file is protected for authors (P2-R13): added to the policy in memory only.
-  const statusPath = campaign?.scope.paths?.[1];
+  const statusPath = campaign ? o.statusPath : undefined;
   const capturePolicy: ProjectPolicy | null = statusPath
     ? { ...(policy ?? { schema: POLICY_SCHEMA, languages: ['node'], protectedPaths: [], gate: null, author: {}, clamped: [], digest: '' }),
       protectedPaths: [...(policy?.protectedPaths ?? []), statusPath] }

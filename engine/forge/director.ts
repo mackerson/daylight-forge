@@ -7,7 +7,7 @@ import { NotImplemented, type MissionStore } from '../mission/store.ts';
 import { isHumanActor } from '../mission/types.ts';
 import type {
   CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
-  Finding, FindingSeverity, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
+  Finding, FindingSeverity, Integration, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { gitIn } from './apply.ts';
@@ -16,7 +16,7 @@ import { dependencyNeeds } from './dependency-requests.ts';
 import type { GateContext } from './gate.ts';
 import {
   authorizationOf, ensureIntegrationRef, envelopeOf, expectedTip, integrationRefFor, integrationTip, landCandidate, prepareIntegration,
-  R5_INTEGRATE_DEPS, reconcileIntegrations, refTarget, type IntegrateDeps, type IntegrationStep,
+  IntegrationRefused, R5_INTEGRATE_DEPS, reconcileIntegrations, refTarget, type IntegrateDeps, type IntegrationStep,
 } from './integrate.ts';
 import { ImplementRefused, runImplement } from './orchestrate.ts';
 import { DecisionRefused } from './policy.ts';
@@ -221,6 +221,12 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
     if (env && ticketBudgetLeft(ctx, env, t, m) <= 1e-9) {
       // P2-R35: a ticket that used its own budget is blocked, with a need; the campaign goes on.
       set('blocked', { reason: `${TICKET_BUDGET_EXHAUSTED}: spent $${missionSpend(ctx, m.id).spentUsd.toFixed(2)} of its $${Math.min(t.budget.maxUsd ?? Infinity, env.maxUsdPerMission).toFixed(2)}` });
+      continue;
+    }
+    if (c?.verdict === 'gates-inconclusive' && c.attemptId === last?.id
+      && ctx.store.candidates(m.id).filter((x) => x.verdict === 'gates-inconclusive').length > 1) {
+      // §4.7: an inconclusive result is repaired once; twice says the check, not the change, is unsure.
+      set('blocked', { reason: `candidate ${c.id} is gates-inconclusive a second time; a person looks at the check` });
       continue;
     }
     if (c && (c.verdict === 'gates-invalid' || c.verdict === 'no-diff') && c.attemptId === last?.id) {
@@ -566,6 +572,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       try {
         const r = await runImplement(ctx, {
           missionId: m.id, repo: root, tool, base: tipNow, ticket: t, brief: 'campaign', evaluate: false, repair, reserveUsd: reserve,
+          ...(plan.derivedStatus && plan.statusPath ? { statusPath: plan.statusPath } : {}),
           maxTurns: Math.min(envelope.maxTurns, t.budget.maxTurns ?? Infinity),
           timeoutMs: Math.min(envelope.timeoutSeconds, t.budget.timeoutSeconds ?? Infinity) * 1000,
           sandbox, env: o.env, runs: o.runs,
@@ -578,10 +585,10 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         if (now.state === 'ready') {
           // P2-R23: never redispatched; a person retries it.
           ctx.store.closeMission(now.id, 'inconclusive', `refused before an author ran: ${why}`);
-          emit(now, 'lifecycle', 'campaign.ticket.blocked', { ticketId: t.ticketId, missionId: now.id, reason: 'preflight-refused' });
+          emit(campaign, 'lifecycle', 'campaign.ticket.blocked', { ticketId: t.ticketId, missionId: now.id, reason: 'preflight-refused' });
         } else if (now.state === 'running') {
           ctx.store.transitionMission(now.id, 'blocked', `refused: ${why}`);
-          emit(now, 'lifecycle', 'campaign.ticket.blocked', { ticketId: t.ticketId, missionId: now.id, reason: 'refused' });
+          emit(campaign, 'lifecycle', 'campaign.ticket.blocked', { ticketId: t.ticketId, missionId: now.id, reason: 'refused' });
         }
       }
       const after = campaignSpend(ctx, campaign.id);
@@ -595,7 +602,15 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
 
     const integrate = async (item: { candidateId: string; ticketId: string }): Promise<void> => {
       const t = host.tickets(campaign.id).find((x) => x.ticketId === item.ticketId)!;
-      let i = prepareIntegration(ictx, item.candidateId, { ticketId: t.ticketId, deps: host.integrate });
+      let i: Integration;
+      try {
+        i = prepareIntegration(ictx, item.candidateId, { ticketId: t.ticketId, deps: host.integrate });
+      } catch (err) {
+        // A diff that cannot be integrated (mode, size, digest, git) is a verdict, not a crash of the loop (L1).
+        if (!(err instanceof IntegrationRefused)) throw err;
+        ctx.store.updateCandidateVerdict(item.candidateId, 'gates-invalid', [`integration refused: ${err.message}`.slice(0, 500)]);
+        return;
+      }
       if (i.state === 'evaluating') {
         await evaluateIntegrated(gctx, i.id, t);
         i = ctx.store.integration(i.id)!;
@@ -615,7 +630,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         if ('landed' in r) {
           landings++;
           landedNow.push(t.ticketId);
-          emit(m, 'lifecycle', 'campaign.ticket.landed', { ticketId: t.ticketId, missionId: m.id, commit: r.landed.integratedCommit });
+          emit(campaign, 'lifecycle', 'campaign.ticket.landed', { ticketId: t.ticketId, missionId: m.id, commit: r.landed.integratedCommit });
         } else if (integrationTip(root, campaign.id) !== i.onto) {
           queue.push(item);
         } else {
@@ -639,14 +654,14 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         if (!m) continue;
         if (s.status === 'blocked' && m.state === 'running') {
           ctx.store.transitionMission(m.id, 'blocked', s.reason ?? 'blocked');
-          emit(m, 'lifecycle', 'campaign.ticket.blocked', {
+          emit(campaign, 'lifecycle', 'campaign.ticket.blocked', {
             ticketId: s.ticket.ticketId, missionId: m.id,
             reason: s.attempts >= s.maxAttempts ? 'attempts-exhausted' : s.reason?.startsWith(TICKET_BUDGET_EXHAUSTED) ? 'ticket-budget-exhausted' : 'unrepairable',
           });
         }
         if (s.status === 'waiting-dependency' && !parked.has(m.id)) {
           parked.add(m.id);
-          emit(m, 'lifecycle', 'campaign.ticket.parked', { ticketId: s.ticket.ticketId, missionId: m.id, requests: dependencyNeeds(ctx, m).map((n) => n.ref) });
+          emit(campaign, 'lifecycle', 'campaign.ticket.parked', { ticketId: s.ticket.ticketId, missionId: m.id, requests: dependencyNeeds(ctx, m).map((n) => n.ref) });
         }
       }
     };

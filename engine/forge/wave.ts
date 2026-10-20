@@ -31,7 +31,7 @@ import { createWorkspace } from './workspace.ts';
  */
 
 const landingsSince = (ctx: Pick<DaylightContext, 'store'>, campaignId: string): Integration[] => {
-  const landed = ctx.store.integrations(campaignId, { state: 'integrated' }).sort((a, b) => a.updatedAt - b.updatedAt);
+  const landed = ctx.store.integrations(campaignId, { state: 'integrated' });
   const last = ctx.store.waves(campaignId).at(-1);
   if (!last) return landed;
   const at = landed.findIndex((i) => i.integratedCommit === last.toCommit);

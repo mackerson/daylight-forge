@@ -230,16 +230,22 @@ section('resume: the rows the table names that no crash above leaves');
   check('integrated without an application: the application is recorded again', r.landed.includes(i.id) && !!w.ctx.store.application(t.c.id)
     && w.ctx.store.integration(i.id)!.applicationId === w.ctx.store.application(t.c.id)!.id, JSON.stringify(r));
 
+  const t2 = w.ticket('T2', i.integratedCommit!, { 'src/b.js': 'module.exports = 20;\n' });
+  const i2 = prepareIntegration(w.ictx, t2.c.id, { ticketId: 'T2', deps });
+  landCandidate(w.ictx, accept(w.ctx, i2).id, { ticketId: 'T2', deps });
+  w.ctx.store.updateIntegration(i.id, 'integrated', { applicationId: w.ctx.store.application(t.c.id)!.id });
+  check('a later repair of an older landing\'s row does not make it look like the tip (L5)', reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T1', deps }).moved === null);
+  check('immediate joins a transaction already open instead of nesting BEGIN (L7)', w.ctx.store.immediate(() => w.ctx.store.immediate(() => 7)) === 7);
   const stray = makeTicketMission(w.ctx, w.campaign, 'T9', w.base);
   const strayCommit = commitOn(w.repo, w.base, { 'src/z.js': 'z\n' });
   git(w.repo, ['update-ref', applyRefFor(stray.id), strayCommit]);
   const r2 = reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T9', deps });
   check('a per-mission ref with no application, naming an unrecorded commit, is deleted', r2.deletedRefs.includes(applyRefFor(stray.id)) && refTarget(w.repo, applyRefFor(stray.id)) === null);
 
-  const foreign = commitOn(w.repo, i.integratedCommit!, { README: 'pushed by hand\n' });
+  const foreign = commitOn(w.repo, i2.integratedCommit!, { README: 'pushed by hand\n' });
   git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), foreign]);
   const r3 = reconcileIntegrations(w.ictx, w.campaign.id, { ticketOf: () => 'T1', deps });
-  check('a ref no row explains is reported moved, for the director to halt integration-moved', r3.moved?.actual === foreign && r3.moved.expected === i.integratedCommit);
+  check('a ref no row explains is reported moved, for the director to halt integration-moved', r3.moved?.actual === foreign && r3.moved.expected === i2.integratedCommit);
 
   section('adopt-tip: a person explains the foreign commits and answers the halt');
   const halt = w.ctx.store.recordDecision({
@@ -259,7 +265,7 @@ section('resume: the rows the table names that no crash above leaves');
   };
   check('refused under CLAUDECODE', /CLAUDECODE/.test(tryAdopt({ env: { ...human, CLAUDECODE: '1' } }) ?? ''));
   check('refused with the wrong confirm code', /--confirm/.test(tryAdopt({ confirm: '00000000' }) ?? ''));
-  check('the scope names the move: from the last landing to the foreign commit', scope.from === i.integratedCommit && scope.to === foreign);
+  check('the scope names the move: from the last landing to the foreign commit', scope.from === i2.integratedCommit && scope.to === foreign);
   const rewritten = commitOn(w.repo, w.base, { README: 'history rewritten\n' });
   git(w.repo, ['update-ref', integrationRefFor(w.campaign.id), rewritten]);
   const s2 = adoptScopeOf(w.ictx, w.campaign.id, halt.id);
