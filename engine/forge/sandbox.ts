@@ -456,6 +456,39 @@ export function execLaunch(
   attempt: Pick<Attempt, 'id' | 'sandbox'>,
   o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
 ): SandboxLaunch {
+  try {
+    return execLaunchUnchecked(profile, attempt, o);
+  } catch (err) {
+    if (err instanceof SandboxRefused) throw new SandboxRefused(hostless(o.tree, o.out, o.home ?? os.homedir())(err.message));
+    throw err;
+  }
+}
+
+/**
+ * `msg` with every host path the `run` tool's caller could learn from it spelled as a
+ * placeholder: `<out>`, the snapshot's `<repo>`, the tree as `/work`, the home as `~` (review L1,
+ * L2). The author reads every exec refusal; the operator reads the same line.
+ */
+export function hostless(tree: string, out: string, home: string): (msg: string) => string {
+  let repo: string | undefined;
+  try {
+    repo = readSnapshot(out)?.repo;
+  } catch {
+    // No readable record: nothing more to spell.
+  }
+  // Any of these may be missing when the refusal is that it is missing.
+  const spelled = ([[out, '<out>'], [tree, '/work'], [repo, '<repo>'], [home, '~']] as Array<[unknown, string]>)
+    .filter((e): e is [string, string] => typeof e[0] === 'string' && e[0].length > 1)
+    .flatMap(([p, to]) => [[p, to], [resolved(p), to]])
+    .filter(([p]) => p.length > 1).sort((a, b) => b[0].length - a[0].length);
+  return (msg: string) => spelled.reduce((m, [p, to]) => m.split(p).join(to), msg);
+}
+
+function execLaunchUnchecked(
+  profile: SandboxProfile,
+  attempt: Pick<Attempt, 'id' | 'sandbox'>,
+  o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
+): SandboxLaunch {
   if (!profile.available) throw new SandboxRefused(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
   const why = execRefusal(attempt);
   if (why) throw new SandboxRefused(why);
@@ -463,7 +496,8 @@ export function execLaunch(
   if (!cmd.ok) throw new SandboxRefused(cmd.why);
   const tree = resolved(o.tree);
   if (!fs.statSync(tree, { throwIfNoEntry: false })?.isDirectory()) throw new SandboxRefused(`${tree} is not a directory`);
-  if (fs.existsSync(path.join(tree, '.git'))) throw new SandboxRefused(`${tree} has a .git; exec runs over a detached workspace only`);
+  // lstat, so a planted symlink named .git is caught as well as a directory.
+  if (fs.lstatSync(path.join(tree, '.git'), { throwIfNoEntry: false })) throw new SandboxRefused('/work has a .git; exec runs over a detached workspace only');
   const treeWhy = mountRefusal(tree, { home: o.home ?? os.homedir(), out: o.out, allow: [tree] });
   if (treeWhy) throw new SandboxRefused(`refusing to mount the exec tree: ${treeWhy}`);
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
@@ -484,26 +518,19 @@ export function execLaunch(
  * snapshot, or a `Cargo.lock` that is not the one the snapshot was fetched for.
  */
 function authorCargo(tree: string, out: string, home: string): ReturnType<typeof cargoMounts> {
-  // What the author's `run` tool is told never names a host path (review L2): <out>, the
-  // repository and the tree are said as placeholders; the operator reads the same command.
-  const repo = readSnapshot(out)?.repo;
-  const spelled = [
-    [out, '<out>'], [resolved(out), '<out>'], [tree, '/work'], [resolved(tree), '/work'],
-    ...(repo ? [[repo, '<repo>'], [resolved(repo), '<repo>']] : []), [home, '~'], [resolved(home), '~'],
-  ].filter(([p]) => p.length > 1).sort((a, b) => b[0].length - a[0].length);
-  const hostless = (msg: string) => spelled.reduce((m, [p, to]) => m.split(p).join(to), msg);
-  const why = snapshotRefusal(tree, out, repo ?? '<repo>');
-  if (why) throw new SandboxRefused(hostless(why));
+  // Every refusal here reaches the author through execLaunch, which spells host paths away.
+  const why = snapshotRefusal(tree, out, readSnapshot(out)?.repo ?? '<repo>');
+  if (why) throw new SandboxRefused(why);
   let m: ReturnType<typeof cargoMounts>;
   try {
     m = cargoMounts('author', out);
   } catch (err) {
-    if (err instanceof CargoRefused) throw new SandboxRefused(hostless(err.message));
+    if (err instanceof CargoRefused) throw new SandboxRefused(err.message);
     throw err;
   }
   for (const bind of m.binds) {
     const refused = mountRefusal(bind.src, { home, out, allow: [bind.src], outAllow: [bind.src] });
-    if (refused) throw new SandboxRefused(hostless(`refusing to mount the cargo ${bind.dest}: ${refused}`));
+    if (refused) throw new SandboxRefused(`refusing to mount the cargo ${bind.dest}: ${refused}`);
   }
   return m;
 }
@@ -648,7 +675,8 @@ export function registerRunTool(
           }],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: (err as Error).message }) }], isError: true };
+        const text = hostless(ctx.tree, ctx.out, os.homedir())((err as Error).message);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: text }) }], isError: true };
       }
     },
   );
