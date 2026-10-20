@@ -155,6 +155,13 @@ outside ADR-37's threat model like raw SQL. Only `engine/test/forge-campaign-*.t
 `startAttempt` and reported by `unauthorizedWriteAttempts` and `derivationRefusals`. An attempt
 under a derived grant is refused once the authorization has expired or the campaign is halted.
 
+A wave-review finding becomes a **proposed** fix ticket (`FIX.<wave>.<n>`, `fileFixTicket`), checked
+and redacted like a proposal. The store admits it only inside the fix lane: the lane on, under the
+per-wave cap, a scope no built-in set, policy glob, plan or status path protects, at
+`fixLane.maxUsdPerTicket`; `derivationRefusals` reports any admission outside it. A fix or
+follow-up ticket a person approves with `work-item approve` is admitted too. A derived
+`integrate-candidate` needs `--auto-apply integration-ref` and names a real candidate at its diff.
+
 A person may still `mission authorize` a campaign's ticket mission by hand.
 
 ## Assumptions
