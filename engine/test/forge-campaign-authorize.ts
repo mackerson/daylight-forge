@@ -24,7 +24,7 @@ import { openDaylight } from '../mission/context.ts';
 import { DAYLIGHT_DB } from '../mission/db.ts';
 import { exportMission, importMission } from '../mission/export.ts';
 import { needsOf } from '../mission/needs.ts';
-import { decisionRefusal, newId } from '../mission/store.ts';
+import { decisionRefusal, envelopeShapeRefusal, newId } from '../mission/store.ts';
 import { campaignActorOf, type CampaignEnvelope } from '../mission/types.ts';
 import {
   approve, authorize, authorized, CLEAN_ENV, code, FLAGS, HUMAN, imported, lockByHand, makeRepo, revisePlan, ROOT, samplePlan, throws, tmp,
@@ -161,6 +161,16 @@ section('authorize-campaign');
     const err = throws(() => authorize(s.ctx, id, patch));
     check(`refused: ${name}`, re.test(err?.message ?? ''), err?.message);
   }
+  for (const span of ['30d', '720h']) {
+    const e = buildEnvelope(s.ctx, id, { ...FLAGS, notAfter: span });
+    check(`--not-after ${span}, the documented maximum, passes the store's shape check (review L1)`, envelopeShapeRefusal(e, s.ctx.store.clock()) === null,
+      String(envelopeShapeRefusal(e, s.ctx.store.clock())));
+  }
+  check('--not-after 721h is refused', /not-after/.test(throws(() => buildEnvelope(s.ctx, id, { ...FLAGS, notAfter: '721h' }))?.message ?? ''));
+  const past = { ...buildEnvelope(s.ctx, id, FLAGS), notAfter: s.ctx.store.clock() - 1000 };
+  check('the store refuses a notAfter in the past (review L8)', /not-after/.test(throws(() => s.ctx.store.authorizeCampaign(id, {
+    actor: HUMAN, rationale: 'x', expectedGateSetDigest: past.gateSetDigest, scope: { operation: 'authorize-campaign', ...past },
+  }))?.message ?? ''));
   const e0 = buildEnvelope(s.ctx, id, FLAGS);
   check('refused for a non-human actor', /human/.test(throws(() => authorizeCampaign(s.ctx, {
     campaignId: id, actor: 'agent:mock', rationale: 'x', env: CLEAN_ENV, flags: FLAGS, confirm: code(confirmDigest(s.ctx, 'authorize-campaign', id, { envelope: e0 }).digest),

@@ -2743,7 +2743,10 @@ export function envelopeShapeRefusal(e: CampaignEnvelope, now: number): string |
   }
   if (f.maxUsdPerTicket > e.maxUsdPerMission) return 'the fix lane\'s per-ticket cap is above the per-mission cap';
   if (!e.identity || typeof e.identity.name !== 'string' || typeof e.identity.email !== 'string') return 'an authorization names the committer identity';
-  if (!Number.isInteger(e.notAfter) || e.notAfter <= now || e.notAfter > now + MAX_NOT_AFTER_MS) return 'not-after is in the future, at most 30 days away';
+  // The 30-day bound is on the span asked for; the CLI rounds the instant up to the hour after it.
+  if (!Number.isInteger(e.notAfter) || e.notAfter <= now || e.notAfter > now + MAX_NOT_AFTER_MS + 60 * 60 * 1000) {
+    return 'not-after is in the future, at most 30 days away';
+  }
   return null;
 }
 
