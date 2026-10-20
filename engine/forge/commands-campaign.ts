@@ -1,5 +1,7 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { DAYLIGHT_DB } from '../mission/db.ts';
 import { needsOf } from '../mission/needs.ts';
 import type { AssumptionDecisionScope, AssumptionStatus, CampaignEnvelope } from '../mission/types.ts';
 import { defaultOut } from '../paths.ts';
@@ -158,6 +160,12 @@ function withCtx<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
   }
 }
 
+/** `withCtx` for a read-only command: an out dir with no database is an error, never created (P2-R24). */
+function readCtx<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
+  if (!fs.existsSync(path.join(out(), DAYLIGHT_DB))) throw new Error(`${out()} holds no Daylight database; nothing to read`);
+  return withCtx(out, fn);
+}
+
 /** Without `--confirm`: show what would be confirmed, and stop with exit 2. */
 function preview(c: { digest: string; lines: string[] }, asJson: boolean): number {
   if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
@@ -232,7 +240,7 @@ export async function runCampaignCommand(argv: string[], env: NodeJS.ProcessEnv 
       case 'show': {
         const id = p.positionals[0];
         if (!id) throw new Usage('campaign show needs <campaign>');
-        const view = withCtx(out, (ctx) => showCampaign(ctx, id));
+        const view = readCtx(out, (ctx) => showCampaign(ctx, id));
         if (asJson) json(view);
         else {
           say(`campaign ${view.campaign.id} (${view.campaign.state}): ${view.title}`);
@@ -316,7 +324,7 @@ export async function runAssumptionCommand(argv: string[], env: NodeJS.ProcessEn
         if (!id) throw new Usage('assumption list needs <campaign>');
         const status = flag(p, 'status') as AssumptionStatus | undefined;
         if (status !== undefined && !ASSUMPTION_STATUSES.includes(status)) throw new Usage(`--status is one of ${ASSUMPTION_STATUSES.join(', ')}`);
-        const rows = withCtx(out, (ctx) => ctx.store.assumptions(id, { status }));
+        const rows = readCtx(out, (ctx) => ctx.store.assumptions(id, { status }));
         if (asJson) json(rows);
         else {
           if (!rows.length) say('no assumptions');
@@ -329,6 +337,8 @@ export async function runAssumptionCommand(argv: string[], env: NodeJS.ProcessEn
         if (!id) throw new Usage('assumption record needs <campaign> --question … --default …');
         const question = need(p, 'question');
         const dflt = p.flags.get('default') ?? '';
+        // A bare --default parses as 'true'; a person who means no default leaves the flag out.
+        if (dflt === 'true' && !argv.includes('--default=true')) throw new Usage("--default needs a value; leave it out for an assumption with no default");
         const ticketId = flag(p, 'ticket');
         const confirm = flag(p, 'confirm');
         return withCtx(out, (ctx) => {
@@ -355,7 +365,7 @@ export async function runAssumptionCommand(argv: string[], env: NodeJS.ProcessEn
         return withCtx(out, (ctx) => {
           if (confirm === undefined) {
             const a = ctx.store.assumption(id);
-            return preview(confirmDigest(ctx, operation, id, { value: value ?? a?.default, followUp: statement }), asJson);
+            return preview(confirmDigest(ctx, operation, id, { value: value ?? a?.default, followUp: statement, followUpLane: followUp?.lane, followUpScope: followUp?.scope }), asJson);
           }
           const r = decideAssumption(ctx, { id, operation, value, followUp, actor: actorFor(flag(p, 'actor')), rationale: flag(p, 'rationale'), confirm, env });
           if (asJson) json(r);

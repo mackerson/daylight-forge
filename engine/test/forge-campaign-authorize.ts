@@ -24,7 +24,7 @@ import { openDaylight } from '../mission/context.ts';
 import { DAYLIGHT_DB } from '../mission/db.ts';
 import { exportMission, importMission } from '../mission/export.ts';
 import { needsOf } from '../mission/needs.ts';
-import { decisionRefusal, envelopeShapeRefusal, newId } from '../mission/store.ts';
+import { decisionRefusal, envelopeShapeRefusal, movesWorkItem, newId } from '../mission/store.ts';
 import { campaignActorOf, type CampaignEnvelope } from '../mission/types.ts';
 import {
   approve, authorize, authorized, CLEAN_ENV, code, FLAGS, HUMAN, imported, lockByHand, makeRepo, revisePlan, ROOT, samplePlan, throws, tmp,
@@ -84,6 +84,21 @@ section('agent sessions write nothing (P2-R9, P2-R24, P2-R25)');
   check('sessionRefusal is null in a clean environment', sessionRefusal(CLEAN_ENV, 'x') === null && sessionRefusal({ CLAUDECODE: '' }, 'x') === null);
 }
 
+section('campaign commands outside an agent session');
+{
+  const s = imported('clean-cli');
+  const id = s.imp.campaign.id;
+  s.ctx.close();
+  const bare = cli(['assumption', 'record', id, '--question', 'q', '--default', '--out', s.out], {});
+  check('assumption record with a bare --default is a usage error, not the default "true" (review L6)', bare.code === 2 && /--default needs a value/.test(bare.err), bare.err);
+  const empty = path.join(tmp, 'empty-out');
+  fs.mkdirSync(empty);
+  const shown = cli(['campaign', 'show', id, '--out', empty], { CLAUDECODE: '1' });
+  check('campaign show on an empty out dir fails and creates nothing (review L7)', shown.code === 1 && fs.readdirSync(empty).length === 0, `${shown.code} ${fs.readdirSync(empty).join()}`);
+  const listed = cli(['assumption', 'list', id, '--out', empty], { CLAUDECODE: '1' });
+  check('assumption list on an empty out dir creates nothing', listed.code === 1 && fs.readdirSync(empty).length === 0);
+}
+
 section('approve-plan is a guarded human act');
 {
   const s = imported('approve');
@@ -100,11 +115,27 @@ section('approve-plan is a guarded human act');
   check('one decision approves every plan ticket', items.every((w) => w.status === 'approved' && w.decisionId === d.id));
   check('the decision lists each work item at its digest', items.every((w) => (d.scope.workItems as Record<string, string>)[w.id] === w.contentDigest));
   check('the campaign is ready', s.ctx.store.mission(id)!.state === 'ready');
+  {
+    const w = items[0];
+    const fake = { ...d, id: newId('decision'), actor: 'agent:mock' };
+    check('an approve-plan by anyone but a person moves nothing (review L8)', !movesWorkItem(fake, w, 'approved') && movesWorkItem(d, w, 'approved'));
+  }
   check('assertImplementable accepts an approve-plan item', assertImplementable(s.ctx, items[1].id).id === items[1].id);
   check('the spec-intake invariant holds over approve-plan items', specIntakeViolations(s.ctx, s.imp.campaign.projectId).length === 0,
     specIntakeViolations(s.ctx, s.imp.campaign.projectId).join('; '));
   check('the campaign invariants hold', campaignViolations(s.ctx, s.imp.campaign.projectId).length === 0, campaignViolations(s.ctx, s.imp.campaign.projectId).join('; '));
 
+  {
+    // D5: a revision may not change a ticket whose mission is still open (review L8).
+    const sd = authorized('d5');
+    const m = startTicketMission(sd.ctx, { campaignId: sd.imp.campaign.id, ticketId: 'C1', base: sd.commit });
+    const p = samplePlan();
+    p.tickets[0].statement = 'changed while building';
+    revisePlan(sd.root, p);
+    const err = throws(() => importPlan(sd.ctx, sd.root, 'daylight.plan.json', { campaignId: sd.imp.campaign.id }));
+    check('import refuses a revision that changes a ticket an open mission builds', new RegExp(`mission ${m.id}`).test(err?.message ?? ''), err?.message);
+    sd.ctx.close();
+  }
   // A changed ticket is a new work item; the next approve-plan supersedes the old one.
   const p = samplePlan();
   p.tickets[2].statement = 'main prints -7 and a newline.';
