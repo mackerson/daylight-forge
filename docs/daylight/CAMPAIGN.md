@@ -104,7 +104,7 @@ daylight campaign approve-plan <campaign> --rationale '…' --confirm <digest8>
 The one approval of a plan. It goes through the same guard as every other Forge decision (ADR-20):
 refused under `CLAUDECODE` or `DAYLIGHT_SESSION`, refused for anyone but the OS user, refused
 without the first eight hex of the digest being confirmed. Without `--confirm` it prints what it
-would approve and the digest, and exits 2.
+would approve and the digest, and exits 0 (P2-R40); that preview runs in an agent session too.
 
 The digest covers the campaign, the plan digest and revision, and every plan ticket's work item at
 its content digest. One decision then moves every proposed plan work item to `approved`,
@@ -215,7 +215,7 @@ runs one (P2-R9). Under `CLAUDECODE` or `DAYLIGHT_SESSION`:
 
 | Allowed (writes nothing) | Refused before anything is opened |
 | --- | --- |
-| `campaign show`, `campaign validate`, `campaign status` without `--write`, `campaign gate list`, `campaign run --dry-run`, `assumption list` | every other `campaign` subcommand (`import`, `approve-plan`, `authorize`, `retry`, and WS-R6's `run`, `baseline`, `lock`, `gate register`, `status --write`, `halt`, `resume`, `adopt-tip`), and `assumption record|confirm|decide|overturn` |
+| `campaign show`, `campaign validate`, `campaign status` without `--write`, `campaign gate list`, `campaign run --dry-run`, `assumption list`, and the preview of every guarded act: `campaign approve-plan|authorize|retry|lock|resume|adopt-tip` and `assumption record|confirm|decide|overturn` with no `--confirm` flag at all (P2-R41) | every other `campaign` subcommand (`import`, WS-R6's `run`, `baseline`, `gate register`, `status --write`, `halt`), and every guarded act given `--confirm` |
 
 The check is at the CLI. The store never reads the environment. Like the decision guard, it is a
 heuristic, not authentication: a session that imports the engine functions from `node -e` is

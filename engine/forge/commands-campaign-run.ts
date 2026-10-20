@@ -20,8 +20,8 @@ import { DecisionRefused } from './policy.ts';
  * `daylight campaign gate|baseline|lock|run|status|halt|resume|adopt-tip` (§3.1, §4.1, §7; WS-R6).
  * WS-R5's `runCampaignCommand` dispatches here from its default case, after its agent-session
  * refusal has run (P2-R9, P2-R24): this module does not repeat it. Same contract as every
- * Forge command: `--out`, `--format json`, exit 0 when the command ran, 2 for usage or a
- * missing `--confirm`, 1 for a refusal, a halt or a failure.
+ * Forge command: `--out`, `--format json`, exit 0 when the command ran or printed a preview's
+ * digest (no `--confirm`, P2-R40), 2 for usage, 1 for a refusal, a halt or a failure.
  *
  *   gate register <c> --role holdout|gate|regression --file <host path> [--ticket T] --expect-exit n --expect-stdout s…
  *        [--harness node|cargo] [--crate <dir>] [--name <basename>]
@@ -154,8 +154,8 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
               for (const l of preview.lines) say(l);
               say(`gate set ${preview.digest}`);
             }
-            stderr('usage: re-run with --confirm <the first eight hex characters of the gate-set digest>\n');
-            return 2;
+            stderr('next: re-run with --confirm <the first eight hex characters of the gate-set digest>\n');
+            return 0;
           }
           const d = lockCampaign(g, {
             campaignId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), ratchet, confirm, acceptVacuous: list(last(p, 'accept-vacuous')), env,
@@ -209,8 +209,8 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
           const preview = await withCtx((ctx) => confirmDigest(ctx, 'resume-campaign', campaignId, { haltDecisionId }));
           if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
           else for (const l of [...preview.lines, `digest ${preview.digest}`]) say(l);
-          stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
-          return 2;
+          stderr('next: re-run with --confirm <the first eight hex characters of the digest>\n');
+          return 0;
         }
         const d = await withCtx((ctx) => resume(ctx, {
           campaignId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm: last(p, 'confirm'), env, haltDecisionId: need(p, 'halt'),
@@ -230,8 +230,8 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
             const preview = confirmDigest(ctx, 'adopt-integration-tip', campaignId, { adopt: { ref: s.ref, from: s.from, to: s.to, haltDecisionId } });
             if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
             else for (const l of [...preview.lines, `digest ${preview.digest}`]) say(l);
-            stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
-            return 2;
+            stderr('next: re-run with --confirm <the first eight hex characters of the digest>\n');
+            return 0;
           }
           const d = adoptIntegrationTip(ictx, { campaignId, haltDecisionId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm, env });
           if (asJson) json(d);

@@ -36,16 +36,22 @@ import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
  *
  * Every campaign or assumption command that writes a row or moves a ref is refused under
  * `CLAUDECODE` and `DAYLIGHT_SESSION` here, at the CLI, before anything is opened (P2-R9,
- * P2-R24); the read-only set runs anywhere. A heuristic, as ADR-20 says of the guard: a session
- * that imports the functions directly is outside the threat model, like raw SQL (ADR-37).
+ * P2-R24); the read-only set runs anywhere, and so does the preview of a guarded act (no
+ * `--confirm` at all), as `mission create`'s does (P2-R41). A heuristic, as ADR-20 says of the
+ * guard: a session that imports the functions directly is outside the threat model, like raw
+ * SQL (ADR-37), and the confirmed act's own guard refuses a session again.
  *
- * Contract as the other Forge commands: `--out`, `--format json`, exit 0 when it ran, 2 for bad
- * arguments or a missing `--confirm` (the digest is printed), 1 for a refusal or a failure.
+ * Contract as the other Forge commands: `--out`, `--format json`, exit 0 when it ran or printed
+ * a preview's digest (P2-R40), 2 for bad arguments, 1 for a refusal or a failure.
  */
 
 /** R5's own; WS-R6's `CAMPAIGN_RUN_SUBCOMMANDS` are joined at dispatch (a top-level spread would read it inside an import cycle). */
 export const CAMPAIGN_SUBCOMMANDS = ['validate', 'import', 'show', 'retry', 'approve-plan', 'authorize'] as const;
 export const ASSUMPTION_SUBCOMMANDS = ['list', 'record', 'confirm', 'decide', 'overturn'] as const;
+
+/** The guarded acts: without `--confirm` each only prints the digest it would decide on. */
+const CAMPAIGN_GUARDED: readonly string[] = ['approve-plan', 'authorize', 'retry', 'lock', 'resume', 'adopt-tip'];
+const ASSUMPTION_GUARDED: readonly string[] = ['record', 'confirm', 'decide', 'overturn'];
 
 class Usage extends Error {}
 
@@ -100,11 +106,13 @@ const num = (p: Parsed, k: string, required = true): number | undefined => {
 
 /**
  * Whether `campaign <sub> …` writes nothing: `show`, `validate`, `status` without `--write`,
- * `gate list` and `run --dry-run` (P2-R24, P2-R25). Every other subcommand, known here or not
- * (R6's included), is treated as one that writes.
+ * `gate list`, `run --dry-run` (P2-R24, P2-R25) and a guarded act's preview, with no
+ * `--confirm` flag at all (P2-R41). Every other subcommand, known here or not (R6's included),
+ * is treated as one that writes.
  */
 export function campaignReadOnly(sub: string | undefined, p: Parsed = { positionals: [], flags: new Map() }): boolean {
   if (sub === 'show' || sub === 'validate') return true;
+  if (sub !== undefined && CAMPAIGN_GUARDED.includes(sub)) return !p.flags.has('confirm');
   if (sub === 'status') return p.flags.get('write') === undefined;
   if (sub === 'gate') return p.positionals[0] === 'list';
   if (sub === 'run') return p.flags.get('dry-run') === 'true';
@@ -168,15 +176,15 @@ function readCtx<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
   return withCtx(out, fn);
 }
 
-/** Without `--confirm`: show what would be confirmed, and stop with exit 2. */
+/** Without `--confirm`: show what would be confirmed, and stop. A preview ran, so exit 0 (P2-R40). */
 function preview(c: { digest: string; lines: string[] }, asJson: boolean): number {
   if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
   else {
     for (const l of c.lines) say(l);
     say(`digest ${c.digest}`);
   }
-  console.error('usage: re-run with --confirm <the first eight hex characters of the digest>');
-  return 2;
+  console.error('next: re-run with --confirm <the first eight hex characters of the digest>');
+  return 0;
 }
 
 /** `--fix-lane 5:1.5` or `off`. */
@@ -380,5 +388,5 @@ export async function runAssumptionCommand(argv: string[], env: NodeJS.ProcessEn
       default:
         throw new Usage(`assumption needs one of: ${ASSUMPTION_SUBCOMMANDS.join(', ')}`);
     }
-  }, (sub) => sub === 'list');
+  }, (sub, p) => sub === 'list' || (sub !== undefined && ASSUMPTION_GUARDED.includes(sub) && !p.flags.has('confirm')));
 }

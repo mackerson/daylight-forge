@@ -15,8 +15,9 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   authorizeGrantRefusal, buildEnvelope, envelopeRefusal, haltCampaign, resumeCampaign, retryTicket, startTicketMission, campaignViolations,
-  approvePlan, authorizeCampaign, importPlan,
+  approvePlan, authorizeCampaign, importPlan, planOf,
 } from '../forge/campaign.ts';
+import { registerPlanGates } from '../forge/campaign-gates.ts';
 import { campaignReadOnly, sessionRefusal } from '../forge/commands-campaign.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { assertImplementable, specIntakeViolations } from '../forge/work-items.ts';
@@ -54,12 +55,12 @@ section('agent sessions write nothing (P2-R9, P2-R24, P2-R25)');
     const writes: Array<[string, string[]]> = [
       ['import', ['campaign', 'import', s.root, '--file', 'daylight.plan.json', '--out', s.out]],
       ['approve-plan', ['campaign', 'approve-plan', id, '--rationale', 'x', '--confirm', '00000000', '--out', s.out]],
-      ['authorize', ['campaign', 'authorize', id, '--expected-gate-set', 'x', '--out', s.out]],
-      ['retry', ['campaign', 'retry', id, 'C1', '--out', s.out]],
+      ['authorize', ['campaign', 'authorize', id, '--expected-gate-set', 'x', '--confirm', '00000000', '--out', s.out]],
+      ['retry', ['campaign', 'retry', id, 'C1', '--confirm', '00000000', '--out', s.out]],
       ['run (R6, not a dry run)', ['campaign', 'run', id, s.root, '--out', s.out]],
       ['status --write (R6)', ['campaign', 'status', id, '--write', '--out', s.out]],
-      ['assumption record', ['assumption', 'record', id, '--question', 'q', '--default', 'd', '--out', s.out]],
-      ['assumption confirm', ['assumption', 'confirm', 'u_x', '--out', s.out]],
+      ['assumption record', ['assumption', 'record', id, '--question', 'q', '--default', 'd', '--confirm', '00000000', '--out', s.out]],
+      ['assumption confirm', ['assumption', 'confirm', 'u_x', '--confirm', '00000000', '--out', s.out]],
     ];
     const before = fs.statSync(path.join(s.out, DAYLIGHT_DB)).mtimeMs;
     for (const [name, args] of writes) {
@@ -74,14 +75,59 @@ section('agent sessions write nothing (P2-R9, P2-R24, P2-R25)');
     const list = cli(['assumption', 'list', id, '--out', s.out, '--format', 'json'], env);
     check(`${v}: assumption list runs`, list.code === 0 && JSON.parse(list.out).length === 2, list.err);
   }
-  check('the read-only set is show, validate, status, gate list and run --dry-run',
+  const confirmed = { positionals: [], flags: new Map([['confirm', '00000000']]) };
+  check('the read-only set is show, validate, status, gate list, run --dry-run and a guarded act\'s preview',
     ['show', 'validate', 'status'].every((x) => campaignReadOnly(x))
       && campaignReadOnly('gate', { positionals: ['list'], flags: new Map() })
       && campaignReadOnly('run', { positionals: [], flags: new Map([['dry-run', 'true']]) })
       && !campaignReadOnly('gate', { positionals: ['register'], flags: new Map() })
       && !campaignReadOnly('status', { positionals: [], flags: new Map([['write', 'true']]) })
-      && !['import', 'approve-plan', 'authorize', 'retry', 'lock', 'baseline', 'halt', 'resume', 'adopt-tip', 'run'].some((x) => campaignReadOnly(x)));
+      && ['approve-plan', 'authorize', 'retry', 'lock', 'resume', 'adopt-tip'].every((x) => campaignReadOnly(x) && !campaignReadOnly(x, confirmed))
+      && !['import', 'baseline', 'halt', 'run'].some((x) => campaignReadOnly(x)));
   check('sessionRefusal is null in a clean environment', sessionRefusal(CLEAN_ENV, 'x') === null && sessionRefusal({ CLAUDECODE: '' }, 'x') === null);
+}
+
+section('previews of guarded acts run in an agent session; the confirmed act does not (P2-R41)');
+{
+  const s = imported('session-preview');
+  const id = s.imp.campaign.id;
+  const assumptionId = s.ctx.store.assumptions(id)[0].id;
+  // Registered by a person beforehand, so the lock preview has gates to name.
+  registerPlanGates({ store: s.ctx.store, artifacts: s.ctx.artifacts, events: s.ctx.events, repoRoot: s.root, out: s.out, env: CLEAN_ENV }, id, planOf(s.ctx, id).plan);
+  const rows = () => {
+    const ctx = openDaylight(s.out);
+    try {
+      return JSON.stringify([ctx.store.decisions(id).length, ctx.store.assumptions(id).map((a) => a.status), ctx.store.campaignTickets(id).length]);
+    } finally {
+      ctx.close();
+    }
+  };
+  s.ctx.close();
+  const before = rows();
+  const envelope = ['--expected-gate-set', GATE_SET, '--roster', 'mock', '--max-usd-total', '40', '--max-usd-per-mission', '2', '--max-turns', '60',
+    '--timeout', '600', '--max-attempts', '3', '--concurrency', '2', '--auto-apply', 'integration-ref'];
+  const previews: Array<[string, string[]]> = [
+    ['campaign approve-plan', ['campaign', 'approve-plan', id, '--rationale', 'x']],
+    ['campaign authorize', ['campaign', 'authorize', id, ...envelope, '--rationale', 'x']],
+    ['campaign lock', ['campaign', 'lock', id, '--no-ratchet', '--rationale', 'x']],
+    ['assumption record', ['assumption', 'record', id, '--question', 'q', '--default', 'd']],
+    ['assumption confirm', ['assumption', 'confirm', assumptionId, '--rationale', 'x']],
+    ['assumption decide', ['assumption', 'decide', assumptionId, '--value', 'v', '--rationale', 'x']],
+  ];
+  for (const v of ['CLAUDECODE', 'DAYLIGHT_SESSION']) {
+    for (const [name, args] of previews) {
+      const r = cli([...args, '--out', s.out, '--format', 'json'], { [v]: '1' });
+      const digest = r.code === 0 ? (JSON.parse(r.out) as { digest?: string }).digest : undefined;
+      check(`${v}: the ${name} preview exits 0 with its digest`, r.code === 0 && /^sha256:[0-9a-f]{64}$/.test(digest ?? ''), `${r.code} ${r.err}`);
+      const text = cli([...args, '--out', s.out], { [v]: '1' });
+      check(`${v}: and prints it as text`, text.code === 0 && /^digest sha256:|^gate set sha256:/m.test(text.out), `${text.code} ${text.err}`);
+      const act = cli([...args, '--out', s.out, '--confirm', (digest ?? 'sha256:00000000').slice(7, 15)], { [v]: '1' });
+      check(`${v}: ${name} --confirm is refused at the CLI`, act.code === 1 && act.err.includes(v) && act.err.includes('refused'), `${act.code} ${act.err}`);
+      const bare = cli([...args, '--out', s.out, '--confirm'], { [v]: '1' });
+      check(`${v}: a bare --confirm is not a preview`, bare.code === 1 && bare.err.includes('refused'), `${bare.code} ${bare.err}`);
+    }
+  }
+  check('no row was written by any preview or refusal', rows() === before, `${before} -> ${rows()}`);
 }
 
 section('campaign commands outside an agent session');
