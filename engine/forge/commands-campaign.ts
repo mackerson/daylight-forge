@@ -3,9 +3,9 @@ import path from 'node:path';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { DAYLIGHT_DB } from '../mission/db.ts';
 import { needsOf } from '../mission/needs.ts';
-import type { AssumptionDecisionScope, AssumptionStatus, CampaignEnvelope } from '../mission/types.ts';
+import type { AssumptionDecisionScope, AssumptionStatus, CampaignEnvelope, ForgeAssumptionRow, ForgeCampaignShow } from '../mission/types.ts';
 import { defaultOut } from '../paths.ts';
-import { ASSUMPTION_STATUSES, decideAssumption, recordAssumption } from './assumptions.ts';
+import { ASSUMPTION_STATUSES, decideAssumption, heldTickets, recordAssumption } from './assumptions.ts';
 import {
   approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, PlanInvalid, planOf, retryScopeOf, retryTicket,
   type EnvelopeFlags,
@@ -373,22 +373,51 @@ export async function runCampaignCommand(argv: string[], env: NodeJS.ProcessEnv 
   }, campaignReadOnly);
 }
 
-/** `campaign show`: the plan's DAG, lanes, a waves preview and owner decisions, with the campaign's needs. */
-export function showCampaign(ctx: DaylightContext, campaignId: string) {
+/**
+ * `campaign show`: the plan's DAG, lanes, a waves preview and owner decisions, with the
+ * campaign's needs, the authorization's envelope and the gate lock (counted, holdouts never named).
+ */
+export function showCampaign(ctx: DaylightContext, campaignId: string): ForgeCampaignShow {
   const plan = planOf(ctx, campaignId);
   const campaign = ctx.store.mission(campaignId)!;
   const tickets = ctx.store.campaignTickets(campaignId);
+  const auth = ctx.store.campaignAuthorization(campaignId);
+  const lock = ctx.store.latestDecision(campaignId, 'lock-campaign-gates');
+  const roles = Object.values((lock?.scope.roles ?? {}) as Record<string, string>);
   return {
     campaign, title: plan.plan.title, planDigest: plan.planDigest, commit: plan.commit,
     approved: ctx.store.latestDecision(campaignId, 'approve-plan')?.scope.planDigest === plan.planDigest,
     authorization: campaignAuthorizationRefusal(ctx, campaignId),
     order: topoOrder(plan.plan.tickets),
-    lanes: plan.plan.lanes.map((l) => ({ id: l.id, title: l.title, tickets: tickets.filter((t) => t.lane === l.id).map((t) => t.ticketId) })),
+    lanes: plan.plan.lanes.map((l) => ({
+      id: l.id, title: l.title, tickets: tickets.filter((t) => t.lane === l.id).map((t) => t.ticketId), owns: [...l.owns], maxParallel: l.maxParallel ?? 1,
+    })),
     waves: wavesPreview(plan.plan.tickets),
-    tickets: tickets.map((t) => ({ ...t, status: ctx.store.workItem(t.workItemId)?.status ?? 'unknown' })),
+    tickets: tickets.map((t) => {
+      const w = ctx.store.workItem(t.workItemId);
+      return { ...t, status: w?.status ?? 'unknown', title: w?.title ?? '' };
+    }),
     ownerDecisions: ctx.store.assumptions(campaignId).filter((a) => a.ownerDecisionId),
     needs: needsOf(ctx, campaign),
+    envelope: auth ? (auth.scope as unknown as CampaignEnvelope) : null,
+    lock: lock ? {
+      decisionId: lock.id, gateSetDigest: String(lock.scope.gateSetDigest), ratchet: lock.scope.ratchet === true,
+      gates: roles.filter((r) => r !== 'holdout').length, holdouts: roles.filter((r) => r === 'holdout').length,
+    } : null,
   };
+}
+
+/** `assumption list` rows: each with the tickets it holds and its plan options (WS-R8). */
+export function assumptionRows(ctx: DaylightContext, campaignId: string, status?: AssumptionStatus): ForgeAssumptionRow[] {
+  let options = new Map<string, string[]>();
+  try {
+    options = new Map((planOf(ctx, campaignId).plan.ownerDecisions ?? []).map((o) => [o.id, [...(o.options ?? [])]]));
+  } catch {
+    // A campaign without a readable plan has no options to offer.
+  }
+  return ctx.store.assumptions(campaignId, { status }).map((a) => ({
+    ...a, heldTickets: heldTickets(ctx, a), options: a.ownerDecisionId ? options.get(a.ownerDecisionId) ?? [] : [],
+  }));
 }
 
 // ---- assumption ------------------------------------------------------------------------
@@ -402,7 +431,7 @@ export async function runAssumptionCommand(argv: string[], env: NodeJS.ProcessEn
         if (!id) throw new Usage('assumption list needs <campaign>');
         const status = flag(p, 'status') as AssumptionStatus | undefined;
         if (status !== undefined && !ASSUMPTION_STATUSES.includes(status)) throw new Usage(`--status is one of ${ASSUMPTION_STATUSES.join(', ')}`);
-        const rows = readCtx(out, (ctx) => ctx.store.assumptions(id, { status }));
+        const rows = readCtx(out, (ctx) => assumptionRows(ctx, id, status));
         if (asJson) json(rows);
         else {
           if (!rows.length) say('no assumptions');

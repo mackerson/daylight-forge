@@ -26,7 +26,7 @@ import { r5StatusHost } from '../forge/campaign-status.ts';
 import { runClaimFile } from '../mission/orchestrate.ts';
 import { newId } from '../mission/store.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
-import { STATUS_BUCKET_OF, STATUS_BUCKETS, type CampaignStatusReport, type ForgeCampaignList, type PlanFileV1, type SpendLine, type WaveReport } from '../mission/types.ts';
+import { STATUS_BUCKET_OF, STATUS_BUCKETS, type CampaignStatusReport, type ForgeAssumptionRow, type ForgeCampaignList, type ForgeCampaignShow, type PlanFileV1, type SpendLine, type WaveReport } from '../mission/types.ts';
 import {
   approve, authorize, CLEAN_ENV, git, HUMAN, imported, lock, lockedGateSet, ROOT, tmp,
 } from './forge-campaign-fixture.ts';
@@ -162,7 +162,7 @@ function reportWorld(name: string) {
     kind: 'daylight-plan', version: 1, title: 'Report fixture', campaignGates: [],
     lanes: [{ id: 'API', title: 'api', owns: ['src/api/'] }, { id: 'UI', title: 'ui', owns: ['src/ui/'] }],
     ownerDecisions: [
-      { id: 'O1', question: 'Blocking question?', blocking: true },
+      { id: 'O1', question: 'Blocking question?', options: ['error', 'panic'], blocking: true },
       { id: 'O2', question: 'Width?', blocking: false, default: 'u64' },
     ],
     tickets: [
@@ -414,6 +414,16 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
     }
   })();
   check('without --out, the out dir derives from <repo>', derived.code === 1 && derived.err.includes(expectedOut), `${derived.err} vs ${expectedOut}`);
+  const show = json<ForgeCampaignShow>(cli(['campaign', 'show', id, '--out', w.out, '--format', 'json']));
+  check('campaign show carries the envelope, the lock as counts, lane ownership and ticket titles',
+    !!show && show.envelope?.ticketIds.join() === 'A1,A2,U1,U2' && show.lock?.holdouts === 1 && show.lock.gates === 0 && show.lock.gateSetDigest.startsWith('sha256:')
+      && show.lanes.find((l) => l.id === 'API')?.owns.join() === 'src/api/' && show.lanes.every((l) => l.maxParallel === 1)
+      && show.tickets.find((t) => t.ticketId === 'A1')?.title === 'First api change', JSON.stringify(show?.lock));
+  check('and names no holdout', !JSON.stringify(show).includes(w.holdout.id) && !JSON.stringify(show).includes(HOLDOUT_BASENAME));
+  const rows = json<ForgeAssumptionRow[]>(cli(['assumption', 'list', id, '--out', w.out, '--format', 'json']));
+  const r1 = rows?.find((a) => a.ownerDecisionId === 'O1');
+  check('assumption list rows carry held tickets and the plan\'s options', r1?.heldTickets.join() === 'U1' && r1.options.join() === 'error,panic'
+    && rows?.find((a) => a.ownerDecisionId === 'O2')?.options.length === 0, JSON.stringify(r1));
   check('the read-only set gains list, report without --write and refine',
     campaignReadOnly('list') && campaignReadOnly('report') && campaignReadOnly('refine')
       && !campaignReadOnly('report', { positionals: [], flags: new Map([['write', 'true']]) }));
