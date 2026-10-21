@@ -13,6 +13,10 @@ daylight deps snapshot <repo> [--out <dir>]   # on the host, with network; a per
 daylight deps status   <repo> [--out <dir>]   # recorded digest, verified; Cargo.lock match; cache sizes
 ```
 
+`deps snapshot` is refused under `CLAUDECODE` or `DAYLIGHT_SESSION`, in one line, before anything
+is read: a fetch on the host with network is a person's act (P2-R41). `deps status` and
+`deps requests` run in an agent session.
+
 `deps snapshot` checks the repository first. It refuses the repository, before anything is
 fetched, when any of these holds:
 
@@ -120,6 +124,24 @@ daylight gate add <mission> --role gate|holdout --harness cargo --crate <dir> --
 `--harness` defaults to the project policy's `gate.harness`, else `cargo` when its `languages` is `["rust"]`, else `node` ([POLICY.md](POLICY.md)). It is stored on the experiment row and in the gate's expectation,
 so it is covered by the harness digest: changing it makes a new harness.
 
+### Trying a test before registering it
+
+```
+daylight gate try <repo> --harness node|cargo --test <file> [--crate <dir>] \
+  [--expect-exit 0 --expect-stdout 'test result: ok.'] [--rev HEAD] [--out <dir>] [--format json]
+```
+
+`gate try` baselines one test at one revision exactly as `gate baseline` runs a gate: the same
+registration checks, the same placement, the same bwrap sandbox, the same cargo snapshot and the
+same reading of the result. It prints what each run showed and what a baseline would conclude
+(`falsified`, `supported` or `invalid`). It opens no store, needs no mission and writes no row
+or artifact under `<out>`; the registered test lives in a scratch directory under the system
+temp dir for the length of the run. A cargo try builds into its own gate cache under
+`<out>/cargo/target/gate/`, seeded from `gate/base/` and removed afterwards, so neither the base
+cache nor a candidate's is touched. Because it decides nothing, an agent session may run it
+(P2-R41). Without `--expect-exit` and `--expect-stdout` it predicts exit 0 and the harness's
+pass marker. Without bwrap it fails closed: the run is `denied` and the command exits 1.
+
 ### Where the test goes
 
 The registered file is one Rust integration test. It is placed in two places, from the same
@@ -197,6 +219,56 @@ The prediction is the exit code plus the `test result: ok.` marker.
 | that line says 0 passed and 0 failed, or no result line at all | `invalid`: an empty or unfinished gate is not evidence |
 
 The second row is what "the base lacks the function" looks like in Rust.
+
+### Gates that run cargo
+
+A regression gate sometimes has to run a cargo subcommand itself, for example to check that
+`cargo test --workspace`, `cargo fmt --check` or `cargo clippy` still passes (P2-R16: a cargo
+gate's test invokes what it needs). Such a gate is one integration test that spawns cargo.
+
+**Echoing the nested output makes the gate `invalid`, by design.** The result is read only when
+stderr shows exactly one `Running tests/daylight_<x_id>.rs (` line and stdout exactly one
+`test result:` line (P2-R30). A nested `cargo test` prints its own `Running …` and
+`test result: …` lines. If the gate prints them (through `--nocapture`, or by putting the nested
+output in a panic message, which libtest prints when the test fails), the outer run shows more
+than one of each and cannot be read. A failing step then reads as `invalid` instead of
+`falsified`. This stays strict: a reader that guessed which line was the gate's own would also
+accept a forged one.
+
+Write the gate so that it captures the nested run and summarises it:
+
+- spawn cargo with `Command::output()`, never inheriting stdout or stderr;
+- assert on the exit status, and on failure print a summary: the failing test names and cargo's
+  `error` lines, without any `Running` or `test result:` line;
+- give the nested run its own target directory under `CARGO_TARGET_DIR`, because the outer
+  `cargo test` holds the lock on its own;
+- set an environment variable on the nested run and return at once when it is set, because the
+  nested `cargo test --workspace` builds and runs the gate's own placed test too;
+- pass `--offline`. Inside the sandbox `CARGO_HOME` is the read-only snapshot and there is no
+  network.
+
+The worked example is `fixtures/cargo-workspace/gates/workspace_tests.rs`, a regression gate over
+`cargo test --workspace`. `engine/test/forge-cargo.ts` baselines it as `supported` at the
+fixture's base, `falsified` once a unit test in the workspace fails, and shows that the same gate
+reads as `invalid` when it echoes the nested output instead. The core of it:
+
+```rust
+let out = Command::new(env!("CARGO"))
+    .args(["test", "--offline", "--workspace"])
+    .current_dir(root)
+    .env(NESTED, "1")
+    .env("CARGO_TARGET_DIR", &target)
+    .output();
+match out {
+    Ok(o) if o.status.success() => {}
+    Ok(o) => panic!("nested cargo test failed ({}):\n{}", o.status, summary(&o.stdout, &o.stderr)),
+    Err(e) => panic!("could not start cargo: {e}"),
+}
+```
+
+Each `cargo fmt --check` or `cargo clippy` step follows the same pattern, one gate per step, so
+that a failure names the step. A tool that is not in the sandbox (`/usr` is the host's, read-only)
+fails to start, and the gate reports that as a failure.
 
 ## Limitations
 

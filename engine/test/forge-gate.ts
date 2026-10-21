@@ -26,7 +26,7 @@ import type {
 import { confirmDigest } from '../forge/confirm.ts';
 import { checkPolicy, DecisionRefused } from '../forge/policy.ts';
 import {
-  authorBrief, baseline, evaluate, GateRefused, listGates, lock, registerGate, verdictRows, type GateContext,
+  authorBrief, baseline, evaluate, GateRefused, listGates, lock, registerGate, tryGate, verdictRows, type GateContext,
 } from '../forge/gate.ts';
 import { candidateVerdict, type VerdictRows } from '../forge/verdict.ts';
 import { DIFF_FLAGS } from '../forge/diff.ts';
@@ -717,6 +717,52 @@ section('a holdout\'s basename reaches no event payload and no shared artifact (
   const refs = [...new Set(mine.flatMap((e) => e.artifactIds ?? []))].map((id) => dctx.store.artifact(id)).filter((a) => !!a && !withheld.has(a.id));
   check('and no artifact row an event names carries it as its path', refs.every((a) => !JSON.stringify(a).includes(BASENAME)));
   check('a gate\'s path is not redacted', named.length === 0 && events.some((e) => e.name === 'experiment.registered' && e.payload.subject === gate.testArtifact.path));
+}
+
+section('gate try: a test baselined with no store, no mission and no row, in an agent session (P2-R41)');
+{
+  const runner = path.join(tmp, 'gate-try-cli.ts');
+  fs.writeFileSync(runner, [
+    `import { runGateCommand } from ${JSON.stringify(path.join(HERE, '..', 'forge', 'commands-gate.ts'))};`,
+    'process.exitCode = await runGateCommand(process.argv.slice(2));',
+  ].join('\n'));
+  const tryOut = path.join(tmp, 'try-out');
+  const cli = (args: string[]) => {
+    const r = spawnSync(process.execPath, [runner, 'try', repo, ...args, '--out', tryOut], { encoding: 'utf8', env: { ...process.env, CLAUDECODE: '1' } });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
+  const failing = path.join(tmp, 'try-add.test.js');
+  fs.writeFileSync(failing, GATE_TEST);
+  const passing = path.join(tmp, 'try-always.test.js');
+  fs.writeFileSync(passing, VACUOUS_TEST);
+  const experimentsBefore = dctx.store.experiments(mission.id).length;
+  const eventsBefore = events.length;
+  const bad = cli(['--test', failing]);
+  check('--harness is required', bad.code === 2 && /--harness/.test(bad.stderr), bad.stderr);
+  const half = cli(['--harness', 'node', '--test', failing, '--expect-exit', '0']);
+  check('--expect-exit without --expect-stdout is a usage error', half.code === 2, half.stderr);
+  if (live.available) {
+    const f = cli(['--harness', 'node', '--test', failing, '--format', 'json']);
+    const fr = f.code === 0 ? JSON.parse(f.stdout) as { conclusion: string; commit: string; runs: Array<{ status: string; exitCode: number; stdout: string }> } : null;
+    check('under CLAUDECODE, a test that fails at the base would be falsified, with what each run showed',
+      fr?.conclusion === 'falsified' && fr.commit === commit && fr.runs.length === 2 && fr.runs.every((r) => r.status === 'ran' && r.exitCode === 1 && /# fail 1/.test(r.stdout)),
+      `${f.code} ${f.stderr} ${f.stdout.slice(0, 300)}`);
+    const s = cli(['--harness', 'node', '--test', passing, '--rev', 'HEAD']);
+    check('one that passes would be supported, said in text', s.code === 0 && /a baseline would conclude supported/.test(s.stdout) && /run 1: ran exit 0, matches/.test(s.stdout), s.stdout + s.stderr);
+    const named = cli(['--harness', 'node', '--test', failing, '--expect-exit', '1', '--expect-stdout', '# fail 1', '--format', 'json']);
+    check('a named prediction is the one judged', named.code === 0 && JSON.parse(named.stdout).conclusion === 'supported', named.stderr);
+  } else {
+    console.log(`  skipped: the gate try runs need bwrap and prlimit (${live.why})`);
+  }
+  const closed = await tryGate({ repoRoot: repo, revision: commit, harness: 'node', testSource: GATE_TEST, basename: 'add.test.js', sandbox: UNAVAILABLE });
+  check('without a sandbox it fails closed: invalid, the run denied, nothing run bare',
+    closed.conclusion === 'invalid' && closed.runs.length === 1 && closed.runs[0].status === 'denied' && /sandbox unavailable/.test(closed.runs[0].why ?? ''), JSON.stringify(closed.runs));
+  check('a node try refuses a crate', (await throws(() => tryGate({ repoRoot: repo, revision: commit, harness: 'node', testSource: GATE_TEST, basename: 'a.test.js', crate: 'x' }))) instanceof GateRefused);
+  check('an unknown revision is refused', (await throws(() => tryGate({ repoRoot: repo, revision: 'no-such-branch', harness: 'node', testSource: GATE_TEST, basename: 'a.test.js' }))) instanceof GateRefused);
+  check('no <out> was created: no database, no artifact', !fs.existsSync(tryOut));
+  check('no experiment row and no event was written', dctx.store.experiments(mission.id).length === experimentsBefore && events.length === eventsBefore);
+  const help = spawnSync(process.execPath, [path.join(HERE, '..', 'cli.ts'), 'gate', 'try', '--help'], { encoding: 'utf8' });
+  check('gate try --help prints the usage with try in it and exits 0', help.status === 0 && /try <repo> --harness node\|cargo --test <file>/.test(help.stdout), help.stderr);
 }
 
 section('nothing is left behind');

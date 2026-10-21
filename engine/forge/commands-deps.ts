@@ -2,6 +2,7 @@ import path from 'node:path';
 import { defaultOut } from '../paths.ts';
 import { CargoRefused, createSnapshot, snapshotStatus } from './cargo.ts';
 import { parse, runDepsRequestsCommand } from './commands-deps-requests.ts';
+import { AGENT_SESSION_VARS } from './policy.ts';
 
 /**
  * `daylight deps snapshot|status`: the crate snapshot a Rust repository's gates and author
@@ -14,6 +15,9 @@ import { parse, runDepsRequestsCommand } from './commands-deps-requests.ts';
  *
  *   deps snapshot <repo> [--out <dir>]   # cargo fetch --locked, on the host, with network
  *   deps status   <repo> [--out <dir>]   # recorded digest, lock match, cache sizes
+ *
+ * `snapshot` is refused under `CLAUDECODE` or `DAYLIGHT_SESSION` (P2-R41): a fetch on the host,
+ * with network, is a person's act. `status`, `requests` and the preview of `resolve` run anywhere.
  */
 
 class Usage extends Error {}
@@ -30,6 +34,12 @@ export async function runDepsCommand(argv: string[], env: NodeJS.ProcessEnv = pr
   const p = parse(argv.slice(sub ? 1 : 0));
   const asJson = p.flags.get('format') === 'json';
   try {
+    if (sub === 'snapshot') {
+      const set = AGENT_SESSION_VARS.filter((k) => env[k] !== undefined && env[k] !== '');
+      if (set.length) {
+        throw new CargoRefused(`refused: ${set.join(' and ')} is set, so an agent is running this; \`deps snapshot\` fetches crates on the host with network and is run by a person from their own shell`);
+      }
+    }
     const [repoArg] = p.positionals;
     if (sub !== 'snapshot' && sub !== 'status') throw new Usage('deps needs one of: snapshot, status, requests, resolve');
     if (!repoArg) throw new Usage(`deps ${sub} needs a <repo>`);

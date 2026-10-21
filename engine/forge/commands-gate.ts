@@ -7,11 +7,11 @@ import { confirmDigest } from './confirm.ts';
 import { DecisionRefused } from './policy.ts';
 import { defaultGateHarness, loadProjectPolicy } from './project-policy.ts';
 import {
-  baseline, evaluate, GateRefused, listGates, lock, registerGate, type GateContext,
+  baseline, evaluate, GateRefused, listGates, lock, registerGate, tryGate, type GateContext,
 } from './gate.ts';
 
 /**
- * `daylight gate add|baseline|lock|list|evaluate`. WS8 wires the dispatch; nothing here
+ * `daylight gate add|baseline|lock|list|evaluate|try`. WS8 wires the dispatch; nothing here
  * edits `cli.ts` or `mission/commands.ts`.
  *
  * Same contract as the mission commands: `--out` (default: the repository's data dir),
@@ -25,6 +25,13 @@ import {
  *            [--accept-vacuous x_…,…] [--only x_…,…]
  *   gate list <mission>
  *   gate evaluate <candidate> [repo] [--runs n] [--timeout s]
+ *   gate try <repo> --harness node|cargo --test <file> [--crate <dir>] [--expect-exit n --expect-stdout s…] [--rev HEAD]
+ *            [--runs n] [--timeout s]
+ *
+ * `gate try` baselines one test in the sandbox at one revision and prints what it observed and
+ * what a baseline would conclude. It opens no store, needs no mission and writes no row, so an
+ * agent session may run it (P2-R41); a cargo try reads the crate snapshot under `--out`. Exit 0
+ * when the test ran (whatever it concluded), 1 when it could not run (no sandbox included).
  */
 
 class Usage extends Error {}
@@ -191,8 +198,41 @@ async function gate(sub: string | undefined, p: Parsed, out: () => string, asJso
       }
       return 0;
     }
+    case 'try': {
+      const [repoArg] = p.positionals;
+      if (!repoArg) throw new Usage('gate try needs a <repo>');
+      const harness = need(p, 'harness');
+      if (harness !== 'node' && harness !== 'cargo') throw new Usage(`--harness is node or cargo, not ${harness}`);
+      const testFile = need(p, 'test');
+      const exit = num(last(p, 'expect-exit'));
+      const stdoutIncludes = all(p, 'expect-stdout');
+      if ((exit === undefined) !== (stdoutIncludes.length === 0)) throw new Usage('--expect-exit and --expect-stdout go together; leave both out for the harness default');
+      const repo = path.resolve(repoArg);
+      const timeout = num(last(p, 'timeout'));
+      const r = await tryGate({
+        repoRoot: repo, revision: last(p, 'rev') ?? 'HEAD', harness, testSource: fs.readFileSync(testFile, 'utf8'), basename: path.basename(testFile),
+        ...(last(p, 'crate') !== undefined ? { crate: last(p, 'crate') } : {}),
+        ...(exit !== undefined ? { prediction: { exitCode: exit, stdoutIncludes } } : {}),
+        ...(harness === 'cargo' ? { out: out() } : {}),
+        runs: num(last(p, 'runs')), timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
+      });
+      const denied = r.runs.some((x) => x.status === 'denied');
+      if (asJson) json(r);
+      else {
+        say(`gate try at ${r.commit.slice(0, 12)} (${r.harness}): a baseline would conclude ${r.conclusion}`);
+        for (const x of r.runs) {
+          say(`  run ${x.runIndex}: ${x.status}${x.exitCode !== null ? ` exit ${x.exitCode}` : ''}${x.signal ? ` ${x.signal}` : ''}${x.timedOut ? ' timed out' : ''}, ${x.matchesPrediction ? 'matches' : 'does not match'} the prediction, ${x.durationMs} ms${x.why ? `: ${x.why}` : ''}`);
+        }
+        const lastRun = r.runs.at(-1);
+        const tail = (t: string) => t.trimEnd().split('\n').slice(-20);
+        if (lastRun?.stdout) for (const l of ['stdout (last run, last 20 lines):', ...tail(lastRun.stdout)]) say(l);
+        if (lastRun?.stderr) for (const l of ['stderr (last run, last 20 lines):', ...tail(lastRun.stderr)]) say(l);
+      }
+      if (denied) console.error(`error: the test did not run: ${r.runs.find((x) => x.status === 'denied')?.why ?? 'the sandbox refused it'}`);
+      return denied ? 1 : 0;
+    }
     default:
-      throw new Usage('gate needs one of: add, baseline, lock, list, evaluate');
+      throw new Usage('gate needs one of: add, baseline, lock, list, evaluate, try');
   }
 }
 
@@ -202,7 +242,7 @@ export async function runGateCommand(argv: string[]): Promise<number> {
   const p = parse(argv.slice(sub ? 1 : 0));
   const explicitOut = last(p, 'out');
   const asJson = last(p, 'format') === 'json';
-  const repoArg = sub === 'baseline' || sub === 'evaluate' ? p.positionals[1] : undefined;
+  const repoArg = sub === 'baseline' || sub === 'evaluate' ? p.positionals[1] : sub === 'try' ? p.positionals[0] : undefined;
   let resolved: string | undefined;
   const out = () => (resolved ??= explicitOut ? path.resolve(explicitOut) : defaultOut(repoArg ?? process.cwd()));
   try {

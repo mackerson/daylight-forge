@@ -43,6 +43,11 @@ const DEP = v('dep', (p) => { p.tickets[0].dependsOn = ['ZZ9']; });
 const SELF = v('self', (p) => { p.tickets[0].dependsOn = ['C1']; });
 const CYCLE = v('cycle', (p) => { p.tickets[0].dependsOn = ['C2']; });
 const MISSING = v('missing', (p) => { p.tickets[0].scope = ['crates/core/src/nothing.rs']; });
+const NEW_DIR = v('new-dir', (p) => { p.tickets[0].scope = ['crates/core/src/fresh']; });
+const ESCAPE = v('escape', (p) => { p.tickets[0].scope = ['crates/core/../../outside.rs']; });
+const NEW_PROTECTED = v('new-protected', (p) => { p.tickets[0].scope = ['crates/core/src/.cargo/config.toml']; });
+const NEW_BUILD = v('new-build', (p) => { p.lanes[1].owns.push('crates/app/build.rs'); p.tickets[2].scope = ['crates/app/build.rs']; });
+const BELOW_FILE = v('below-file', (p) => { p.tickets[0].scope = ['crates/core/src/lib.rs/inner.rs']; });
 const PLANNED = v('planned', (p) => { p.tickets[0].scope = ['crates/core/src/newmod/']; });
 const OUTSIDE = v('outside', (p) => { p.tickets[0].scope = ['crates/app/src/main.rs']; });
 const OVERLAP = v('overlap', (p) => { p.lanes[1].owns.push('crates/core/src/lib.rs'); });
@@ -90,6 +95,8 @@ const P_GATES = PROTECT('p-gates', '.daylight-gates/', '.daylight-gates');
 const P_MANIFEST = PROTECT('p-manifest', 'crates/core/Cargo.toml', 'crates/core');
 const P_PLAN = PROTECT('p-plan', 'plans/p-plan.json', 'plans');
 const P_YARN = PROTECT('p-yarn', '.yarn/releases/', '.yarn');
+const P_BUILD = PROTECT('p-build', 'crates/core/build.rs', 'crates/core');
+const NOT_BUILD = v('not-build', (p) => { p.tickets[0].scope = ['crates/core/src/build.rs']; });
 const P_STATUS = PROTECT('p-status', 'crates/core/src/STATUS.md', undefined, (p) => { p.statusPath = 'crates/core/src/STATUS.md'; p.derivedStatus = true; });
 const TEXT = v('text', (p) => { p.tickets[0].title = `${SENTINEL}‮ line`; });
 const STATEMENT = v('statement', (p) => { p.tickets[0].statement = [SENTINEL, 'x'.repeat(5000)]; });
@@ -97,6 +104,8 @@ const UNKNOWN = v('unknown', (p) => { (p.tickets[0] as unknown as Record<string,
 
 const extra: Record<string, string> = {
   'crates/core/src/STATUS.md': '# status\n',
+  'crates/core/build.rs': 'fn main() {}\n',
+  'crates/core/src/build.rs': 'pub fn build() {}\n',
   '.github/x.yml': 'on: push\n',
   'plans/version.json': JSON.stringify({ ...samplePlan(), version: 2 }),
   'plans/notjson.json': `{ "title": "${SENTINEL}" `,
@@ -119,6 +128,8 @@ section('a valid plan');
   check('its digest is the blob\'s', r.planDigest?.startsWith('sha256:') === true);
   check('the root plan validates too', at('daylight.plan.json').refusals.length === 0);
   check('a scope ending in / under its lane may name a directory that does not exist yet', at(PLANNED).refusals.length === 0, show(at(PLANNED).refusals));
+  check('a scope may name a file that does not exist yet (P2-R41)', at(MISSING).refusals.length === 0, show(at(MISSING).refusals));
+  check('or a directory that does not exist yet, without a trailing /', at(NEW_DIR).refusals.length === 0, show(at(NEW_DIR).refusals));
   check('lanes may overlap where both list the prefix as shared', at(SHARED).refusals.length === 0, show(at(SHARED).refusals));
 }
 
@@ -130,7 +141,10 @@ section('every PlanRule, with its path');
     ['a ticket depends on an unknown ticket', DEP, 'unknown-dependency', '$.tickets[0].dependsOn[0]'],
     ['a ticket depends on itself', SELF, 'self-dependency', '$.tickets[0].dependsOn[0]'],
     ['a dependency cycle', CYCLE, 'cycle', '$.tickets'],
-    ['a scope that is not in the tree', MISSING, 'scope-path', '$.tickets[0].scope[0]'],
+    ['a scope below a file at the plan commit', BELOW_FILE, 'scope-path', '$.tickets[0].scope[0]'],
+    ['a scope with .. (it leaves the repository)', ESCAPE, 'scope-path', '$.tickets[0].scope[0]'],
+    ['a protected scope that does not exist yet', NEW_PROTECTED, 'scope-protected', '$.tickets[0].scope[0]'],
+    ['a crate-root build.rs that does not exist yet', NEW_BUILD, 'scope-protected', '$.tickets[2].scope[0]'],
     ['a scope outside its lane', OUTSIDE, 'scope-outside-lane', '$.tickets[0].scope[0]'],
     ['two lanes overlap', OVERLAP, 'lane-overlap', '$.lanes[1].owns'],
     ['an overlap only one lane shares', SHARED_ONE, 'lane-overlap', '$.lanes[1].owns'],
@@ -173,11 +187,12 @@ section('every PlanRule, with its path');
 
 section('protected scopes');
 {
-  for (const [name, rel] of [['Cargo.lock', P_LOCK], ['.github/x', P_GITHUB], ['.daylight-gates/', P_GATES], ['a crate manifest', P_MANIFEST],
+  for (const [name, rel] of [['Cargo.lock', P_LOCK], ['.github/x', P_GITHUB], ['.daylight-gates/', P_GATES], ['a crate manifest', P_MANIFEST], ['a crate root build.rs', P_BUILD],
     ['the plan file itself', P_PLAN], ['a directory over a protected subtree (.yarn/releases/, review L9)', P_YARN], ['statusPath', P_STATUS]] as const) {
     const r = at(rel);
     check(`${name} is scope-protected`, has(r.refusals, 'scope-protected', '$.tickets[0].scope[0]'), show(r.refusals));
   }
+  check('build.rs under a crate\'s src/ is an ordinary module, not protected (P2-R41)', at(NOT_BUILD).refusals.length === 0, show(at(NOT_BUILD).refusals));
 }
 
 section('refusals never echo what they refused');

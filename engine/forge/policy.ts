@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { CandidateFile, MissionScope, PolicyRule, PolicyViolation } from '../mission/types.ts';
 import { isHumanActor } from '../mission/types.ts';
-import { protectedBy, type ProjectPolicy } from './project-policy.ts';
+import { protectedBy, type CrateLayout, type ProjectPolicy } from './project-policy.ts';
 
 /**
  * The Forge's pure rules: which paths a candidate diff may touch (ADR-21), and whether a
@@ -33,6 +33,11 @@ export interface PolicyContext {
    * sets, exactly as before policies existed.
    */
   policy?: ProjectPolicy | null;
+  /**
+   * The crates of the tree the path is judged against (P2-R41). Absent or null: every `build.rs`
+   * is protected, since the check cannot tell a crate root.
+   */
+  crates?: CrateLayout | null;
 }
 
 /**
@@ -54,7 +59,7 @@ export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): Po
     || parts.some((s) => s === '..' || s === '.' || s === '');
   if (escapes) rules.push('path-escape');
 
-  if (protectedBy(p, ctx.policy).length) rules.push('protected-path');
+  if (protectedBy(p, ctx.policy, ctx.crates).length) rules.push('protected-path');
   if (parts[0] === GATE_DIR) rules.push('gate-path');
   if (ctx.specPath !== undefined && p === normalise(ctx.specPath)) rules.push('spec-path');
 
@@ -80,7 +85,7 @@ export function checkPolicy(files: readonly CandidateFile[], ctx: PolicyContext 
     for (const rule of new Set(pathViolations(f, ctx))) {
       // Which set matched is said only under a loaded policy, so a repository without one
       // records exactly the rows it did before policies existed.
-      const why = rule === 'protected-path' && ctx.policy ? `protected by the ${protectedBy(f.path, ctx.policy).join(' and ')} set` : undefined;
+      const why = rule === 'protected-path' && ctx.policy ? `protected by the ${protectedBy(f.path, ctx.policy, ctx.crates).join(' and ')} set` : undefined;
       out.push(why ? { rule, path: f.path, why } : { rule, path: f.path });
     }
   }

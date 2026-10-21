@@ -59,6 +59,8 @@ usage:
   node engine/cli.ts gate       add <m> --role gate|holdout --test <file> --expect-exit 0 --expect-stdout '# fail 0'
                                 [--harness node|cargo] [--crate <dir>]   # cargo: --expect-stdout 'test result: ok.'
                                 baseline <m> [repo] | lock <m> --rationale '<why>' --confirm <c> | list <m> | evaluate <c>
+                                try <repo> --harness node|cargo --test <file> [--crate <dir>] [--expect-exit n --expect-stdout s] [--rev r]
+                                    # baseline one test in the sandbox; no store, no mission, no rows; allowed in an agent session
   node engine/cli.ts forge      run <m> <repo> --tools mock[:model] [--max-cost <usd>] [--timeout s] [--keep-workspace]
                                 evaluate <c> | candidate <c> [--max-bytes N]
                                 approve|reject|override <c> --rationale '<why>' --confirm <c> | apply <c> <repo> --confirm <c>
