@@ -21,38 +21,50 @@ import {
 } from '../fixtures/forge-campaign.sample.ts';
 import { FORGE_WAVE_REPORT } from '../fixtures/forge-campaign-report.sample.ts';
 import { FORGE_REFINE, FORGE_REFINE_MAP } from '../fixtures/forge-campaign-refine.sample.ts';
+import { campaignSpendWords as engineCampaignWords, spendWords as engineWords } from '../../../../engine/forge/campaign-report.ts';
 import { harness } from '../../../../engine/test/harness.ts';
 
 const { check, section, done } = harness();
 const here = path.dirname(fileURLToPath(import.meta.url));
-const line = (o = {}) => ({ key: 'k', attempts: 2, spentUsd: 1, knownUsd: 1, scannedUsd: 0, scannedCount: 0, unknownCount: 0, runningCount: 0, reservationCount: 0, ...o });
+const line = (o = {}) => ({ key: 'k', attempts: 2, spentUsd: 1, knownUsd: 1, scannedUsd: 0, scannedCount: 0, unknownCount: 0, runningCount: 0, reservationCount: 0, reservationUsd: 0, ...o });
 
-section('spend: never a figure it was not given');
+section('spend: the engine\'s words, case for case (review M3)');
 {
   check('no attempts is a dash', spendWords(line({ attempts: 0, spentUsd: 0, knownUsd: 0 })) === '—');
-  check('every finished attempt unknown and nothing scanned is unknown, not $0.00',
+  check('nothing finished yet says so', spendWords(line({ attempts: 1, runningCount: 1 })) === '1 running, nothing reported yet');
+  check('every finished attempt unknown and nothing beside is unknown, not $0.00',
     spendWords(line({ attempts: 2, knownUsd: 0, spentUsd: 0, unknownCount: 2 })) === 'unknown');
-  check('some unknown is a floor with the count', spendWords(line({ knownUsd: 1.5, unknownCount: 1 })) === '≥ $1.50 (1 unknown)', spendWords(line({ knownUsd: 1.5, unknownCount: 1 })));
+  check('some unknown is a floor with the count', spendWords(line({ knownUsd: 1.5, unknownCount: 1 })) === '≥ $1.50 (1 unknown)');
   const scanned = spendWords(line({ knownUsd: 1, scannedUsd: 0.4, scannedCount: 1 }));
-  check('scanned spend sits beside the known figure, never inside it', scanned === '$1.00 · $0.40 scanned, not known', scanned);
+  check('scanned spend sits beside the known figure, never inside it', scanned === '$1.00; $0.40 scanned, not known', scanned);
   check('only scanned: no known $0.00 is printed', spendWords(line({ knownUsd: 0, scannedUsd: 0.4, scannedCount: 1 })) === '$0.40 scanned, not known');
-  check('running is appended', spendWords(line({ runningCount: 1, attempts: 3 })) === '$1.00 +1 running');
-  check('attempts charged at their reservation are said beside', /1 charged at reservation/.test(spendWords(line({ reservationCount: 1 }))));
-  const bar = spendBar(line({ knownUsd: 4, scannedUsd: 2, unknownCount: 1 }), 10);
-  check('the bar draws known and scanned against the cap', bar.known === 0.4 && Math.abs(bar.scanned - 0.2) < 1e-9);
+  check('a running attempt keeps the floor mark', spendWords(line({ runningCount: 1, attempts: 3 })) === '≥ $1.00 +1 running');
+  const res = spendWords(line({ reservationCount: 1, reservationUsd: 0.5 }));
+  check('reservation charges are stated with their dollars', res === '$1.00; $0.50 charged at reservation for 1 unfinished', res);
+  const bar = spendBar(line({ knownUsd: 4, scannedUsd: 2, unknownCount: 1, reservationUsd: 1, reservationCount: 1 }), 10);
+  check('the bar draws known, scanned and the reservation charge against the cap', bar.known === 0.4 && Math.abs(bar.scanned - 0.2) < 1e-9 && Math.abs(bar.charged - 0.1) < 1e-9 && bar.chargedUsd === 1);
   check('with a cost unknown the bar has no right edge and counts it', bar.open === true && bar.unknown === 1);
   check('a fully known bar is closed', spendBar(line(), 10).open === false);
   check('a bar never draws past the cap', spendBar(line({ knownUsd: 50 }), 10).known === 1 && spendBar(line({ knownUsd: 9, scannedUsd: 5 }), 10).scanned <= 0.1 + 1e-9);
   const cs = FORGE_CAMPAIGN_STATUS.spend;
   const cb = campaignSpendBar(cs);
-  check('the campaign bar over the sample is open with one unknown and reads as the engine\'s floor (WS-R12)',
-    cb.open && cb.unknown === 1 && /^≥ \$8\.42 \(1 unknown; \$1\.00 charged at reservation for 1 unfinished attempt\(s\)\)/.test(cb.words), cb.words);
+  check('the campaign bar over the sample is open with one unknown and reads as STATUS.md does',
+    cb.open && cb.unknown === 1 && cb.words === '≥ $6.10 (1 unknown); $1.32 scanned, not known; $1.00 charged at reservation for 1 unfinished +1 running', cb.words);
   check('the reservation charge is its own segment, labelled with its dollars and count', cb.charged === 1 / 40 && cb.chargedUsd === 1 && cb.reservationCount === 1);
-  check('the campaign words count scanned attempts and name what running attempts hold', /1 scanned, not known/.test(campaignSpendWords(cs)) && /\$1\.50 reserved by running/.test(campaignSpendWords(cs)));
-  check('a campaign with nothing spent and an unknown is unknown, not $0.00',
-    campaignSpendWords({ ...cs, spentUsd: 0, knownUsd: 0, scannedCount: 0, reservedUsd: 0, runningCount: 0, reservationCount: 0, reservationUsd: 0 }) === 'unknown (1 unknown)');
-  check('a base without the reservation fields still reads (fields optional until WS-R12 merges)',
-    campaignSpendWords({ spentUsd: 1, knownUsd: 1, unknownCount: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: 5 }) === '$1.00');
+  check('a campaign with nothing known and an unknown is unknown, not $0.00',
+    campaignSpendWords({ ...cs, spentUsd: 0, knownUsd: 0, scannedCount: 0, reservedUsd: 0, runningCount: 0, reservationCount: 0, reservationUsd: 0 }) === 'unknown (1 attempt(s) reported no cost)');
+  // The test (never the bundle) imports the engine's rule and compares over a grid of lines.
+  const grid = [];
+  for (const attempts of [0, 1, 3]) for (const runningCount of [0, 1]) for (const unknownCount of [0, 1, 3]) for (const scannedCount of [0, 1])
+    for (const reservationCount of [0, 1]) for (const knownUsd of [0, 1.25]) {
+      if (runningCount > attempts || unknownCount > attempts - runningCount) continue;
+      grid.push(line({ attempts, runningCount, unknownCount, scannedCount, scannedUsd: scannedCount * 0.4, reservationCount, reservationUsd: reservationCount * 0.5, knownUsd }));
+    }
+  const differ = grid.filter((l) => spendWords(l) !== engineWords(l));
+  check(`a line reads exactly as the engine's spendWords, over ${grid.length} cases`, differ.length === 0, JSON.stringify(differ[0]));
+  const spends = grid.map((l) => ({ spentUsd: l.knownUsd + l.scannedUsd + l.reservationUsd, knownUsd: l.knownUsd, unknownCount: l.unknownCount, unknownUnansweredCount: 0,
+    reservationCount: l.reservationCount, reservationUsd: l.reservationUsd, scannedCount: l.scannedCount, runningCount: l.runningCount, reservedUsd: 0, capUsd: 10 }));
+  check('the campaign total reads exactly as the engine\'s campaignSpendWords', spends.every((x) => campaignSpendWords(x) === engineCampaignWords(x)));
   const unknownLines = [...FORGE_WAVE_REPORT.spend.lanes, ...FORGE_WAVE_REPORT.spend.tickets].filter((l) => l.unknownCount > 0);
   check('no sample line with an unknown cost renders a bare dollar figure', unknownLines.length > 0 && unknownLines.every((l) => /^(≥|unknown)/.test(spendWords(l))));
 }

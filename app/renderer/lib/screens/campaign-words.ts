@@ -90,46 +90,44 @@ export function severityWord(s: FindingSeverity): Word {
 
 // ---- spend --------------------------------------------------------------------------------
 
+const round = (n: number): number => Math.round(n * 100) / 100;
+
 /**
- * One spend line as words, the engine's `spendWords` rule: `—` for no attempts, `unknown` when
- * every finished attempt is unknown and nothing was scanned, a floor `≥` when some are; scanned
- * spend beside, never inside; attempts charged at their reservation beside; running appended.
+ * One spend line as words, the engine's `spendWords` (campaign-report.ts) case for case, so the
+ * screen says what STATUS.md and the markdown report say: `—` for no attempts; `N running,
+ * nothing reported yet` before anything finished; `unknown` when every finished attempt is
+ * unknown and nothing is beside it; otherwise a floor `≥` whenever a figure is unknown or an
+ * attempt is still running. Scanned dollars and reservation charges sit beside, never inside.
  */
 export function spendWords(l: SpendLine): string {
   if (l.attempts === 0) return '—';
   const finished = l.attempts - l.runningCount;
-  let head: string;
-  if (l.unknownCount > 0 && l.unknownCount >= finished && l.scannedCount === 0) head = UNKNOWN;
-  else if (l.unknownCount > 0) head = `≥ ${money(l.knownUsd)} (${l.unknownCount} unknown)`;
-  else if (l.knownUsd === 0 && l.scannedUsd > 0 && l.reservationCount === 0) head = '';
-  else head = money(l.knownUsd);
+  const running = l.runningCount ? ` +${l.runningCount} running` : '';
+  if (finished === 0) return `${l.runningCount} running, nothing reported yet`;
   const beside = [
-    l.scannedUsd > 0 ? `${money(l.scannedUsd)} scanned, not known` : '',
-    l.reservationCount > 0 ? `${l.reservationCount} charged at reservation` : '',
+    l.scannedCount ? `${money(l.scannedUsd)} scanned, not known` : '',
+    l.reservationCount ? `${money(l.reservationUsd)} charged at reservation for ${l.reservationCount} unfinished` : '',
   ].filter(Boolean);
-  const text = [head, ...beside].filter(Boolean).join(' · ');
-  return l.runningCount > 0 ? `${text} +${l.runningCount} running` : text;
+  if (l.unknownCount === finished && !beside.length) return `${UNKNOWN}${running}`;
+  const unknown = l.unknownCount ? `${l.unknownCount} unknown` : '';
+  const known = l.knownUsd > 0 || !beside.length ? money(l.knownUsd) : '';
+  const floor = l.unknownCount || l.runningCount ? '≥ ' : '';
+  const lead = known ? `${floor}${known}${unknown ? ` (${unknown})` : ''}` : unknown;
+  return [lead, ...beside].filter(Boolean).join('; ') + running;
 }
 
-/**
- * The whole campaign's spend in the engine's STATUS words (WS-R12): `≥ $spent (N unknown; $R
- * charged at reservation for K unfinished attempt(s))` when it is a floor; scanned attempts and
- * running reservations beside. `spentUsd` is what counts against the cap.
- */
+/** The whole campaign's spend, the engine's `campaignSpendWords` (STATUS.md) case for case. */
 export function campaignSpendWords(s: CampaignSpend): string {
-  const notes = [
-    s.unknownCount ? `${s.unknownCount} unknown` : '',
-    s.reservationCount ? `${money(s.reservationUsd ?? 0)} charged at reservation for ${s.reservationCount} unfinished attempt(s)` : '',
-  ].filter(Boolean);
-  // Nothing spent that anyone reported and a figure missing: the word, never `≥ $0.00`.
-  const head = s.spentUsd === 0 && s.unknownCount > 0 && !s.reservationCount ? `${UNKNOWN} (${s.unknownCount} unknown)`
-    : notes.length ? `≥ ${money(s.spentUsd)} (${notes.join('; ')})` : money(s.spentUsd);
+  const scannedUsd = round(s.spentUsd - s.knownUsd - s.reservationUsd);
   const beside = [
-    s.scannedCount > 0 ? `${s.scannedCount} scanned, not known` : '',
-    s.reservedUsd > 0 ? `${money(s.reservedUsd)} reserved by running attempts` : '',
+    s.scannedCount ? `${money(scannedUsd)} scanned, not known` : '',
+    s.reservationCount ? `${money(s.reservationUsd)} charged at reservation for ${s.reservationCount} unfinished` : '',
   ].filter(Boolean);
-  const text = [head, ...beside].join(' · ');
-  return s.runningCount > 0 ? `${text} +${s.runningCount} running` : text;
+  const running = s.runningCount ? ` +${s.runningCount} running` : '';
+  if (s.knownUsd === 0 && s.unknownCount && !beside.length) return `${UNKNOWN} (${s.unknownCount} attempt(s) reported no cost)${running}`;
+  const floor = s.unknownCount || s.runningCount ? '≥ ' : '';
+  const known = s.knownUsd > 0 || !beside.length ? `${floor}${money(s.knownUsd)}${s.unknownCount ? ` (${s.unknownCount} unknown)` : ''}` : '';
+  return [known, ...beside].filter(Boolean).join('; ') + running;
 }
 
 export interface SpendBar {
