@@ -841,7 +841,7 @@ export const STATUS_BUCKETS: readonly StatusBucket[] = ['done', 'in-progress', '
 export const STATUS_BUCKET_OF: Readonly<Record<TicketStatus | 'regressed', StatusBucket>> = {
   landed: 'done', running: 'in-progress', integrating: 'in-progress',
   blocked: 'blocked', regressed: 'blocked',
-  'waiting-owner': 'requests', 'waiting-dependency': 'requests',   // a person acts (P2-R21)
+  'waiting-owner': 'requests', 'waiting-dependency': 'requests', stale: 'requests',   // a person acts (P2-R21); a person re-approves (P2-R53)
   ready: 'queued', waiting: 'queued',
   superseded: 'superseded',
 };
@@ -1336,7 +1336,8 @@ export type TicketStatus =
   | 'running' | 'integrating'        // live attempt | integration row pending/evaluating
   | 'waiting-dependency'             // its mission has an open request-dependency need: parked, the loop continues (P2-R21)
   | 'landed' | 'blocked'             // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
-  | 'regressed';                     // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
+  | 'regressed'                      // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
+  | 'stale';                         // cites a record with no span at the corpus's current revision; a person re-approves (P2-R53)
 
 export interface ApprovePlanScope { operation: 'approve-plan'; planDigest: string; planRevision: string;
   workItems: Record<string, string>;   // workItemId → contentDigest for every plan ticket: what setWorkItemStatus/assertImplementable check
