@@ -66,6 +66,8 @@ section('the row-state table, case by case');
   const errata = rec('Errata one overrides eta.', { kind: 'decision' });
   const removed = rec('Omega one must hold.');
   const contra = rec('Alpha one must', { kind: 'contradiction', other: { docKey: 'std', quote: 'Zeta one must hold' }, statement: 'Alpha against Zeta' });
+  const inferredKept = rec('', { source: 'inferred', basisSections: ['std:zeta'], statement: 'Zeta implies a ledger.' });
+  const inferredGone = rec('', { source: 'inferred', basisSections: ['std:omega', 'std:delta'], statement: 'Omega implies an audit.' });
   ctx.store.insertIrLink({ fromIr: errata.id, toIr: overridden.id, kind: 'overrides', basis: 'precedence', createdAt: 1 });
   approveRecords(w, [carried, review, moved, ambiguous, split, renamed, missing, overridden, errata, removed, contra].map((r) => r.id), { reject: [rejected.id] });
 
@@ -97,6 +99,8 @@ section('the row-state table, case by case');
     && after.get('ir_spans')!.size > before.get('ir_spans')!.size);
   check('the moved record keeps its approval and its content digest', ctx.store.irRecord(split.id)!.status === 'approved'
     && ctx.store.irRecord(split.id)!.contentDigest === split.contentDigest);
+  check('an inferred record follows its basis sections: current while one remains', !isIrStale(ctx, inferredKept.id)
+    && !isIrStale(ctx, inferredGone.id) && ctx.store.irSpans(inferredKept.id).length === 0);
   check('staleness is per revision: current at the old one, stale at the new one', !isIrStale(ctx, missing.id, rev1.id) && isIrStale(ctx, missing.id));
   check('carrying again adds nothing (one row per role per revision)', (carryForward(ctx, corpus.id, rev1.id, rev2.id), snapshot(w.out).get('ir_spans')!.size === after.get('ir_spans')!.size));
 
@@ -109,7 +113,10 @@ section('the row-state table, case by case');
   check('the corpus needs the stale and changed records looked at', ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-stale' && n.ref === missing.id)
     && ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-review' && n.ref === review.id));
 
-  const rev3 = addRevision(w, { std: doc(REV2), notes: '# Notes\n' }, { configDigest: digestOf('config:other') });
+  const rev3 = addRevision(w, { std: doc({ ...REV2, '## Delta': ['- Delta stays.'] }).replace('### Delta part\n- Delta one must hold.\n\n', '').replace('## Delta\n', '## Delta again\n'), notes: '# Notes\n' },
+    { configDigest: digestOf('config:other') });
+  check('an inferred record whose every basis section is gone is stale', isIrStale(ctx, inferredGone.id) && !isIrStale(ctx, inferredGone.id, rev2.id)
+    && !isIrStale(ctx, inferredKept.id));
   const r3 = new Map(carryForward(ctx, corpus.id, rev2.id, rev3.id).map((r) => [r.irId, r]));
   check('a config change re-sections; records carry by quote, the reason says why', r3.get(carried.id)?.status === 'carried' && r3.get(carried.id)?.reason === 'config-changed');
   check('a record stale at the last revision is not brought back', !r3.has(missing.id) && isIrStale(ctx, missing.id));

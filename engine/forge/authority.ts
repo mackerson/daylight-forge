@@ -126,25 +126,51 @@ export function ticketIrRefs(t: PlanFile['tickets'][number]): Array<{ irId: stri
 export function isIrStale(ctx: DaylightContext, irId: string, revisionId?: string): boolean {
   const r = ctx.store.irRecord(irId, revisionId);
   if (!r) throw new Error(`unknown IR record ${irId}`);
-  return recordStale(ctx, r);
+  return recordStale(ctx, r, revisionId);
 }
 
-function recordStale(ctx: DaylightContext, r: IrRecord): boolean {
-  if (r.source === 'inferred' && r.span === null && !ctx.store.irSpans(r.id).length) return false;
+/** Section ids of a revision's index; indexes are immutable artifacts, so this is cached by their digest. */
+const sectionIdsCache = new Map<string, Set<string>>();
+function sectionIdsAt(ctx: DaylightContext, revisionId: string): Set<string> {
+  const rev = ctx.store.corpusRevision(revisionId);
+  if (!rev) return new Set();
+  const hit = sectionIdsCache.get(rev.sectionIndex.digest);
+  if (hit) return hit;
+  const ids = new Set(revisionMaterial(ctx, revisionId).sections.keys());
+  sectionIdsCache.set(rev.sectionIndex.digest, ids);
+  return ids;
+}
+
+/**
+ * An extracted record is stale where it lacks a span for a role it has. An inferred record has no
+ * span: its staleness follows its basis sections, stale only when every one of them is gone from
+ * the revision's index (one with no basis rests on a decided interpretation and does not go stale).
+ */
+function recordStale(ctx: DaylightContext, r: IrRecord, revisionId?: string): boolean {
+  if (r.source === 'inferred' && r.span === null && !ctx.store.irSpans(r.id).length) {
+    if (!r.basisSections.length) return false;
+    const rev = revisionId ?? ctx.store.currentCorpusRevision(r.corpusId)?.id;
+    if (!rev) return false;
+    const ids = sectionIdsAt(ctx, rev);
+    return r.basisSections.every((s) => !ids.has(s));
+  }
   if (r.span === null) return true;
   return r.other === null && ctx.store.irSpans(r.id).some((s) => s.role === 'other');
 }
 
+/** Whether an approved record enters the IR set at a revision (§6.2): it has a span there. WS-R14's `coverageOf` uses the same rule. */
+export const inIrSet = (r: Pick<IrRecord, 'span' | 'other'>): boolean => r.span !== null || r.other !== null;
+
 /**
- * `sha256` over the sorted `<id>:<contentDigest>` lines of the corpus's approved records that are
- * not stale at the revision, or null when there are none. Offsets and section ids never enter it,
- * so a rename or a move does not change it; a record going stale does.
+ * `sha256` over the sorted `<id>:<contentDigest>` lines of the corpus's approved records with a
+ * span at the revision (§6.2), or null when there are none: the value `coverageOf` reports.
+ * Offsets and section ids never enter it, so a rename or a move does not change it; a record
+ * losing its span does. Inferred records (no span) are not in it.
  */
 export function irSetDigestAt(ctx: DaylightContext, corpusId: string, revisionId?: string): string | null {
   const rev = revisionId ?? ctx.store.currentCorpusRevision(corpusId)?.id;
   if (!rev) return null;
-  const lines = ctx.store.irRecords(corpusId, { status: 'approved', revisionId: rev })
-    .filter((r) => !recordStale(ctx, r)).map((r) => `${r.id}:${r.contentDigest}`).sort();
+  const lines = ctx.store.irRecords(corpusId, { status: 'approved', revisionId: rev }).filter(inIrSet).map((r) => `${r.id}:${r.contentDigest}`).sort();
   return lines.length ? digestOf(lines.join('\n')) : null;
 }
 

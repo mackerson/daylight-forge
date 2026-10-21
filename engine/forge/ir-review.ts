@@ -10,7 +10,7 @@ import type {
   IrSpanRef, ReportedIrFinding, Task,
 } from '../mission/types.ts';
 import { FINDING_SEVERITIES, IR_FINDING_KINDS, isEntityId } from '../mission/types.ts';
-import { irSetDigestAt, isIrStale, occurrencesIn, quoteDigestOf, revisionMaterial, type RevisionMaterial } from './authority.ts';
+import { inIrSet, irSetDigestAt, isIrStale, occurrencesIn, quoteDigestOf, revisionMaterial, type RevisionMaterial } from './authority.ts';
 import { irContentDigestOf, irIdOf, resolveQuote, validateIrProposal } from './ir.ts';
 import { ingestOutbox, OUTBOX_TOOLS, type OutboxRefusal } from './outbox.ts';
 import { assertHumanDecision, DecisionRefused } from './policy.ts';
@@ -533,10 +533,12 @@ export function planApproveIr(ctx: DaylightContext, corpusId: string, set: Appro
   }
 
   // The approved set after this act, at the current revision: what `irSetDigest` will be.
-  const after = new Map(ctx.store.irRecords(corpusId, { status: 'approved', revisionId: rev.id })
-    .filter((r) => !isIrStale(ctx, r.id, rev.id)).map((r) => [r.id, r.contentDigest]));
+  const after = new Map(ctx.store.irRecords(corpusId, { status: 'approved', revisionId: rev.id }).filter(inIrSet).map((r) => [r.id, r.contentDigest]));
   for (const id of Object.keys(supersede)) after.delete(id);
-  for (const [id, cd] of Object.entries(approve)) after.set(id, cd);
+  for (const [id, cd] of Object.entries(approve)) {
+    const r = ctx.store.irRecord(id, rev.id);
+    if (r ? inIrSet(r) : corrections.find((c) => c.id === id)?.span) after.set(id, cd);
+  }
   const setLines = [...after].map(([id, cd]) => `${id}:${cd}`).sort();
   const scope: ApproveIrScope = {
     operation: 'approve-ir', corpusId, revisionId: rev.id, corpusDigest: rev.corpusDigest, approve, reject, supersede: { ...supersede }, findings,
