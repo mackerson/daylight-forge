@@ -36,8 +36,10 @@ export interface PacketTemplate {
 }
 export interface BlueprintTemplate { kind: 'daylight-blueprint-template'; v: 1; rest: string; body: BlueprintV1 }
 export interface ReviewScript {
-  findings: Array<{ kind: string; severity: 'high' | 'medium' | 'low'; title: string; statement: string; irKey?: string; docKey?: string; quote?: string }>;
-  accept: number[]; dismiss: number[]; reject: string[];
+  /** Each finding says how the scripted person disposes of it; the store's finding is found by `findingKey`, never by order (P2-R61). */
+  findings: Array<{ kind: string; severity: 'high' | 'medium' | 'low'; title: string; statement: string; irKey?: string; docKey?: string; quote?: string;
+    disposition: 'accept' | 'dismiss' }>;
+  reject: string[];
   corrections: Array<{ kind: string; source: 'extracted'; statement: string; confidence: number; docKey: string; quote: string }>;
 }
 export interface BenchFixture {

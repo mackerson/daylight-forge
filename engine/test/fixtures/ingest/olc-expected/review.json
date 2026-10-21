@@ -1,7 +1,7 @@
 {
  "kind": "daylight-review-script",
  "v": 1,
- "note": "The scripted reviewer (§11.2): four findings, of which the scripted approve-ir set accepts two (rejecting the invented record, adding one correction for the omission) and dismisses two.",
+ "note": "The scripted reviewer (§11.2): four findings. The scripted approve-ir set accepts two and dismisses two, matched to the stored findings by record id, kind and quote digest (P2-R61), never by order. Accepting the invented-requirement finding rejects that record; the omission gets a correction.",
  "findings": [
   {
    "kind": "omission",
@@ -9,37 +9,33 @@
    "title": "Hostile input rule not extracted",
    "statement": "The never-panic rule for pack bytes is normative.",
    "docKey": "olc-agents",
-   "quote": "Packs come from USB sticks."
+   "quote": "Packs come from USB sticks.",
+   "disposition": "accept"
   },
   {
    "kind": "invented-requirement",
    "severity": "medium",
    "title": "Record states more than the text",
    "statement": "The record adds a requirement the passage does not make.",
-   "irKey": "u:adr-0004:412"
+   "irKey": "u:adr-0004:412",
+   "disposition": "accept"
   },
   {
    "kind": "contradiction",
    "severity": "low",
    "title": "Catalog vs MCP timing",
    "statement": "ADR 0014 and §26 disagree on MCP timing.",
-   "irKey": "h080"
+   "irKey": "h080",
+   "disposition": "dismiss"
   },
   {
    "kind": "wrong-dependency",
    "severity": "low",
    "title": "Engine depends on learner",
    "statement": "E4 should not need L4.",
-   "irKey": "h159"
+   "irKey": "h159",
+   "disposition": "dismiss"
   }
- ],
- "accept": [
-  0,
-  1
- ],
- "dismiss": [
-  2,
-  3
  ],
  "reject": [
   "u:adr-0004:412"

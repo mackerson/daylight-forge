@@ -201,6 +201,19 @@ const blind = await runBenchmark(BENCH_FIXTURES.harbor, { mode: 'mock', env: {} 
 check('without scripted agents, extraction is blocked, never faked', blind.stages.find((s) => s.id === 'extract')?.status === 'blocked'
   || blind.stages.find((s) => s.id === 'register')?.status === 'blocked');
 
+section('findings are matched by a stable key, so the same run gives the same report (P2-R61)');
+{
+  const seen = new Set<string>();
+  let approveOk = 0;
+  for (let k = 0; k < 10; k++) {
+    const r = await runBenchmark(BENCH_FIXTURES.olc, { mode: 'mock', agents, env: {} });
+    if (r.stages.find((s) => s.id === 'approve-ir')?.status === 'ok') approveOk++;
+    seen.add(JSON.stringify(normalise(r)));
+  }
+  check('approve-ir accepts the scripted findings on every one of 10 OLC runs', approveOk === 10, `${approveOk}/10`);
+  check('the 10 reports are identical after normalisation', seen.size === 1, `${seen.size} distinct`);
+}
+
 section('mock-mode scores (for the hand-off)');
 for (const [name, r] of Object.entries(reports)) {
   console.log(`  ${name}: ${r.summary.pass} pass, ${r.summary.fail} fail, ${r.summary.blocked} blocked; fixture scores ${JSON.stringify({ ...r.scores.fixture, missing: undefined, extra: undefined })}`

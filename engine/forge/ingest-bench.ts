@@ -15,7 +15,7 @@ import { coverageOf, safeExcerpt } from './coverage.ts';
 import { currentIrSetDigest, runIrReview } from './ir-review.ts';
 import { importBlueprint } from './blueprint.ts';
 import { emitPlan, importPackets, packetContext } from './packets.ts';
-import { reviseCorpus, staleTickets } from './authority.ts';
+import { quoteDigestOf, reviseCorpus, staleTickets } from './authority.ts';
 import { importPlan } from './campaign.ts';
 import { AGENT_SESSION_VARS } from './policy.ts';
 import { isPlanRefusals, parsePlan, topoOrder } from './plan.ts';
@@ -322,6 +322,9 @@ function rowSnapshot(ctx: DaylightContext): Map<string, string> {
   return out;
 }
 
+/** A finding's stable identity across runs: the record it names, its kind and the digest of the quote it cites (P2-R61). */
+export const findingKey = (irId: string | null, kind: string, quoteDigest: string | null): string => `${irId ?? '-'}|${kind}|${quoteDigest ?? '-'}`;
+
 function personOf(x: Inputs): BenchPerson {
   if (!x.agents?.person) throw new StageBlocked('the scripted agents bring no person: every human act is theirs, never the benchmark\'s');
   return x.agents.person;
@@ -372,16 +375,24 @@ const STAGES: Stage[] = [
     const rejectKeys = new Set(x.fixture.review?.reject ?? []);
     const reject = recs.filter((r) => !bound.has(r.id) || [...rejectKeys].some((k) => x.irOf!(k) === r.id)).map((r) => r.id);
     const findings = x.ctx!.store.irFindings(x.corpusId!, { disposition: 'open' });
-    const pick = (ix: number[]) => ix.map((i) => findings[i]?.id).filter((v): v is string => !!v);
+    const byKey = new Map(findings.map((f) => [findingKey(f.irId, f.kind, f.span?.quoteDigest ?? null), f.id]));
+    const want = (x.fixture.review?.findings ?? []).map((f) => {
+      const k = findingKey(f.irKey ? x.irOf!(f.irKey) : null, f.kind, f.quote ? quoteDigestOf(f.quote) : null);
+      const id = byKey.get(k);
+      if (!id) throw new Error(`no stored finding matches the scripted ${f.kind} finding (${k})`);
+      return { id, disposition: f.disposition };
+    });
+    const unscripted = findings.filter((f) => !want.some((w) => w.id === f.id));
+    if (unscripted.length) throw new Error(`${unscripted.length} stored finding(s) the review script does not name`);
     const idx = corpusOf(x.ctx!, x.corpusId!).index;
     const corrections: IrProposal[] = (x.fixture.review?.corrections ?? []).map((c) => ({
       kind: c.kind as IrProposal['kind'], source: c.source, statement: c.statement, confidence: c.confidence, quote: c.quote,
       section: sectionAt(idx, c.docKey, x.fixture.docs.get(c.docKey)!.indexOf(Buffer.from(c.quote, 'utf8'))) ?? '',
     }));
-    const accept = pick(x.fixture.review?.accept ?? []);
     const set: ApproveIrSetV1 = { kind: 'daylight-approve-ir', version: 1, corpusId: x.corpusId!, revisionId: x.rev!.id,
-      approve: recs.map((r) => r.id).filter((id) => !reject.includes(id)), reject, accept,
-      dismiss: findings.map((f) => f.id).filter((id) => !accept.includes(id)), corrections };
+      approve: recs.map((r) => r.id).filter((id) => !reject.includes(id)), reject,
+      accept: want.filter((w) => w.disposition === 'accept').map((w) => w.id).sort(), dismiss: want.filter((w) => w.disposition === 'dismiss').map((w) => w.id).sort(),
+      corrections };
     personOf(x).approveIr(x.ctx!, set);
     x.approved = new Set(x.ctx!.store.irRecords(x.corpusId!, { status: 'approved' }).map((r) => r.id));
     x.records = x.ctx!.store.irRecords(x.corpusId!);
