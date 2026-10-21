@@ -72,6 +72,8 @@ export interface ConfirmOptions {
   /** `overturn-assumption`: the follow-up's lane and scope, as given (absent: the held ticket's). */
   followUpLane?: string;
   followUpScope?: readonly string[];
+  /** `acknowledge-forgery-shape`: reject the shapes instead of acknowledging them. */
+  declined?: boolean;
   /** `record-assumption`: the row that will be recorded (the subject is the campaign). */
   assumption?: { question: string; default: string; ticketId?: string };
 }
@@ -209,6 +211,20 @@ export function confirmDigest(
       if (!m || !halt) throw new Error(`${String(opts.haltDecisionId)} is not a halt of campaign ${subjectId}`);
       return out(digestOf(canonicalJson({ operation, haltDecisionId: halt.id, reason: halt.scope.reason, campaignId: m.id, projectId: m.projectId })), [
         `resume campaign ${m.id}, halted by ${halt.actor}: ${String(halt.scope.reason)} (${halt.id})`,
+      ]);
+    }
+    case 'acknowledge-forgery-shape': {
+      // The candidate ops' identity, plus which way: a code to acknowledge never rejects (P2-R49).
+      const c = ctx.store.candidate(subjectId);
+      if (!c) throw new Error(`unknown candidate ${subjectId}`);
+      const declined = opts.declined === true;
+      return out(digestOf(canonicalJson({
+        operation, candidateId: c.id, missionId: c.missionId, diffDigest: c.diffArtifact.digest,
+        gateSetDigest: c.gateSetDigest, baseCommit: c.baseCommit, declined,
+      })), [
+        `${declined ? 'reject' : 'acknowledge'} the test-output forgery shapes of candidate ${c.id} on mission ${c.missionId}`,
+        `diff ${c.diffArtifact.digest} (${c.files.length} file(s)) on base ${c.baseCommit}`,
+        declined ? 'the candidate will not land' : 'the candidate may land once its checks pass',
       ]);
     }
     case 'record-assumption': {

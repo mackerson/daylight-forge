@@ -64,6 +64,7 @@ usage:
   node engine/cli.ts forge      run <m> <repo> --tools mock[:model] [--max-cost <usd>] [--timeout s] [--keep-workspace]
                                 evaluate <c> | candidate <c> [--max-bytes N]
                                 approve|reject|override <c> --rationale '<why>' --confirm <c> | apply <c> <repo> --confirm <c>
+                                | acknowledge-forgery <c> --rationale '<why>' --confirm <c> [--declined]
   node engine/cli.ts confirm    <operation> <subject> [--write] [--execute] [--max-usd N] [--only x,…]   # what --confirm checks
   node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
   node engine/cli.ts deps       snapshot <repo> [--out <dir>]   # cargo fetch --locked on the host, with network
@@ -81,6 +82,8 @@ usage:
                                 run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run] | status <c> [<repo>] [--write]
                                 halt <c> --rationale '<why>' | resume <c> --halt <d> --rationale '<why>' --confirm <c8>
                                 adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
+                                list [<repo>] | report <c> [<repo>] [--wave n | --open | --all] [--format json|md] [--write]
+                                refine <c> [<repo>] [--rev <sha>] [--rows-only | --cached]   # maps under <out> only; allowed in an agent session
   node engine/cli.ts assumption list <c> [--status open|pending|confirmed|overturned]
                                 record <c> --question '<q>' --default '<d>' [--ticket T] --rationale '<why>' --confirm <c8>
                                 confirm <u> | decide <u> --value '<v>' | overturn <u> --value '<v>' --follow-up '<s>' [--lane L] [--scope a,b]

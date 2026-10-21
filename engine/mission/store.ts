@@ -900,7 +900,14 @@ export class MissionStore {
     if (!canTransition(ATTEMPT_TRANSITIONS, a.state, result.state)) {
       throw new IllegalTransition('attempt', attemptId, a.state, result.state);
     }
-    const costSource = result.costSource ?? (result.costUsd === null ? 'none' : undefined);
+    if (result.costSource === 'reservation') {
+      throw new Error(`attempt ${attemptId}: only the store charges an attempt at its reservation`);
+    }
+    // P2-R44: an attempt that ends unfinished and reports nothing is charged at its reservation,
+    // the most it was allowed to spend, so a crash can neither hide spend nor wedge a cap.
+    const charged = result.state !== 'completed' && result.costUsd === null && a.maxCostUsd !== undefined;
+    const costUsd = charged ? a.maxCostUsd! : result.costUsd;
+    const costSource = charged ? 'reservation' : result.costSource ?? (result.costUsd === null ? 'none' : undefined);
     if (costSource === undefined) {
       throw new Error(`attempt ${attemptId}: a cost of ${result.costUsd} needs a costSource; an unlabelled figure is not assumed known`);
     }
@@ -921,7 +928,7 @@ export class MissionStore {
            WHERE id=?`,
         )
         .run(
-          result.state, at, result.costUsd,
+          result.state, at, costUsd,
           // The CHECK refuses a cost labelled `none`.
           costSource,
           result.exitCode ?? null, result.signal ?? null,
@@ -966,7 +973,8 @@ export class MissionStore {
   /**
    * Cancel every attempt of a mission that is still marked live, with `failure` as the reason,
    * failing their tasks so they can be retried. For attempts whose owning process is known to
-   * be gone; the caller decides that, this only records it.
+   * be gone; the caller decides that, this only records it. One with a reservation is charged
+   * at it (P2-R44).
    */
   cancelRunningAttempts(missionId: string, failure: string): Attempt[] {
     const ids = (

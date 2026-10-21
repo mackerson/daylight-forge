@@ -31,6 +31,9 @@ import { DIFF_FLAGS } from '../forge/diff.ts';
 import {
   authorBrief, baseline, CARGO_GATE_LIMITS, CARGO_GATE_TIMEOUT_MS, cargoTargetOf, DEFAULT_CARGO_GATE_COMMAND, evaluate, GateRefused, lock, registerGate, type GateContext,
 } from '../forge/gate.ts';
+import { lockCampaign, evaluateIntegrated, registerCampaignGate, baselineCampaign } from '../forge/campaign-gates.ts';
+import { repairBrief } from '../forge/director.ts';
+import { ensureIntegrationRef, prepareIntegration } from '../forge/integrate.ts';
 import { checkPolicy } from '../forge/policy.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { execLaunch, mountRefusal, runExec, SandboxRefused } from '../forge/sandbox.ts';
@@ -39,6 +42,7 @@ import { openDaylight } from '../mission/context.ts';
 import { identifyProject } from '../mission/project.ts';
 import type { Attempt, Candidate, CandidateFile, Experiment, GateEvaluation, Mission } from '../mission/types.ts';
 import { harness } from './harness.ts';
+import { makeCampaign, makeCandidate, makeTicketMission } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
 
@@ -769,6 +773,80 @@ section('one candidate\'s build cannot reach another\'s gate (P2-R28)');
   const b = await judged(m, x, addPadded);
   check('clean candidate B is still accepted: its verdict does not depend on A', b.g?.conclusion === 'supported' && b.c.verdict === 'accepted-by-gates',
     `${b.g?.conclusion} ${b.c.verdict} ${stdoutOf(recordsOf(b.g!)[0] ?? ({} as ExecutionRecord)).slice(-300)}`);
+}
+
+section('cache isolation: a write in one gate run is invisible to the next (P2-R42 H1, probe C)');
+{
+  const MARKER = 'DAYLIGHT_CACHE_MARKER_k4';
+  const HOLDOUT_TEXT = 'HOLDOUT_TEXT_w7p2';
+  const GATE = ['#[test]', 'fn pads() {', '    assert_eq!(fixture_core::padded(7, 3), "007");', '}', ''].join('\n');
+  const HOLDOUT = ['#[test]', `fn ${HOLDOUT_TEXT.toLowerCase()}() {`, `    // ${HOLDOUT_TEXT}`, '    assert_eq!(fixture_core::padded(42, 4), "0042");', '}', ''].join('\n');
+  // Library code any test reaches: it prints what an earlier run left in the target directory,
+  // then leaves this run's marker there, with the test sources it can see beside it. Written
+  // straight to fd 2, so libtest's capture does not hold it back.
+  const PROBE = [
+    '', 'pub fn padded(_n: u64, _width: usize) -> String {', '    cache_probe();', '    String::from("wrong")', '}',
+    'fn cache_probe() {', '    use std::io::Write;',
+    '    let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| String::from("/cargo-target"));',
+    '    let marker = std::path::Path::new(&target).join("daylight-probe.txt");',
+    '    if let Ok(seen) = std::fs::read_to_string(&marker) { let _ = std::io::stderr().write_all(seen.as_bytes()); }',
+    // Spelled in two halves, so the marker is not in the candidate's diff the brief quotes.
+    `    let mut note = format!("{}{}\\n", "${MARKER.slice(0, 15)}", "${MARKER.slice(15)}");`,
+    '    if let Ok(dir) = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests")) {',
+    '        for e in dir.flatten() { if let Ok(t) = std::fs::read_to_string(e.path()) { note.push_str(&t); } }',
+    '    }',
+    '    let _ = std::fs::write(&marker, note);', '}', '',
+  ].join('\n');
+  // The holdout's runs go first (experiments run in id order), so a cache it could write to
+  // would be read by the public gate's runs.
+  let campaign!: Mission;
+  let gateX!: Experiment;
+  for (;;) {
+    campaign = makeCampaign(dctx, repo, commit).campaign;
+    const h = registerCampaignGate(ctx, { campaignId: campaign.id, role: 'holdout', ticketId: 'T', testSource: HOLDOUT, basename: 'hidden.rs', prediction: PASS, harness: 'cargo', crate: 'crates/core' });
+    gateX = registerCampaignGate(ctx, { campaignId: campaign.id, role: 'gate', ticketId: 'T', testSource: GATE, basename: 'pads.rs', prediction: PASS, harness: 'cargo', crate: 'crates/core' });
+    if (h.id < gateX.id) break;
+  }
+  const based = await baselineCampaign(ctx, campaign.id);
+  check('both fail on the base, which lacks padded()', based.length === 2 && based.every((b) => b.conclusion === 'falsified'), based.map((b) => b.conclusion).join(','));
+  const ids = [...new Set(based.map((b) => b.experimentId))];
+  const locked = lockCampaign(ctx, {
+    campaignId: campaign.id, experimentIds: ids, ratchet: false, actor: HUMAN, rationale: 'r',
+    confirm: confirmDigest(ctx, 'lock-campaign-gates', campaign.id, { experimentIds: ids, ratchet: false }).digest8,
+  });
+  const m = makeTicketMission(dctx, campaign, 'T', commit, ['crates/core/src/lib.rs']);
+  const ws = createWorkspace(repo, commit);
+  let diff: Buffer;
+  try {
+    fs.appendFileSync(path.join(ws.tree, 'crates', 'core', 'src', 'lib.rs'), PROBE);
+    diff = diffOf(ws);
+  } finally {
+    ws.dispose();
+  }
+  const c = makeCandidate(dctx, m, commit, diff,
+    [{ path: 'crates/core/src/lib.rs', change: 'modified', insertions: PROBE.split('\n').length - 1, deletions: 0, mode: 'file', previousMode: 'file' }],
+    String(locked.scope.gateSetDigest));
+  ensureIntegrationRef(repo, campaign.id, commit);
+  const i = prepareIntegration({ store: dctx.store, events: dctx.events, artifacts: dctx.artifacts, repoRoot: repo }, c.id, { ticketId: 'T' });
+  check('the candidate is integrated and awaits its checks', i.state === 'evaluating' && !!i.integratedDiffDigest, i.state);
+  const evals = await evaluateIntegrated(ctx, i.id, { ticketId: 'T', acceptance: { kind: 'gate', tests: [] } } as Parameters<typeof evaluateIntegrated>[2]);
+  const g = evals.find((e) => e.experimentId === gateX.id);
+  const gr = g ? recordsOf(g) : [];
+  const allRuns = evals.flatMap((e) => recordsOf(e));
+  check('the public gate ran twice and failed on the wrong padded()', g?.conclusion === 'falsified' && gr.length >= 2, `${g?.conclusion} ${gr.length}`);
+  check('every run did reach the probe (it built and ran the test)', gr.every((r) => /panicked|assertion/.test(stdoutOf(r) + stderrOf(r))),
+    gr.map((r) => stderrOf(r).slice(-300)).join(' | '));
+  const gateText = gr.map((r) => `${stdoutOf(r)}\n${stderrOf(r)}`).join('\n');
+  check('the public gate\'s stderr carries no marker from an earlier run', !gr.some((r) => stderrOf(r).includes(MARKER)), gateText.slice(-600));
+  check('and no holdout text, in stderr or stdout', !gateText.includes(HOLDOUT_TEXT) && !gateText.includes(HOLDOUT_TEXT.toLowerCase()));
+  const brief = JSON.stringify(repairBrief(dctx, c.id, 1));
+  check('the repair brief carries the gate\'s failure, and no marker or holdout text',
+    brief.includes(gateX.id) && !brief.includes(MARKER) && !brief.includes(HOLDOUT_TEXT) && !brief.includes(HOLDOUT_TEXT.toLowerCase()), brief.slice(0, 600));
+  const runDirs = allRuns.map((r) => bindsOf(r.sandboxArgv).find((b) => b.flag === '--bind' && b.dest === '/cargo-target')?.src ?? '');
+  check('every run had a cache of its own', runDirs.length >= 4 && runDirs.every(Boolean) && new Set(runDirs).size === runDirs.length, JSON.stringify(runDirs));
+  check('and the per-run cache directories are gone afterwards, gate/base kept',
+    runDirs.every((d) => !fs.existsSync(d)) && !fs.existsSync(gateCacheDir(out, gateCacheKey(i.integratedDiffDigest!)))
+    && fs.readdirSync(targetDir(out, 'gate')).every((n) => n === 'base'), fs.readdirSync(targetDir(out, 'gate')).join(','));
 }
 
 section('the snapshot is verified in full before every gate run and exec launch (P2-R29)');

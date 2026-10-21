@@ -340,6 +340,29 @@ section('a possible secret is curable, but only once a human acknowledges it (R1
   check('an unflagged candidate needs no acknowledgement', decisionsOn(good).length === 1);
 }
 
+section('a test-output forgery shape is curable, but approve needs it acknowledged (P2-R49)');
+{
+  const f = newMission('forgery shape');
+  const c = evaluated(f, candidate(f));
+  // The shapes capture records in the summary's flags, stood in for on this candidate's summary.
+  const summary = JSON.stringify({ flags: [{ path: 'src/add.js', forgeryShapes: ['TAP version'] }] });
+  const artifacts = new Proxy(d.artifacts, {
+    get(target, prop, recv) {
+      if (prop === 'text') return (ref: typeof c.summaryArtifact) => (ref.id === c.summaryArtifact.id ? summary : target.text(ref));
+      const v = Reflect.get(target, prop, recv);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const fctx = { ...ctx, artifacts };
+  const input = { candidateId: c.id, operation: 'approve-candidate' as const, actor: HUMAN, rationale: 'looked', confirm: code('approve-candidate', c) };
+  const err = throws(() => decideCandidate(fctx, input));
+  check('approve with a forgery shape and no acknowledgement is refused, naming the file',
+    err instanceof CandidateRefused && /acknowledge-forgery-shape/.test(err.message) && /src\/add\.js/.test(err.message), err?.message);
+  const ok = decideCandidate(fctx, { ...input, acknowledgeForgeryShape: true });
+  check('with the acknowledgement it is approved, and the decision names the file', ok.kind === 'approve'
+    && JSON.stringify(ok.scope.acknowledgedForgeryShapes) === '["src/add.js"]');
+}
+
 section('reject and override');
 {
   const c = evaluated(main, candidate(main), 'falsified');

@@ -1,5 +1,6 @@
 import type { Candidate, CandidateDecisionScope, Decision, Mission, PolicyRule } from '../mission/types.ts';
 import { candidateDecisionOf, confirmDigest } from './confirm.ts';
+import { forgeryShapesOf } from './forgery.ts';
 import { verdictRows, type GateContext } from './gate.ts';
 import { assertHumanDecision } from './policy.ts';
 import { candidateVerdict } from './verdict.ts';
@@ -87,6 +88,8 @@ export interface DecideInput {
   subject?: string;
   /** `--acknowledge-possible-secret`: required to approve or override a candidate with a possible secret (R16). */
   acknowledgePossibleSecret?: boolean;
+  /** `--acknowledge-forgery-shape`: required to approve or override a candidate with test-output forgery shapes (P2-R49). */
+  acknowledgeForgeryShape?: boolean;
 }
 
 /**
@@ -130,12 +133,17 @@ export function decideCandidate(ctx: DecideContext, input: DecideInput): Decisio
   if (possible && !input.acknowledgePossibleSecret) {
     throw new CandidateRefused(`candidate ${c.id} has ${possible} possible secret(s); read the diff, then re-run with --acknowledge-possible-secret`);
   }
+  const forged = input.operation === 'reject-candidate' ? [] : forgeryShapesOf(ctx.artifacts, c);
+  if (forged.length && !input.acknowledgeForgeryShape) {
+    throw new CandidateRefused(`candidate ${c.id} has test-output forgery shapes in ${forged.map((h) => h.path).join(', ')}; read the diff, then re-run with --acknowledge-forgery-shape`);
+  }
 
-  const scope: CandidateDecisionScope & { commitSubject?: string; acknowledgedPossibleSecrets?: number } = {
+  const scope: CandidateDecisionScope & { commitSubject?: string; acknowledgedPossibleSecrets?: number; acknowledgedForgeryShapes?: string[] } = {
     operation: input.operation, candidateId: c.id, diffDigest: c.diffArtifact.digest,
     gateSetDigest: c.gateSetDigest, baseCommit: c.baseCommit,
     ...(input.subject !== undefined && input.operation !== 'reject-candidate' ? { commitSubject: input.subject } : {}),
     ...(possible ? { acknowledgedPossibleSecrets: possible } : {}),
+    ...(forged.length ? { acknowledgedForgeryShapes: forged.map((h) => h.path) } : {}),
   };
   const d = ctx.store.recordDecision({
     missionId: m.id, projectId: m.projectId, revision: c.baseCommit, actor: input.actor, kind: KIND[input.operation],

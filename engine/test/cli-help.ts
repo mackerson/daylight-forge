@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { COMMANDS } from '../cli-usage.ts';
 import { ASSUMPTION_SUBCOMMANDS, CAMPAIGN_SUBCOMMANDS } from '../forge/commands-campaign.ts';
+import { CAMPAIGN_REPORT_SUBCOMMANDS } from '../forge/commands-campaign-report.ts';
 import { CAMPAIGN_RUN_SUBCOMMANDS } from '../forge/commands-campaign-run.ts';
 import { harness } from './harness.ts';
 
@@ -109,7 +110,7 @@ section('--help on every campaign and assumption subcommand: usage, exit 0, noth
   const before = snapshot();
   const never = path.join(tmp, 'never-campaign');
   const forms = [
-    ...[...CAMPAIGN_SUBCOMMANDS, ...CAMPAIGN_RUN_SUBCOMMANDS].map((sub) => ['campaign', sub, 'm_00000000000000000000000000000000', repo, '--out', never, '--help']),
+    ...[...CAMPAIGN_SUBCOMMANDS, ...CAMPAIGN_RUN_SUBCOMMANDS, ...CAMPAIGN_REPORT_SUBCOMMANDS].map((sub) => ['campaign', sub, 'm_00000000000000000000000000000000', repo, '--out', never, '--help']),
     ['campaign', 'gate', 'register', 'm_00000000000000000000000000000000', '--out', never, '-h'],
     ['campaign', 'run', 'm_00000000000000000000000000000000', repo, '--dry-run', '--out', never, '--help'],
     ...ASSUMPTION_SUBCOMMANDS.map((sub) => ['assumption', sub, 'u_00000000000000000000000000000000', '--out', never, '--help']),

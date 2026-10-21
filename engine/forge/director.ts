@@ -6,16 +6,22 @@ import { redact } from '../mission/redact.ts';
 import type { MissionStore } from '../mission/store.ts';
 import { campaignActorOf, isHumanActor } from '../mission/types.ts';
 import type {
-  CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
+  Attempt, CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
   Finding, FindingSeverity, Integration, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
+import { parseSpec } from '../swarm/adapters.ts';
 import { gitIn } from './apply.ts';
 import { waitingOwner } from './assumptions.ts';
+import { authorFor } from './authors.ts';
 import {
   admitIfWithinEnvelope, campaignAuthorizationRefusal, fileFixTicket, haltCampaign, planOf, startTicketMission,
 } from './campaign.ts';
-import { campaignLockRefusal, concludeVerdict, evaluateIntegrated } from './campaign-gates.ts';
+import { campaignLockOf, campaignLockRefusal, concludeVerdict, evaluateIntegrated, holdoutPaths } from './campaign-gates.ts';
+import { gateCacheKey, removeGateCache } from './cargo.ts';
+import { recordIntegrated, runContext } from './gate.ts';
+import { createWorkspace } from './workspace.ts';
+import { runGate } from '../experiment/runner.ts';
 import { dependencyNeeds } from './dependency-requests.ts';
 import type { GateContext } from './gate.ts';
 import {
@@ -23,6 +29,7 @@ import {
   IntegrationRefused, R5_INTEGRATE_DEPS, reconcileIntegrations, refTarget, type IntegrateDeps, type IntegrationStep,
 } from './integrate.ts';
 import { ImplementRefused, runImplement } from './orchestrate.ts';
+import { forgeryHold, forgeryShapesOf } from './forgery.ts';
 import { DecisionRefused } from './policy.ts';
 import { closeWave, fixTicketsFrom, runWaveReview, waveDue } from './wave.ts';
 
@@ -35,11 +42,12 @@ import { closeWave, fixTicketsFrom, runWaveReview, waveDue } from './wave.ts';
  * `maxParallel`, integrates finished candidates one at a time onto the tip, repairs what failed
  * with the failure fenced into the next brief, blocks what is exhausted, and closes a wave for
  * blind review every `waveSize` landings. A crash loses nothing: the next run reconciles rows
- * and refs by §4.4 and carries on.
+ * and refs by §4.4, charges the attempts it cut short at their reservations, and carries on.
  *
  * Spend is reserved before launch (`attempts.max_cost_usd`, P2-R18) and checked against the
- * campaign cap; an attempt whose cost is unknown halts the campaign (P2-R11), as does any
- * breach of the cap. Nothing here records a decision a person owns: derived decisions go
+ * campaign cap; an attempt that completed with its cost unknown halts the campaign once
+ * (P2-R11) and its candidate never lands, as does any breach of the cap. An attempt a crash
+ * or Ctrl-C cut short is charged at its reservation (P2-R44), so it never wedges the cap. Nothing here records a decision a person owns: derived decisions go
  * through WS-R5 (`CampaignHost`, `IntegrateDeps`).
  */
 
@@ -106,9 +114,22 @@ export function haltOf(store: Pick<MissionStore, 'decisions'>, campaignId: strin
   return halt ? { decision: halt, reason: halt.scope.reason as CampaignHaltReason } : null;
 }
 
-/** The ticket's implement missions under this campaign, oldest first. */
+/**
+ * The ticket's implement missions under this campaign, oldest first, less any a person released
+ * with `campaign retry` (P2-R25, P2-R27): a released mission no longer speaks for its ticket, so
+ * the ticket is ready again and a new mission builds it.
+ */
 function missionsOf(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, t: CampaignTicket): Mission[] {
-  return ctx.store.missions(campaign.projectId).filter((m) => m.parentId === campaign.id && m.kind === 'implement' && m.workItemId === t.workItemId);
+  const released = ctx.store.releasedMissions(campaign.projectId);
+  return ctx.store.missions(campaign.projectId)
+    .filter((m) => m.parentId === campaign.id && m.kind === 'implement' && m.workItemId === t.workItemId && !released.has(m.id));
+}
+
+/** The latest `retry-ticket` decision that released a mission of this ticket, if any. */
+function retryOf(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, t: CampaignTicket): Decision | undefined {
+  const released = ctx.store.releasedMissions(campaign.projectId);
+  return ctx.store.decisions(campaign.id)
+    .filter((d) => d.scope.operation === 'retry-ticket' && d.scope.ticketId === t.ticketId && released.has(String(d.scope.closedMissionId))).at(-1);
 }
 
 const authorAttempts = (store: MissionStore, m: Mission) =>
@@ -144,7 +165,7 @@ const FINAL_VERDICTS = new Set(['accepted-by-gates', 'rejected-by-gates', 'gates
  * Every ticket's status, derived from rows and the integration ref on each call (§4.2). The
  * effective set is the envelope's tickets plus generated tickets a decision approved.
  */
-export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketState> {
+export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketState> {
   const campaign = ctx.store.mission(campaignId);
   if (!campaign || campaign.kind !== 'campaign') throw new DirectorRefused(`${campaignId} is not a campaign`);
   const auth = authorizationOf(ctx.store, campaignId);
@@ -202,11 +223,24 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
     }
     const c = latestCandidate(ctx.store, m);
     const last = attempts.at(-1);
+    if (last && unknownCost(last)) {
+      // P2-R11, P2-R35: a candidate whose attempt reported no cost never lands.
+      set('blocked', { reason: `${UNKNOWN_COST}: attempt ${last.id} completed without reporting what it spent; its candidate never lands` });
+      continue;
+    }
     if (env?.autoApply === 'none' && c?.verdict === 'accepted-by-gates') {
       set('blocked', { reason: `candidate ${c.id} is accepted; with autoApply none a person approves and applies it` });
       continue;
     }
-    if (c && last && c.attemptId === last.id && !ctx.store.integrations(campaignId, { missionId: m.id }).some((i) => i.candidateId === c.id && i.state !== 'abandoned')) {
+    const unintegrated = !!c && !!last && c.attemptId === last.id
+      && !ctx.store.integrations(campaignId, { missionId: m.id }).some((i) => i.candidateId === c.id && i.state !== 'abandoned');
+    // P2-R49: forgery shapes park the candidate for a person; acknowledged, it integrates; rejected, it is repaired.
+    const hold = unintegrated ? forgeryHold(ctx, c!) : null;
+    if (hold?.state === 'waiting') {
+      set('waiting-owner', { reason: hold.why });
+      continue;
+    }
+    if (unintegrated && !hold) {
       set('integrating', { queued: c });
       continue;
     }
@@ -241,11 +275,29 @@ function landedTicket(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, ti
     .some((i) => i.integratedCommit && isAncestor(repo, i.integratedCommit, tip)));
 }
 
-export function ticketStatuses(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketStatus> {
+export function ticketStatuses(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketStatus> {
   return new Map([...ticketStates(ctx, campaignId, repo, host)].map(([id, s]) => [id, s.status]));
 }
 
 // ---- spend ------------------------------------------------------------------------------------
+
+export const UNKNOWN_COST = 'cost unknown';
+
+/** An attempt that completed and reported no figure: the one shape of unknown spend that halts (P2-R44). */
+const unknownCost = (a: Attempt): boolean => a.state === 'completed' && a.costUsd === null;
+
+/**
+ * When a person last answered a `spend-unknown` halt (a human resume or adoption naming it), or
+ * null. Attempts that had completed with no figure by then were seen: they stay unknown in
+ * every total, and their candidates never land, but they do not halt the campaign again.
+ */
+function unknownSeenUntil(store: Pick<MissionStore, 'decisions'>, campaignId: string): number | null {
+  const ds = store.decisions(campaignId);
+  const answered = new Set(ds.filter((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip')
+    && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+  const seen = ds.filter((d) => d.scope.operation === 'halt-campaign' && d.scope.reason === 'spend-unknown' && answered.has(d.id)).map((d) => d.at);
+  return seen.length ? Math.max(...seen) : null;
+}
 
 /** The campaign's spend over every child mission (§4.6), from attempt rows only. */
 export function campaignSpend(ctx: Pick<DaylightContext, 'store'>, campaignId: string): CampaignSpend {
@@ -253,32 +305,39 @@ export function campaignSpend(ctx: Pick<DaylightContext, 'store'>, campaignId: s
   if (!campaign) throw new DirectorRefused(`unknown campaign ${campaignId}`);
   const auth = authorizationOf(ctx.store, campaignId);
   const children = ctx.store.missions(campaign.projectId).filter((m) => m.parentId === campaignId);
+  const seenUntil = unknownSeenUntil(ctx.store, campaignId);
   const out: CampaignSpend = {
-    spentUsd: 0, knownUsd: 0, unknownCount: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: auth ? envelopeOf(auth).maxUsdTotal : 0,
+    spentUsd: 0, knownUsd: 0, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0, scannedCount: 0, runningCount: 0,
+    reservedUsd: 0, capUsd: auth ? envelopeOf(auth).maxUsdTotal : 0,
   };
   for (const m of children) {
     const s = missionSpend(ctx, m.id);
-    out.spentUsd += s.spentUsd;
+    // Reservation charges count against the cap (P2-R44); the mission's own spend leaves them out.
+    out.spentUsd += s.spentUsd + s.reservationUsd;
     out.knownUsd += s.knownUsd;
     out.unknownCount += s.unknownCount;
     out.scannedCount += s.scannedCount;
+    out.reservationCount += s.reservationCount;
+    out.reservationUsd += s.reservationUsd;
     out.runningCount += s.runningCount;
     for (const a of ctx.store.tasks(m.id).flatMap((t) => ctx.store.attempts(t.id))) {
       if (a.state === 'running' || a.state === 'starting') out.reservedUsd += a.maxCostUsd ?? 0;
+      if (unknownCost(a) && (seenUntil === null || (a.finishedAt ?? Infinity) > seenUntil)) out.unknownUnansweredCount++;
     }
   }
   const round = (n: number) => Math.round(n * 1e6) / 1e6;
-  return { ...out, spentUsd: round(out.spentUsd), knownUsd: round(out.knownUsd), reservedUsd: round(out.reservedUsd) };
+  return { ...out, spentUsd: round(out.spentUsd), knownUsd: round(out.knownUsd), reservationUsd: round(out.reservationUsd), reservedUsd: round(out.reservedUsd) };
 }
 
 /**
- * Whether another attempt reserving `nextUsd` may launch (§4.6). Unknown spend halts (P2-R11):
- * it is never charged at the cap and never summed as zero. A launch that would cross the cap
- * waits; with nothing running to free a reservation, the campaign halts `spend-cap`.
+ * Whether another attempt reserving `nextUsd` may launch (§4.6). An attempt that completed with
+ * its cost unknown halts once (P2-R11, P2-R44): it is never charged at the cap and never summed
+ * as zero. A launch that would cross the cap waits; with nothing running to free a reservation,
+ * the campaign halts `spend-cap`.
  */
 export function campaignSpendRefusal(spend: CampaignSpend, envelope: Pick<CampaignEnvelope, 'maxUsdTotal'>, nextUsd: number): { refuse: string; halt: CampaignHaltReason | null } | null {
-  if (spend.unknownCount > 0) {
-    return { refuse: `cost unknown for ${spend.unknownCount} attempt(s); the $${envelope.maxUsdTotal.toFixed(2)} cap cannot be enforced`, halt: 'spend-unknown' };
+  if (spend.unknownUnansweredCount > 0) {
+    return { refuse: `cost unknown for ${spend.unknownUnansweredCount} attempt(s); the $${envelope.maxUsdTotal.toFixed(2)} cap cannot be enforced`, halt: 'spend-unknown' };
   }
   if (spend.spentUsd > envelope.maxUsdTotal) {
     return { refuse: `spent $${spend.spentUsd.toFixed(2)}, past the $${envelope.maxUsdTotal.toFixed(2)} cap`, halt: 'spend-breach' };
@@ -359,7 +418,11 @@ export function repairBrief(ctx: Pick<DaylightContext, 'store' | 'artifacts'>, c
   return {
     attempt, priorCandidateId: c.id, outcome, failures, hiddenFailures,
     conflictPaths: integration?.state === 'conflict' ? integration.conflictPaths : [],
-    policy: c.policyViolations.map((v) => (v.path === null ? v.rule : `${v.rule}: ${v.path}`)),
+    policy: [
+      ...c.policyViolations.map((v) => (v.path === null ? v.rule : `${v.rule}: ${v.path}`)),
+      // A person rejected its forgery shapes (P2-R49): the author is told where, so the repair drops them.
+      ...(forgeryHold(ctx, c)?.state === 'rejected' ? forgeryShapesOf(ctx.artifacts, c).map((h) => `gate-forgery-shape: ${h.path} (${h.shapes.join(', ')})`) : []),
+    ],
     priorDiff,
   };
 }
@@ -370,6 +433,51 @@ function captureRefusedBrief(attempt: number, why: string): RepairBrief {
     attempt, priorCandidateId: '', outcome: 'capture-refused', failures: [{ check: 'capture', role: 'gate', tail: tailOf(redact(why).text, TAIL) }],
     hiddenFailures: 0, conflictPaths: [], policy: [], priorDiff: '',
   };
+}
+
+// ---- regressions --------------------------------------------------------------------------------
+
+/** The landing whose commit is the tip of the campaign's ref, if the tip is a landing. */
+function tipLanding(ctx: Pick<DaylightContext, 'store'>, campaignId: string, repo: string): Integration | undefined {
+  const tip = integrationTip(repo, campaignId);
+  return tip ? ctx.store.integrations(campaignId, { state: 'integrated' }).find((i) => i.integratedCommit === tip) : undefined;
+}
+
+/**
+ * Each earlier-landed ticket's own public gates (role `gate`, bound to it by the lock) that have
+ * no evaluation on the tip's landing yet: what `recheckLanded` runs (wave2 L7).
+ */
+function landedGates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Array<{ ticketId: string; experimentId: string; at: Integration }> {
+  const lock = campaignLockOf(ctx, campaignId);
+  const at = tipLanding(ctx, campaignId, repo);
+  if (!lock || !at) return [];
+  const tipTicket = host.tickets(campaignId).find((t) => t.workItemId === ctx.store.mission(at.missionId)?.workItemId)?.ticketId;
+  const landed = [...ticketStates(ctx, campaignId, repo, host).values()].filter((s) => s.status === 'landed').map((s) => s.ticket.ticketId);
+  return lock.scope.experimentIds.flatMap((id) => {
+    const ticketId = lock.scope.bindings[id];
+    return lock.scope.roles[id] === 'gate' && ticketId && landed.includes(ticketId) && ticketId !== tipTicket ? [{ ticketId, experimentId: id, at }] : [];
+  });
+}
+
+/**
+ * Landed tickets whose own public gate fails on the tip, by ticket: a later landing broke it.
+ * Without a ratchet nothing at landing time looks (P2-R17); `campaign status` shows these as
+ * `regressed`, each with a need (wave2 L7). From rows: the latest evaluation of the gate on the
+ * tip's landing at the locked harness.
+ */
+export function landedRegressions(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Map<string, { gates: string[]; tip: string }> {
+  const out = new Map<string, { gates: string[]; tip: string }>();
+  const lock = campaignLockOf(ctx, campaignId);
+  if (!lock) return out;
+  for (const g of landedGates(ctx, campaignId, repo, host)) {
+    const e = ctx.store.gateEvaluations({ integrationId: g.at.id, target: 'integrated' })
+      .filter((x) => x.experimentId === g.experimentId && x.harnessDigest === lock.scope.harnessDigests[g.experimentId]).at(-1);
+    if (!e || e.conclusion === 'supported') continue;
+    const r = out.get(g.ticketId) ?? { gates: [], tip: g.at.integratedCommit! };
+    r.gates.push(`${g.experimentId} ${e.conclusion}`);
+    out.set(g.ticketId, r);
+  }
+  return out;
 }
 
 // ---- needs --------------------------------------------------------------------------------------
@@ -383,12 +491,30 @@ export function campaignRunNeeds(ctx: DaylightContext, campaign: Mission, host: 
       out.push({ kind: 'blocked', ref: m.id, why: `ticket ${t.ticketId}: ${m.outcomeReason ?? m.outcome}; a person retries it with \`daylight campaign retry\`` });
     }
   }
-  const moved = (() => {
-    const repo = ctx.store.project(campaign.projectId)?.root;
-    const at = repo ? refTarget(repo, integrationRefFor(campaign.id)) : null;
-    return at && at !== expectedTip(ctx.store, campaign.id) ? at : null;
-  })();
-  if (moved) out.push({ kind: 'campaign-halted', ref: campaign.id, why: `${integrationRefFor(campaign.id)} is at ${moved}, which no landing explains; a person runs \`daylight campaign adopt-tip\`` });
+  const repo = ctx.store.project(campaign.projectId)?.root;
+  if (repo) {
+    for (const [ticketId, r] of landedRegressions(ctx, campaign.id, repo, host)) {
+      out.push({ kind: 'blocked', ref: campaign.id, why: `ticket ${ticketId} landed, but its gate fails on the tip ${r.tip.slice(0, 12)} (${r.gates.join(', ')}); a later landing broke it, so a person looks` });
+    }
+  }
+  for (const t of host.tickets(campaign.id)) {
+    const m = missionsOf(ctx, campaign, t).at(-1);
+    const c = m && m.state !== 'closed' ? latestCandidate(ctx.store, m) : undefined;
+    const hold = c ? forgeryHold(ctx, c) : null;
+    if (c && hold?.state === 'waiting') out.push({ kind: 'forgery-shape-review', ref: c.id, why: `ticket ${t.ticketId}: ${hold.why}` });
+  }
+  const at = repo ? refTarget(repo, integrationRefFor(campaign.id)) : null;
+  const want = expectedTip(ctx.store, campaign.id);
+  if (repo && at && at !== want) {
+    // A ref that no longer contains the last explained commit (deleted and recreated, or rewound)
+    // is restored to it; one that only gained commits is adopted where it is (wave2 L4).
+    const adopts = isAncestor(repo, want, at);
+    const how = adopts ? '`daylight campaign adopt-tip`' : `\`daylight campaign adopt-tip --to ${want}\`, which puts it back where the rows say`;
+    out.push({
+      kind: 'campaign-halted', ref: campaign.id, why: `${integrationRefFor(campaign.id)} is at ${at}, which no landing explains; a person runs ${how}`,
+      commit: adopts ? at : want,
+    });
+  }
   return out;
 }
 
@@ -405,7 +531,9 @@ export interface DirectorOptions extends CampaignRunOptions {
   crashLanding?: { n: number; step: IntegrationStep };
 }
 
-const emptySpend = (cap: number): CampaignSpend => ({ spentUsd: 0, knownUsd: 0, unknownCount: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: cap });
+const emptySpend = (cap: number): CampaignSpend => ({
+  spentUsd: 0, knownUsd: 0, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: cap,
+});
 
 const counts = (states: Map<string, TicketState>) => {
   const n: Partial<Record<TicketStatus, number>> = {};
@@ -434,6 +562,8 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     refused: null, waves: 0, spend: env ? campaignSpend(ctx, campaign.id) : emptySpend(0), schedule: [], ...r,
   });
 
+  let detected: SandboxProfile | undefined;
+  const sandbox = (): SandboxProfile => (detected ??= o.sandbox ?? detectSandbox());
   const refusals: string[] = [];
   if (!auth || !env) refusals.push(`campaign ${campaign.id} has no human authorize-campaign decision; a person runs \`daylight campaign authorize\``);
   else {
@@ -446,6 +576,14 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     if (r5) refusals.push(r5);
     if (o.concurrency !== undefined && (!Number.isInteger(o.concurrency) || o.concurrency < 1 || o.concurrency > env.concurrency)) {
       refusals.push(`--concurrency ${o.concurrency} is not within the authorized 1..${env.concurrency}`);
+    }
+    if (!o.dryRun) {
+      // An environment that cannot run an author is the run's refusal, not every ticket's (wave2 M1):
+      // dispatching would close each ready ticket inconclusive for a cause none of them owns. A dry
+      // run reads rows only and is often made from another shell, so it does not judge this one.
+      const missing = env.roster.map((r) => ({ r, a: authorFor(parseSpec(r).tool, o.env) })).filter((x) => x.a.status !== 'available');
+      if (missing.length) refusals.push(`no author for roster ${missing.map((x) => `${x.r} (${x.a.status === 'available' ? '' : x.a.why})`).join(', ')}; nothing was dispatched`);
+      if (!sandbox().available) refusals.push(`the author sandbox cannot be built: ${sandbox().why ?? 'unavailable'}; nothing was dispatched`);
     }
   }
   if (refusals.length) return result({ refused: refusals.join('\n') });
@@ -498,7 +636,6 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     ctx.events.append({ projectId: m.projectId, missionId: m.id, actorId: 'daylight', category, name, payload });
   const ictx = { store: ctx.store, events: ctx.events, artifacts: ctx.artifacts, repoRoot: root };
   const gctx: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out: ctx.out, runs: o.runs, sandbox: o.sandbox, timeoutMs: o.gateTimeoutMs };
-  const sandbox = o.sandbox ?? detectSandbox();
   let halted: CampaignHaltReason | null = null;
   let stopped: string | null = null;
   let landings = 0;
@@ -530,6 +667,15 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     }
     const rec = reconcileIntegrations(ictx, campaign.id, { ticketOf, deps: host.integrate });
     if (rec.moved) halt('integration-moved');
+    // Spend is re-checked before anything is integrated, so a resume never lands the candidate
+    // whose spend halted the campaign while that spend still breaks the rule (wave2 M3). Within a
+    // run, each attempt's end is checked where it ends.
+    const startSpend = campaignSpend(ctx, campaign.id);
+    if (startSpend.unknownUnansweredCount > 0) halt('spend-unknown');
+    else if (startSpend.spentUsd > envelope.maxUsdTotal) {
+      emit(campaign, 'cost', 'campaign.spend.breached', { spent: startSpend.spentUsd, reserved: startSpend.reservedUsd, cap: startSpend.capUsd, unknownCount: startSpend.unknownCount });
+      halt('spend-breach');
+    }
     emit(campaign, 'lifecycle', resumed ? 'campaign.resumed' : 'campaign.started', {
       integrationRef: ref, tip, statuses: counts(ticketStates(ctx, campaign.id, root, host)), reconciled: { requeued: rec.requeue.length, landed: rec.landed.length, refsDeleted: rec.deletedRefs.length },
     });
@@ -539,9 +685,13 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const t = s.ticket;
       let m = s.mission;
       const tipNow = integrationTip(root, campaign.id)!;
+      let retry: Decision | undefined;
       if (!m) {
         try {
+          retry = retryOf(ctx, campaign, t);
           m = host.startTicketMission(campaign.id, t.ticketId, tipNow);
+          // The new mission names the person's retry that released its predecessor (P2-R27).
+          if (retry) emit(m, 'lifecycle', 'campaign.ticket.retried', { ticketId: t.ticketId, retryDecisionId: retry.id, releasedMissionId: retry.scope.closedMissionId });
         } catch (err) {
           // P2-R36: R5 refusing the grant blocks this ticket for the run; the loop goes on.
           if (!(err instanceof DecisionRefused)) throw err;
@@ -557,14 +707,14 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const repair = attempt === 1 ? undefined
         : prior && prior.attemptId === lastAttempt?.id ? repairBrief(ctx, prior.id, attempt)
           : lastAttempt ? captureRefusedBrief(attempt, lastAttempt.failure ?? 'the attempt left no capturable candidate') : undefined;
-      emit(m, 'lifecycle', 'campaign.ticket.dispatched', { ticketId: t.ticketId, missionId: m.id, attempt, base: tipNow, tool });
+      emit(m, 'lifecycle', 'campaign.ticket.dispatched', { ticketId: t.ticketId, missionId: m.id, attempt, base: tipNow, tool, ...(retry ? { retryDecisionId: retry.id } : {}) });
       try {
         const r = await runImplement(ctx, {
           missionId: m.id, repo: root, tool, base: tipNow, ticket: t, brief: 'campaign', evaluate: false, repair, reserveUsd: reserve,
           ...(plan.derivedStatus && plan.statusPath ? { statusPath: plan.statusPath } : {}),
           maxTurns: Math.min(envelope.maxTurns, t.budget.maxTurns ?? Infinity),
           timeoutMs: Math.min(envelope.timeoutSeconds, t.budget.timeoutSeconds ?? Infinity) * 1000,
-          sandbox, env: o.env, runs: o.runs,
+          sandbox: sandbox(), env: o.env, runs: o.runs,
         });
         if (r.candidate) queue.push({ candidateId: r.candidate.id, ticketId: t.ticketId });
       } catch (err) {
@@ -582,7 +732,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       }
       const after = campaignSpend(ctx, campaign.id);
       // P2-R11, P2-R35: checked as the attempt ends, before its candidate may land.
-      if (after.unknownCount > 0) halt('spend-unknown');
+      if (after.unknownUnansweredCount > 0) halt('spend-unknown');
       if (after.spentUsd > envelope.maxUsdTotal) {
         emit(campaign, 'cost', 'campaign.spend.breached', { spent: after.spentUsd, reserved: after.reservedUsd, cap: after.capUsd, unknownCount: after.unknownCount });
         halt('spend-breach');
@@ -591,6 +741,16 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
 
     const integrate = async (item: { candidateId: string; ticketId: string }): Promise<void> => {
       const t = host.tickets(campaign.id).find((x) => x.ticketId === item.ticketId)!;
+      const from = ctx.store.attempt(ctx.store.candidate(item.candidateId)?.attemptId ?? '');
+      // P2-R35: an unknown-cost candidate never lands, whatever queued it.
+      if (!from || unknownCost(from)) return;
+      // Never build on a commit no row explains: the ref moved outside the director (§4.4).
+      if (integrationTip(root, campaign.id) !== expectedTip(ctx.store, campaign.id)) {
+        halt('integration-moved');
+        return;
+      }
+      // P2-R49: never integrated, so never landed, before a person reviews its forgery shapes.
+      if (forgeryHold(ctx, ctx.store.candidate(item.candidateId)!)) return;
       let i: Integration;
       try {
         i = prepareIntegration(ictx, item.candidateId, { ticketId: t.ticketId, deps: host.integrate });
@@ -621,7 +781,10 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
           landedNow.push(t.ticketId);
           emit(campaign, 'lifecycle', 'campaign.ticket.landed', { ticketId: t.ticketId, missionId: m.id, commit: r.landed.integratedCommit });
         } else if (integrationTip(root, campaign.id) !== i.onto) {
-          queue.push(item);
+          // The compare-and-swap lost: the row is abandoned and the candidate stays accepted. A tip
+          // the rows explain is integrated onto again; any other is a person's to adopt (P2-R35).
+          if (integrationTip(root, campaign.id) === expectedTip(ctx.store, campaign.id)) queue.push(item);
+          else halt('integration-moved');
         } else {
           stopped = r.refused;
         }
@@ -666,18 +829,49 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const no = campaignSpendRefusal(spend, envelope, reserve);
       if (no) {
         emit(campaign, 'cost', 'campaign.spend.refused', { spent: spend.spentUsd, reserved: spend.reservedUsd, cap: spend.capUsd, unknownCount: spend.unknownCount, waveSeq: seq });
-        if (no.halt) halt(no.halt);
+        // A campaign that spent exactly its cap with nothing left to build has finished, not
+        // halted (wave2 L2): only the review is skipped, and it says so.
+        const finished = no.halt === 'spend-cap' && ![...ticketStates(ctx, campaign.id, root, host).values()].some((x) => x.status === 'ready');
+        if (no.halt && !finished) halt(no.halt);
         return;
       }
       reviewing.add(seq);
       const p = (async () => {
-        await runWaveReview(ctx, campaign.id, seq, { repo: root, roster: envelope.reviewRoster, sandbox, env: o.env, reserveUsd: reserve });
+        await runWaveReview(ctx, campaign.id, seq, { repo: root, roster: envelope.reviewRoster, sandbox: sandbox(), env: o.env, reserveUsd: reserve });
         fixTicketsFrom(ctx, campaign.id, seq, host);
         const after = campaignSpend(ctx, campaign.id);
-        if (after.unknownCount > 0) halt('spend-unknown');
+        if (after.unknownUnansweredCount > 0) halt('spend-unknown');
         else if (after.spentUsd > envelope.maxUsdTotal) halt('spend-breach');
       })().finally(() => reviews.delete(p));
       reviews.add(p);
+    };
+
+    /**
+     * At the end of a run, each earlier-landed ticket's own public gates are run on the tip once
+     * and recorded there (wave2 L7): without a ratchet no landing looks, and `campaign status`
+     * reads these to mark a ticket a later landing broke. Nothing lands or moves on the result.
+     */
+    const recheckLanded = async () => {
+      const lock = campaignLockOf(gctx, campaign.id);
+      const todo = landedGates(ctx, campaign.id, root, host).filter((g) => !ctx.store.gateEvaluations({ integrationId: g.at.id, target: 'integrated' })
+        .some((e) => e.experimentId === g.experimentId && e.harnessDigest === lock?.scope.harnessDigests[g.experimentId]));
+      if (!lock || !todo.length) return;
+      const at = todo[0].at;
+      const hidden = holdoutPaths(ctx, campaign.id);
+      const cache = gateCacheKey(at.integratedDiffDigest!);
+      try {
+        for (const g of todo) {
+          const x = ctx.store.experiment(g.experimentId);
+          if (!x || x.harnessDigest !== lock.scope.harnessDigests[x.id]) continue;
+          const r = await runGate(x, {
+            ...runContext(gctx, x, cache), target: { kind: 'integrated', diffDigest: at.integratedDiffDigest! },
+            materialise: () => createWorkspace(root, at.integratedCommit!, { hidden }),
+          });
+          recordIntegrated(gctx, campaign, x, r, { id: at.id, candidateId: at.candidateId, integratedCommit: at.integratedCommit!, integratedDiffDigest: at.integratedDiffDigest! });
+        }
+      } finally {
+        if (ctx.out) removeGateCache(ctx.out, cache);
+      }
     };
 
     const closeIfDue = (quiescent: boolean) => {
@@ -767,6 +961,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       if (mayDispatch() && schedule(ticketStates(ctx, campaign.id, root, host), running, concurrency).length) continue;
       break;
     }
+    await recheckLanded();
     const final = ticketStates(ctx, campaign.id, root, host);
     emit(campaign, 'lifecycle', 'campaign.finished', { integrationRef: ref, tip: integrationTip(root, campaign.id), statuses: counts(final), halted, landed: landings });
     return result({

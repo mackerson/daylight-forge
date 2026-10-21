@@ -28,6 +28,7 @@ import { policyAt } from './plan.ts';
 import { authorLimits, loadProjectPolicy, POLICY_SCHEMA, ProjectPolicyError, protectedLabels, type ProjectPolicy } from './project-policy.ts';
 import { MCP_CONFIG, newMcpToken, type ExecResult } from './sandbox.ts';
 import { createWorkspace, sweepWorkspaces, type Workspace } from './workspace.ts';
+import { candidateForgeryShapes } from './forgery-classes.ts';
 
 /**
  * `forge run`: one author attempt on an implement mission, from the human's grants to a
@@ -543,6 +544,7 @@ export function candidateView(ctx: DaylightContext, candidateId: string, maxByte
   return {
     candidate,
     possibleSecrets: possibleSecrets(ctx, candidate),
+    forgeryShapes: candidateForgeryShapes(ctx.artifacts, candidate),
     // Masked at capture when a secret was found; masked again here for whatever this environment knows.
     diff: { text: redact(bytes.subarray(0, maxBytes).toString('utf8')).text, truncated: bytes.length > maxBytes, bytes: bytes.length },
   };

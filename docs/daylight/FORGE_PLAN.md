@@ -511,6 +511,33 @@ rulings.
   turns it off without touching anything else.
 - **Status.** Decided (P2-R10).
 
+### ADR-40 — The REFINE stage: reports, refine maps and the GUI's campaign acts (P2, WS-R8/R9)
+
+- **Context.** A campaign lands on an integration ref nobody has read. A person needs what a wave
+  did, what waits on them, and where to look first, without the checkout moving and without a
+  holdout leaking into anything a session or the renderer can read.
+- **Decision.**
+  - The wave report, the campaign list and STATUS are derived on read and never stored. A report
+    is written only on `--write`, under `<out>/campaigns/<c>/reports/`, never into the target
+    repository, a commit or a trailer, and that write is refused in an agent session.
+  - Refine maps are made by a library function over trees materialised with `createWorkspace`,
+    holdouts hidden, never the checkout; a committed holdout refuses the refine with a path-free
+    message. Maps live under `<out>/campaigns/<c>/maps/<sha>/`, cached by sha, parser set and
+    `MAP_FORMAT`, with no claims database. `campaign refine` writes nothing else, so it runs in an
+    agent session.
+  - Focus order is data (`FOCUS_RULES`): assumption, High finding, forgery-shape, blocked ticket,
+    untested diff, introduced.
+  - The GUI never starts `campaign run`: a run shows through its run claim, and the GUI offers the
+    command to copy. Halt is the GUI's one write without a digest, as the CLI's. Every other
+    campaign act goes through `daylight confirm`, which knows every operation `confirmDigest`
+    computes.
+  - The Refine view embeds the tip's map read-only: no symbol expansion, no node moves, no read or
+    write of the checkout's map directory.
+- **Consequences.** What a person reads before merging is reproducible from rows and refs, and
+  the same rows print the same bytes. A refine of a large repository can take minutes, so the GUI
+  runs it as a job and re-reads the cached report.
+- **Status.** Decided (P2-R40, P2-R45, P2-R47).
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required

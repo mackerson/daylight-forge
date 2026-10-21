@@ -23,7 +23,8 @@ import { findingIdOf, findingOutboxFile, validateFinding } from '../forge/findin
 import type { GateContext } from '../forge/gate.ts';
 import { integrationTip } from '../forge/integrate.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
-import { ingestFindings } from '../forge/wave.ts';
+import { campaignStatus } from '../forge/campaign-status.ts';
+import { fixTicketsFrom, ingestFindings, runWaveReview } from '../forge/wave.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { PlanFileV1 } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -170,13 +171,14 @@ ingestFindings(ctx, review.id);
 check('a forged outbox line is refused on the host, and nothing is added', ctx.store.findings(campaign.id).length === 6
   && ctx.events.forMission(review.id).some((e) => e.name === 'campaign.finding.refused'));
 
-section('the fix lane: one proposed ticket per finding, High admitted up to the cap (P2-R10)');
+section('the fix lane: one proposed ticket per path, High admitted up to the cap (P2-R10, wave2 L5)');
 const fixes = tickets.filter((t) => t.origin === 'fix');
-check('three fix tickets, one per corroborated finding, in lane FIX', fixes.length === 3 && fixes.every((t) => t.lane === 'FIX' && /^FIX\.1\.\d$/.test(t.ticketId)), JSON.stringify(fixes.map((t) => t.ticketId)));
+check('two fix tickets, one per path the findings name, in lane FIX', fixes.length === 2 && fixes.every((t) => t.lane === 'FIX' && /^FIX\.1\.\d$/.test(t.ticketId))
+  && new Set(fixes.map((t) => t.scope.join(','))).size === 2, JSON.stringify(fixes.map((t) => [t.ticketId, t.scope])));
 const admitted = fixes.filter((t) => ctx.store.workItem(t.workItemId)?.status === 'approved');
-check('one High admitted (the cap is 1); the others proposed for a person', admitted.length === 1 && fixes.length - admitted.length === 2);
-check('the medium one was never admitted', fixes.filter((t) => ctx.store.findings(campaign.id).find((f) => f.id === t.sourceRef)?.severity === 'medium')
-  .every((t) => ctx.store.workItem(t.workItemId)?.status === 'proposed'));
+check('one High admitted (the cap is 1); the other proposed for a person', admitted.length === 1 && fixes.length - admitted.length === 1);
+check('every ticket was filed for a High finding; the medium one on src/a.js shares a.js\'s ticket', fixes.every((t) => ctx.store.findings(campaign.id).find((f) => f.id === t.sourceRef)?.severity === 'high')
+  && ctx.store.findings(campaign.id).filter((f) => f.severity === 'medium' && f.fixTicketId).every((f) => fixes.find((t) => t.ticketId === f.fixTicketId)?.scope[0] === 'src/a.js'));
 
 section('ADR-19: findings changed no verdict and no landed commit');
 const landed = ctx.store.integrations(campaign.id, { state: 'integrated' });
@@ -216,6 +218,35 @@ section('finding titles and statements lose tabs, CR and zero-width characters (
   const same = validateFinding({ path: 'src/a.js', severity: 'low', title: 'a bcde', statement: 'one\ntwo three' }, { paths });
   check('and both id the same finding as the plain text', !('refused' in v) && !('refused' in same) && findingIdOf('at_1', v) === findingIdOf('at_1', same));
   check('a title of only invisible characters is empty', JSON.stringify(validateFinding({ path: 'src/a.js', severity: 'low', title: '\u200b\ufeff\r', statement: 's' }, { paths })) === '{"field":"title","refused":"empty"}');
+}
+
+section('a roster of mock,mock runs two reviewers, not one (wave2 L3, p17b)');
+{
+  const tip = integrationTip(repo, campaign.id)!;
+  ctx.store.recordWave({ campaignId: campaign.id, seq: 3, fromCommit: wave.fromCommit, toCommit: tip, ticketIds: [] });
+  const { reviewMission } = await runWaveReview(ctx, campaign.id, 3, { repo, roster: ['mock', 'mock'], sandbox: live, env: { ...human, DAYLIGHT_MOCK_ADAPTER: both }, reserveUsd: 1 });
+  const rs = ctx.store.tasks(reviewMission.id).flatMap((t) => ctx.store.attempts(t.id));
+  check('two reviewer attempts with distinct ids, both completed', rs.length === 2 && new Set(rs.map((a) => a.id)).size === 2 && rs.every((a) => a.state === 'completed'),
+    JSON.stringify(rs.map((a) => [a.runnerId, a.state])));
+  check('each filed its own findings', new Set(ctx.store.findings(campaign.id, { waveSeq: 3 }).map((f) => f.attemptId)).size === 2);
+}
+
+section('one reviewer cannot spend a wave\'s fix budget on one path (wave2 L5, p9)');
+{
+  const tip = integrationTip(repo, campaign.id)!;
+  ctx.store.recordWave({ campaignId: campaign.id, seq: 4, fromCommit: wave.fromCommit, toCommit: tip, ticketIds: [] });
+  const many = path.join(root, 'many.cjs');
+  const calls = Array.from({ length: 8 }, (_, i) => `{ name: 'report_finding', arguments: { path: 'src/a.js', severity: 'high', title: 'bug ${i}', statement: 'distinct ${i}' } }`);
+  fs.writeFileSync(many, reviewer.replace(/const calls = \[[\s\S]*?\n\];/, `const calls = [${calls.join(',')}];`));
+  process.env.DAYLIGHT_MOCK_ADAPTER = many;
+  await runWaveReview(ctx, campaign.id, 4, { repo, roster: ['mock'], sandbox: live, env: { ...human, DAYLIGHT_MOCK_ADAPTER: many }, reserveUsd: 1 });
+  process.env.DAYLIGHT_MOCK_ADAPTER = both;
+  const before = tickets.length;
+  const { filed } = fixTicketsFrom(ctx, campaign.id, 4, host);
+  const f4 = ctx.store.findings(campaign.id, { waveSeq: 4 });
+  check('eight High findings on src/a.js file one fix ticket, not eight', f4.length === 8 && filed.length === 1 && tickets.length === before + 1, JSON.stringify([f4.length, filed.length]));
+  check('every one of them names that ticket', f4.every((f) => f.fixTicketId === filed[0]?.ticketId));
+  check('status counts tickets, not findings', campaignStatus(ctx, campaign.id, repo, host).waves.find((x) => x.seq === 4)?.fixTickets === 1);
 }
 
 ctx.close();

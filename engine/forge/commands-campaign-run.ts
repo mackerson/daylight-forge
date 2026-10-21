@@ -10,11 +10,12 @@ import {
 import { haltCampaign, resumeCampaign } from './campaign.ts';
 import { campaignStatus, r5StatusHost, renderCampaignStatus, type StatusHost } from './campaign-status.ts';
 import { actorFor, parse, Usage } from './commands.ts';
-import { confirmDigest } from './confirm.ts';
+import { confirmDigest, type ConfirmDigest } from './confirm.ts';
 import { DirectorRefused, runCampaign } from './director.ts';
 import { GateRefused, type GateContext } from './gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, IntegrationRefused } from './integrate.ts';
 import { DecisionRefused } from './policy.ts';
+import type { FlagGet } from './commands-campaign.ts';
 
 /**
  * `daylight campaign gate|baseline|lock|run|status|halt|resume|adopt-tip` (§3.1, §4.1, §7; WS-R6).
@@ -32,7 +33,7 @@ import { DecisionRefused } from './policy.ts';
  *   status <c> [<repo>] [--write]
  *   halt <c> --rationale '<why>'
  *   resume <c> --halt <d> --rationale '<why>' --confirm <c8>
- *   adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
+ *   adopt-tip <c> <repo> --halt <d> [--to <commit>] --rationale '<why>' --confirm <c8>
  */
 
 export const CAMPAIGN_RUN_SUBCOMMANDS = ['gate', 'baseline', 'lock', 'run', 'status', 'halt', 'resume', 'adopt-tip'] as const;
@@ -62,6 +63,37 @@ const num = (s: string | undefined): number | undefined => {
   if (!Number.isFinite(n)) throw new Usage(`not a number: ${s}`);
   return n;
 };
+
+export type CampaignRunConfirmOp = 'lock-campaign-gates' | 'resume-campaign' | 'adopt-integration-tip';
+export const CAMPAIGN_RUN_CONFIRM_OPS: readonly CampaignRunConfirmOp[] = ['lock-campaign-gates', 'resume-campaign', 'adopt-integration-tip'];
+
+/**
+ * The digest `daylight confirm <op>` prints for one of WS-R6's acts, computed as the act's own
+ * preview computes it. `repo` (from `--repo`, else the out dir's mapped root) is needed by
+ * `adopt-integration-tip` only, which reads where the integration ref is now.
+ */
+export function campaignRunConfirm(ctx: DaylightContext, op: CampaignRunConfirmOp, subjectId: string, get: FlagGet, repo: string | null): ConfirmDigest {
+  const needOf = (k: string) => {
+    const v = get(k);
+    if (v === undefined || v === 'true') throw new Usage(`--${k} is required`);
+    return v;
+  };
+  switch (op) {
+    case 'lock-campaign-gates': {
+      const ratchet = get('ratchet') === 'true' ? true : get('no-ratchet') === 'true' ? false : undefined;
+      if (ratchet === undefined) throw new Usage('--ratchet or --no-ratchet is required');
+      return confirmDigest(ctx, 'lock-campaign-gates', subjectId, { experimentIds: lockableIds(ctx, subjectId), ratchet });
+    }
+    case 'resume-campaign':
+      return confirmDigest(ctx, 'resume-campaign', subjectId, { haltDecisionId: needOf('halt') });
+    case 'adopt-integration-tip': {
+      const haltDecisionId = needOf('halt');
+      if (!repo) throw new Usage(`${ctx.out} holds no map; name the repository with --repo`);
+      const s = adoptScopeOf({ store: ctx.store, repoRoot: repo }, subjectId, haltDecisionId);
+      return confirmDigest(ctx, 'adopt-integration-tip', subjectId, { adopt: { ref: s.ref, from: s.from, to: s.to, haltDecisionId } });
+    }
+  }
+}
 
 /** `argv` starts at the subcommand, as `runCampaignCommand`'s does. Returns the exit code. */
 export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessEnv = process.env, deps: CampaignRunDeps = {}): Promise<number> {
@@ -168,7 +200,8 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
       case 'run': {
         const r = await withCtx((ctx) => runCampaign(ctx, {
           campaignId, repo: repoOf(ctx, p.positionals[1]), concurrency: num(last(p, 'concurrency')), maxWaves: num(last(p, 'max-waves')),
-          dryRun: last(p, 'dry-run') === 'true', host: hostOf(ctx), env, ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
+          // Any spelling of --dry-run is a dry run (wave2 L1): a typo must never become a real run.
+          dryRun: p.flags.has('dry-run'), host: hostOf(ctx), env, ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
         }));
         if (asJson) json(r);
         else {
@@ -226,14 +259,14 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
           const repo = repoOf(ctx, p.positionals[1]);
           const ictx = { store: ctx.store, events: ctx.events, artifacts: ctx.artifacts, repoRoot: repo };
           if (confirm === undefined) {
-            const s = adoptScopeOf(ictx, campaignId, haltDecisionId);
+            const s = adoptScopeOf(ictx, campaignId, haltDecisionId, last(p, 'to'));
             const preview = confirmDigest(ctx, 'adopt-integration-tip', campaignId, { adopt: { ref: s.ref, from: s.from, to: s.to, haltDecisionId } });
             if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
             else for (const l of [...preview.lines, `digest ${preview.digest}`]) say(l);
             stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
             return 2;
           }
-          const d = adoptIntegrationTip(ictx, { campaignId, haltDecisionId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm, env });
+          const d = adoptIntegrationTip(ictx, { campaignId, haltDecisionId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm, env, to: last(p, 'to') });
           if (asJson) json(d);
           else say(`adopted ${String(d.scope.ref)} at ${String(d.scope.to)} (${d.id})`);
           return 0;
