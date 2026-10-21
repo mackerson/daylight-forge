@@ -10,8 +10,10 @@ import type {
   Finding, FindingSeverity, Integration, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
+import { parseSpec } from '../swarm/adapters.ts';
 import { gitIn } from './apply.ts';
 import { waitingOwner } from './assumptions.ts';
+import { authorFor } from './authors.ts';
 import {
   admitIfWithinEnvelope, campaignAuthorizationRefusal, fileFixTicket, haltCampaign, planOf, startTicketMission,
 } from './campaign.ts';
@@ -480,6 +482,8 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     refused: null, waves: 0, spend: env ? campaignSpend(ctx, campaign.id) : emptySpend(0), schedule: [], ...r,
   });
 
+  let detected: SandboxProfile | undefined;
+  const sandbox = (): SandboxProfile => (detected ??= o.sandbox ?? detectSandbox());
   const refusals: string[] = [];
   if (!auth || !env) refusals.push(`campaign ${campaign.id} has no human authorize-campaign decision; a person runs \`daylight campaign authorize\``);
   else {
@@ -492,6 +496,14 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     if (r5) refusals.push(r5);
     if (o.concurrency !== undefined && (!Number.isInteger(o.concurrency) || o.concurrency < 1 || o.concurrency > env.concurrency)) {
       refusals.push(`--concurrency ${o.concurrency} is not within the authorized 1..${env.concurrency}`);
+    }
+    if (!o.dryRun) {
+      // An environment that cannot run an author is the run's refusal, not every ticket's (wave2 M1):
+      // dispatching would close each ready ticket inconclusive for a cause none of them owns. A dry
+      // run reads rows only and is often made from another shell, so it does not judge this one.
+      const missing = env.roster.map((r) => ({ r, a: authorFor(parseSpec(r).tool, o.env) })).filter((x) => x.a.status !== 'available');
+      if (missing.length) refusals.push(`no author for roster ${missing.map((x) => `${x.r} (${x.a.status === 'available' ? '' : x.a.why})`).join(', ')}; nothing was dispatched`);
+      if (!sandbox().available) refusals.push(`the author sandbox cannot be built: ${sandbox().why ?? 'unavailable'}; nothing was dispatched`);
     }
   }
   if (refusals.length) return result({ refused: refusals.join('\n') });
@@ -544,7 +556,6 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     ctx.events.append({ projectId: m.projectId, missionId: m.id, actorId: 'daylight', category, name, payload });
   const ictx = { store: ctx.store, events: ctx.events, artifacts: ctx.artifacts, repoRoot: root };
   const gctx: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out: ctx.out, runs: o.runs, sandbox: o.sandbox, timeoutMs: o.gateTimeoutMs };
-  const sandbox = o.sandbox ?? detectSandbox();
   let halted: CampaignHaltReason | null = null;
   let stopped: string | null = null;
   let landings = 0;
@@ -614,7 +625,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
           ...(plan.derivedStatus && plan.statusPath ? { statusPath: plan.statusPath } : {}),
           maxTurns: Math.min(envelope.maxTurns, t.budget.maxTurns ?? Infinity),
           timeoutMs: Math.min(envelope.timeoutSeconds, t.budget.timeoutSeconds ?? Infinity) * 1000,
-          sandbox, env: o.env, runs: o.runs,
+          sandbox: sandbox(), env: o.env, runs: o.runs,
         });
         if (r.candidate) queue.push({ candidateId: r.candidate.id, ticketId: t.ticketId });
       } catch (err) {
@@ -724,7 +735,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       }
       reviewing.add(seq);
       const p = (async () => {
-        await runWaveReview(ctx, campaign.id, seq, { repo: root, roster: envelope.reviewRoster, sandbox, env: o.env, reserveUsd: reserve });
+        await runWaveReview(ctx, campaign.id, seq, { repo: root, roster: envelope.reviewRoster, sandbox: sandbox(), env: o.env, reserveUsd: reserve });
         fixTicketsFrom(ctx, campaign.id, seq, host);
         const after = campaignSpend(ctx, campaign.id);
         if (after.unknownUnansweredCount > 0) halt('spend-unknown');

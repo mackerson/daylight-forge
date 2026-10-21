@@ -167,6 +167,21 @@ const run = (w: World, script: string, over: Partial<DirectorOptions> = {}) => r
   host: testHost(w.ctx, w.campaign, w.plan, w.tickets), ...over,
 });
 
+/** R5's host, except that each ticket mission's grant carries no write: refused at the ticket's own preflight (P2-R23). */
+function noWriteHost(w: World): CampaignHost {
+  return {
+    ...testHost(w.ctx, w.campaign, w.plan, w.tickets),
+    startTicketMission: (_c, ticketId, at) => {
+      const t = w.tickets.find((x) => x.ticketId === ticketId)!;
+      storeTicket(w.ctx, t);
+      const m = w.ctx.store.createMission({
+        projectId: w.campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: at, parentId: w.campaign.id, workItemId: t.workItemId, scope: { paths: t.scope },
+      });
+      return w.ctx.store.authorizeMission({ missionId: m.id, actor: ACTOR, rationale: 'no write', permissions: { write: false, execute: false }, maxUsd: 1 }).mission;
+    },
+  };
+}
+
 const namesOf = (w: World): string[] => {
   const all = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.id === w.campaign.id || m.parentId === w.campaign.id).map((m) => m.id);
   return all.flatMap((id) => w.ctx.events.forMission(id)).sort((a, b) => a.sequence - b.sequence).map((e) => e.name);
@@ -476,12 +491,34 @@ section('a ready ticket refused at preflight closes inconclusive once, with a bl
 {
   const w = nodeWorld('preflight', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
   await lockAndAuthorize(w, { concurrency: 1 });
-  const r = await run(w, path.join(w.dir, 'no-such-author.cjs'));
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  const r = await run(w, author, { host: noWriteHost(w) });
   const ms = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id);
-  check('one mission, closed inconclusive, with the refusal as its reason', ms.length === 1 && ms[0].outcome === 'inconclusive' && /no author/.test(ms[0].outcomeReason ?? ''), JSON.stringify(ms.map((m) => [m.state, m.outcome, m.outcomeReason])));
+  check('one mission, closed inconclusive, with the refusal as its reason', ms.length === 1 && ms[0].outcome === 'inconclusive' && /does not hold write/.test(ms[0].outcomeReason ?? ''), JSON.stringify(ms.map((m) => [m.state, m.outcome, m.outcomeReason])));
   check('it was not dispatched again', namesOf(w).filter((n) => n === 'campaign.ticket.dispatched').length === 1 && r.statuses.A === 'blocked');
   check('one blocked event', namesOf(w).filter((n) => n === 'campaign.ticket.blocked').length === 1);
   check('campaignRunNeeds names it for a person to retry', campaignRunNeeds(w.ctx, w.campaign, testHost(w.ctx, w.campaign, w.plan, w.tickets)).some((n) => n.kind === 'blocked' && /campaign retry/.test(n.why)));
+  w.ctx.close();
+}
+
+section('no sandbox or no author refuses the run in one line and closes no ticket (wave2 M1, p5)');
+{
+  const gate = (id: string) => `test('${id}', () => assert.strictEqual(${load(`src/${id.toLowerCase()}.js`)}(), '${id}'));`;
+  const w = nodeWorld('nosandbox', ['A', 'B', 'C'].map((id) => ({ id, lane: `L${id}`, scope: [`src/${id.toLowerCase()}.js`], gate: gate(id) })));
+  await lockAndAuthorize(w, { concurrency: 3 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), Object.fromEntries(['A', 'B', 'C'].map((id) => [id, { first: { [`src/${id.toLowerCase()}.js`]: `module.exports = () => '${id}';\n` } }])));
+  const rows = rowCounts(w.ctx);
+  const refs = refsOf(w.repo);
+  const r = await run(w, author, { concurrency: 3, sandbox: { name: 'bwrap', available: false, why: 'probe: bwrap gone' } });
+  check('no sandbox: the run is refused with one line naming it', r.refused !== null && r.refused.split('\n').length === 1 && /sandbox cannot be built: probe: bwrap gone/.test(r.refused), String(r.refused));
+  check('no mission was created, no ticket closed, no need raised', !w.ctx.store.missions(w.campaign.projectId).some((m) => m.parentId === w.campaign.id)
+    && campaignRunNeeds(w.ctx, w.campaign, testHost(w.ctx, w.campaign, w.plan, w.tickets)).length === 0 && Object.values(r.statuses).every((x) => x !== 'blocked'));
+  check('and nothing was written: no row, no event, no ref', rowCounts(w.ctx) === rows && refsOf(w.repo) === refs);
+  const n = await run(w, path.join(w.dir, 'no-such-author.cjs'), { concurrency: 3 });
+  check('no author: the run is refused with one line naming the roster entry', n.refused !== null && n.refused.split('\n').length === 1 && /no author for roster mock/.test(n.refused), String(n.refused));
+  check('again nothing was created or written', rowCounts(w.ctx) === rows && refsOf(w.repo) === refs);
+  const ok = await run(w, author, { concurrency: 3 });
+  check('with both back, all three land', ok.landed.length === 3 && Object.values(ok.statuses).every((x) => x === 'landed'), JSON.stringify(ok.statuses));
   w.ctx.close();
 }
 
@@ -491,19 +528,7 @@ section('campaign retry releases a closed ticket and the director dispatches it 
   await lockAndAuthorize(w, { concurrency: 1 });
   const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
   const base = testHost(w.ctx, w.campaign, w.plan, w.tickets);
-  // The first mission's grant carries no write: a refusal at the ticket's own preflight (P2-R23).
-  const noWrite: CampaignHost = {
-    ...base,
-    startTicketMission: (_c, ticketId, at) => {
-      const t = w.tickets.find((x) => x.ticketId === ticketId)!;
-      storeTicket(w.ctx, t);
-      const m = w.ctx.store.createMission({
-        projectId: w.campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: at, parentId: w.campaign.id, workItemId: t.workItemId, scope: { paths: t.scope },
-      });
-      return w.ctx.store.authorizeMission({ missionId: m.id, actor: ACTOR, rationale: 'no write', permissions: { write: false, execute: false }, maxUsd: 1 }).mission;
-    },
-  };
-  const r1 = await run(w, author, { host: noWrite });
+  const r1 = await run(w, author, { host: noWriteHost(w) });
   const closed = w.ctx.store.missions(w.campaign.projectId).find((m) => m.parentId === w.campaign.id)!;
   check('the refused ticket is closed inconclusive and blocked', closed.outcome === 'inconclusive' && r1.statuses.A === 'blocked', JSON.stringify(r1.statuses));
   const retry = w.ctx.store.retryTicket(w.campaign.id, { actor: ACTOR, rationale: 'grant fixed', scope: retryScopeOf(w.ctx, w.campaign.id, 'A') });

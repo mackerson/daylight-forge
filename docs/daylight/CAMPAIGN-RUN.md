@@ -80,8 +80,10 @@ already accepted when a halt arrives stays accepted; its integration is abandone
 person resumes the campaign (or adopts a moved tip) it is integrated again onto the tip and
 re-evaluated there, without a new attempt.
 
-A ready ticket whose mission is refused at preflight (no author, a stale crate snapshot, an
-invalid policy, no sandbox) is closed `inconclusive` with the refusal as its reason, once, and
+A run whose environment cannot run an author (a roster entry with no author, or no sandbox) is
+refused before anything is dispatched, in one line, and closes no ticket. A ready ticket whose
+mission is refused at its own preflight (a stale crate snapshot, an invalid policy, a grant
+without write) is closed `inconclusive` with the refusal as its reason, once, and
 raises a `blocked` need: it is never redispatched (P2-R23). A person retries it with
 `campaign retry`.
 
