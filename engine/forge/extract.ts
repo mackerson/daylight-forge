@@ -63,17 +63,17 @@ const TEMPLATE = [
 /** The extract prompt's template, digested: a change to it is a new IR version. */
 export const EXTRACT_PROMPT_DIGEST: string = digestOf(TEMPLATE);
 
-export function buildExtractPrompt(window: ExtractWindow, texts: { primary: string; linked: string }, ctx: { config: SectionerConfig; precedence: string[] }): string {
+export function buildExtractPrompt(w: ExtractWindow, texts: { primary: string; linked: string }, ctx: { config: SectionerConfig; precedence: string[] }): string {
   let tag = `CORPUS-${sha256hex(texts.primary + texts.linked).slice(0, 12)}`;
   while (texts.primary.includes(tag) || texts.linked.includes(tag)) tag = `${tag}-${sha256hex(tag).slice(0, 4)}`;
   const fill: Record<string, string> = {
-    sections: window.sectionIds.join(' '), linked: window.linked.join(' ') || '(none)',
+    sections: w.sectionIds.join(' '), linked: w.linked.join(' ') || '(none)',
     precedence: ctx.precedence.length ? ctx.precedence.map((p) => JSON.stringify(p)).join('; ') : '(none stated)',
     tags: ctx.config.tags.length ? ctx.config.tags.join(', ') : 'free text', milestone: ctx.config.milestone ?? 'free text',
     tag, primary: texts.primary, linkedText: texts.linked,
   };
   const prompt = TEMPLATE.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => fill[k] ?? '');
-  if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_SPEC_BYTES) throw new Error(`window ${window.id}'s prompt is over ${MAX_PROMPT_SPEC_BYTES} bytes`);
+  if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_SPEC_BYTES) throw new Error(`window ${w.id}'s prompt is over ${MAX_PROMPT_SPEC_BYTES} bytes`);
   return prompt;
 }
 
