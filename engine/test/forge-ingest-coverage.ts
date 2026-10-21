@@ -129,6 +129,10 @@ const md = renderCoverageMarkdown(rB, (s) => safeExcerpt(ctxB, s, { holdoutBasen
 check('the markdown says withheld and never carries the secret', md.includes('excerpt withheld') && !md.includes('ghp_abc'));
 ctxB.close();
 const mdA = renderCoverageMarkdown(r2, (s) => safeExcerpt(ctx, s, { holdoutBasenames: new Set(), revisionId: rev.id }));
+const ticketRef = r0.danglingRefs.find((d) => d.kind === 'ticket')!.raw;
+const mdHoldout = renderCoverageMarkdown(r0, (s) => safeExcerpt(ctx, s, { holdoutBasenames: new Set([ticketRef]), revisionId: rev.id }));
+check('a dangling reference\'s text follows the excerpt rule: withheld for a holdout basename (review L-8)', !mdHoldout.includes(ticketRef)
+  && /## Dangling references[\s\S]*ticket _\(excerpt withheld\)_/.test(mdHoldout));
 check('the markdown never carries an extractor\'s statement (P2-R40)', !mdA.includes('ZEBRA') && mdA.includes('## Unmapped normative units'));
 
 section('the CLI: coverage reads anywhere; --write only under <out>/corpus/<id>/');

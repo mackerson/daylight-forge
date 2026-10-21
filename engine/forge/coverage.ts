@@ -383,7 +383,8 @@ export function renderCoverageMarkdown(r: CoverageReport, excerpt: (s: SpanRef) 
       return `- ${x.detector} (${x.confidence}) \`${x.a.sectionId}\` ${ex(x.a)} ⟷ \`${x.b.sectionId}\` ${ex(x.b)} — ${how}`;
     }),
     '', `## Dangling references (${r.danglingRefs.length})`, '',
-    ...r.danglingRefs.map((d) => `- \`${d.fromSection}\` ${d.kind} \`${d.raw.replace(/`/g, '')}\` — ${d.reason ?? 'unresolved'}`),
+    // The reference's own text is corpus text too: the same withhold rule as every excerpt.
+    ...r.danglingRefs.map((d) => `- \`${d.fromSection}\` ${d.kind} ${ex({ docKey: docOf(d.fromSection), sectionId: d.fromSection, start: d.start, end: d.end })} — ${d.reason ?? 'unresolved'}`),
     '', `## Disagreements between extractors (${r.disagreements.length})`, '',
     ...r.disagreements.map((d) => `- ${d.kind} \`${d.sectionId}\` ${d.irIds.length} record(s), ${d.extractors.length} extractor(s)`),
     '', `## Unsupported inferences (${r.unsupported.length}) and stale records (${r.stale.length})`, '',
