@@ -110,6 +110,10 @@ export function exportMission(ctx: DaylightContext, missionId: string): MissionE
   if (mission.kind === 'campaign' || (mission.parentId !== undefined && ctx.store.mission(mission.parentId)?.kind === 'campaign')) {
     throw new Error(`mission ${missionId} is ${mission.kind === 'campaign' ? 'a campaign' : 'a campaign\'s child'}; campaign missions are not exported`);
   }
+  // An approve-ir never arrives by file, so neither does the corpus it approves (spec ingestion §12).
+  if (mission.kind === 'corpus' || (mission.parentId !== undefined && ctx.store.mission(mission.parentId)?.kind === 'corpus')) {
+    throw new Error(`mission ${missionId} is ${mission.kind === 'corpus' ? 'a corpus' : 'a corpus\'s review'}; corpus missions are not exported`);
+  }
   const project = ctx.store.project(mission.projectId);
   if (!project) throw new Error(`mission ${missionId} names project ${mission.projectId}, which is not recorded`);
   const tasks = ctx.store.tasks(missionId);
@@ -277,6 +281,7 @@ function forgedRowRefusal(ctx: DaylightContext, file: MissionExport): string | n
   const m = file.mission;
   // P2-R14, the other way: no campaign, campaign child or campaign actor arrives by file.
   if (m.kind === 'campaign' || m.parentId !== undefined) return `mission ${m.id} belongs to a campaign; campaign missions are not imported`;
+  if (m.kind === 'corpus') return `mission ${m.id} is a corpus; corpus missions are not imported`;
   const derived = file.decisions.find((d) => isCampaignActor(d.actor));
   if (derived) return `decision ${derived.id} is a campaign actor's; derived decisions are not imported`;
   const inFile = new Map(file.decisions.map((d) => [d.id, d]));

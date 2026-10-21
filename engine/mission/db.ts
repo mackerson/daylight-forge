@@ -384,7 +384,7 @@ CREATE TABLE findings (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, campaign_i
 CREATE TABLE corpus_revisions (id TEXT PRIMARY KEY, corpus_id TEXT NOT NULL REFERENCES missions(id), project_id TEXT NOT NULL, seq INTEGER NOT NULL,
   manifest_path TEXT NOT NULL, manifest_digest TEXT NOT NULL, commits TEXT NOT NULL, corpus_digest TEXT NOT NULL, docs TEXT NOT NULL, precedence TEXT NOT NULL,
   dependencies TEXT NOT NULL, unordered TEXT NOT NULL, section_index TEXT NOT NULL REFERENCES artifacts(id), section_set_digest TEXT NOT NULL,
-  sectioner_version TEXT NOT NULL, config_digest TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (corpus_id, seq), UNIQUE (corpus_id, corpus_digest));
+  sectioner_version TEXT NOT NULL, config_digest TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (corpus_id, seq), UNIQUE (corpus_id, corpus_digest, config_digest));
 CREATE TABLE ir_records (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
   kind TEXT NOT NULL CHECK (kind IN ('requirement','invariant','constraint','interface','acceptance-condition','decision','dependency','non-goal','deferral',
     'open-question','ambiguity','contradiction')),

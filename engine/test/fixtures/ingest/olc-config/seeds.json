@@ -1,0 +1,22 @@
+[
+  { "id": "olc-s1", "kind": "modal-contradiction", "docKey": "olc-spec",
+    "afterSectionId": "olc-spec:part-ii--products-boundaries-and-architecture/6-keep-public-content-private-learning-and-editorial-tooling-separate",
+    "text": "Private learner material is always submitted automatically with every report and contribution.", "expect": ["modal-polarity"] },
+  { "id": "olc-s2", "kind": "numeric-contradiction", "docKey": "olc-spec",
+    "afterSectionId": "olc-spec:part-vii--daylight-implementation-plan-and-acceptance/28-normative-first-slice-tests",
+    "text": "A starter release pack must install from removable media in at most 30 seconds on the reference laptop. On the reference laptop a starter release pack must install from removable media in at most 90 seconds.",
+    "expect": ["numeric"] },
+  { "id": "olc-s3", "kind": "cross-doc-contradiction", "docKey": "adr-0002", "afterSectionId": "adr-0002:adr-0002-layering/decision",
+    "text": "The learning UI must never work with a pack after all other computers and hosted services have been switched off.", "expect": ["modal-polarity", "precedence"] },
+  { "id": "olc-s4", "kind": "unordered-precedence", "docKey": "olc-errata",
+    "afterSectionId": "olc-errata:errata-and-resolutions-for-spec-v08/e9--m0-includes-an-accessible-responsive-two-region-book-shell",
+    "text": "A `model-critique-only` proof must always count as mastery evidence in the objective strand.", "expect": ["modal-polarity", "precedence"] },
+  { "id": "olc-s5", "kind": "cross-doc-contradiction", "docKey": "cf-spec", "afterSectionId": "cf-spec:olc-corpus-foundry/3-contract-first-compatibility",
+    "text": "The learning UI must never work with a pack once all other computers and hosted services have been switched off.", "expect": ["modal-polarity"] },
+  { "id": "olc-s6", "kind": "hedge-ambiguity", "docKey": "olc-spec",
+    "afterSectionId": "olc-spec:part-iv--the-learner-experience/11-the-unfolding-book--normative-learner-interaction-contract/114-navigation-multiple-doors-into-the-same-knowledge",
+    "text": "Where possible, every navigation entry must preserve the reader's return trail across bindings.", "expect": ["hedge"] },
+  { "id": "olc-s7", "kind": "dangling-ref", "docKey": "olc-errata",
+    "afterSectionId": "olc-errata:errata-and-resolutions-for-spec-v08/e9--m0-includes-an-accessible-responsive-two-region-book-shell",
+    "text": "Resolution: the export view follows §99 and ADR 0099 before release.", "expect": ["dangling"] }
+]
