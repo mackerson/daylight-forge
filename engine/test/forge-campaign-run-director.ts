@@ -470,7 +470,9 @@ section('spend: a director killed mid-attempt; the orphan is charged at its rese
     && spend.spentUsd >= 1 + spend.knownUsd - 1e-9, JSON.stringify(spend));
   check('no halt decision was recorded', !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
   const status = renderCampaignStatus(campaignStatus(w.ctx, w.campaign.id, w.repo, host));
-  check('status shows a floor that lists the reservation charge separately', /Spend ≥ \$[\d.]+ \(\$1\.00 charged at reservation for 1 unfinished attempt\(s\)\)/.test(status), status.split('\n').find((l) => l.startsWith('Spend')));
+  // STATUS spend uses the report's words (WS-R8): scanned and reservation-charged dollars beside, never inside, the known figure.
+  check('status lists the reservation charge separately', /^Spend .*\$1\.00 charged at reservation for 1 unfinished/m.test(status) && !/^Spend ≥ \$1\./m.test(status),
+    status.split('\n').find((l) => l.startsWith('Spend')));
   const l = ledger(w.ctx, { projectId: w.campaign.projectId, group: 'mission' });
   const row = l.rows.find((x) => x.key === am.id)!;
   check('the ledger lists it apart: reservationCount, not unknown, not known', row.reservationCount === 1 && row.usdReservation === 1 && row.usdUnknownCount === 0

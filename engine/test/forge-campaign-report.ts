@@ -317,7 +317,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
     spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 1, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0 }) === 'unknown'
       && /^≥ \$0\.05 \(1 unknown\)$/.test(spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 2, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0.05, knownUsd: 0.05 }))
       && spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 0 }) === '—'
-      && /^\$2\.00 charged at reservation for 1 unfinished$/.test(spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 1, unknownCount: 0, scannedCount: 0, scannedUsd: 0, spentUsd: 2, knownUsd: 0, reservationCount: 1, reservationUsd: 2 })));
+      && /^\$2\.00 charged at reservation for 1 unfinished$/.test(spendWords({ ...u2line, attempts: 1, unknownCount: 0, scannedCount: 0, scannedUsd: 0, spentUsd: 2, knownUsd: 0, reservationCount: 1, reservationUsd: 2 })));
 
   const holdoutPath = w.holdout.testArtifact.path ?? '';
   check('holdouts are counted: one locked, not run at the tip', r.holdouts.locked === 1 && r.holdouts.atTip['not-run'] === 1);
