@@ -117,8 +117,8 @@ function Overview({ api, sample, data, row, events, onReload, onOpen, onNeed, on
 
   const run = runWord(status.run);
   const halt = haltWord(status.authorization.halted);
-  /** The halt decision a resume names. `campaign status` does not carry it yet (an r8 need); typed when absent. */
-  const knownHalt = (status.authorization as { haltDecisionId?: string }).haltDecisionId ?? '';
+  /** The halt decision a resume or adopt-tip names, as `campaign status` reports it. */
+  const knownHalt = status.authorization.haltDecisionId ?? '';
   const proposed = proposedTickets(show);
   /** The commit a deleted or rewound ref is restored to, as the halt need names it (WS-R12). */
   const adoptNeed = (status.needs as AnyNeed[]).find((n) => n.kind === 'campaign-halted' && /adopt-tip/.test(n.why));

@@ -89,9 +89,7 @@ const TABLE: StatusTable = {
   totals: buckets({ done: 2, 'in-progress': 2, blocked: 2, requests: 3, queued: 2, superseded: 1 }),
 };
 
-/** WS-R12's reservation charges (P2-R44) ride along until `CampaignSpend` on this base declares them. */
-type Spend = CampaignSpend & { unknownUnansweredCount: number; reservationCount: number; reservationUsd: number };
-const SPEND: Spend = {
+const SPEND: CampaignSpend = {
   spentUsd: 8.42, knownUsd: 6.1, unknownCount: 1, unknownUnansweredCount: 1, reservationCount: 1, reservationUsd: 1,
   scannedCount: 1, runningCount: 1, reservedUsd: 1.5, capUsd: 40,
 };
@@ -161,7 +159,7 @@ export const FORGE_CAMPAIGN_STATUS: CampaignStatusReport & { _sample: typeof SAM
   _sample: SAMPLE_MARK,
   kind: 'daylight-campaign-status', campaignId: SAMPLE_CAMPAIGN, projectId: PROJECT, planRevision: BASE,
   integration: { ref: REF, base: BASE, tip: TIP, landed: 3, mergeHint: `git merge --ff-only ${REF}` },
-  authorization: { decisionId: AUTH_DECISION, notAfter: T0 + 72 * HOUR, halted: 'spend-unknown' },
+  authorization: { decisionId: AUTH_DECISION, notAfter: T0 + 72 * HOUR, halted: 'spend-unknown', haltDecisionId: HALT_DECISION },
   lanes: [],
   tickets: TICKETS.map((t) => ({
     id: t.ticketId, lane: t.lane, status: t.status, attempts: t.attempts,
@@ -192,18 +190,21 @@ export const FORGE_CAMPAIGN_LIST: ForgeCampaignList & { _sample: typeof SAMPLE_M
     {
       id: CAMPAIGN_RUNNING, projectId: PROJECT, title: 'Ledger export (sample)', state: 'running', createdAt: T0 - 48 * HOUR,
       planRevision: commit('c0'), planApproved: true,
-      authorization: { decisionId: id('d', 'a9'), refusal: null, notAfter: T0 + 24 * HOUR },
+      authorization: { decisionId: id('d', 'a9'), refusal: null, notAfter: T0 + 24 * HOUR, haltDecisionId: null },
       halted: null, run: { pid: 51007, alive: true },
       runHint: `daylight campaign run ${CAMPAIGN_RUNNING} /work/sample --out /work/sample-out`,
       integrationRef: `refs/heads/daylight/campaign/${CAMPAIGN_RUNNING}`, tip: commit('8f'),
       tickets: 6, byBucket: buckets({ done: 2, 'in-progress': 2, queued: 2 }), needs: 0, assumptions: { open: 0, pending: 0 },
-      spend: { spentUsd: 3.2, knownUsd: 3.2, unknownCount: 0, scannedCount: 0, runningCount: 2, reservedUsd: 4, capUsd: 25 },
+      spend: {
+        spentUsd: 3.2, knownUsd: 3.2, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0,
+        scannedCount: 0, runningCount: 2, reservedUsd: 4, capUsd: 25,
+      },
       unavailable: null,
     },
     {
       id: SAMPLE_CAMPAIGN, projectId: PROJECT, title: FORGE_CAMPAIGN_SHOW.title, state: 'running', createdAt: T0,
       planRevision: BASE, planApproved: true,
-      authorization: { decisionId: AUTH_DECISION, refusal: null, notAfter: T0 + 72 * HOUR },
+      authorization: { decisionId: AUTH_DECISION, refusal: null, notAfter: T0 + 72 * HOUR, haltDecisionId: HALT_DECISION },
       halted: 'spend-unknown', run: { pid: 48211, alive: false },
       runHint: `daylight campaign run ${SAMPLE_CAMPAIGN} /work/sample --out /work/sample-out`,
       integrationRef: REF, tip: TIP, tickets: TICKETS.length, byBucket: TABLE.totals, needs: CAMPAIGN_NEEDS.length,

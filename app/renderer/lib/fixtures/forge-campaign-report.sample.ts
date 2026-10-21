@@ -20,7 +20,7 @@ const commit = (seed: string) => seed.repeat(40).slice(0, 40);
 const WAVE1_END = commit('91');
 
 const line = (key: string, o: Partial<SpendLine> = {}): SpendLine => ({
-  key, attempts: 1, spentUsd: 0.5, knownUsd: 0.5, scannedUsd: 0, scannedCount: 0, unknownCount: 0, runningCount: 0, reservationCount: 0, ...o,
+  key, attempts: 1, spentUsd: 0.5, knownUsd: 0.5, scannedUsd: 0, scannedCount: 0, unknownCount: 0, runningCount: 0, reservationCount: 0, reservationUsd: 0, ...o,
 });
 
 export const FORGE_WAVE_REPORT: WaveReport & { _sample: typeof SAMPLE_MARK } = {
@@ -74,14 +74,14 @@ export const FORGE_WAVE_REPORT: WaveReport & { _sample: typeof SAMPLE_MARK } = {
     tickets: [
       line('API.1'), line('API.2', { spentUsd: 0, knownUsd: 0 }), line('API.3', { attempts: 2, spentUsd: 0.4, knownUsd: 0.4, unknownCount: 1, runningCount: 1 }),
       line('API.4'), line('UI.1', { spentUsd: 1.0, knownUsd: 0.5, scannedUsd: 0.5, scannedCount: 1 }), line('UI.3'),
-      line('FIX.1', { attempts: 2, spentUsd: 1.4, knownUsd: 0.9, reservationCount: 1 }), line('FIX.2'),
+      line('FIX.1', { attempts: 2, spentUsd: 1.4, knownUsd: 0.9, reservationCount: 1, reservationUsd: 0.5 }), line('FIX.2'),
     ],
     lanes: [
       line('API', { attempts: 5, spentUsd: 1.9, knownUsd: 1.9, unknownCount: 1, runningCount: 1 }),
-      line('FIX', { attempts: 3, spentUsd: 1.9, knownUsd: 1.4, reservationCount: 1 }),
+      line('FIX', { attempts: 3, spentUsd: 1.9, knownUsd: 1.4, reservationCount: 1, reservationUsd: 0.5 }),
       line('UI', { attempts: 2, spentUsd: 1.5, knownUsd: 1.0, scannedUsd: 0.5, scannedCount: 1 }),
     ],
-    waves: [line('wave:1', { attempts: 1, spentUsd: 0.5, knownUsd: 0.5 }), line('wave:2', { attempts: 4, spentUsd: 2.4, knownUsd: 1.9, scannedUsd: 0.5, scannedCount: 1, reservationCount: 1 })],
+    waves: [line('wave:1', { attempts: 1, spentUsd: 0.5, knownUsd: 0.5 }), line('wave:2', { attempts: 4, spentUsd: 2.4, knownUsd: 1.9, scannedUsd: 0.5, scannedCount: 1, reservationCount: 1, reservationUsd: 0.5 })],
     reviews: [line('review:1', { spentUsd: 0.6, knownUsd: 0.6 }), line('review:2', { spentUsd: 1.52, knownUsd: 1.3 })],
   },
   needs: CAMPAIGN_NEEDS,

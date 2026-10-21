@@ -112,17 +112,11 @@ export function spendWords(l: SpendLine): string {
 }
 
 /**
- * `CampaignSpend` with WS-R12's reservation charges (P2-R44): unfinished attempts charged at
- * their reservation, in `spentUsd`, listed apart. Optional until this branch's base has them.
- */
-export type CampaignSpendWords = CampaignSpend & Partial<{ reservationCount: number; reservationUsd: number; unknownUnansweredCount: number }>;
-
-/**
  * The whole campaign's spend in the engine's STATUS words (WS-R12): `≥ $spent (N unknown; $R
  * charged at reservation for K unfinished attempt(s))` when it is a floor; scanned attempts and
  * running reservations beside. `spentUsd` is what counts against the cap.
  */
-export function campaignSpendWords(s: CampaignSpendWords): string {
+export function campaignSpendWords(s: CampaignSpend): string {
   const notes = [
     s.unknownCount ? `${s.unknownCount} unknown` : '',
     s.reservationCount ? `${money(s.reservationUsd ?? 0)} charged at reservation for ${s.reservationCount} unfinished attempt(s)` : '',
@@ -157,28 +151,24 @@ export interface SpendBar {
 
 const frac = (n: number, cap: number) => (cap > 0 && Number.isFinite(n) ? Math.max(0, Math.min(1, n / cap)) : 0);
 
-/**
- * A spend line drawn against a cap: known solid, scanned hatched beside, the reservation charge
- * its own segment. `reservationUsd` is drawn only when the line carries it (an r8 need on
- * `SpendLine`); otherwise the charge is said as a count.
- */
-export function spendBar(l: SpendLine & { reservationUsd?: number }, capUsd: number): SpendBar {
+/** A spend line drawn against a cap: known solid, scanned hatched beside, the reservation charge its own segment. */
+export function spendBar(l: SpendLine, capUsd: number): SpendBar {
   const known = frac(l.knownUsd, capUsd);
   const scanned = Math.min(1 - known, frac(l.scannedUsd, capUsd));
-  const charged = Math.min(1 - known - scanned, frac(l.reservationUsd ?? 0, capUsd));
+  const charged = Math.min(1 - known - scanned, frac(l.reservationUsd, capUsd));
   return {
     known, scanned, charged, reserved: 0, open: l.unknownCount > 0, unknown: l.unknownCount,
-    reservationCount: l.reservationCount, chargedUsd: l.reservationUsd ?? null, words: spendWords(l), cap: capUsd > 0 ? `of ${money(capUsd)}` : 'no cap',
+    reservationCount: l.reservationCount, chargedUsd: l.reservationUsd, words: spendWords(l), cap: capUsd > 0 ? `of ${money(capUsd)}` : 'no cap',
   };
 }
 
 /** The campaign bar: known solid, reservation charges their own segment, running reservations outlined, open while any figure is unknown. */
-export function campaignSpendBar(s: CampaignSpendWords): SpendBar {
+export function campaignSpendBar(s: CampaignSpend): SpendBar {
   const known = frac(s.knownUsd, s.capUsd);
-  const charged = Math.min(1 - known, frac(s.reservationUsd ?? 0, s.capUsd));
+  const charged = Math.min(1 - known, frac(s.reservationUsd, s.capUsd));
   return {
     known, scanned: 0, charged, reserved: Math.min(1 - known - charged, frac(s.reservedUsd, s.capUsd)), open: s.unknownCount > 0,
-    unknown: s.unknownCount, reservationCount: s.reservationCount ?? null, chargedUsd: s.reservationUsd ?? null,
+    unknown: s.unknownCount, reservationCount: s.reservationCount, chargedUsd: s.reservationUsd,
     words: campaignSpendWords(s), cap: s.capUsd > 0 ? `of ${money(s.capUsd)}` : 'no cap',
   };
 }
