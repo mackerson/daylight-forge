@@ -540,7 +540,7 @@ export interface CandidateFile {
 export type PolicyRule =
   | 'protected-path' | 'gate-path' | 'spec-path' | 'outside-scope' | 'path-escape'
   | 'symlink' | 'gitlink' | 'exec-mode' | 'empty-diff' | 'too-many-files' | 'too-large'
-  | 'secret-in-diff' | 'gate-forgery-shape';
+  | 'secret-in-diff';
 
 /** `path` is null for a rule about the diff as a whole (empty, too large, too many files). */
 export interface PolicyViolation {
@@ -650,7 +650,8 @@ export type NeedKind =
   | 'blocked' | 'dispute' | 'spec-ambiguity' | 'gate-lock' | 'gate-vacuous'
   | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize'
   | 'request-dependency'
-  | 'plan-approval' | 'campaign-authorize' | 'campaign-halted' | 'assumption-pending' | 'owner-decision';
+  | 'plan-approval' | 'campaign-authorize' | 'campaign-halted' | 'assumption-pending' | 'owner-decision'
+  | 'forgery-shape-review';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {
@@ -816,7 +817,7 @@ export type DecisionOperation =
   | 'resolve-dependency-request'
   | 'approve-plan' | 'lock-campaign-gates' | 'authorize-campaign' | 'halt-campaign' | 'resume-campaign'
   | 'adopt-integration-tip' | 'integrate-candidate' | 'admit-work-item' | 'confirm-assumption' | 'decide-assumption'
-  | 'overturn-assumption' | 'retry-ticket';
+  | 'overturn-assumption' | 'retry-ticket' | 'acknowledge-forgery-shape';
 
 export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'authorize-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
@@ -824,7 +825,7 @@ export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'resolve-dependency-request',
   'approve-plan', 'lock-campaign-gates', 'authorize-campaign', 'halt-campaign', 'resume-campaign',
   'adopt-integration-tip', 'integrate-candidate', 'admit-work-item', 'confirm-assumption', 'decide-assumption',
-  'overturn-assumption', 'retry-ticket',
+  'overturn-assumption', 'retry-ticket', 'acknowledge-forgery-shape',
 ];
 
 /** `mission authorize`: the only act that turns `write` on (ADR-9, ADR-34). */

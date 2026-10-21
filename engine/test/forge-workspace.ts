@@ -139,12 +139,14 @@ const artifacts = new ArtifactStore(path.join(tmp, 'out'));
     write(forged, 'src/add.test.js', "process.stdout.write('# fail 0\\n');\nprocess.exit(0);\n");
     const f = captureCandidate(forged);
     if (!('verdict' in f)) throw new Error(f.refused);
-    const v = f.policyViolations.filter((x) => x.rule === 'gate-forgery-shape');
-    check('capture flags library code shaped like test output: gate-forgery-shape, a policy violation (P2-R43)',
-      f.verdict === 'policy-violation' && v.length === 1 && v[0].path === 'src/add.js' && /heuristic/.test(v[0].why ?? '') && /process\.exit\(0\)/.test(v[0].why ?? ''),
-      JSON.stringify(f.policyViolations));
-    check('the same lines in a test file are not flagged', !v.some((x) => x.path === 'src/add.test.js'));
-    check('the file flag carries the rule', f.flags.find((x) => x.path === 'src/add.js')?.rules.includes('gate-forgery-shape') === true);
+    const v = f.warnings.filter((x) => x.rule === 'gate-forgery-shape');
+    const flag = f.flags.find((x) => x.path === 'src/add.js');
+    check('capture flags library code shaped like test output: a gate-forgery-shape warning, not a violation (P2-R43, P2-R49)',
+      f.verdict === 'pending' && f.policyViolations.length === 0 && v.length === 1 && v[0].path === 'src/add.js', JSON.stringify(f.warnings));
+    check('the file flag carries the shapes found, which the summary keeps',
+      JSON.stringify(flag?.forgeryShapes) === JSON.stringify(['process.stdout.write( with a test summary', 'TAP version', 'process.exit(0) outside a function']) && !flag?.rules.length, JSON.stringify(flag));
+    check('the same lines in a test file are not flagged', !v.some((x) => x.path === 'src/add.test.js')
+      && !f.flags.find((x) => x.path === 'src/add.test.js')?.forgeryShapes);
   } finally {
     forged.dispose();
   }

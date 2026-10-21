@@ -62,6 +62,7 @@ usage:
   node engine/cli.ts forge      run <m> <repo> --tools mock[:model] [--max-cost <usd>] [--timeout s] [--keep-workspace]
                                 evaluate <c> | candidate <c> [--max-bytes N]
                                 approve|reject|override <c> --rationale '<why>' --confirm <c> | apply <c> <repo> --confirm <c>
+                                | acknowledge-forgery <c> --rationale '<why>' --confirm <c> [--declined]
   node engine/cli.ts confirm    <operation> <subject> [--write] [--execute] [--max-usd N] [--only x,…]   # what --confirm checks
   node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
   node engine/cli.ts deps       snapshot <repo> [--out <dir>]   # cargo fetch --locked on the host, with network

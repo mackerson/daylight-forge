@@ -6,7 +6,7 @@ import { redact } from '../mission/redact.ts';
 import type {
   ArtifactRef, CandidateFile, FileMode, PolicyRule, PolicyViolation,
 } from '../mission/types.ts';
-import { checkPolicy, forgeryShapes, forgeryWhy, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
+import { checkPolicy, forgeryShapes, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
 import { siblingGit, walkTree, type Workspace } from './workspace.ts';
 
 /**
@@ -43,11 +43,13 @@ export interface FileFlag {
   secretHits: number;
   /** Low-confidence matches in this file's part: a curable `possible-secret` warning. */
   possibleSecretHits: number;
+  /** Test-output forgery shapes on this file's added lines (P2-R43, P2-R49): a curable warning a person acknowledges. */
+  forgeryShapes?: string[];
 }
 
 /** R16: a warning the approve dialog shows and the human acknowledges; never a violation. */
 export interface CandidateWarning {
-  rule: 'possible-secret';
+  rule: 'possible-secret' | 'gate-forgery-shape';
   path: string | null;
 }
 
@@ -242,18 +244,16 @@ export function captureCandidate(
     maxBytes: MAX_DIFF_BYTES, maxFiles: MAX_DIFF_FILES, ...ctx, diffBytes: patch.length,
   };
   const violations = checkPolicy(files, policyCtx);
-  // P2-R43: library code shaped like a test runner's output, a heuristic (POLICY.md).
-  const forged = new Set<string>();
+  // P2-R43, P2-R49: library code shaped like a test runner's output, a heuristic (POLICY.md);
+  // a warning a person acknowledges, never a violation.
+  const forged = new Map<string, string[]>();
   if (aligned) {
     files.forEach((f, i) => {
       if (f.change === 'deleted' || !SCANNED.test(f.path)) return;
       const added = addedLines(parts[i]);
       if (!added.length) return;
       const shapes = forgeryShapes(f.path, postImageOf(ws, f.path, parts[i], added), added);
-      if (shapes.length) {
-        violations.push({ rule: 'gate-forgery-shape', path: f.path, why: forgeryWhy(shapes) });
-        forged.add(f.path);
-      }
+      if (shapes.length) forged.set(f.path, shapes);
     });
   }
   if (secretHits) {
@@ -265,14 +265,15 @@ export function captureCandidate(
     if (aligned) for (const p of possibleByPath.keys()) warnings.push({ rule: 'possible-secret', path: p });
     else warnings.push({ rule: 'possible-secret', path: null });
   }
+  for (const p of forged.keys()) warnings.push({ rule: 'gate-forgery-shape', path: p });
   const flags: FileFlag[] = files.map((f) => {
     const rules = [...new Set(pathViolations(f, policyCtx))];
     const hits = hitsByPath.get(f.path) ?? 0;
     if (hits) rules.push('secret-in-diff');
-    if (forged.has(f.path)) rules.push('gate-forgery-shape');
     return {
       path: f.path, protected: rules.some((r) => PROTECTED_RULES.has(r)), rules,
       secretHits: hits, possibleSecretHits: possibleByPath.get(f.path) ?? 0,
+      ...(forged.has(f.path) ? { forgeryShapes: forged.get(f.path) } : {}),
     };
   });
 

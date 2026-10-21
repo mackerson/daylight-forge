@@ -94,13 +94,13 @@ export function checkPolicy(files: readonly CandidateFile[], ctx: PolicyContext 
 // ---- gate-forgery shapes (P2-R43) ------------------------------------------------
 
 /**
- * The `why` of a `gate-forgery-shape` violation. A heuristic: library code that writes to fd 1
- * directly, exits the process, or prints a test runner's summary can make a gate's run look like
- * a pass from inside the code under test. Expected to be rare in library code; a false positive
- * is a person's call, made outside the candidate, since no decision waves an uncurable rule through.
+ * What a `gate-forgery-shape` warning says (P2-R43, P2-R49). A heuristic: library code that writes
+ * to fd 1 directly, exits the process, or prints a test runner's summary can make a gate's run
+ * look like a pass from inside the code under test. Expected to be rare in library code. Curable:
+ * the candidate never lands on its own; a person acknowledges the shapes or rejects them.
  */
 export const forgeryWhy = (shapes: readonly string[]): string =>
-  `heuristic (P2-R43): added non-test code has ${shapes.join(', ')}, a shape that can forge a gate's pass; a false positive is a person's call`;
+  `heuristic (P2-R43): added non-test code has ${shapes.join(', ')}, a shape that can forge a gate's pass; a person acknowledges it or rejects it`;
 
 const RUST_SHAPES: ReadonlyArray<[string, RegExp]> = [
   ['from_raw_fd(1)', /from_raw_fd\(\s*1\s*\)/],

@@ -620,6 +620,47 @@ section('campaign authors are judged by the policy at the plan commit, never the
 
 // ---- cargo ------------------------------------------------------------------------------------
 
+section('a candidate with a test-output forgery shape parks for a person; acknowledged, it lands (P2-R49)');
+{
+  const w = nodeWorld('forgery', [
+    { id: 'F', lane: 'LF', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1 });
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    F: { first: { 'src/a.js': "const banner = 'TAP version 13';\nmodule.exports = () => 'A';\n" } },
+  });
+  const r1 = await run(w, author);
+  const m = w.ctx.store.missions(w.campaign.projectId).find((x) => x.parentId === w.campaign.id)!;
+  const c = w.ctx.store.candidates(m.id).at(-1)!;
+  check('before integration the ticket waits for a person, and nothing lands',
+    r1.statuses.F === 'waiting-owner' && r1.landed.length === 0 && w.ctx.store.integrations(w.campaign.id, { state: 'integrated' }).length === 0,
+    JSON.stringify(r1.statuses));
+  check('its candidate is not a policy violation: a warning, recorded in its summary flags',
+    !!c && c.policyViolations.length === 0 && /TAP version/.test(w.ctx.artifacts.text(c.summaryArtifact)), JSON.stringify(c?.policyViolations));
+  const needs = campaignRunNeeds(w.ctx, w.campaign, host).filter((n) => n.kind === 'forgery-shape-review');
+  check('a forgery-shape-review need names the candidate, the file and the shape',
+    needs.length === 1 && needs[0].ref === c.id && /src\/a\.js \(TAP version\)/.test(needs[0].why) && /heuristic/.test(needs[0].why), JSON.stringify(needs));
+  const code = confirmDigest(w.gctx, 'acknowledge-forgery-shape', c.id).digest8;
+  check('acknowledging and rejecting have different confirm codes', code !== confirmDigest(w.gctx, 'acknowledge-forgery-shape', c.id, { declined: true }).digest8);
+  const ack = (env: NodeJS.ProcessEnv) => spawnSync(process.execPath, [CLI, 'forge', 'acknowledge-forgery', c.id, '--rationale', 'read it: a banner constant',
+    '--confirm', code, '--out', w.out, '--format', 'json'], { encoding: 'utf8', env });
+  const agent = ack({ ...humanEnv, CLAUDECODE: '1' });
+  check('under CLAUDECODE the acknowledgement is refused and nothing is recorded',
+    agent.status === 1 && /CLAUDECODE/.test(agent.stderr) && !w.ctx.store.decisions(m.id).some((d) => d.scope.operation === 'acknowledge-forgery-shape'),
+    `${agent.status} ${agent.stderr.slice(-300)}`);
+  check('the next run still lands nothing', (await run(w, author)).landed.length === 0);
+  const human = ack(humanEnv);
+  check('a person acknowledges it with a rationale and the code', human.status === 0
+    && w.ctx.store.decisions(m.id).filter((d) => d.scope.operation === 'acknowledge-forgery-shape' && d.kind === 'approve').length === 1, human.stderr.slice(-300));
+  check('the need is gone', !campaignRunNeeds(w.ctx, w.campaign, host).some((n) => n.kind === 'forgery-shape-review'));
+  const r2 = await run(w, author);
+  check('the next run integrates it, recomputes the verdict and lands it', r2.statuses.F === 'landed' && r2.landed.join(',') === 'F'
+    && w.ctx.store.candidate(c.id)?.verdict === 'accepted-by-gates', JSON.stringify(r2));
+  check('with no second author attempt', w.ctx.store.tasks(m.id).flatMap((t) => w.ctx.store.attempts(t.id)).filter((a) => a.runnerId.startsWith('agent:')).length === 1);
+  w.ctx.close();
+}
+
 section('one cargo-gate landing: a crate with no dependencies, gates under cargo test');
 {
   const dir = path.join(root, 'cargo');
