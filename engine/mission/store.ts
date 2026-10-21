@@ -2285,7 +2285,9 @@ export class MissionStore {
     return this.tx(() => {
       const a = this.assumption(id);
       if (!a) throw new Error(`unknown assumption ${id}`);
-      const c = this.requireCampaign(a.campaignId);
+      // An IR interpretation lives on its corpus mission (§6.3); it holds tickets by owner decision id, never files one.
+      const interpretation = a.source === 'ir-interpretation';
+      const c = interpretation ? this.requireMission(a.campaignId) : this.requireCampaign(a.campaignId);
       const op = input.scope.operation;
       if (input.scope.assumptionId !== a.id) throw new Error(`the decision names assumption ${input.scope.assumptionId}, not ${a.id}`);
       const from: Record<AssumptionDecisionScope['operation'], AssumptionStatus[]> = {
@@ -2295,7 +2297,8 @@ export class MissionStore {
       if (op === 'confirm-assumption' && input.scope.value !== a.default) throw new Error(`refused: confirm names the default assumption ${a.id} proceeds on`);
       if (op !== 'confirm-assumption' && !input.scope.value.trim()) throw new Error(`refused: ${op} needs a value`);
       let followUpWorkItemId: string | undefined;
-      if (op === 'overturn-assumption' && !input.followUp) throw new Error('refused: an overturn creates exactly one follow-up');
+      if (op === 'overturn-assumption' && !input.followUp && !interpretation) throw new Error('refused: an overturn creates exactly one follow-up');
+      if (interpretation && input.followUp) throw new Error('refused: an IR interpretation is overturned without a follow-up; the record is superseded by approve-ir');
       if (input.followUp) {
         if (op !== 'overturn-assumption') throw new Error('only an overturn creates a follow-up');
         const w = this.createWorkItem(input.followUp.workItem);
@@ -2618,8 +2621,9 @@ export class MissionStore {
    * director's preflight. A binding comes from the experiment's subject (`ticket:<id>`), which
    * nothing rewrites after registration; the digest covers it and the ratchet flag (P2-R17).
    */
-  campaignGateSet(campaignId: string, experimentIds: readonly string[], ratchet: boolean): {
+  campaignGateSet(campaignId: string, experimentIds: readonly string[], ratchet: boolean, obligations: Record<string, readonly string[]> = {}): {
     experiments: Experiment[]; bindings: Record<string, string | null>; roles: CampaignLockScope['roles']; gateSetDigest: string;
+    obligations: Record<string, string[]>;
   } {
     const m = this.requireMission(campaignId);
     if (m.kind !== 'campaign') throw new Error(`mission ${m.id} is ${m.kind}, not a campaign`);
@@ -2636,7 +2640,16 @@ export class MissionStore {
     const bindings = Object.fromEntries(experiments.map((x) => [x.id, campaignBindingOf(x)]));
     const roles = Object.fromEntries(experiments.map((x) => [x.id, x.role])) as CampaignLockScope['roles'];
     const lines = experiments.map((x) => `${x.id}:${x.harnessDigest}:${x.role}:${bindings[x.id] ?? '*'}`).sort();
-    return { experiments, bindings, roles, gateSetDigest: digestOf([...lines, `ratchet:${ratchet}`].join('\n')) };
+    // Acceptance obligations a locked gate discharges (spec ingestion §8.4): in the digest only when
+    // there are any, so a lock without them digests as it always did.
+    const bound: Record<string, string[]> = {};
+    for (const [x, obs] of Object.entries(obligations)) {
+      if (!ids.includes(x)) throw new Error(`obligations name experiment ${x}, which is not in the set being locked`);
+      if (!obs.every((o) => typeof o === 'string' && /^[A-Z][A-Z0-9]*(\.[A-Z0-9]+)*:ob[0-9]{1,3}$/.test(o))) throw new Error(`experiment ${x}'s obligations are <ticket>:ob<n>`);
+      if (obs.length) bound[x] = [...new Set(obs)].sort();
+    }
+    const obLines = Object.entries(bound).flatMap(([x, obs]) => obs.map((o) => `ob:${x}:${o}`)).sort();
+    return { experiments, bindings, roles, obligations: bound, gateSetDigest: digestOf([...lines, ...obLines, `ratchet:${ratchet}`].join('\n')) };
   }
 
   /**
@@ -2644,13 +2657,13 @@ export class MissionStore {
    * other than the one confirmed, record the human's `lock-campaign-gates` decision and stamp
    * `locked_by`. Same shape as `lockGates`.
    */
-  lockCampaignGates(campaignId: string, input: LockGatesInput & { ratchet: boolean }): { decision: Decision; gateSetDigest: string } {
+  lockCampaignGates(campaignId: string, input: LockGatesInput & { ratchet: boolean; obligations?: Record<string, readonly string[]> }): { decision: Decision; gateSetDigest: string } {
     const m = this.requireMission(campaignId);
     if (typeof input.expectedGateSetDigest !== 'string' || !input.expectedGateSetDigest) {
       throw new Error(`campaign ${m.id}: a gate lock names the gate-set digest the human confirmed`);
     }
     return this.tx(() => {
-      const set = this.campaignGateSet(m.id, input.experimentIds, input.ratchet);
+      const set = this.campaignGateSet(m.id, input.experimentIds, input.ratchet, input.obligations);
       if (set.gateSetDigest !== input.expectedGateSetDigest) {
         throw new GateSetMoved(
           `campaign ${m.id}: the gate set is ${set.gateSetDigest}, not the one confirmed (${input.expectedGateSetDigest}); ` +
@@ -2664,6 +2677,7 @@ export class MissionStore {
         operation: 'lock-campaign-gates', experimentIds: ids,
         harnessDigests: Object.fromEntries(set.experiments.map((x) => [x.id, x.harnessDigest])),
         vacuousOverrides: vacuous, bindings: set.bindings, roles: set.roles, ratchet: input.ratchet, gateSetDigest: set.gateSetDigest,
+        ...(Object.keys(set.obligations).length ? { obligations: set.obligations } : {}),
       };
       const decision = this.recordDecision({
         missionId: m.id, projectId: m.projectId, revision: m.baseRevision, actor: input.actor, kind: 'approve',
@@ -2877,13 +2891,17 @@ export class MissionStore {
   }
 
   /** Forbidden-call guarded (§9): called only from the approve-ir path. */
-  setIrStatus(id: string, to: 'approved' | 'rejected' | 'superseded', decisionId: string): IrRecord {
+  setIrStatus(id: string, to: 'approved' | 'rejected' | 'superseded', decisionId: string, o: { assumptionId?: string } = {}): IrRecord {
     const r = this.irRecord(id);
     if (!r) throw new Error(`unknown IR record ${id}`);
     if (!canTransition(IR_TRANSITIONS, r.status, to)) throw new IllegalTransition('IR record', id, r.status, to);
     const d = this.decision(decisionId);
     if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
-    this.db.prepare('UPDATE ir_records SET status=?, decision_id=?, updated_at=? WHERE id=?').run(to, decisionId, this.now(), id);
+    // An inferred record without basis is approved on its confirmed interpretation, which it then names.
+    const u = o.assumptionId !== undefined ? this.assumption(o.assumptionId) : null;
+    if (o.assumptionId !== undefined && (u?.irId !== id || u.status !== 'confirmed')) throw new Error(`assumption ${o.assumptionId} is not a confirmed interpretation of ${id}`);
+    this.db.prepare('UPDATE ir_records SET status=?, decision_id=?, assumption_id=COALESCE(?, assumption_id), updated_at=? WHERE id=?')
+      .run(to, decisionId, u?.id ?? null, this.now(), id);
     return this.irRecord(id)!;
   }
 
@@ -3080,6 +3098,15 @@ export class MissionStore {
       if (own) this.db.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  /** The campaign's trace as its current plan states it: the rows of an earlier import are replaced, in one transaction. */
+  replaceTicketTrace(campaignId: string, rows: TicketTraceRow[]): void {
+    this.tx(() => {
+      if (rows.some((t) => t.campaignId !== campaignId)) throw new Error(`a trace row names another campaign than ${campaignId}`);
+      this.db.prepare('DELETE FROM ticket_trace WHERE campaign_id=?').run(campaignId);
+      this.insertTicketTrace(rows);
+    });
   }
 
   ticketTrace(campaignId: string, ticketId?: string): TicketTraceRow[] {
