@@ -11,6 +11,7 @@ import {
   type EnvelopeFlags,
 } from './campaign.ts';
 import { actorFor, Usage } from './commands.ts';
+import { CAMPAIGN_REPORT_SUBCOMMANDS, runCampaignReportCommand } from './commands-campaign-report.ts';
 import { CAMPAIGN_RUN_SUBCOMMANDS, runCampaignRunCommand } from './commands-campaign-run.ts';
 import { confirmDigest, type ConfirmDigest } from './confirm.ts';
 import { topoOrder, validatePlanAt, wavesPreview } from './plan.ts';
@@ -105,12 +106,14 @@ const num = (p: Parsed, k: string, required = true): number | undefined => {
 
 /**
  * Whether `campaign <sub> …` writes nothing: `show`, `validate`, `status` without `--write`,
- * `gate list`, `run --dry-run` (P2-R24, P2-R25) and a guarded act's preview, with no
+ * `gate list`, `run --dry-run` (P2-R24, P2-R25), `list`, `report` without `--write` and
+ * `refine`, which writes derived map files under `<out>` only (P2-R40), and a guarded act's preview, with no
  * `--confirm` flag at all (P2-R41). Every other subcommand, known here or not (R6's included),
  * is treated as one that writes.
  */
 export function campaignReadOnly(sub: string | undefined, p: Parsed = { positionals: [], flags: new Map() }): boolean {
-  if (sub === 'show' || sub === 'validate') return true;
+  if (sub === 'show' || sub === 'validate' || sub === 'list' || sub === 'refine') return true;
+  if (sub === 'report') return !p.flags.has('write');
   if (sub !== undefined && CAMPAIGN_GUARDED.includes(sub)) return !p.flags.has('confirm');
   if (sub === 'status') return p.flags.get('write') === undefined;
   if (sub === 'gate') return p.positionals[0] === 'list';
@@ -363,7 +366,9 @@ export async function runCampaignCommand(argv: string[], env: NodeJS.ProcessEnv 
       default:
         // WS-R6's subcommands, behind the same session refusal (`campaignReadOnly` above).
         if (sub && (CAMPAIGN_RUN_SUBCOMMANDS as readonly string[]).includes(sub)) return runCampaignRunCommand(argv, env);
-        throw new Usage(`campaign needs one of: ${[...CAMPAIGN_SUBCOMMANDS, ...CAMPAIGN_RUN_SUBCOMMANDS].join(', ')}`);
+        // WS-R8's list, report and refine derive their own --out from <repo>.
+        if (sub && (CAMPAIGN_REPORT_SUBCOMMANDS as readonly string[]).includes(sub)) return runCampaignReportCommand(argv, env);
+        throw new Usage(`campaign needs one of: ${[...CAMPAIGN_SUBCOMMANDS, ...CAMPAIGN_RUN_SUBCOMMANDS, ...CAMPAIGN_REPORT_SUBCOMMANDS].join(', ')}`);
     }
   }, campaignReadOnly);
 }

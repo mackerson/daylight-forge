@@ -4,17 +4,34 @@
  *
  * What must hold: `daylight confirm` prints, for every campaign and assumption act, the digest
  * the act itself accepts, and says the act is refused in an agent session while still printing
- * it (P2-R40, P2-R45 D6). Mocks only: no model, no cargo, no bwrap.
+ * it (P2-R40, P2-R45 D6). The wave report's landings are exactly the range's integrations with
+ * git's own line counts; its spend lines sum to `campaignSpend` and never print a figure for
+ * unknown spend; holdouts are counts with no id, path or basename anywhere; the STATUS table is
+ * `STATUS_BUCKET_OF` over the ticket states, shared with `campaign status`; forgery-shaped
+ * candidates are counted and classed, never quoted; the same rows print the same bytes; `--write`
+ * writes under `<out>` only and is refused in an agent session. Mocks only: no model, no cargo,
+ * no bwrap.
  */
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
-import { registerPlanGates } from '../forge/campaign-gates.ts';
-import { haltCampaign, planOf, startTicketMission } from '../forge/campaign.ts';
-import { ensureIntegrationRef, integrationRefFor } from '../forge/integrate.ts';
+import { buildWaveReport, campaignList, renderWaveReport, runClaimOf, spendWords, statusTable } from '../forge/campaign-report.ts';
+import { registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
+import { haltCampaign, importPlan, planOf, startTicketMission } from '../forge/campaign.ts';
+import { campaignReadOnly } from '../forge/commands-campaign.ts';
+import { campaignSpend, r5Host, ticketStates } from '../forge/director.ts';
+import { ensureIntegrationRef, integrationRefFor, integrationTip, landCandidate, prepareIntegration } from '../forge/integrate.ts';
+import { closeWave, fixTicketsFrom } from '../forge/wave.ts';
+import { r5StatusHost } from '../forge/campaign-status.ts';
+import { runClaimFile } from '../mission/orchestrate.ts';
+import { newId } from '../mission/store.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { STATUS_BUCKET_OF, STATUS_BUCKETS, type CampaignStatusReport, type ForgeCampaignList, type PlanFileV1, type SpendLine, type WaveReport } from '../mission/types.ts';
 import {
-  CLEAN_ENV, git, HUMAN, imported, lockedGateSet, ROOT, tmp,
+  approve, authorize, CLEAN_ENV, git, HUMAN, imported, lock, lockedGateSet, ROOT, tmp,
 } from './forge-campaign-fixture.ts';
+import { accept, commitOn, diffOf, fakeDeps, filesOf, makeCandidate, repoState } from './forge-campaign-run-fixture.ts';
+import { defaultOut as defaultOutFor } from '../paths.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -126,6 +143,280 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   const viaRepo = json<Confirmed>(cli(['confirm', 'adopt-integration-tip', id, '--halt', haltId, '--repo', s.root, '--out', s.out, '--format', 'json']));
   check('adopt-integration-tip reads the repo from --repo, else the out dir\'s map, to the same digest', !!viaMap && viaMap.digest === viaRepo?.digest);
   confirmsAct('adopt-integration-tip', s.out, ['adopt-integration-tip', id, '--halt', haltId, '--repo', s.root], ['campaign', 'adopt-tip', id, s.root, '--halt', haltId, '--rationale', 'reviewed']);
+}
+
+
+// ---- a campaign with landings, a wave, findings, unknown spend and a forgery-shaped candidate ----
+
+const HOLDOUT_BASENAME = 'secret_holdout_probe.test.js';
+const FORGED_TEXT = 'FORGED-OUTPUT-MARKER-7c1e';
+const STATEMENT_MARKER = 'STATEMENT-MARKER-91ab';
+
+function reportWorld(name: string) {
+  const root = path.join(tmp, name);
+  const files: Record<string, string> = {
+    'src/api/a.ts': 'export const a = 1;\n', 'src/api/b.ts': 'export const b = 2;\n',
+    'src/ui/u.ts': 'export const u = 3;\n', 'src/ui/v.ts': 'export const v = 4;\n',
+  };
+  const plan: PlanFileV1 = {
+    kind: 'daylight-plan', version: 1, title: 'Report fixture', campaignGates: [],
+    lanes: [{ id: 'API', title: 'api', owns: ['src/api/'] }, { id: 'UI', title: 'ui', owns: ['src/ui/'] }],
+    ownerDecisions: [
+      { id: 'O1', question: 'Blocking question?', blocking: true },
+      { id: 'O2', question: 'Width?', blocking: false, default: 'u64' },
+    ],
+    tickets: [
+      { id: 'A1', lane: 'API', title: 'First api change', statement: 'a', scope: ['src/api/a.ts', 'src/api/logo.bin'] },
+      { id: 'A2', lane: 'API', title: 'Second api change', statement: 'b', dependsOn: ['A1'], scope: ['src/api/b.ts'], blocksOn: ['O2'] },
+      { id: 'U1', lane: 'UI', title: 'Waits on the owner', statement: 'u', scope: ['src/ui/u.ts'], blocksOn: ['O1'] },
+      { id: 'U2', lane: 'UI', title: 'Spends unknown', statement: 'v', scope: ['src/ui/v.ts'] },
+    ],
+  };
+  for (const [rel, text] of Object.entries({ ...files, 'daylight.plan.json': `${JSON.stringify(plan, null, 2)}\n` })) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), text);
+  }
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'init');
+  const base = git(root, 'rev-parse', 'HEAD');
+  const out = path.join(tmp, `${name}-out`);
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(path.join(out, 'view.json'), JSON.stringify({ root }));
+  const ctx = openDaylight(out);
+  const id = importPlan(ctx, root, 'daylight.plan.json').campaign.id;
+  approve(ctx, id);
+  const gctx = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out, env: CLEAN_ENV };
+  const holdout = registerCampaignGate(gctx, {
+    campaignId: id, role: 'holdout', ticketId: null, testSource: "require('node:test')('h', () => {});\n", basename: HOLDOUT_BASENAME,
+    prediction: { exitCode: 0, stdoutIncludes: ['# fail 0'] },
+  });
+  lock(ctx, id);
+  authorize(ctx, id, { tickets: ['A1', 'A2', 'U1', 'U2'] });
+  const deps = fakeDeps();
+  const ictx = { store: ctx.store, events: ctx.events, artifacts: ctx.artifacts, repoRoot: root };
+  ensureIntegrationRef(root, id, base);
+  const land = (ticketId: string, changes: Record<string, string | null>) => {
+    const tip = integrationTip(root, id) ?? base;
+    const m = startTicketMission(ctx, { campaignId: id, ticketId, base: tip });
+    const side = commitOn(root, tip, changes);
+    const c = makeCandidate(ctx, m, tip, diffOf(root, tip, side), filesOf(changes), lockedGateSet(ctx, id));
+    const i = prepareIntegration(ictx, c.id, { ticketId, deps });
+    landCandidate(ictx, accept(ctx, i).id, { ticketId, deps });
+    return ctx.store.integration(i.id)!;
+  };
+  return { root, out, base, ctx, id, holdout, land, plan };
+}
+
+/** `git diff --numstat` read independently of the report. */
+const numstat = (repo: string, a: string, b: string) => {
+  const rows = git(repo, 'diff', '--numstat', '--no-renames', a, b).split('\n').filter(Boolean).map((l) => l.split('\t'));
+  return {
+    files: rows.length,
+    insertions: rows.filter((r) => r[0] !== '-').reduce((n, r) => n + Number(r[0]), 0),
+    deletions: rows.filter((r) => r[1] !== '-').reduce((n, r) => n + Number(r[1]), 0),
+    binary: rows.filter((r) => r[0] === '-').length,
+  };
+};
+
+section('the wave report: landings, spend, holdouts, the STATUS table, forgery shapes');
+{
+  const w = reportWorld('report');
+  const { ctx, id, root } = w;
+  const before = repoState(root);
+  const i1 = w.land('A1', { 'src/api/a.ts': 'export const a = 10;\nexport const a2 = 11;\n', 'src/api/logo.bin': 'PNG\u0000\u0001\u0002binary' });
+  const i2 = w.land('A2', { 'src/api/b.ts': 'export const b = 20;\n' });
+  const ticketOf = (missionId: string) => ctx.store.campaignTickets(id).find((t) => t.workItemId === ctx.store.mission(missionId)?.workItemId)!.ticketId;
+  const wave = closeWave(ctx, id, { ticketOf })!;
+
+  // The wave's review: one reviewer attempt, a corroborated High and a Medium.
+  const c = ctx.store.mission(id)!;
+  const review = ctx.store.createMission({ projectId: c.projectId, kind: 'audit', objective: 'wave 1 review', baseRevision: wave.toCommit, parentId: id, scope: { paths: [] } });
+  ctx.store.setWaveReview(id, wave.seq, review.id);
+  const rt = ctx.store.createTask({ missionId: review.id, role: 'review', objective: 'review' });
+  const ra = ctx.store.startAttempt({ taskId: rt.id, runnerId: 'agent:mock:review' });
+  ctx.store.finishAttempt(ra.id, { state: 'completed', costUsd: 0.02, costSource: 'provider' });
+  const finding = (severity: 'high' | 'medium', p: string, title: string) => ctx.store.recordFinding({
+    id: newId('finding'), projectId: c.projectId, campaignId: id, waveSeq: 1, reviewMissionId: review.id, attemptId: ra.id, path: p, severity, title,
+    statement: `${STATEMENT_MARKER} ${title}`, findingArtifact: ctx.artifacts.put(`${title}\n`, { kind: 'summary', projectId: c.projectId, label: 'finding' }),
+  });
+  const high = finding('high', 'src/api/a.ts', 'a2 is `unchecked` | wrong');
+  const other = finding('high', 'src/api/a.ts', 'a2 is `unchecked` | wrong (second reviewer)');
+  ctx.store.updateFinding(high.id, { corroboratedBy: [other.id] });
+  finding('medium', 'src/api/b.ts', 'b could be clearer');
+  fixTicketsFrom(ctx, id, 1, r5Host(ctx));
+
+  // U2: an attempt that reported no cost, then one read by stdout scan whose candidate tripped the forgery heuristic.
+  const tip = integrationTip(root, id)!;
+  const u2 = startTicketMission(ctx, { campaignId: id, ticketId: 'U2', base: tip });
+  const grant = ctx.store.authorizeDecision(u2.id)!;
+  const sandbox = { profile: 'author' as const, network: 'none' as const, write: true, exec: false, authorizeDecisionId: grant.id };
+  const t1 = ctx.store.createTask({ missionId: u2.id, role: 'author', objective: 'author', runnerHint: 'mock:0' });
+  const a1 = ctx.store.startAttempt({ taskId: t1.id, runnerId: 'agent:mock:default', sandbox });
+  ctx.store.finishAttempt(a1.id, { state: 'completed', costUsd: null });
+  const t2 = ctx.store.createTask({ missionId: u2.id, role: 'author', objective: 'author', runnerHint: 'mock:1' });
+  const a2 = ctx.store.startAttempt({ taskId: t2.id, runnerId: 'agent:mock:default', sandbox });
+  ctx.store.finishAttempt(a2.id, { state: 'completed', costUsd: 0.3, costSource: 'stdout-scan' });
+  const forgedDiff = Buffer.from(`+process.stdout.write("${FORGED_TEXT} # pass 1 # fail 0");\n`);
+  const forged = ctx.store.createCandidate({
+    missionId: u2.id, attemptId: a2.id, projectId: c.projectId, baseCommit: tip,
+    diffArtifact: ctx.artifacts.put(forgedDiff, { kind: 'diff', projectId: c.projectId, revision: tip, label: 'candidate diff' }),
+    summaryArtifact: ctx.artifacts.put('{}', { kind: 'summary', projectId: c.projectId, revision: tip, label: 'summary' }),
+    files: filesOf({ 'src/ui/v.ts': 'x' }),
+    policyViolations: [{ rule: 'gate-forgery-shape' as never, path: 'src/ui/v.ts', why: 'heuristic (P2-R43): added non-test code has process.stdout.write( with a test summary, process.exit(0) outside a function, a shape that can forge a gate\'s pass' },
+      { rule: 'outside-scope', path: 'src/ui/elsewhere.ts' }],
+    secretHits: 0, gateSetDigest: lockedGateSet(ctx, id)!, profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed',
+  });
+
+  const r = buildWaveReport(ctx, id, root);
+  const md = renderWaveReport(r);
+  const text = JSON.stringify(r);
+
+  check('the default scope is the latest closed wave', r.scope.kind === 'wave' && r.scope.seq === 1 && r.range.from === w.base && r.range.to === i2.integratedCommit);
+  check('landings of wave 1 are exactly its integrations, in order', r.landed.map((l) => l.integrationId).join() === [i1.id, i2.id].join(), JSON.stringify(r.landed.map((l) => l.ticketId)));
+  check('each landing\'s diff is git\'s numstat of onto..commit, the binary file counted',
+    r.landed.every((l) => JSON.stringify(l.diff) === JSON.stringify(numstat(root, l.onto, l.commit))) && r.landed[0].diff.binary === 1, JSON.stringify(r.landed.map((l) => [l.diff, numstat(root, l.onto, l.commit)])));
+  check('the range diff is git\'s numstat of from..to', JSON.stringify(r.diff) === JSON.stringify(numstat(root, r.range.from, r.range.to)));
+  check('a landing carries its work item title and acceptance kind', r.landed[0].title === 'First api change' && r.landed[0].acceptance === 'ci-only');
+
+  const all = buildWaveReport(ctx, id, root, { scope: { kind: 'all' } });
+  const open = buildWaveReport(ctx, id, root, { scope: { kind: 'open' } });
+  check('--all covers base..tip and every wave\'s review', all.range.from === w.base && all.range.to === integrationTip(root, id) && all.review.length === 1);
+  check('--open covers the landings after the last wave (none yet)', open.range.from === wave.toCommit && open.landed.length === 0);
+
+  const sum = (ls: SpendLine[], k: keyof SpendLine) => Math.round(ls.reduce((n, l) => n + (l[k] as number), 0) * 1e6) / 1e6;
+  const closing = [...r.spend.lanes, ...r.spend.reviews];
+  const camp = campaignSpend(ctx, id);
+  check('Σ lanes + Σ reviews = campaignSpend, field by field',
+    (['spentUsd', 'knownUsd', 'unknownCount', 'scannedCount', 'runningCount'] as const).every((k) => sum(closing, k) === camp[k]),
+    JSON.stringify({ lanes: closing.map((l) => [l.key, l.spentUsd, l.knownUsd, l.unknownCount]), camp }));
+  check('the report\'s campaign spend is campaignSpend, unchanged', JSON.stringify(r.spend.campaign) === JSON.stringify(camp));
+  const ui = r.spend.lanes.find((l) => l.key === 'UI')!;
+  const u2line = r.spend.tickets.find((l) => l.key === 'U2')!;
+  check('the attempt with no cost is one unknown on its ticket and its lane', u2line.unknownCount === 1 && ui.unknownCount === 1 && camp.unknownCount === 1);
+  check('scanned dollars are never inside knownUsd, and are their own figure', u2line.knownUsd === 0 && u2line.scannedUsd === 0.3 && u2line.spentUsd === 0.3);
+  check('a review line carries the review mission\'s spend', r.spend.reviews.some((l) => l.key === 'review:1' && l.knownUsd === 0.02));
+  check('wave 1\'s line is its tickets\' missions', r.spend.waves.length === 1 && r.spend.waves[0].attempts === 2);
+  const uiWords = md.split('\n').find((l) => l.startsWith('- lane UI:')) ?? '';
+  check('markdown prints unknown spend as unknown, never $0.00, and scanned beside', /unknown/.test(uiWords) && !/\$0\.00/.test(uiWords) && /scanned, not known/.test(uiWords), uiWords);
+  check('spendWords: unknown alone, a floor with some known, a dash for nothing',
+    spendWords({ ...u2line, attempts: 1, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0 }) === 'unknown'
+      && /^≥ \$0\.05 \(1 unknown\)$/.test(spendWords({ ...u2line, attempts: 2, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0.05, knownUsd: 0.05 }))
+      && spendWords({ ...u2line, attempts: 0 }) === '—'
+      && /charged at reservation for 1 unfinished/.test(spendWords({ ...u2line, attempts: 1, unknownCount: 0, scannedCount: 0, scannedUsd: 0, spentUsd: 2, knownUsd: 0, reservationCount: 1 })));
+
+  const holdoutPath = w.holdout.testArtifact.path ?? '';
+  check('holdouts are counted: one locked, not run at the tip', r.holdouts.locked === 1 && r.holdouts.atTip['not-run'] === 1);
+  for (const [what, s] of [['JSON', text], ['markdown', md]] as const) {
+    check(`the ${what} names no holdout id, path or basename`, !s.includes(w.holdout.id) && !s.includes(HOLDOUT_BASENAME) && !s.includes(holdoutPath) && !s.includes('secret_holdout'));
+  }
+
+  const states = ticketStates(ctx, id, root, r5StatusHost(ctx));
+  const expected = statusTable(states.values());
+  check('the STATUS table is STATUS_BUCKET_OF over the ticket states', JSON.stringify(r.status) === JSON.stringify(expected)
+    && [...states.values()].every((s) => r.status.rows.find((x) => x.lane === s.ticket.lane)!.tickets[STATUS_BUCKET_OF[s.status]].includes(s.ticket.ticketId)));
+  check('its totals sum to the ticket count', STATUS_BUCKETS.reduce((n, b) => n + r.status.totals[b], 0) === states.size, JSON.stringify(r.status.totals));
+  check('landed tickets are done, the owner-held one is a request', r.status.totals.done >= 2 && r.status.rows.find((x) => x.lane === 'UI')!.tickets.requests.includes('U1'));
+
+  const o1 = r.assumptions.open.find((a) => a.ownerDecisionId === 'O1');
+  const o2 = r.assumptions.pending.find((a) => a.ownerDecisionId === 'O2');
+  check('an open assumption carries its held tickets', !!o1 && o1.blocking && o1.heldTickets.join() === 'U1' && o1.landedOnIt.length === 0, JSON.stringify(o1));
+  check('a pending one carries its default and what landed on it', !!o2 && o2.default === 'u64' && o2.landedOnIt.join() === 'A2', JSON.stringify(o2));
+  const hf = r.findings.find((f) => f.id === high.id);
+  check('findings are most severe first and carry the fix ticket, its status and who admitted it',
+    r.findings[0].severity === 'high' && !!hf?.fixTicketId && hf.fixAdmission === 'derived' && hf.fixStatus !== 'none' && hf.corroboratedBy.join() === other.id, JSON.stringify(hf));
+  const med = r.findings.find((f) => f.severity === 'medium');
+  check('a medium finding\'s fix waits for a person', med?.fixAdmission === 'none', JSON.stringify(med));
+  const fixRows = ctx.store.campaignTickets(id).filter((t) => t.origin === 'fix');
+  const derivedAdmissions = fixRows.filter((t) => ctx.store.admission(id, t.workItemId)?.actor.startsWith('campaign:')).length;
+  check('the fix lane counts filed, admitted by the envelope and waiting, as the rows say',
+    fixRows.length >= 2 && r.fixLane.filed === fixRows.length && r.fixLane.admittedDerived === derivedAdmissions && derivedAdmissions >= 1
+      && r.fixLane.approvedByPerson === 0 && r.fixLane.waiting === fixRows.length && r.fixLane.landed === 0, JSON.stringify(r.fixLane));
+  check('the review is done with one reviewer and the counts', r.review[0].state === 'done' && r.review[0].reviewers === 1 && r.review[0].findings.high === 2);
+  check('markdown shows a finding as severity · path · title (reviewer-claimed), its text escaped, never its statement',
+    md.includes('high · src/api/a.ts · a2 is \\`unchecked\\` \\| wrong (reviewer-claimed)') && !md.includes(STATEMENT_MARKER), md.split('\n').filter((l) => l.includes('reviewer-claimed')).join('\n'));
+  check('the JSON keeps the statement, redacted as stored', text.includes(STATEMENT_MARKER));
+
+  const u1 = r.blocked.find((b) => b.ticketId === 'U1');
+  check('a ticket held by an open owner decision is blocked with act owner-decision, its reason verbatim',
+    u1?.status === 'waiting-owner' && u1.act === 'owner-decision' && u1.reason === states.get('U1')!.reason, JSON.stringify(r.blocked));
+
+  const fsh = r.forgeryShapes;
+  check('the forgery-shaped candidate is counted, by ticket, path and class, as a heuristic',
+    fsh.heuristic && fsh.candidates === 1 && fsh.items[0].ticketId === 'U2' && fsh.items[0].candidateId === forged.id && fsh.items[0].paths.join() === 'src/ui/v.ts'
+      && fsh.items[0].classes.join() === 'process-exit,stdout-fd-write,test-summary-literal' && fsh.byClass['stdout-fd-write'] === 1 && !fsh.items[0].ticketLanded, JSON.stringify(fsh));
+  check('the report never carries the violating diff\'s text', !text.includes(FORGED_TEXT) && !md.includes(FORGED_TEXT));
+  check('markdown names it a warning with its forgery-shape-review need', /Forgery-shaped candidates \(heuristic\)/.test(md) && md.includes('forgery-shape-review'));
+
+  const again = buildWaveReport(ctx, id, root);
+  check('the same rows print the same bytes, JSON and markdown', JSON.stringify(again) === text && renderWaveReport(again) === md);
+  check('the target repository is untouched (HEAD, index, worktree, refs)', repoState(root) === before);
+
+  section('run claims (§1.4)');
+  check('no claim file: run is null', runClaimOf(w.out, id) === null && r.run === null);
+  fs.writeFileSync(runClaimFile(w.out, id), String(process.pid));
+  check('a claim by a live pid is a running claim', JSON.stringify(runClaimOf(w.out, id)) === JSON.stringify({ pid: process.pid, alive: true }));
+  const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+  fs.writeFileSync(runClaimFile(w.out, id), String(dead));
+  check('a claim by a dead pid is a claim left behind', JSON.stringify(runClaimOf(w.out, id)) === JSON.stringify({ pid: dead, alive: false }));
+  fs.writeFileSync(runClaimFile(w.out, id), '0');
+  check('a pid of 0 is never signalled: a dead claim', runClaimOf(w.out, id)?.alive === false);
+  fs.rmSync(runClaimFile(w.out, id));
+
+  section('campaign list');
+  const list = campaignList(ctx);
+  const row = list.campaigns.find((x) => x.id === id)!;
+  check('the list has the campaign with its plan, buckets, spend and run hint',
+    list.kind === 'daylight-campaign-list' && row.title === 'Report fixture' && row.planApproved && row.tickets === ctx.store.campaignTickets(id).length
+      && JSON.stringify(row.byBucket) === JSON.stringify(r.status.totals) && JSON.stringify(row.spend) === JSON.stringify(camp)
+      && row.runHint === `daylight campaign run ${id} ${root} --out ${w.out}` && row.unavailable === null && row.run === null, JSON.stringify(row));
+  ctx.close();
+
+  section('the CLI: report, list, refine run in an agent session; report --write does not');
+  const status = json<CampaignStatusReport>(cli(['campaign', 'status', id, root, '--out', w.out, '--format', 'json']));
+  check('campaign status --format json carries the same STATUS table and a run claim', JSON.stringify(status?.table) === JSON.stringify(r.status) && status?.run === null);
+  for (const v of ['CLAUDECODE', 'DAYLIGHT_SESSION']) {
+    const rep = cli(['campaign', 'report', id, root, '--out', w.out, '--format', 'json'], { [v]: '1' });
+    check(`${v}: campaign report runs, exit 0, the same report`, rep.code === 0 && json<WaveReport>(rep)?.landed.length === 2, `${rep.code} ${rep.err}`);
+    const md2 = cli(['campaign', 'report', id, root, '--out', w.out], { [v]: '1' });
+    check(`${v}: campaign report prints the markdown`, md2.code === 0 && md2.out === md, md2.err);
+    const lst = cli(['campaign', 'list', '--out', w.out, '--format', 'json'], { [v]: '1' });
+    check(`${v}: campaign list runs`, lst.code === 0 && json<ForgeCampaignList>(lst)?.campaigns.some((x) => x.id === id) === true, lst.err);
+    const ref = cli(['campaign', 'refine', id, root, '--rows-only', '--out', w.out, '--format', 'json'], { [v]: '1' });
+    check(`${v}: campaign refine --rows-only runs`, ref.code === 0 && json<{ kind: string }>(ref)?.kind === 'daylight-refine', `${ref.code} ${ref.err}`);
+    const write = cli(['campaign', 'report', id, root, '--out', w.out, '--write'], { [v]: '1' });
+    check(`${v}: campaign report --write is refused, exit 1, naming the variable`, write.code === 1 && write.err.includes(v) && !fs.existsSync(path.join(w.out, 'campaigns', id, 'reports')), write.err);
+  }
+  const written = cli(['campaign', 'report', id, root, '--out', w.out, '--write', '--all']);
+  const reports = path.join(w.out, 'campaigns', id, 'reports');
+  const tip12 = (integrationTip(root, id) ?? '').slice(0, 12);
+  check('report --write writes the json and md under <out>/campaigns/<c>/reports only', written.code === 0
+    && fs.readdirSync(reports).sort().join() === [`all-${tip12}.json`, `all-${tip12}.md`].join(), `${written.code} ${written.err} ${fs.existsSync(reports) ? fs.readdirSync(reports) : ''}`);
+  check('and what it wrote is what it printed', fs.readFileSync(path.join(reports, `all-${tip12}.md`), 'utf8') === written.out);
+  check('the repository is still untouched', repoState(root) === before);
+  const wave1 = cli(['campaign', 'report', id, root, '--out', w.out, '--wave', '1', '--write']);
+  check('--wave 1 --write names its file wave-1', wave1.code === 0 && fs.existsSync(path.join(reports, 'wave-1.json')), wave1.err);
+  check('an unknown wave exits 1', cli(['campaign', 'report', id, root, '--out', w.out, '--wave', '9']).code === 1);
+  check('two scopes are a usage error, exit 2', cli(['campaign', 'report', id, root, '--out', w.out, '--wave', '1', '--all']).code === 2);
+  check('an unknown campaign exits 1', cli(['campaign', 'report', 'm_00000000000000000000000000000000', root, '--out', w.out]).code === 1);
+  check('report with no campaign is a usage error, exit 2', cli(['campaign', 'report', '--out', w.out]).code === 2);
+  const empty = path.join(tmp, 'report-empty-out');
+  const none = cli(['campaign', 'list', '--out', empty]);
+  check('an out dir with no database is an error, never created', none.code === 1 && !fs.existsSync(empty), none.err);
+  const derived = cli(['campaign', 'list', root]);
+  const expectedOut = (() => {
+    const prev = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = tmp;
+    try {
+      return path.join(defaultOutFor(root));
+    } finally {
+      process.env.XDG_DATA_HOME = prev;
+    }
+  })();
+  check('without --out, the out dir derives from <repo>', derived.code === 1 && derived.err.includes(expectedOut), `${derived.err} vs ${expectedOut}`);
+  check('the read-only set gains list, report without --write and refine',
+    campaignReadOnly('list') && campaignReadOnly('report') && campaignReadOnly('refine')
+      && !campaignReadOnly('report', { positionals: [], flags: new Map([['write', 'true']]) }));
 }
 
 done();

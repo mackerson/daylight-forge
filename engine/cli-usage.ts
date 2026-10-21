@@ -81,6 +81,8 @@ usage:
                                 run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run] | status <c> [<repo>] [--write]
                                 halt <c> --rationale '<why>' | resume <c> --halt <d> --rationale '<why>' --confirm <c8>
                                 adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
+                                list [<repo>] | report <c> [<repo>] [--wave n | --open | --all] [--format json|md] [--write]
+                                refine <c> [<repo>] [--rev <sha>] [--rows-only | --cached]   # maps under <out> only; allowed in an agent session
   node engine/cli.ts assumption list <c> [--status open|pending|confirmed|overturned]
                                 record <c> --question '<q>' --default '<d>' [--ticket T] --rationale '<why>' --confirm <c8>
                                 confirm <u> | decide <u> --value '<v>' | overturn <u> --value '<v>' --follow-up '<s>' [--lane L] [--scope a,b]
