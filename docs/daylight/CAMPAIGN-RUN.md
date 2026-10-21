@@ -209,7 +209,10 @@ daylight campaign status <c> [<repo>] [--write]
 Derived from rows and the integration ref on every call: tickets by lane and status, the tip and
 how many landed, the authorization and any halt, assumptions pending the owner, needs, spend as
 `≥ $X (N unknown; $R charged at reservation for K unfinished attempt(s))` when anything is
-unknown or charged at a reservation, and each wave's findings. `--write` puts STATUS.md
+unknown or charged at a reservation, and each wave's findings. A landed ticket whose own gate
+fails on the tip is shown `regressed`, with a need: at the end of every run the director runs
+each earlier landing's public gates once on the tip and records them there (without a ratchet no
+landing looks; nothing lands or moves on the result). `--write` puts STATUS.md
 under `<out>/campaigns/<id>/`; nothing is ever written into the target repository (P2-R13).
 
 ## Events

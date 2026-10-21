@@ -17,7 +17,11 @@ import { authorFor } from './authors.ts';
 import {
   admitIfWithinEnvelope, campaignAuthorizationRefusal, fileFixTicket, haltCampaign, planOf, startTicketMission,
 } from './campaign.ts';
-import { campaignLockRefusal, concludeVerdict, evaluateIntegrated } from './campaign-gates.ts';
+import { campaignLockOf, campaignLockRefusal, concludeVerdict, evaluateIntegrated, holdoutPaths } from './campaign-gates.ts';
+import { gateCacheKey, removeGateCache } from './cargo.ts';
+import { recordIntegrated, runContext } from './gate.ts';
+import { createWorkspace } from './workspace.ts';
+import { runGate } from '../experiment/runner.ts';
 import { dependencyNeeds } from './dependency-requests.ts';
 import type { GateContext } from './gate.ts';
 import {
@@ -418,6 +422,51 @@ function captureRefusedBrief(attempt: number, why: string): RepairBrief {
   };
 }
 
+// ---- regressions --------------------------------------------------------------------------------
+
+/** The landing whose commit is the tip of the campaign's ref, if the tip is a landing. */
+function tipLanding(ctx: Pick<DaylightContext, 'store'>, campaignId: string, repo: string): Integration | undefined {
+  const tip = integrationTip(repo, campaignId);
+  return tip ? ctx.store.integrations(campaignId, { state: 'integrated' }).find((i) => i.integratedCommit === tip) : undefined;
+}
+
+/**
+ * Each earlier-landed ticket's own public gates (role `gate`, bound to it by the lock) that have
+ * no evaluation on the tip's landing yet: what `recheckLanded` runs (wave2 L7).
+ */
+function landedGates(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Array<{ ticketId: string; experimentId: string; at: Integration }> {
+  const lock = campaignLockOf(ctx, campaignId);
+  const at = tipLanding(ctx, campaignId, repo);
+  if (!lock || !at) return [];
+  const tipTicket = host.tickets(campaignId).find((t) => t.workItemId === ctx.store.mission(at.missionId)?.workItemId)?.ticketId;
+  const landed = [...ticketStates(ctx, campaignId, repo, host).values()].filter((s) => s.status === 'landed').map((s) => s.ticket.ticketId);
+  return lock.scope.experimentIds.flatMap((id) => {
+    const ticketId = lock.scope.bindings[id];
+    return lock.scope.roles[id] === 'gate' && ticketId && landed.includes(ticketId) && ticketId !== tipTicket ? [{ ticketId, experimentId: id, at }] : [];
+  });
+}
+
+/**
+ * Landed tickets whose own public gate fails on the tip, by ticket: a later landing broke it.
+ * Without a ratchet nothing at landing time looks (P2-R17); `campaign status` shows these as
+ * `regressed`, each with a need (wave2 L7). From rows: the latest evaluation of the gate on the
+ * tip's landing at the locked harness.
+ */
+export function landedRegressions(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Map<string, { gates: string[]; tip: string }> {
+  const out = new Map<string, { gates: string[]; tip: string }>();
+  const lock = campaignLockOf(ctx, campaignId);
+  if (!lock) return out;
+  for (const g of landedGates(ctx, campaignId, repo, host)) {
+    const e = ctx.store.gateEvaluations({ integrationId: g.at.id, target: 'integrated' })
+      .filter((x) => x.experimentId === g.experimentId && x.harnessDigest === lock.scope.harnessDigests[g.experimentId]).at(-1);
+    if (!e || e.conclusion === 'supported') continue;
+    const r = out.get(g.ticketId) ?? { gates: [], tip: g.at.integratedCommit! };
+    r.gates.push(`${g.experimentId} ${e.conclusion}`);
+    out.set(g.ticketId, r);
+  }
+  return out;
+}
+
 // ---- needs --------------------------------------------------------------------------------------
 
 /** The director's needs on a campaign: tickets closed before an author ran, which nothing else lists (P2-R23). */
@@ -430,6 +479,11 @@ export function campaignRunNeeds(ctx: DaylightContext, campaign: Mission, host: 
     }
   }
   const repo = ctx.store.project(campaign.projectId)?.root;
+  if (repo) {
+    for (const [ticketId, r] of landedRegressions(ctx, campaign.id, repo, host)) {
+      out.push({ kind: 'blocked', ref: campaign.id, why: `ticket ${ticketId} landed, but its gate fails on the tip ${r.tip.slice(0, 12)} (${r.gates.join(', ')}); a later landing broke it, so a person looks` });
+    }
+  }
   const at = repo ? refTarget(repo, integrationRefFor(campaign.id)) : null;
   const want = expectedTip(ctx.store, campaign.id);
   if (repo && at && at !== want) {
@@ -767,6 +821,34 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       reviews.add(p);
     };
 
+    /**
+     * At the end of a run, each earlier-landed ticket's own public gates are run on the tip once
+     * and recorded there (wave2 L7): without a ratchet no landing looks, and `campaign status`
+     * reads these to mark a ticket a later landing broke. Nothing lands or moves on the result.
+     */
+    const recheckLanded = async () => {
+      const lock = campaignLockOf(gctx, campaign.id);
+      const todo = landedGates(ctx, campaign.id, root, host).filter((g) => !ctx.store.gateEvaluations({ integrationId: g.at.id, target: 'integrated' })
+        .some((e) => e.experimentId === g.experimentId && e.harnessDigest === lock?.scope.harnessDigests[g.experimentId]));
+      if (!lock || !todo.length) return;
+      const at = todo[0].at;
+      const hidden = holdoutPaths(ctx, campaign.id);
+      const cache = gateCacheKey(at.integratedDiffDigest!);
+      try {
+        for (const g of todo) {
+          const x = ctx.store.experiment(g.experimentId);
+          if (!x || x.harnessDigest !== lock.scope.harnessDigests[x.id]) continue;
+          const r = await runGate(x, {
+            ...runContext(gctx, x, cache), target: { kind: 'integrated', diffDigest: at.integratedDiffDigest! },
+            materialise: () => createWorkspace(root, at.integratedCommit!, { hidden }),
+          });
+          recordIntegrated(gctx, campaign, x, r, { id: at.id, candidateId: at.candidateId, integratedCommit: at.integratedCommit!, integratedDiffDigest: at.integratedDiffDigest! });
+        }
+      } finally {
+        if (ctx.out) removeGateCache(ctx.out, cache);
+      }
+    };
+
     const closeIfDue = (quiescent: boolean) => {
       if (halted || stopped || (o.maxWaves !== undefined && wavesClosed >= o.maxWaves)) return;
       const due = waveDue(ctx, campaign.id, envelope.waveSize);
@@ -854,6 +936,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       if (mayDispatch() && schedule(ticketStates(ctx, campaign.id, root, host), running, concurrency).length) continue;
       break;
     }
+    await recheckLanded();
     const final = ticketStates(ctx, campaign.id, root, host);
     emit(campaign, 'lifecycle', 'campaign.finished', { integrationRef: ref, tip: integrationTip(root, campaign.id), statuses: counts(final), halted, landed: landings });
     return result({

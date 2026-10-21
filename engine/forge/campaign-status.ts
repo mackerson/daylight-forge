@@ -2,7 +2,7 @@ import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
 import { campaignNeeds } from './campaign-needs.ts';
-import { campaignRunNeeds, campaignSpend, haltOf, r5Host, ticketStates, type CampaignHost } from './director.ts';
+import { campaignRunNeeds, campaignSpend, haltOf, landedRegressions, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
 /**
@@ -11,7 +11,7 @@ import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from '
  * repository (P2-R13); a person who wants it committed copies it.
  */
 
-const STATUSES: readonly TicketStatus[] = ['superseded', 'waiting-owner', 'waiting', 'ready', 'running', 'integrating', 'waiting-dependency', 'landed', 'blocked'];
+const STATUSES: readonly TicketStatus[] = ['superseded', 'waiting-owner', 'waiting', 'ready', 'running', 'integrating', 'waiting-dependency', 'landed', 'blocked', 'regressed'];
 
 /** What `campaign status` reads beyond R6's rows: WS-R5's plan revision, assumptions and needs. */
 export type StatusHost = CampaignHost & Partial<{
@@ -40,6 +40,12 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
   if (!campaign || campaign.kind !== 'campaign') throw new Error(`${campaignId} is not a campaign`);
   const auth = authorizationOf(ctx.store, campaignId);
   const states = ticketStates(ctx, campaignId, repo, host);
+  const landedCount = [...states.values()].filter((s) => s.status === 'landed').length;
+  // A landed ticket whose own gate fails on the tip is shown regressed (wave2 L7); it still landed.
+  for (const [ticketId, r] of landedRegressions(ctx, campaignId, repo, host)) {
+    const s = states.get(ticketId);
+    if (s) states.set(ticketId, { ...s, status: 'regressed', reason: `its gate fails on the tip ${r.tip.slice(0, 12)}: ${r.gates.join(', ')}` });
+  }
   const ref = integrationRefFor(campaignId);
   const tip = integrationTip(repo, campaignId) ?? campaign.baseRevision;
   const byLane = new Map<string, Record<TicketStatus, number>>();
@@ -54,7 +60,7 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
   return {
     kind: 'daylight-campaign-status', campaignId, projectId: campaign.projectId, planRevision: host.planRevision?.(campaignId) ?? campaign.baseRevision,
     integration: {
-      ref, base: campaign.baseRevision, tip, landed: [...states.values()].filter((s) => s.status === 'landed').length,
+      ref, base: campaign.baseRevision, tip, landed: landedCount,
       mergeHint: `git merge --ff-only ${ref}`,
     },
     authorization: { decisionId: auth?.id ?? null, notAfter: auth ? envelopeOf(auth).notAfter : null, halted: haltOf(ctx.store, campaignId)?.reason ?? null },
@@ -95,7 +101,7 @@ export function renderCampaignStatus(r: CampaignStatusReport): string {
     r.authorization.decisionId ? `Authorized by ${r.authorization.decisionId}${r.authorization.halted ? `; halted (${r.authorization.halted})` : ''}.` : 'Not authorized.',
     `Spend ${spend} of ${money(r.spend.capUsd)}.`, '',
     '## Lanes', '',
-    ...r.lanes.map((l) => `- ${l.lane}: ${l.byStatus.landed}/${l.total} landed${l.byStatus.blocked ? `, ${l.byStatus.blocked} blocked` : ''}${l.byStatus.running ? `, ${l.byStatus.running} running` : ''}`),
+    ...r.lanes.map((l) => `- ${l.lane}: ${l.byStatus.landed + l.byStatus.regressed}/${l.total} landed${l.byStatus.regressed ? `, ${l.byStatus.regressed} regressed` : ''}${l.byStatus.blocked ? `, ${l.byStatus.blocked} blocked` : ''}${l.byStatus.running ? `, ${l.byStatus.running} running` : ''}`),
     '', '## Tickets', '',
     ...r.tickets.map((t) => `- ${t.id} (${t.lane}) ${t.status}${t.commit ? ` ${t.commit.slice(0, 12)}` : ''}${t.attempts ? `, ${t.attempts} attempt(s)` : ''}${t.reason ? `: ${t.reason}` : ''}`),
     '', '## Assumptions pending the owner', '',

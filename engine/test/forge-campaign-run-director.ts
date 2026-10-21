@@ -376,6 +376,32 @@ section('a deleted integration ref is recovered by adopt-tip naming a commit (wa
   w.ctx.close();
 }
 
+section('a later landing that breaks an earlier ticket\'s gate marks it regressed in status (wave2 L7, p7)');
+{
+  const w = nodeWorld('regressed', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js', 'src/a.js'], dependsOn: ['A'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } },
+    B: { first: { 'src/b.js': "module.exports = () => 'B';\n", 'src/a.js': "module.exports = () => 'broken by B';\n" } },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('both landed: B\'s own gate and the regression gate pass, and no ratchet looks at A\'s', r.landed.join(',') === 'A,B', JSON.stringify(r.statuses));
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const st = campaignStatus(w.ctx, w.campaign.id, w.repo, host);
+  const a = st.tickets.find((t) => t.id === 'A');
+  check('status marks A regressed, naming its failing gate on the tip', a?.status === 'regressed' && /fails on the tip/.test(a.reason ?? ''), JSON.stringify(a));
+  check('B is landed, and both still count as landed on the ref', st.tickets.find((t) => t.id === 'B')?.status === 'landed' && st.integration.landed === 2);
+  check('with a need for a person', st.needs.some((n) => n.kind === 'blocked' && /ticket A landed, but its gate fails on the tip/.test(n.why)), JSON.stringify(st.needs));
+  check('STATUS.md says so', /- A \(LA\) regressed/.test(renderCampaignStatus(st)));
+  const evals = w.ctx.store.gateEvaluations({ missionId: w.campaign.id, target: 'integrated' }).length;
+  await run(w, author, { concurrency: 1 });
+  check('the recheck is recorded once: a run with nothing new runs no gate again', w.ctx.store.gateEvaluations({ missionId: w.campaign.id, target: 'integrated' }).length === evals);
+  w.ctx.close();
+}
+
 // ---- spend --------------------------------------------------------------------------------------
 
 section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');

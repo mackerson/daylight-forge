@@ -1082,7 +1082,8 @@ export type TicketStatus =
   | 'waiting' | 'ready'              // a dependency not landed | deps landed, no open mission, not exhausted
   | 'running' | 'integrating'        // live attempt | integration row pending/evaluating
   | 'waiting-dependency'             // its mission has an open request-dependency need: parked, the loop continues (P2-R21)
-  | 'landed' | 'blocked';            // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
+  | 'landed' | 'blocked'             // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
+  | 'regressed';                     // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
 
 export interface ApprovePlanScope { operation: 'approve-plan'; planDigest: string; planRevision: string;
   workItems: Record<string, string>;   // workItemId → contentDigest for every plan ticket: what setWorkItemStatus/assertImplementable check
