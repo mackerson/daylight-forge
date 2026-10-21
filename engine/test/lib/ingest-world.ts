@@ -18,6 +18,8 @@ import type {
 } from '../../mission/types.ts';
 import { outboxPathOf } from '../../mcp/outbox-server.ts';
 import { occurrencesIn, quoteDigestOf, sectionAt } from '../../forge/authority.ts';
+import { approveIr, planApproveIr } from '../../forge/ir-review.ts';
+import { confirmCodeOf } from '../../forge/policy.ts';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const GIT_ENV = { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -108,7 +110,7 @@ export function addRevision(w: World, docs: Record<string, string>, o: { configD
   const corpusDocs: CorpusDoc[] = Object.entries(docs).sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, text]) => {
     const artifact = ctx.artifacts.put(Buffer.from(text, 'utf8'), { kind: 'spec', projectId, revision: commit, path: `${key}.md`, label: key, mediaType: 'text/markdown' });
     ctx.store.recordArtifact(artifact);
-    return { key, role: 'primary', domain: 'd', path: `${key}.md`, projectId, commit, artifact, digest: artifact.digest, bytes: artifact.bytes };
+    return { key, role: 'primary', domain: 'd', path: `${key}.md`, projectId, commit, artifact, digest: artifact.digest, bytes: Buffer.byteLength(text, 'utf8') };
   });
   const corpusDigest = digestOf(canonicalJson({ v: 1, docs: corpusDocs.map((d) => ({ key: d.key, digest: d.digest })) }));
   const configDigest = o.configDigest ?? digestOf('config:test');
@@ -219,3 +221,11 @@ export const throwsAsync = async (fn: () => Promise<unknown>): Promise<Error | n
     return err as Error;
   }
 };
+
+/** A person's `approve-ir` of exactly these records at the current revision (the guarded act, confirm computed as a person would read it). */
+export function approveRecords(w: World, ids: string[], more: Partial<import('../../mission/types.ts').ApproveIrSetV1> = {}) {
+  const rev = w.ctx.store.currentCorpusRevision(w.corpus.id)!;
+  const set = { kind: 'daylight-approve-ir' as const, version: 1 as const, corpusId: w.corpus.id, revisionId: rev.id, approve: ids, reject: [], accept: [], dismiss: [], ...more };
+  const code = confirmCodeOf(digestOf(canonicalJson(planApproveIr(w.ctx, w.corpus.id, set).scope)));
+  return approveIr(w.ctx, { corpusId: w.corpus.id, actor: HUMAN, rationale: 'read and agreed', confirm: code, env: {}, set });
+}
