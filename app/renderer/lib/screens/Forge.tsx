@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { MissionNeed, Need } from '../types.ts';
-import { mergeNeeds, NEED_WORDS, needsStrip, needTarget, shortRef, type ForgeScreen, type NeedTarget } from './forge-words.ts';
+import {
+  mergeNeeds, NEED_WORDS, needsStrip, needTarget, shortRef, type AnyNeed, type CampaignTab, type ForgeScreen, type NeedTarget,
+} from './forge-words.ts';
 import { Choice, type ForgeApi } from './ForgeParts.tsx';
 import { WorkItems } from './WorkItems.tsx';
 import { Ledger } from './Ledger.tsx';
 import { IngestSources } from './IngestSources.tsx';
+import { Campaigns } from './Campaigns.tsx';
+import { CampaignDetail } from './CampaignDetail.tsx';
 
 /**
  * Mission Control's Forge strip: where the other Forge screens are, and what needs a person.
@@ -14,7 +18,7 @@ import { IngestSources } from './IngestSources.tsx';
  * link to the screen that answers it. It decides nothing about whether something is needed.
  */
 export function Forge({
-  api, sample, screen, onScreen, running, missionNeeds, missionOfCandidate, onOpen, children,
+  api, sample, screen, onScreen, running, missionNeeds, missionOfCandidate, campaignOfNeed, campaign, onCampaign, onOpen, children,
 }: {
   api: ForgeApi;
   sample: boolean;
@@ -24,6 +28,11 @@ export function Forge({
   missionNeeds?: Record<string, MissionNeed[]>;
   /** For a need that names a candidate: the mission it belongs to, when the view knows. */
   missionOfCandidate: (id: string) => string | undefined;
+  /** For a need listed under a campaign mission: that campaign. */
+  campaignOfNeed: (n: AnyNeed) => string | undefined;
+  /** The open campaign and its tab, or none (the list). */
+  campaign: { id: string | null; tab: CampaignTab };
+  onCampaign: (c: { id: string | null; tab: CampaignTab }) => void;
   onOpen: (t: NeedTarget) => void;
   /** The mission list, drawn when `screen` is `missions`. */
   children: ReactNode;
@@ -38,11 +47,11 @@ export function Forge({
   }, [api]);
   useEffect(() => { void loadNeeds(); }, [loadNeeds, screen]);
 
-  const needs = mergeNeeds(itemNeeds, ...Object.values(missionNeeds ?? {}));
+  const needs = mergeNeeds<AnyNeed>(itemNeeds, ...Object.values(missionNeeds ?? {}));
 
   /** A candidate need the view cannot place is looked up once, then opened. */
-  const open = async (n: Need) => {
-    const t = needTarget(n, missionOfCandidate);
+  const open = async (n: AnyNeed) => {
+    const t = needTarget(n, missionOfCandidate, campaignOfNeed);
     if (!t.missionId && /^c_[0-9a-f]{32}$/.test(n.ref)) {
       const r = await api.candidate(n.ref);
       if (!r.error && r.candidate) return onOpen({ screen: 'missions', missionId: r.candidate.missionId, tab: 'candidate', candidateId: n.ref });
@@ -59,6 +68,7 @@ export function Forge({
             { value: 'work-items', label: 'work items' },
             { value: 'ledger', label: 'ledger' },
             { value: 'ingest', label: 'ingest sources' },
+            { value: 'campaigns', label: 'campaigns' },
           ]}
           value={screen}
           onChange={onScreen}
@@ -81,6 +91,18 @@ export function Forge({
       {screen === 'missions' && children}
       {screen === 'work-items' && <WorkItems api={api} sample={sample} />}
       {screen === 'ledger' && <Ledger api={api} sample={sample} />}
+      {screen === 'campaigns' && !campaign.id && (
+        <Campaigns api={api} sample={sample} onOpen={(id) => onCampaign({ id, tab: 'overview' })} />
+      )}
+      {screen === 'campaigns' && campaign.id && (
+        <CampaignDetail
+          api={api} sample={sample} id={campaign.id} tab={campaign.tab}
+          onTab={(tab) => onCampaign({ id: campaign.id, tab })}
+          onBack={() => onCampaign({ id: null, tab: 'overview' })}
+          onOpen={onOpen}
+          onNeed={(n) => void open(n)}
+        />
+      )}
       {screen === 'ingest' && (
         <IngestSources api={api} sample={sample} onOpenMission={(id) => onOpen({ screen: 'missions', missionId: id })} />
       )}
