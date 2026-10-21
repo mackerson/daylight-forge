@@ -109,6 +109,20 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   const off = ratchetOf('--no-ratchet');
   check('confirm lock-campaign-gates --ratchet digests as the act does, and not as --no-ratchet', !!on.confirm && on.confirm === on.act && off.confirm === off.act && on.confirm !== off.confirm,
     JSON.stringify({ on, off }));
+  // --accept-vacuous is part of what is confirmed (L6): a code for the plain lock does not lock with it.
+  let gateId = '';
+  reopen(s.out, (ctx) => {
+    gateId = ctx.store.experimentsFor(id).find((x) => x.role === 'gate')?.id ?? '';
+  });
+  const vac = ratchetOf('--no-ratchet');
+  const withVac = {
+    confirm: json<Confirmed>(cli(['confirm', 'lock-campaign-gates', id, '--no-ratchet', '--accept-vacuous', gateId, '--out', s.out, '--format', 'json'])),
+    act: json<{ digest: string }>(cli(['campaign', 'lock', id, '--no-ratchet', '--accept-vacuous', gateId, '--rationale', 'r', '--out', s.out, '--format', 'json']))?.digest,
+  };
+  check('confirm lock-campaign-gates --accept-vacuous digests as the act does, and not as the plain lock', !!gateId && withVac.confirm?.digest === withVac.act
+    && withVac.act !== vac.act && withVac.confirm?.lines.some((l) => l.includes('vacuous')) === true, JSON.stringify(withVac));
+  const crossed = cli(['campaign', 'lock', id, '--no-ratchet', '--accept-vacuous', gateId, '--rationale', 'r', '--out', s.out, '--confirm', (vac.confirm ?? 'sha256:00000000').slice(7, 15)]);
+  check('the plain lock\'s code does not confirm a lock that accepts a vacuous gate', crossed.code === 1 && /--confirm/.test(crossed.err), crossed.err);
   confirmsAct('lock-campaign-gates', s.out, ['lock-campaign-gates', id, '--no-ratchet'], ['campaign', 'lock', id, '--no-ratchet', '--rationale', 'read']);
   let gateSet = '';
   reopen(s.out, (ctx) => {

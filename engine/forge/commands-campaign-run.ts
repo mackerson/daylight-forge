@@ -82,7 +82,7 @@ export function campaignRunConfirm(ctx: DaylightContext, op: CampaignRunConfirmO
     case 'lock-campaign-gates': {
       const ratchet = get('ratchet') === 'true' ? true : get('no-ratchet') === 'true' ? false : undefined;
       if (ratchet === undefined) throw new Usage('--ratchet or --no-ratchet is required');
-      return confirmDigest(ctx, 'lock-campaign-gates', subjectId, { experimentIds: lockableIds(ctx, subjectId), ratchet });
+      return confirmDigest(ctx, 'lock-campaign-gates', subjectId, { experimentIds: lockableIds(ctx, subjectId), ratchet, acceptVacuous: list(get('accept-vacuous')) });
     }
     case 'resume-campaign':
       return confirmDigest(ctx, 'resume-campaign', subjectId, { haltDecisionId: needOf('halt') });
@@ -181,7 +181,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
           const g = gctx(ctx, '');
           const ids = lockableIds(g, campaignId);
           if (confirm === undefined) {
-            const preview = confirmDigest(g, 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet });
+            const preview = confirmDigest(g, 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet, acceptVacuous: list(last(p, 'accept-vacuous')) });
             if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
             else {
               for (const l of preview.lines) say(l);
