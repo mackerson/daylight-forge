@@ -20,7 +20,7 @@ const WORK_M = `m_${'6e'.repeat(16)}`;
  */
 const row = (key: string, over: Partial<LedgerRow>, facts: { providerCost?: number; ingested?: number } = {}): LedgerJsonRow => {
   const r: LedgerRow = {
-    key, attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0,
+    key, attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0, usdReservation: 0, reservationCount: 0,
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 0 },
     candidates: { accepted: 0, rejected: 0, applied: 0, overridden: 0 }, decisions: 0, gateSetDigests: [],
     ...over,

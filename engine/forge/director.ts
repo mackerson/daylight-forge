@@ -6,7 +6,7 @@ import { redact } from '../mission/redact.ts';
 import type { MissionStore } from '../mission/store.ts';
 import { campaignActorOf, isHumanActor } from '../mission/types.ts';
 import type {
-  CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
+  Attempt, CampaignEnvelope, CampaignHaltReason, CampaignRunOptions, CampaignRunResult, CampaignSpend, CampaignTicket, Candidate, Decision,
   Finding, FindingSeverity, Integration, Mission, Need, PlanFileV1, RepairBrief, TicketStatus,
 } from '../mission/types.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
@@ -35,11 +35,12 @@ import { closeWave, fixTicketsFrom, runWaveReview, waveDue } from './wave.ts';
  * `maxParallel`, integrates finished candidates one at a time onto the tip, repairs what failed
  * with the failure fenced into the next brief, blocks what is exhausted, and closes a wave for
  * blind review every `waveSize` landings. A crash loses nothing: the next run reconciles rows
- * and refs by §4.4 and carries on.
+ * and refs by §4.4, charges the attempts it cut short at their reservations, and carries on.
  *
  * Spend is reserved before launch (`attempts.max_cost_usd`, P2-R18) and checked against the
- * campaign cap; an attempt whose cost is unknown halts the campaign (P2-R11), as does any
- * breach of the cap. Nothing here records a decision a person owns: derived decisions go
+ * campaign cap; an attempt that completed with its cost unknown halts the campaign once
+ * (P2-R11) and its candidate never lands, as does any breach of the cap. An attempt a crash
+ * or Ctrl-C cut short is charged at its reservation (P2-R44), so it never wedges the cap. Nothing here records a decision a person owns: derived decisions go
  * through WS-R5 (`CampaignHost`, `IntegrateDeps`).
  */
 
@@ -202,6 +203,11 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
     }
     const c = latestCandidate(ctx.store, m);
     const last = attempts.at(-1);
+    if (last && unknownCost(last)) {
+      // P2-R11, P2-R35: a candidate whose attempt reported no cost never lands.
+      set('blocked', { reason: `${UNKNOWN_COST}: attempt ${last.id} completed without reporting what it spent; its candidate never lands` });
+      continue;
+    }
     if (env?.autoApply === 'none' && c?.verdict === 'accepted-by-gates') {
       set('blocked', { reason: `candidate ${c.id} is accepted; with autoApply none a person approves and applies it` });
       continue;
@@ -247,38 +253,63 @@ export function ticketStatuses(ctx: Pick<DaylightContext, 'store' | 'out'>, camp
 
 // ---- spend ------------------------------------------------------------------------------------
 
+export const UNKNOWN_COST = 'cost unknown';
+
+/** An attempt that completed and reported no figure: the one shape of unknown spend that halts (P2-R44). */
+const unknownCost = (a: Attempt): boolean => a.state === 'completed' && a.costUsd === null;
+
+/**
+ * When a person last answered a `spend-unknown` halt (a human resume or adoption naming it), or
+ * null. Attempts that had completed with no figure by then were seen: they stay unknown in
+ * every total, and their candidates never land, but they do not halt the campaign again.
+ */
+function unknownSeenUntil(store: Pick<MissionStore, 'decisions'>, campaignId: string): number | null {
+  const ds = store.decisions(campaignId);
+  const answered = new Set(ds.filter((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip')
+    && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+  const seen = ds.filter((d) => d.scope.operation === 'halt-campaign' && d.scope.reason === 'spend-unknown' && answered.has(d.id)).map((d) => d.at);
+  return seen.length ? Math.max(...seen) : null;
+}
+
 /** The campaign's spend over every child mission (§4.6), from attempt rows only. */
 export function campaignSpend(ctx: Pick<DaylightContext, 'store'>, campaignId: string): CampaignSpend {
   const campaign = ctx.store.mission(campaignId);
   if (!campaign) throw new DirectorRefused(`unknown campaign ${campaignId}`);
   const auth = authorizationOf(ctx.store, campaignId);
   const children = ctx.store.missions(campaign.projectId).filter((m) => m.parentId === campaignId);
+  const seenUntil = unknownSeenUntil(ctx.store, campaignId);
   const out: CampaignSpend = {
-    spentUsd: 0, knownUsd: 0, unknownCount: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: auth ? envelopeOf(auth).maxUsdTotal : 0,
+    spentUsd: 0, knownUsd: 0, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0, scannedCount: 0, runningCount: 0,
+    reservedUsd: 0, capUsd: auth ? envelopeOf(auth).maxUsdTotal : 0,
   };
   for (const m of children) {
     const s = missionSpend(ctx, m.id);
-    out.spentUsd += s.spentUsd;
+    // Reservation charges count against the cap (P2-R44); the mission's own spend leaves them out.
+    out.spentUsd += s.spentUsd + s.reservationUsd;
     out.knownUsd += s.knownUsd;
     out.unknownCount += s.unknownCount;
     out.scannedCount += s.scannedCount;
+    out.reservationCount += s.reservationCount;
+    out.reservationUsd += s.reservationUsd;
     out.runningCount += s.runningCount;
     for (const a of ctx.store.tasks(m.id).flatMap((t) => ctx.store.attempts(t.id))) {
       if (a.state === 'running' || a.state === 'starting') out.reservedUsd += a.maxCostUsd ?? 0;
+      if (unknownCost(a) && (seenUntil === null || (a.finishedAt ?? Infinity) > seenUntil)) out.unknownUnansweredCount++;
     }
   }
   const round = (n: number) => Math.round(n * 1e6) / 1e6;
-  return { ...out, spentUsd: round(out.spentUsd), knownUsd: round(out.knownUsd), reservedUsd: round(out.reservedUsd) };
+  return { ...out, spentUsd: round(out.spentUsd), knownUsd: round(out.knownUsd), reservationUsd: round(out.reservationUsd), reservedUsd: round(out.reservedUsd) };
 }
 
 /**
- * Whether another attempt reserving `nextUsd` may launch (§4.6). Unknown spend halts (P2-R11):
- * it is never charged at the cap and never summed as zero. A launch that would cross the cap
- * waits; with nothing running to free a reservation, the campaign halts `spend-cap`.
+ * Whether another attempt reserving `nextUsd` may launch (§4.6). An attempt that completed with
+ * its cost unknown halts once (P2-R11, P2-R44): it is never charged at the cap and never summed
+ * as zero. A launch that would cross the cap waits; with nothing running to free a reservation,
+ * the campaign halts `spend-cap`.
  */
 export function campaignSpendRefusal(spend: CampaignSpend, envelope: Pick<CampaignEnvelope, 'maxUsdTotal'>, nextUsd: number): { refuse: string; halt: CampaignHaltReason | null } | null {
-  if (spend.unknownCount > 0) {
-    return { refuse: `cost unknown for ${spend.unknownCount} attempt(s); the $${envelope.maxUsdTotal.toFixed(2)} cap cannot be enforced`, halt: 'spend-unknown' };
+  if (spend.unknownUnansweredCount > 0) {
+    return { refuse: `cost unknown for ${spend.unknownUnansweredCount} attempt(s); the $${envelope.maxUsdTotal.toFixed(2)} cap cannot be enforced`, halt: 'spend-unknown' };
   }
   if (spend.spentUsd > envelope.maxUsdTotal) {
     return { refuse: `spent $${spend.spentUsd.toFixed(2)}, past the $${envelope.maxUsdTotal.toFixed(2)} cap`, halt: 'spend-breach' };
@@ -405,7 +436,9 @@ export interface DirectorOptions extends CampaignRunOptions {
   crashLanding?: { n: number; step: IntegrationStep };
 }
 
-const emptySpend = (cap: number): CampaignSpend => ({ spentUsd: 0, knownUsd: 0, unknownCount: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: cap });
+const emptySpend = (cap: number): CampaignSpend => ({
+  spentUsd: 0, knownUsd: 0, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0, scannedCount: 0, runningCount: 0, reservedUsd: 0, capUsd: cap,
+});
 
 const counts = (states: Map<string, TicketState>) => {
   const n: Partial<Record<TicketStatus, number>> = {};
@@ -582,7 +615,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       }
       const after = campaignSpend(ctx, campaign.id);
       // P2-R11, P2-R35: checked as the attempt ends, before its candidate may land.
-      if (after.unknownCount > 0) halt('spend-unknown');
+      if (after.unknownUnansweredCount > 0) halt('spend-unknown');
       if (after.spentUsd > envelope.maxUsdTotal) {
         emit(campaign, 'cost', 'campaign.spend.breached', { spent: after.spentUsd, reserved: after.reservedUsd, cap: after.capUsd, unknownCount: after.unknownCount });
         halt('spend-breach');
@@ -591,6 +624,9 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
 
     const integrate = async (item: { candidateId: string; ticketId: string }): Promise<void> => {
       const t = host.tickets(campaign.id).find((x) => x.ticketId === item.ticketId)!;
+      const from = ctx.store.attempt(ctx.store.candidate(item.candidateId)?.attemptId ?? '');
+      // P2-R35: an unknown-cost candidate never lands, whatever queued it.
+      if (!from || unknownCost(from)) return;
       let i: Integration;
       try {
         i = prepareIntegration(ictx, item.candidateId, { ticketId: t.ticketId, deps: host.integrate });
@@ -674,7 +710,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         await runWaveReview(ctx, campaign.id, seq, { repo: root, roster: envelope.reviewRoster, sandbox, env: o.env, reserveUsd: reserve });
         fixTicketsFrom(ctx, campaign.id, seq, host);
         const after = campaignSpend(ctx, campaign.id);
-        if (after.unknownCount > 0) halt('spend-unknown');
+        if (after.unknownUnansweredCount > 0) halt('spend-unknown');
         else if (after.spentUsd > envelope.maxUsdTotal) halt('spend-breach');
       })().finally(() => reviews.delete(p));
       reviews.add(p);

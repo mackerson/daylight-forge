@@ -28,10 +28,12 @@ import { createSnapshot } from '../forge/cargo.ts';
 import { baselineCampaign, lockCampaign, lockableIds, registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { requestOutboxFile } from '../forge/dependency-requests.ts';
+import { campaignStatus, renderCampaignStatus } from '../forge/campaign-status.ts';
 import { campaignRunNeeds, campaignSpend, campaignSpendRefusal, runCampaign, ticketStates, type DirectorOptions } from '../forge/director.ts';
 import type { GateContext } from '../forge/gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, InjectedCrash, integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { dollarsOf, ledger } from '../mission/ledger.ts';
 import { needsOf } from '../mission/needs.ts';
 import type { CampaignTicket, Mission, PlanFileV1 } from '../mission/types.ts';
 import { DecisionRefused } from '../forge/policy.ts';
@@ -342,6 +344,56 @@ section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');
   check('the unknown cost is counted, never summed as zero', campaignSpend(w.ctx, w.campaign.id).unknownCount === 1);
   const again = await run(w, author, { concurrency: 1 });
   check('a halted campaign refuses to run until a person resumes it', again.refused !== null && /halted/.test(again.refused) && again.landed.length === 0);
+
+  // wave2-review p10(c): after the resume, the unknown-cost candidate must still never land.
+  w.ctx.store.recordResume(w.campaign.id, { actor: ACTOR, rationale: 'seen the unknown cost', haltDecisionId: halt!.id });
+  const resumed = await run(w, author, { concurrency: 1 });
+  check('after a resume the unknown-cost candidate never lands; A is blocked naming why', !resumed.landed.includes('A') && resumed.statuses.A === 'blocked'
+    && w.ctx.store.integrations(w.campaign.id).every((i) => w.ctx.store.mission(i.missionId)?.objective !== 'ticket A'), JSON.stringify(resumed));
+  check('the answered unknown halts once: no second spend-unknown halt, and B lands', resumed.halted === null && resumed.statuses.B === 'landed'
+    && w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').length === 1, JSON.stringify({ halted: resumed.halted, statuses: resumed.statuses }));
+  const spendAfter = campaignSpend(w.ctx, w.campaign.id);
+  check('the unknown is still counted, never summed as zero', spendAfter.unknownCount === 1 && spendAfter.unknownUnansweredCount === 0, JSON.stringify(spendAfter));
+  const am = w.ctx.store.missions(w.campaign.projectId).find((m) => m.objective === 'ticket A')!;
+  check('A carries a blocked need that says its cost is unknown', needsOf(w.ctx, am).some((n) => n.kind === 'blocked' && /cost unknown/.test(n.why)));
+  w.ctx.close();
+}
+
+section('spend: a director killed mid-attempt; the orphan is charged at its reservation and the next run completes (P2-R44, wave2 H2 p3)');
+{
+  const w = nodeWorld('orphan', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } }, B: { first: { 'src/b.js': "module.exports = () => 'B';\n" } },
+  });
+  // What SIGKILL or Ctrl-C leaves 4 s into A's attempt: its mission running, its author attempt live, holding the $1 reservation.
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const am = host.startTicketMission(w.campaign.id, 'A', w.base);
+  w.ctx.store.transitionMission(am.id, 'running');
+  const task = w.ctx.store.createTask({ missionId: am.id, role: 'author', objective: 'author', runnerHint: 'mock:default' });
+  const orphan = w.ctx.store.startAttempt({
+    taskId: task.id, runnerId: 'agent:mock:default', maxCostUsd: 1,
+    sandbox: { profile: 'author', network: 'none', write: true, exec: false, authorizeDecisionId: w.ctx.store.authorizeDecision(am.id)!.id },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('the next run neither halts nor wedges: A and B land', r.halted === null && r.refused === null && r.statuses.A === 'landed' && r.statuses.B === 'landed',
+    JSON.stringify({ halted: r.halted, refused: r.refused, statuses: r.statuses }));
+  const a = w.ctx.store.attempt(orphan.id)!;
+  check('the orphaned attempt is cancelled and charged at its reservation', a.state === 'cancelled' && a.costSource === 'reservation' && a.costUsd === 1,
+    JSON.stringify({ state: a.state, costSource: a.costSource, costUsd: a.costUsd }));
+  const spend = campaignSpend(w.ctx, w.campaign.id);
+  check('the campaign counts it against the cap, apart, and nothing is unknown', spend.reservationCount === 1 && spend.reservationUsd === 1 && spend.unknownCount === 0
+    && spend.spentUsd >= 1 + spend.knownUsd - 1e-9, JSON.stringify(spend));
+  check('no halt decision was recorded', !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
+  const status = renderCampaignStatus(campaignStatus(w.ctx, w.campaign.id, w.repo, host));
+  check('status shows a floor that lists the reservation charge separately', /Spend ≥ \$[\d.]+ \(\$1\.00 charged at reservation for 1 unfinished attempt\(s\)\)/.test(status), status.split('\n').find((l) => l.startsWith('Spend')));
+  const l = ledger(w.ctx, { projectId: w.campaign.projectId, group: 'mission' });
+  const row = l.rows.find((x) => x.key === am.id)!;
+  check('the ledger lists it apart: reservationCount, not unknown, not known', row.reservationCount === 1 && row.usdReservation === 1 && row.usdUnknownCount === 0
+    && /\$1\.00 charged at reservation for 1 unfinished/.test(dollarsOf(row)), JSON.stringify(row));
   w.ctx.close();
 }
 
@@ -364,12 +416,13 @@ section('spend: after a spend halt no wave review launches (P2-R35, review H1)')
 
 section('spend: the refusal rule, as arithmetic');
 {
-  const s = { spentUsd: 0.5, knownUsd: 0.5, unknownCount: 0, scannedCount: 0, runningCount: 1, reservedUsd: 1, capUsd: 2 };
+  const s = { spentUsd: 0.5, knownUsd: 0.5, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0, scannedCount: 0, runningCount: 1, reservedUsd: 1, capUsd: 2 };
   check('within the cap: launches', campaignSpendRefusal(s, { maxUsdTotal: 2 }, 0.5) === null);
   check('past it with something running: waits, no halt', campaignSpendRefusal(s, { maxUsdTotal: 2 }, 0.6)?.halt === null);
   check('past it with nothing running: halts spend-cap', campaignSpendRefusal({ ...s, runningCount: 0 }, { maxUsdTotal: 2 }, 1.6)?.halt === 'spend-cap');
   check('a breach halts spend-breach', campaignSpendRefusal({ ...s, spentUsd: 2.1 }, { maxUsdTotal: 2 }, 0.1)?.halt === 'spend-breach');
-  check('unknown cost halts before anything else', campaignSpendRefusal({ ...s, unknownCount: 1, spentUsd: 0 }, { maxUsdTotal: 2 }, 0.1)?.halt === 'spend-unknown');
+  check('unknown cost halts before anything else', campaignSpendRefusal({ ...s, unknownCount: 1, unknownUnansweredCount: 1, spentUsd: 0 }, { maxUsdTotal: 2 }, 0.1)?.halt === 'spend-unknown');
+  check('unknown cost a person already answered does not halt again (P2-R44)', campaignSpendRefusal({ ...s, unknownCount: 1, spentUsd: 0 }, { maxUsdTotal: 2 }, 0.1) === null);
 }
 
 section('spend: a reservation holds a second launch until the cap allows it (P2-R18)');

@@ -67,7 +67,7 @@ section('the ledger shape is plain JSON the renderer can import');
   const ledger: Ledger = {
     kind: 'daylight-ledger', schemaVersion: EXPORT_SCHEMA_VERSION, projectId: PROJECT.id,
     rows: [{
-      key: 'agent:mock:a', attempts: 1, usdKnown: 0, usdUnknownCount: 1, usdScanned: 0,
+      key: 'agent:mock:a', attempts: 1, usdKnown: 0, usdUnknownCount: 1, usdScanned: 0, usdReservation: 0, reservationCount: 0,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 1 },
       candidates: { accepted: 0, rejected: 0, applied: 0, overridden: 0 }, decisions: 0, gateSetDigests: [],
     }],

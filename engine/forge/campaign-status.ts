@@ -82,7 +82,11 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 
 /** STATUS.md in kitkraft's shape: landed per lane, assumptions pending, needs, spend, waves. No timestamp. */
 export function renderCampaignStatus(r: CampaignStatusReport): string {
-  const spend = r.spend.unknownCount ? `≥ ${money(r.spend.spentUsd)} (${r.spend.unknownCount} unknown)` : money(r.spend.spentUsd);
+  const notes = [
+    r.spend.unknownCount ? `${r.spend.unknownCount} unknown` : '',
+    r.spend.reservationCount ? `${money(r.spend.reservationUsd)} charged at reservation for ${r.spend.reservationCount} unfinished attempt(s)` : '',
+  ].filter(Boolean);
+  const spend = notes.length ? `≥ ${money(r.spend.spentUsd)} (${notes.join('; ')})` : money(r.spend.spentUsd);
   const lines = [
     `# Campaign ${r.campaignId}`, '',
     `Plan ${r.planRevision}. Integration ${r.integration.ref} at ${r.integration.tip.slice(0, 12)} (base ${r.integration.base.slice(0, 12)}), ${r.integration.landed} landed.`,

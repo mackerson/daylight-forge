@@ -65,8 +65,13 @@ Spend is reserved before every launch, wave reviewers included: the attempt's ce
 `min(the mission's remaining budget, the campaign's remaining cap)`, is handed to the runner and
 stored on `attempts.max_cost_usd` (P2-R18, P2-R35). A launch that would pass the cap waits for a
 running attempt to free its reservation; with nothing running, the campaign halts `spend-cap`.
-An attempt whose cost is unknown halts the campaign `spend-unknown` as it ends, before its
-candidate can land (P2-R11): an unknown is never charged at the cap and never summed as zero.
+An attempt that completes with its cost unknown halts the campaign `spend-unknown` as it ends
+(P2-R11): an unknown is never charged at the cap and never summed as zero, and that attempt's
+candidate never lands, before or after a person resumes. A resume answers the halt for the
+unknowns it saw; only a later one halts again. An attempt that ends unfinished (cancelled,
+crashed, killed with the director) and reported nothing is charged at its reservation
+(`cost_source = 'reservation'`, P2-R44): counted against the cap and listed apart, not against
+the ticket's own budget, so a crash neither hides spend nor wedges the campaign.
 Spend past the cap halts `spend-breach`. A ticket that has used its own budget
 (`min(ticket.maxUsd, maxUsdPerMission)`) is blocked with a need; that never halts the campaign.
 
@@ -165,7 +170,7 @@ The director holds no state of its own. A run that was killed is resumed by runn
 
 | Found | Ref | Then |
 |---|---|---|
-| an attempt still `running` | — | cancelled as orphaned; counts as a failed attempt |
+| an attempt still `running` | — | cancelled as orphaned, charged at its reservation; counts as a failed attempt |
 | a candidate with no integration | — | integrated |
 | an integration `pending`, or `evaluating` with the ref at the tip it was put onto | ref = tip | abandoned and integrated again |
 | an integration `evaluating` | ref = its commit | its digest re-verified, the landing transaction finished |
@@ -192,7 +197,8 @@ daylight campaign status <c> [<repo>] [--write]
 
 Derived from rows and the integration ref on every call: tickets by lane and status, the tip and
 how many landed, the authorization and any halt, assumptions pending the owner, needs, spend as
-`≥ $X (N unknown)` when anything is unknown, and each wave's findings. `--write` puts STATUS.md
+`≥ $X (N unknown; $R charged at reservation for K unfinished attempt(s))` when anything is
+unknown or charged at a reservation, and each wave's findings. `--write` puts STATUS.md
 under `<out>/campaigns/<id>/`; nothing is ever written into the target repository (P2-R13).
 
 ## Events
