@@ -8,7 +8,7 @@
    "kind": "modal-contradiction",
    "docKey": "hl-standard",
    "afterSectionId": "@title:3.1 Append-only store",
-   "text": "A ledger entry may be deleted when it is superseded.",
+   "text": "A ledger entry must be deleted or rewritten when it is superseded.",
    "expect": [
     "modal-polarity"
    ]
@@ -18,7 +18,7 @@
    "kind": "numeric-contradiction",
    "docKey": "hl-standard",
    "afterSectionId": "@title:8.1 Retention periods",
-   "text": "Audit records must be retained for 5 years.",
+   "text": "Audit records must be retained for 1825 days.",
    "expect": [
     "numeric"
    ]
@@ -38,7 +38,7 @@
    "kind": "hedge-ambiguity",
    "docKey": "hl-standard",
    "afterSectionId": "@title:5.2 Conflicts",
-   "text": "A conflicting allocation should probably be resolved by the harbour master, depending on circumstances.",
+   "text": "Where possible, a conflicting allocation must be resolved by the harbour master.",
    "expect": [
     "hedge"
    ]

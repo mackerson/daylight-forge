@@ -1,6 +1,6 @@
 # Harbor Ledger Standard
 
-**Edition:** 1. A fictional port-logistics standard, written as test data for Daylight; no real port or authority is described.
+**Edition:** 1. A fictional port-logistics standard, written as test data for Daylight; it describes nothing real.
 
 ## Clause 1 — Scope and precedence
 
@@ -134,7 +134,7 @@ Clause 7.2 is delivered in wave W1.
 
 ### 8.1 Retention periods
 
-- HL-REQ-070: Audit records must be retained for 7 years.
+- HL-REQ-070: Audit records must be retained for 2555 days.
 
 Clause 8.1 is delivered in wave W2.
 

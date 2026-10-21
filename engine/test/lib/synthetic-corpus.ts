@@ -53,7 +53,7 @@ const CLAUSES: Clause[] = [
     { n: '7.1', title: 'Audit events', wave: 'W1', reqs: [{ id: 'HL-REQ-060', text: 'Every allocation and every charge must emit an audit event to the ledger.', tags: ['auditability'] }] },
     { n: '7.2', title: 'Audit export', wave: 'W1', reqs: [{ id: 'HL-REQ-061', text: 'The audit log must be exportable as a signed bundle.', tags: ['auditability'] }] }] },
   { n: 8, title: 'Retention', subs: [
-    { n: '8.1', title: 'Retention periods', wave: 'W2', reqs: [{ id: 'HL-REQ-070', text: 'Audit records must be retained for 7 years.' }] },
+    { n: '8.1', title: 'Retention periods', wave: 'W2', reqs: [{ id: 'HL-REQ-070', text: 'Audit records must be retained for 2555 days.' }] },
     { n: '8.2', title: 'Disposal', wave: 'W2', reqs: [{ id: 'HL-REQ-071', text: 'A disposed audit record must leave a tombstone entry.', tags: ['auditability'] }] }] },
   { n: 9, title: 'Verification', subs: [
     { n: '9.1', title: 'Checksums', wave: 'W2', reqs: [{ id: 'HL-REQ-080', text: 'The ledger must verify every entry digest on read.' }] },
@@ -122,7 +122,7 @@ const waveLine = (s: Sub) => `Clause ${s.n} is delivered in wave ${s.wave}.`;
 
 function standard(): string {
   const out: string[] = ['# Harbor Ledger Standard', '',
-    '**Edition:** 1. A fictional port-logistics standard, written as test data for Daylight; no real port or authority is described.', ''];
+    '**Edition:** 1. A fictional port-logistics standard, written as test data for Daylight; it describes nothing real.', ''];
   for (const c of CLAUSES) {
     out.push(`## Clause ${c.n} — ${c.title}`, '');
     for (const s of c.subs) {
@@ -177,7 +177,7 @@ function overlay(texts: Record<string, string>): string {
         const kind = r.kind ?? (negative(r.text) ? 'constraint' : 'requirement');
         add(r.id.toLowerCase(), 'hl-standard', r.text, kind, `${r.id}: ${r.text}`, {
           ...(r.tags ? { tags: r.tags } : {}), ...(s.wave ? { milestone: s.wave } : {}), ...(negative(r.text) ? { polarity: 'negative' as const } : {}),
-          subject: `Clause ${s.n}` });
+          subject: r.id });
       }
     }
   }
@@ -250,10 +250,10 @@ function blueprint(): string {
 function seeds(): string {
   const s = (id: string, kind: string, docKey: string, after: string, text: string, expect: string[]) => ({ id, kind, docKey, afterSectionId: `@title:${after}`, text, expect });
   return `${JSON.stringify({ kind: 'daylight-seeds', v: 1, note: 'Harbor Ledger seeds: one of each kind, inserted at the end of the named section at run time.', seeds: [
-    s('hl-s1', 'modal-contradiction', 'hl-standard', '3.1 Append-only store', 'A ledger entry may be deleted when it is superseded.', ['modal-polarity']),
-    s('hl-s2', 'numeric-contradiction', 'hl-standard', '8.1 Retention periods', 'Audit records must be retained for 5 years.', ['numeric']),
+    s('hl-s1', 'modal-contradiction', 'hl-standard', '3.1 Append-only store', 'A ledger entry must be deleted or rewritten when it is superseded.', ['modal-polarity']),
+    s('hl-s2', 'numeric-contradiction', 'hl-standard', '8.1 Retention periods', 'Audit records must be retained for 1825 days.', ['numeric']),
     s('hl-s3', 'cross-doc-contradiction', 'dr-01', 'Decision', 'Ledger entries must not be encoded as canonical JSON before hashing.', ['modal-polarity']),
-    s('hl-s4', 'hedge-ambiguity', 'hl-standard', '5.2 Conflicts', 'A conflicting allocation should probably be resolved by the harbour master, depending on circumstances.', ['hedge']),
+    s('hl-s4', 'hedge-ambiguity', 'hl-standard', '5.2 Conflicts', 'Where possible, a conflicting allocation must be resolved by the harbour master.', ['hedge']),
     s('hl-s5', 'dangling-ref', 'hl-standard', '6.3 Invoicing', 'Invoice layout follows Clause 12.4.', ['dangling']),
     s('hl-s6', 'unordered-precedence', 'hl-amendments', 'Amendment A5 — Tariff currency', 'Charges must never be rounded before the invoice is issued.', ['modal-polarity', 'precedence']),
   ] }, null, 1)}\n`;
