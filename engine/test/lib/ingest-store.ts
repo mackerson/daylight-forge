@@ -8,6 +8,7 @@ import type { CorpusDoc, CorpusManifest, CorpusRevision, Integration, Mission, N
 import {
   diffOf, filesOf, commitOn, git, makeCampaign, makeCandidate, makeRepo, makeWorkItem, rawDecision, storeTicket, ticketRow,
 } from '../forge-campaign-run-fixture.ts';
+import { derivationOf } from '../../forge/blueprint.ts';
 import { loadFixture, repoPathOf, resolveBlueprint, resolvePackets, type BenchFixture } from '../../forge/bench-fixture.ts';
 
 /**
@@ -141,7 +142,8 @@ export function seedIngestStore(fixtureDir: string, dir: string, o: { landTicket
     scope: { operation: 'approve-ir', corpusId: corpus.id }, artifactIds: [] });
   for (const id of idOf.values()) ctx.store.setIrStatus(id, 'approved', approveIr.id);
 
-  const body = resolveBlueprint(fixture.blueprint, { records: fixture.overlay.records, irOf, approved: new Set(idOf.values()), corpusDigest, irSetDigest: digestOf('seeded') });
+  const stored = fixture.overlay.records.map((r) => ({ id: irOf(r.key), kind: r.kind, docKey: r.docKey, at: r.at, milestone: r.attrs.milestone }));
+  const { body, byTicket } = resolveBlueprint(fixture.blueprint, { overlay: fixture.overlay.records, stored, irOf, docs: fixture.docs, corpusDigest, irSetDigest: digestOf('seeded') });
   const bodyArtifact = ctx.artifacts.put(canonicalJson(body), { kind: 'report', projectId: project.id, revision: commit, label: 'blueprint', mediaType: 'application/json' });
   ctx.store.recordArtifact(bodyArtifact);
   const blueprintDigest = digestOf(canonicalJson(body));
@@ -150,18 +152,12 @@ export function seedIngestStore(fixtureDir: string, dir: string, o: { landTicket
   const approveBp = ctx.store.recordDecision({ missionId: corpus.id, projectId: project.id, revision: commit, actor: HUMAN, kind: 'approve', rationale: 'seeded',
     scope: { operation: 'approve-blueprint', blueprintId: bp.id }, artifactIds: [] });
   ctx.store.setBlueprintStatus(bp.id, 'approved', approveBp.id);
-  ctx.store.insertDerivations([
-    ...body.components.flatMap((c) => c.requirements.map((irId) => ({ blueprintId: bp.id, elementId: c.id, irId, role: 'requirement' as const }))),
-    ...body.interfaces.flatMap((i) => i.irIds.map((irId) => ({ blueprintId: bp.id, elementId: i.id, irId, role: 'interface' as const }))),
-    ...body.boundaries.flatMap((b) => [...b.bounds.map((irId) => ({ blueprintId: bp.id, elementId: b.id, irId, role: 'bounds' as const })),
-      ...b.invariants.map((irId) => ({ blueprintId: bp.id, elementId: b.id, irId, role: 'invariant' as const }))]),
-    ...body.constraints.flatMap((c) => c.irIds.map((irId) => ({ blueprintId: bp.id, elementId: c.appliesTo[0], irId, role: 'constraint' as const }))),
-    ...body.deferred.map((d) => ({ blueprintId: bp.id, elementId: 'deferred', irId: d.irId, role: 'deferred' as const })),
-    ...body.outOfScope.map((d) => ({ blueprintId: bp.id, elementId: 'out-of-scope', irId: d.irId, role: 'out-of-scope' as const })),
-  ]);
+  const approvedMap = new Map(ctx.store.irRecords(corpus.id, { status: 'approved' }).map((r) => [r.id, r]));
+  ctx.store.insertDerivations(derivationOf(body, bp.id, approvedMap));
+
 
   const { campaign } = makeCampaign(ctx, root, commit);
-  for (const p of resolvePackets(fixture.packets, irOf, bp.id)) {
+  for (const p of resolvePackets(fixture.packets, irOf, bp.id, byTicket)) {
     const digest = digestOf(canonicalJson(p));
     const art = ctx.artifacts.put(canonicalJson(p), { kind: 'report', projectId: project.id, revision: commit, label: `packet ${p.ticketId}`, mediaType: 'application/json' });
     ctx.store.recordArtifact(art);

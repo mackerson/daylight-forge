@@ -16,7 +16,8 @@ import { spawnSync } from 'node:child_process';
 import { BenchRefused, CHECKS, liveRefusal, runBenchmark, type BenchReport } from '../forge/ingest-bench.ts';
 import agents from './ingest-bench-agents.ts';
 import { buildHarborCorpus, harborDigest } from './lib/synthetic-corpus.ts';
-import { fixtureProblems, invariantPlacement, loadFixture, planOfPackets, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
+import { fixtureProblems, invariantPlacement, loadFixture, planOfPackets, resolveBlueprint, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
+import { ASSIGNABLE } from '../forge/blueprint.ts';
 import { closureOf, hungarian, parseGroundTruth, planOfGroundTruth, scorePlan } from './lib/plan-score.ts';
 import { loadSeeds, missedSeeds } from './lib/seed-defects.ts';
 
@@ -200,6 +201,24 @@ check('an unknown mode is a usage error', cli(['--mode', 'turbo', '--fixture', B
 const blind = await runBenchmark(BENCH_FIXTURES.harbor, { mode: 'mock', env: {} });
 check('without scripted agents, extraction is blocked, never faked', blind.stages.find((s) => s.id === 'extract')?.status === 'blocked'
   || blind.stages.find((s) => s.id === 'register')?.status === 'blocked');
+
+section('the expected blueprints place every record once, within R15\'s list caps (H1)');
+for (const name of ['olc', 'harbor']) {
+  const f = loadFixture(BENCH_FIXTURES[name]);
+  const irOf = (k: string) => (f.overlay.records.some((r) => r.key === k) ? `ir_${k}` : null);
+  const stored = f.overlay.records.map((r) => ({ id: `ir_${r.key}`, kind: r.kind, docKey: r.docKey, at: r.at, milestone: r.attrs.milestone }));
+  const { body } = resolveBlueprint(f.blueprint, { overlay: f.overlay.records, stored, irOf, docs: f.docs, corpusDigest: 'sha256:x', irSetDigest: 'sha256:y' });
+  const placed = [...body.components.flatMap((c) => c.requirements), ...body.interfaces.flatMap((i) => i.irIds), ...body.constraints.flatMap((c) => c.irIds),
+    ...body.deferred.map((d) => d.irId), ...body.outOfScope.map((o) => o.irId)];
+  const twice = placed.filter((id, i) => placed.indexOf(id) !== i);
+  check(`${name}: no record is placed twice`, twice.length === 0, [...new Set(twice)].slice(0, 6).join(', '));
+  check(`${name}: outOfScope and deferred stay within 256 entries each`, body.outOfScope.length <= 256 && body.deferred.length <= 256,
+    `outOfScope ${body.outOfScope.length}, deferred ${body.deferred.length}`);
+  const assignable = stored.filter((r) => ASSIGNABLE.includes(r.kind));
+  check(`${name}: every assignable record is placed`, assignable.every((r) => placed.includes(r.id)), String(assignable.filter((r) => !placed.includes(r.id)).length));
+  check(`${name}: the blueprint stage passes R15's validator on the real pipeline`, reports[name].stages.find((s) => s.id === 'blueprint')?.status === 'ok',
+    reports[name].stages.find((s) => s.id === 'blueprint')?.detail);
+}
 
 section('findings are matched by a stable key, so the same run gives the same report (P2-R61)');
 {

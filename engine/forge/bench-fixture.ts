@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BlueprintV1, PlanFile, WorkPacket } from '../mission/types.ts';
+import type { BlueprintV1, IrKind, PlanFile, WorkPacket } from '../mission/types.ts';
+import { ASSIGNABLE } from './blueprint.ts';
+import { PACKETS_KIND } from './packets.ts';
 import { overlayProblems, readDocs, readOverlay, type OverlayFile, type OverlayRecord } from './bench-overlay.ts';
 import { parseGroundTruth, type GtPlan } from './bench-score.ts';
 
@@ -34,7 +36,7 @@ export interface PacketTemplate {
   requirements: string[]; obligations: Array<{ id: string; keys: string[]; statement: string }>;
   interfaces: Array<{ interfaceId: string; role: 'provides' | 'consumes'; keys: string[] }>;
 }
-export interface BlueprintTemplate { kind: 'daylight-blueprint-template'; v: 1; rest: string; body: BlueprintV1 }
+export interface BlueprintTemplate extends BlueprintTemplateRules { kind: 'daylight-blueprint-template'; v: 1; rest: string; body: BlueprintV1 }
 export interface ReviewScript {
   /** Each finding says how the scripted person disposes of it; the store's finding is found by `findingKey`, never by order (P2-R61). */
   findings: Array<{ kind: string; severity: 'high' | 'medium' | 'low'; title: string; statement: string; irKey?: string; docKey?: string; quote?: string;
@@ -198,37 +200,97 @@ export function resolveKeys<T>(v: T, irOf: (key: string) => string | null): T {
 }
 
 /**
- * The blueprint body for a store: template keys resolved; every approved record no element names
- * goes to `deferred` when its effective milestone is outside scope, else to `outOfScope` with the
- * template's `rest` reason, so each is assigned exactly once.
+ * Where a record nothing names explicitly goes, by the section it sits in (its nearest heading's
+ * title, by prefix): to a component and the packet that covers it, to a constraint on components,
+ * deferred to a milestone, or out of scope. Rules are the blueprint author's, as data; first match.
  */
-export function resolveBlueprint(t: BlueprintTemplate, o: { records: readonly OverlayRecord[]; irOf: (key: string) => string | null; approved: ReadonlySet<string>;
-  corpusDigest: string; irSetDigest: string }): BlueprintV1 {
+export interface PlacementRule {
+  doc: string; under: '*' | string[]; as: 'component' | 'constraint' | 'deferred' | 'outOfScope';
+  component?: string; ticket?: string; appliesTo?: string[]; to?: string; reason?: string;
+}
+export interface BlueprintTemplateRules { place?: PlacementRule[] }
+/** An approved record of the store, located: what the blueprint must place. */
+export interface StoredRecord { id: string; kind: IrKind; docKey: string | null; at: number | null; milestone?: string }
+
+/** The title of the nearest ATX heading at or before `at`, outside fences; null before the first. */
+export function headingTitleAt(doc: Buffer, at: number): string | null {
+  let title: string | null = null;
+  let pos = 0;
+  let fence = false;
+  for (const line of doc.toString('utf8').split('\n')) {
+    if (pos > at) break;
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    const m = !fence && /^#{1,6}\s+(.*)$/.exec(line);
+    if (m) title = m[1].trim();
+    pos += Buffer.byteLength(line, 'utf8') + 1;
+  }
+  return title;
+}
+
+const ruleMatches = (r: PlacementRule, docKey: string, title: string | null) =>
+  r.doc === docKey && (r.under === '*' || (title !== null && r.under.some((p) => title.startsWith(p))));
+
+/**
+ * The blueprint body for a store, placing every approved assignable record exactly once (R15's
+ * rule): template keys resolved; then each record nothing names goes to `deferred` when its
+ * effective milestone is outside scope, else by the first placement rule its section matches,
+ * else to `outOfScope` with the template's `rest` reason. Records placed on a component are
+ * returned by ticket, for the packet that must cover them.
+ */
+export function resolveBlueprint(t: BlueprintTemplate, o: { overlay: readonly OverlayRecord[]; stored: readonly StoredRecord[]; irOf: (key: string) => string | null;
+  docs: ReadonlyMap<string, Buffer>; corpusDigest: string; irSetDigest: string }): { body: BlueprintV1; byTicket: Map<string, string[]> } {
   const body = resolveKeys(structuredClone(t.body), o.irOf);
   const named = new Set([...body.components.flatMap((c) => c.requirements), ...body.interfaces.flatMap((i) => i.irIds),
     ...body.constraints.flatMap((c) => c.irIds), ...body.deferred.map((d) => d.irId), ...body.outOfScope.map((x) => x.irId)]);
-  const eff = effectiveMilestones(o.records);
-  for (const r of o.records) {
-    const id = o.irOf(r.key);
-    if (!id || !o.approved.has(id) || named.has(id)) continue;
-    const m = eff.get(r.key);
-    if (m !== undefined && !body.scope.milestones.includes(m)) body.deferred.push({ irId: id, to: m });
-    else body.outOfScope.push({ irId: id, reason: t.rest });
-    named.add(id);
+  const eff = effectiveMilestones(o.overlay);
+  const keyOf = new Map(o.overlay.map((r) => [o.irOf(r.key), r.key]));
+  const byTicket = new Map<string, string[]>();
+  const ruleConstraints = new Map<number, string[]>();
+  const rules = t.place ?? [];
+  for (const r of [...o.stored].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    if (named.has(r.id) || !ASSIGNABLE.includes(r.kind)) continue;
+    named.add(r.id);
+    const key = keyOf.get(r.id);
+    const m = key !== undefined ? eff.get(key) : r.milestone;
+    if (m !== undefined && !body.scope.milestones.includes(m)) {
+      body.deferred.push({ irId: r.id, to: m });
+      continue;
+    }
+    const doc = r.docKey !== null ? o.docs.get(r.docKey) : undefined;
+    const title = doc && r.at !== null ? headingTitleAt(doc, r.at) : null;
+    const k = r.docKey === null ? -1 : rules.findIndex((x) => ruleMatches(x, r.docKey!, title));
+    const rule = rules[k];
+    if (!rule || rule.as === 'outOfScope') body.outOfScope.push({ irId: r.id, reason: rule?.reason ?? t.rest });
+    else if (rule.as === 'deferred') body.deferred.push({ irId: r.id, to: rule.to ?? 'later' });
+    else if (rule.as === 'constraint') ruleConstraints.set(k, [...(ruleConstraints.get(k) ?? []), r.id]);
+    else {
+      const c = body.components.find((x) => x.id === rule.component);
+      if (!c || !rule.ticket) throw new Error(`placement rule ${k} names no component or ticket`);
+      c.requirements.push(r.id);
+      byTicket.set(rule.ticket, [...(byTicket.get(rule.ticket) ?? []), r.id]);
+    }
   }
-  return { ...body, corpusDigest: o.corpusDigest, irSetDigest: o.irSetDigest };
+  for (const [k, ids] of [...ruleConstraints].sort(([a], [b]) => a - b)) {
+    body.constraints.push({ irIds: ids, appliesTo: rules[k].appliesTo ?? body.components.map((c) => c.id) });
+  }
+  return { body: { ...body, corpusDigest: o.corpusDigest, irSetDigest: o.irSetDigest }, byTicket };
 }
 
-export function resolvePackets(packets: readonly PacketTemplate[], irOf: (key: string) => string | null, blueprintId: string): PacketBody[] {
+/** The packets for a store: template keys resolved, plus the records the blueprint placed on each ticket by rule. */
+export function resolvePackets(packets: readonly PacketTemplate[], irOf: (key: string) => string | null, blueprintId: string,
+  byTicket: ReadonlyMap<string, readonly string[]> = new Map()): PacketBody[] {
   const id = (k: string) => resolveKeys(`ir:${k}`, irOf);
   return packets.map((p) => ({
     blueprintId, componentId: p.componentId, ticketId: p.ticketId, milestone: p.milestone, title: p.title, objective: p.objective,
-    prerequisites: p.prerequisites, scope: p.scope, requirementIds: p.requirements.map(id),
+    prerequisites: p.prerequisites, scope: p.scope, requirementIds: [...p.requirements.map(id), ...(byTicket.get(p.ticketId) ?? [])],
     interfaceContracts: p.interfaces.map((i) => ({ interfaceId: i.interfaceId, role: i.role, irIds: i.keys.map(id) })),
     artifacts: [], acceptanceObligations: p.obligations.map((ob) => ({ id: ob.id, irIds: ob.keys.map(id), statement: ob.statement })),
     integrationDeps: [], blocksOn: [], examples: [], negativeExamples: [],
   }));
 }
+
+/** The packets file R15's `importPackets` reads. */
+export const packetsFileOf = (bodies: readonly PacketBody[]) => ({ kind: PACKETS_KIND, version: 1 as const, packets: bodies });
 
 /** A version-1 plan carrying the packets' tickets (lanes from the blueprint): what an emitter would produce, for scorer tests. */
 export function planOfPackets(packets: ReadonlyArray<Pick<PacketTemplate, 'ticketId' | 'componentId' | 'title' | 'objective' | 'prerequisites' | 'scope'>>,

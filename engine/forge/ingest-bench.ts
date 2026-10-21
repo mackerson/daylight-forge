@@ -104,7 +104,7 @@ interface Inputs {
   fixture: BenchFixture; agents: BenchAgents | null;
   ctx?: DaylightContext; root?: string; projects?: Record<string, string>; rev?: CorpusRevision; corpusId?: string;
   irOf?: (key: string) => string | null; records?: IrRecord[]; units?: Array<{ docKey: string; start: number; end: number }>; approved?: Set<string>; coverage?: CoverageReport; seeds?: SeededDefect[];
-  blueprintId?: string; plan?: PlanFile; campaignId?: string; landing?: Integration; backward?: TraceReport; forward?: TraceReport; roundTrip?: boolean;
+  blueprintId?: string; byTicket?: Map<string, string[]>; plan?: PlanFile; campaignId?: string; landing?: Integration; backward?: TraceReport; forward?: TraceReport; roundTrip?: boolean;
   revise?: { staleKeys: string[]; staleTickets: string[]; changedRows: string[] }; holdout?: { leakedToContext: boolean; withheld: number; excerptWithheld: boolean };
 }
 
@@ -405,8 +405,11 @@ const STAGES: Stage[] = [
     return `${x.coverage.totals.normative} normative, ${x.coverage.unmapped.length} unmapped, ${(x.coverage.seeded ?? []).filter((s) => s.detected).length}/${x.seeds.length} seeds`;
   } },
   { id: 'blueprint', needs: ['approve-ir'], run: (x, work) => {
-    const body = resolveBlueprint(x.fixture.blueprint, { records: x.fixture.overlay.records, irOf: x.irOf!, approved: x.approved!,
+    const stored = x.ctx!.store.irRecords(x.corpusId!, { status: 'approved' })
+      .map((r) => ({ id: r.id, kind: r.kind, docKey: r.span?.docKey ?? null, at: r.span?.start ?? null, milestone: r.attrs.milestone }));
+    const { body, byTicket } = resolveBlueprint(x.fixture.blueprint, { overlay: x.fixture.overlay.records, stored, irOf: x.irOf!, docs: x.fixture.docs,
       corpusDigest: x.rev!.corpusDigest, irSetDigest: currentIrSetDigest(x.ctx!, x.corpusId!) ?? '' });
+    x.byTicket = byTicket;
     const file = path.join(work, 'blueprint.json');
     fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`);
     const { blueprint, refusals } = importBlueprint(x.ctx!, x.corpusId!, file);
@@ -416,7 +419,7 @@ const STAGES: Stage[] = [
     return blueprint.id;
   } },
   { id: 'packets', needs: ['blueprint'], run: (x, work) => {
-    const bodies = resolvePackets(x.fixture.packets, x.irOf!, x.blueprintId!);
+    const bodies = resolvePackets(x.fixture.packets, x.irOf!, x.blueprintId!, x.byTicket);
     const file = path.join(work, 'packets.json');
     fs.writeFileSync(file, `${JSON.stringify(bodies, null, 2)}\n`);
     const { packets, refusals } = importPackets(x.ctx!, x.blueprintId!, file);

@@ -46,7 +46,6 @@
    ],
    "requirements": [
     "hl-req-020",
-    "hl-req-021",
     "hl-req-022",
     "am-a2"
    ],

@@ -91,6 +91,8 @@ const TICKETS: Array<{ id: string; lane: 'K' | 'V' | 'Q'; title: string; deps: s
   { id: 'W2.Q3', lane: 'Q', title: 'Audit retention', deps: ['Q2'], paths: ['svc/audit/src/retention.rs', 'svc/audit/tests/retention.rs'], clauses: ['8.1', '8.2'], decisions: [] },
 ];
 
+const INTERFACE_KEYS = ['hl-req-021'];
+
 const LANES = [
   { id: 'K', title: 'Ledger', owns: ['lib/ledger/'] },
   { id: 'V', title: 'Port services', owns: ['svc/berth/', 'svc/tariff/'] },
@@ -219,7 +221,8 @@ function groundTruth(): string {
 function packets(): string {
   const wave = (id: string) => id.split('.')[0];
   const list = TICKETS.map((t) => {
-    const reqs = [...t.clauses.flatMap(keysOfClause), ...t.decisions.flatMap((d) => [`dr${d}`, `dr${d}-c`]),
+    // A record an interface carries is placed on the interface alone, so no packet lists it as a requirement (placed once, R15).
+    const reqs = [...t.clauses.flatMap(keysOfClause).filter((k) => !INTERFACE_KEYS.includes(k)), ...t.decisions.flatMap((d) => [`dr${d}`, `dr${d}-c`]),
       ...AMENDMENTS.filter((a) => t.clauses.includes(a.clause) && !a.deferral).map((a) => `am-${a.n.toLowerCase()}`)];
     const prereq = t.deps.map((d) => (d.includes('.') ? d : `${wave(t.id)}.${d}`));
     return { ticketId: t.id, componentId: t.lane, milestone: wave(t.id), title: t.title, objective: `Implement Clause ${t.clauses.join(', Clause ')}.`,
@@ -242,7 +245,7 @@ function blueprint(): string {
       { id: 'V', boundary: 'port-services', title: 'Port services', owns: ['svc/berth/', 'svc/tariff/'], sections: [], requirements: req('V'), dependsOn: ['K'], provides: [], consumes: ['ledger.append'] },
       { id: 'Q', boundary: 'audit', title: 'Audit', owns: ['svc/audit/'], sections: [], requirements: req('Q'), dependsOn: ['K'], provides: [], consumes: ['ledger.append'] },
     ],
-    interfaces: [{ id: 'ledger.append', owner: 'K', irIds: ['ir:hl-req-021'], summary: 'Append an entry; refused on a predecessor mismatch.', crossesBoundary: true }],
+    interfaces: [{ id: 'ledger.append', owner: 'K', irIds: INTERFACE_KEYS.map((k) => `ir:${k}`), summary: 'Append an entry; refused on a predecessor mismatch.', crossesBoundary: true }],
     order: [['K'], ['Q', 'V']], constraints: [], deferred: [], outOfScope: [] };
   return `${JSON.stringify({ kind: 'daylight-blueprint-template', v: 1, note: 'By construction from the README map.', rest: 'not placed: rationale or context', body }, null, 1)}\n`;
 }

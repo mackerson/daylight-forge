@@ -40,7 +40,7 @@ const MAX_IDS = 256;
 const MAX_REASON_BYTES = 1024;
 const MAX_SUMMARY_BYTES = 1024;
 /** Records a blueprint must place, each exactly once (§7). */
-const ASSIGNABLE: readonly IrKind[] = ['requirement', 'invariant', 'constraint', 'interface', 'acceptance-condition', 'dependency'];
+export const ASSIGNABLE: readonly IrKind[] = ['requirement', 'invariant', 'constraint', 'interface', 'acceptance-condition', 'dependency'];
 
 const sha256hex = (s: string) => createHash('sha256').update(s).digest('hex');
 type Obj = Record<string, unknown>;

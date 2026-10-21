@@ -53,14 +53,16 @@ const fwd = traceForward(ctx, { corpusId: olc.corpusId, docKey: probe.span!.docK
 const nodeIds = new Set(fwd.nodes.map((n) => n.id));
 check('the report is well formed: every edge joins two nodes by a named join', wellFormed(fwd) === '', wellFormed(fwd));
 check('the passage reaches its record through ir_spans', fwd.edges.some((e) => e.to === probeId && e.via === 'ir-span'));
-check('the record reaches its components through the approved blueprint', fwd.nodes.some((n) => n.type === 'component' && n.id === `${olc.blueprintId}:P`)
-  && fwd.nodes.some((n) => n.type === 'component' && n.id === `${olc.blueprintId}:L`));
-check('the record reaches both tickets that cite it, through their packets', ['M0.P2', 'M0.L3'].every((t) => nodeIds.has(`${olc.campaign.id}:${t}`))
-  && fwd.edges.filter((e) => e.via === 'packet-ticket').length >= 2);
+check('the record reaches the one component it is placed on, through the approved blueprint',
+  fwd.nodes.filter((n) => n.type === 'component').map((n) => n.id).join() === `${olc.blueprintId}:P`);
+check('the record reaches the ticket that cites it, through its packet', nodeIds.has(`${olc.campaign.id}:M0.P2`)
+  && fwd.edges.some((e) => e.via === 'packet-ticket' && e.to === `${olc.campaign.id}:M0.P2`) && !nodeIds.has(`${olc.campaign.id}:M0.L3`));
 check('the landed ticket reaches its work item, mission, candidate and integration', fwd.nodes.some((n) => n.type === 'integration' && n.id === olc.landing.id && n.status === 'integrated')
   && ['work-item', 'mission', 'candidate'].every((t) => fwd.nodes.some((n) => n.type === t)));
 check('a gate bound to the ticket\'s obligation is joined as obligation-gate', fwd.edges.some((e) => e.via === 'obligation-gate'));
-check('an unlanded ticket is a gap, not an invented landing', fwd.gaps.some((g) => g.at.endsWith(':M0.L3') || g.why === 'no ticket mission has started'));
+const unlanded = traceForward(ctx, { irId: olc.irOf('h046') });
+check('an unlanded ticket is a gap, not an invented landing', unlanded.nodes.some((n) => n.id === `${olc.campaign.id}:M0.L3`)
+  && unlanded.gaps.some((g) => g.missing === 'mission' && g.why === 'no ticket mission has started') && !unlanded.nodes.some((n) => n.type === 'integration'));
 check('the passage\'s quote digests were re-hashed from the stored bytes, none mismatched', fwd.verified.quotesRehashed >= 1 && fwd.verified.mismatches.length === 0,
   JSON.stringify(fwd.verified));
 

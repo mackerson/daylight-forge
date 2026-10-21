@@ -17,7 +17,6 @@
    ],
    "requirements": [
     "h083",
-    "h121",
     "h122",
     "h074"
    ],
@@ -140,7 +139,6 @@
     "crates/zip/src/read.rs"
    ],
    "requirements": [
-    "h138",
     "h070",
     "h163"
    ],
@@ -491,7 +489,6 @@
     "xtask/src/ci.rs"
    ],
    "requirements": [
-    "h069",
     "h012",
     "oracle-digest",
     "h164"
@@ -668,15 +665,13 @@
    "requirements": [
     "h046",
     "h047",
-    "h049",
-    "h127",
-    "adr4-tests"
+    "h127"
    ],
    "obligations": [
     {
      "id": "ob1",
      "keys": [
-      "adr4-tests"
+      "h046"
      ],
      "statement": "Mastery transitions read the evidence bit, never editorial state."
     }
@@ -737,7 +732,6 @@
    ],
    "requirements": [
     "h080",
-    "h150",
     "h158",
     "h159"
    ],
