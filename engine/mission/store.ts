@@ -2285,7 +2285,7 @@ export class MissionStore {
     return this.tx(() => {
       const a = this.assumption(id);
       if (!a) throw new Error(`unknown assumption ${id}`);
-      // An IR interpretation lives on its corpus mission (§6.3); it holds tickets by owner decision id, never files one.
+      // IR interpretations live on the corpus (§6.3) and file no follow-up.
       const interpretation = a.source === 'ir-interpretation';
       const c = interpretation ? this.requireMission(a.campaignId) : this.requireCampaign(a.campaignId);
       const op = input.scope.operation;
@@ -2640,8 +2640,7 @@ export class MissionStore {
     const bindings = Object.fromEntries(experiments.map((x) => [x.id, campaignBindingOf(x)]));
     const roles = Object.fromEntries(experiments.map((x) => [x.id, x.role])) as CampaignLockScope['roles'];
     const lines = experiments.map((x) => `${x.id}:${x.harnessDigest}:${x.role}:${bindings[x.id] ?? '*'}`).sort();
-    // Acceptance obligations a locked gate discharges (spec ingestion §8.4): in the digest only when
-    // there are any, so a lock without them digests as it always did.
+    // Obligations enter the digest only when present (§8.4).
     const bound: Record<string, string[]> = {};
     for (const [x, obs] of Object.entries(obligations)) {
       if (!ids.includes(x)) throw new Error(`obligations name experiment ${x}, which is not in the set being locked`);
@@ -2897,11 +2896,11 @@ export class MissionStore {
     if (!canTransition(IR_TRANSITIONS, r.status, to)) throw new IllegalTransition('IR record', id, r.status, to);
     const d = this.decision(decisionId);
     if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
-    // Only a person's approve-ir on this record's corpus moves it (P2-R56, P2-R59): no borrowed decision.
+    // A person's approve-ir on this corpus only (P2-R59).
     if (d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) {
       throw new Error(`decision ${decisionId} is not a person's approve-ir decision on corpus ${r.corpusId}`);
     }
-    // An inferred record without basis is approved on its confirmed interpretation, which it then names.
+    // Inferred, no basis: names its confirmed interpretation.
     const u = o.assumptionId !== undefined ? this.assumption(o.assumptionId) : null;
     if (o.assumptionId !== undefined && (u?.irId !== id || u.status !== 'confirmed')) throw new Error(`assumption ${o.assumptionId} is not a confirmed interpretation of ${id}`);
     this.db.prepare('UPDATE ir_records SET status=?, decision_id=?, assumption_id=COALESCE(?, assumption_id), updated_at=? WHERE id=?')
@@ -3107,7 +3106,7 @@ export class MissionStore {
     }
   }
 
-  /** The campaign's trace as its current plan states it: the rows of an earlier import are replaced, in one transaction. */
+  /** Replaces the campaign's trace with its current plan's, in one transaction. */
   replaceTicketTrace(campaignId: string, rows: TicketTraceRow[]): void {
     this.tx(() => {
       if (rows.some((t) => t.campaignId !== campaignId)) throw new Error(`a trace row names another campaign than ${campaignId}`);
@@ -3129,10 +3128,7 @@ export class MissionStore {
       Array<Record<string, unknown>>).map(rowToTicketTrace);
   }
 
-  /**
-   * Overturn the open interpretations of a record a person's approve-ir rejected or superseded:
-   * a record that says nothing any more has no reading to decide. Returns the rows it moved.
-   */
+  /** Overturns the open interpretations of a rejected or superseded record (review L3). */
   closeInterpretations(irId: string, decisionId: string): string[] {
     const r = this.irRecord(irId);
     const d = this.decision(decisionId);
