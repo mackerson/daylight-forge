@@ -1,64 +1,57 @@
-import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
 import path from 'node:path';
-import { AGENT_SESSION_VARS } from '../forge/policy.ts';
+import { pathToFileURL } from 'node:url';
+import { BENCH_MODES, liveRefusal, renderBenchText, runBenchmark, type BenchAgents, type BenchMode } from '../forge/ingest-bench.ts';
+import type { BenchFixture } from '../forge/bench-fixture.ts';
 
 /**
- * `daylight ingest bench <olc|harbor|dir> --mode mock|live-extract|live-full [--format json] [--keep]`:
- * the ingestion benchmark (spec ingestion §11, WS-R16).
+ * `daylight ingest bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json] [--keep]`:
+ * the ingestion benchmark (spec ingestion §11, WS-R16, P2-R57).
  *
- * Only the gate lives here: the mode is checked and a live mode refused with one line — never from
- * an agent session, and nowhere until a live-spend grant exists (P2-R7). The benchmark itself, with
- * its scripted agents and row-level fixtures, is test code (engine/test/lib/ingest-bench.ts) and
- * product code never calls into engine/test (`tests-are-never-imported`), so mock mode runs it as a
- * child process, `engine/test/ingest-bench-main.ts`, which a build without the test tree lacks.
- * Exit codes are the runner's: 0 nothing failed, 1 a check failed, 2 bad arguments or a refusal.
+ * Everything project-specific is an input: `--fixture` is a directory with `bench.json` (manifest,
+ * ground truth, IR overlay, seeds and templates it names), and in mock mode `--extractor` is a
+ * module whose default export, given the loaded fixture, returns the scripted agents and the
+ * scripted person (`BenchAgents`) — the way `DAYLIGHT_MOCK_ADAPTER` names a mock agent. Nothing
+ * here knows a project or a test file. A live mode is refused with one line: never from an agent
+ * session, and nowhere until a live-spend grant exists (P2-R7). Exit 0 nothing failed, 1 a check
+ * failed, 2 bad arguments or a refusal.
  */
-
-export const BENCH_MODES = ['mock', 'live-extract', 'live-full'] as const;
-export type BenchMode = (typeof BENCH_MODES)[number];
-
-/** Why a mode does not run, in one line; null for mock. Today every live mode is refused (P2-R7). */
-export function liveRefusal(mode: BenchMode, env: Readonly<Record<string, string | undefined>>): string | null {
-  if (mode === 'mock') return null;
-  if (AGENT_SESSION_VARS.some((k) => env[k] !== undefined && env[k] !== '')) return `${mode} spends on live models and is never run from an agent session`;
-  return `${mode} needs live model spend, which is not authorised (P2-R7): no live-spend grant exists yet`;
-}
-
-export const BENCH_MAIN = path.resolve(import.meta.dirname, '..', 'test', 'ingest-bench-main.ts');
-
 export async function runIngestBench(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
-  const [corpus, ...rest] = argv;
   const flags = new Map<string, string>();
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    const key = a.startsWith('--') ? a.slice(2) : null;
-    if (!key || !['mode', 'format', 'keep'].includes(key)) {
-      console.error(`usage: ingest bench <olc|harbor|dir> --mode ${BENCH_MODES.join('|')} [--format json] [--keep] (unexpected ${a})`);
-      return 2;
-    }
-    flags.set(key, key === 'keep' ? 'true' : rest[++i] ?? '');
+  const usage = (why: string) => {
+    console.error(`usage: ingest bench --mode ${BENCH_MODES.join('|')} --fixture <dir> --extractor <script> [--format json] [--keep] (${why})`);
+    return 2;
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const key = argv[i].startsWith('--') ? argv[i].slice(2) : null;
+    if (!key || !['mode', 'fixture', 'extractor', 'format', 'keep'].includes(key) || flags.has(key)) return usage(`unexpected ${argv[i]}`);
+    if (key === 'keep') flags.set(key, 'true');
+    else if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) return usage(`--${key} needs a value`);
+    else flags.set(key, argv[++i]);
   }
   const mode = (flags.get('mode') ?? 'mock') as BenchMode;
   const format = flags.get('format') ?? 'text';
-  if (!corpus || corpus.startsWith('--') || !(BENCH_MODES as readonly string[]).includes(mode) || !['json', 'text'].includes(format)) {
-    console.error(`usage: ingest bench <olc|harbor|dir> --mode ${BENCH_MODES.join('|')} [--format json] [--keep]`);
-    return 2;
-  }
+  if (!(BENCH_MODES as readonly string[]).includes(mode)) return usage(`unknown mode ${mode}`);
+  if (format !== 'json' && format !== 'text') return usage('--format is json or text');
   const refusal = liveRefusal(mode, env);
   if (refusal) {
     console.error(`refused: ${refusal}`);
     if (format === 'json') process.stdout.write(`${JSON.stringify({ error: refusal, refused: true })}\n`);
     return 2;
   }
-  if (!fs.existsSync(BENCH_MAIN)) {
-    console.error('error: the ingestion benchmark ships with the test tree, which this build does not include');
+  const fixture = flags.get('fixture');
+  const extractor = flags.get('extractor');
+  if (!fixture) return usage('--fixture is required');
+  if (!extractor) return usage('mock mode needs --extractor <script>');
+  try {
+    const mod = (await import(pathToFileURL(path.resolve(extractor)).href)) as { default?: (f: BenchFixture) => BenchAgents };
+    if (typeof mod.default !== 'function') return usage(`${extractor} has no default export returning the scripted agents`);
+    const report = await runBenchmark(path.resolve(fixture), { mode, agents: mod.default, env, keep: flags.get('keep') === 'true' });
+    process.stdout.write(format === 'json' ? `${JSON.stringify(report, null, 2)}\n` : renderBenchText(report));
+    return report.summary.fail ? 1 : 0;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (format === 'json') process.stdout.write(`${JSON.stringify({ error: message })}\n`);
+    console.error(`error: ${message}`);
     return 1;
   }
-  const r = spawnSync(process.execPath, [BENCH_MAIN, corpus, mode, format, flags.has('keep') ? 'keep' : ''], {
-    env: env as NodeJS.ProcessEnv, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
-  });
-  process.stdout.write(r.stdout ?? '');
-  if (r.stderr) process.stderr.write(r.stderr);
-  return r.status ?? 1;
 }

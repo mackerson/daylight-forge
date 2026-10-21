@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { buildOverlay, formatOverlay, type MechanicalRule, type OverlayRecord } from './ir-overlay.ts';
+import { buildOverlay, formatOverlay, type MechanicalRule, type OverlayRecord } from '../../forge/bench-overlay.ts';
 
 /**
  * Harbor Ledger, the synthetic second corpus (spec ingestion §11.1, P2-R53 D-e): a made-up

@@ -7,7 +7,7 @@ import type { ExtractWindow, IrKind, IrProposal, ReportedIrFinding, Section, Sec
 import { OUTBOX_TOOLS } from '../../forge/outbox.ts';
 import { corpusOf } from '../../forge/corpus.ts';
 import { windowOfTask } from '../../forge/sectioner.ts';
-import type { OverlayRecord } from './ir-overlay.ts';
+import type { OverlayRecord } from '../../forge/bench-overlay.ts';
 
 /**
  * Scripted extractors and reviewers for the ingestion benchmark (spec ingestion §11.2). WS-R16.

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BlueprintV1, PlanFile, WorkPacket } from '../../mission/types.ts';
-import { overlayProblems, readDocs, readOverlay, type OverlayFile, type OverlayRecord } from './ir-overlay.ts';
-import { parseGroundTruth, type GtPlan } from './plan-score.ts';
+import type { BlueprintV1, PlanFile, WorkPacket } from '../mission/types.ts';
+import { overlayProblems, readDocs, readOverlay, type OverlayFile, type OverlayRecord } from './bench-overlay.ts';
+import { parseGroundTruth, type GtPlan } from './bench-score.ts';
 
 /**
  * A benchmark corpus fixture (spec ingestion §11.1): `bench.json` names the documents by key, the

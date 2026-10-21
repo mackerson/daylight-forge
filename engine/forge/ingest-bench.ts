@@ -4,35 +4,30 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDaylight, type DaylightContext } from '../../mission/context.ts';
-import { identifyProject } from '../../mission/project.ts';
+import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { identifyProject } from '../mission/project.ts';
 import type {
   ApproveIrSetV1, CorpusManifest, CorpusRevision, CoverageReport, Integration, IrProposal, IrRecord, PlanFile, ReportedIrFinding, SeededDefect, TraceReport,
-} from '../../mission/types.ts';
-import { BENCH_MODES, liveRefusal, type BenchMode } from '../../ingest/bench.ts';
-import { corpusOf, registerCorpus } from '../../forge/corpus.ts';
-import { extract } from '../../forge/extract.ts';
-import { coverageOf, safeExcerpt } from '../../forge/coverage.ts';
-import { approveIr, currentIrSetDigest, runIrReview } from '../../forge/ir-review.ts';
-import { approveBlueprint, importBlueprint } from '../../forge/blueprint.ts';
-import { emitPlan, importPackets, packetContext } from '../../forge/packets.ts';
-import { reviseCorpus, staleTickets } from '../../forge/authority.ts';
-import { confirmIngest } from '../../forge/commands-corpus-review.ts';
-import { approvePlan, importPlan } from '../../forge/campaign.ts';
-import { confirmDigest } from '../../forge/confirm.ts';
-import { lockableIds, lockCampaign, registerPlanGates } from '../../forge/campaign-gates.ts';
-import type { GateContext } from '../../forge/gate.ts';
-import { isPlanRefusals, parsePlan, topoOrder } from '../../forge/plan.ts';
-import { spanOfNodeId, traceBackward, traceForward } from '../../forge/trace.ts';
-import { diffOf, filesOf, commitOn, makeCandidate, rawDecision } from '../forge-campaign-run-fixture.ts';
-import { buildOverlay, formatOverlay } from './ir-overlay.ts';
+} from '../mission/types.ts';
+import { corpusOf, registerCorpus } from './corpus.ts';
+import { extract } from './extract.ts';
+import { coverageOf, safeExcerpt } from './coverage.ts';
+import { currentIrSetDigest, runIrReview } from './ir-review.ts';
+import { importBlueprint } from './blueprint.ts';
+import { emitPlan, importPackets, packetContext } from './packets.ts';
+import { reviseCorpus, staleTickets } from './authority.ts';
+import { importPlan } from './campaign.ts';
+import { AGENT_SESSION_VARS } from './policy.ts';
+import { isPlanRefusals, parsePlan, topoOrder } from './plan.ts';
+import { spanOfNodeId, traceBackward, traceForward } from './trace.ts';
+import { buildOverlay, formatOverlay } from './bench-overlay.ts';
 import {
   effectiveMilestones, fixtureProblems, repoPathOf, invariantPlacement, kahnLayers, loadFixture, planOfPackets, resolveBlueprint, resolvePackets, scopeLeaks,
   ticketRefResolution, type BenchFixture,
 } from './bench-fixture.ts';
-import { scriptedExtractor, scriptedReviewer } from './ingest-mocks.ts';
-import { scorePlan, type PlanScore } from './plan-score.ts';
-import { loadSeeds, missedSeeds } from './seed-defects.ts';
+import type { OutboxRunner } from '../mission/orchestrate.ts';
+import { scorePlan, type PlanScore } from './bench-score.ts';
+import { loadSeeds, missedSeeds } from './bench-seeds.ts';
 
 /**
  * The ingestion benchmark (spec ingestion §11, P2-R53 O-c): a corpus fixture in, a report out.
@@ -47,9 +42,42 @@ import { loadSeeds, missedSeeds } from './seed-defects.ts';
  * packets from the fixture files), `live-extract` (real extractors and reviewers), `live-full`
  * (architect and packetizer live too). Live modes are refused: live model spend is not authorised
  * (P2-R7) and no live-spend grant exists yet.
+ *
+ * Product code, project-agnostic (P2-R52, P2-R57): everything about a corpus is the fixture
+ * directory, and everything that stands in for an agent or a person is `BenchAgents`, supplied by
+ * the caller (`daylight ingest bench --extractor <script>`, as `DAYLIGHT_MOCK_ADAPTER` supplies a
+ * mock agent). This module performs no human act: approve-ir, approve-blueprint, approve-plan, the
+ * gate lock and the landing are the scripted person's, and a stage without one is blocked. The
+ * store is a throwaway under the work directory, never a user's `<out>`.
  */
 
-export { BENCH_MODES, liveRefusal, type BenchMode };
+export const BENCH_MODES = ['mock', 'live-extract', 'live-full'] as const;
+export type BenchMode = (typeof BENCH_MODES)[number];
+
+/** Why a mode does not run, in one line; null for mock. Today every live mode is refused (P2-R7). */
+export function liveRefusal(mode: BenchMode, env: Readonly<Record<string, string | undefined>>): string | null {
+  if (mode === 'mock') return null;
+  if (AGENT_SESSION_VARS.some((k) => env[k] !== undefined && env[k] !== '')) return `${mode} spends on live models and is never run from an agent session`;
+  return `${mode} needs live model spend, which is not authorised (P2-R7): no live-spend grant exists yet`;
+}
+
+/** The person the benchmark scripts: every act a human makes in the pipeline, on the throwaway store. */
+export interface BenchPerson {
+  approveIr(ctx: DaylightContext, set: ApproveIrSetV1): void;
+  approveBlueprint(ctx: DaylightContext, blueprintId: string): void;
+  approvePlan(ctx: DaylightContext, campaignId: string): void;
+  /** Register the plan's gates, record their baselines and lock them. */
+  lock(ctx: DaylightContext, o: { root: string; campaignId: string; plan: PlanFile }): void;
+  /** Land one ticket: a mission, a candidate and an integrated row. */
+  land(ctx: DaylightContext, o: { root: string; campaignId: string; ticketId: string }): Integration;
+}
+/** What stands in for agents and people in mock mode; the CLI loads it from `--extractor <script>`. */
+export interface BenchAgents {
+  extract: OutboxRunner;
+  review?: (findings: ReportedIrFinding[]) => OutboxRunner;
+  person?: BenchPerson;
+}
+
 export type Falsifiable = 'falsifiable' | 'by-construction' | 'not-measured';
 export type StageId = 'fixture' | 'config' | 'repo' | 'register' | 'extract' | 'review' | 'approve-ir' | 'coverage' | 'blueprint' | 'packets' | 'campaign' | 'landing'
   | 'trace' | 'revise' | 'holdout';
@@ -73,7 +101,7 @@ class StageBlocked extends Error {}
 // ---- what the stages produce -------------------------------------------------------------------
 
 interface Inputs {
-  fixture: BenchFixture;
+  fixture: BenchFixture; agents: BenchAgents | null;
   ctx?: DaylightContext; root?: string; projects?: Record<string, string>; rev?: CorpusRevision; corpusId?: string;
   irOf?: (key: string) => string | null; records?: IrRecord[]; units?: Array<{ docKey: string; start: number; end: number }>; approved?: Set<string>; coverage?: CoverageReport; seeds?: SeededDefect[];
   blueprintId?: string; plan?: PlanFile; campaignId?: string; landing?: Integration; backward?: TraceReport; forward?: TraceReport; roundTrip?: boolean;
@@ -218,12 +246,9 @@ const countBy = (xs: readonly string[]) => xs.reduce<Record<string, number>>((m,
 
 // ---- the pipeline ------------------------------------------------------------------------------
 
-const HUMAN = `human:${(os.userInfo().username || 'bench').replace(/\s+/g, '_')}`;
-const CLEAN_ENV: Record<string, string | undefined> = { PATH: process.env.PATH };
 const GIT_ENV = { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 const git = (root: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=bench', '-c', 'user.email=bench@daylight.invalid', '-c', 'commit.gpgsign=false',
   '-c', 'core.hooksPath=/dev/null', '-C', root, ...args], { env: GIT_ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-const code8 = (digest: string) => digest.slice('sha256:'.length, 'sha256:'.length + 8);
 
 function commitAll(root: string, message: string): string {
   git(root, 'add', '-A');
@@ -297,6 +322,11 @@ function rowSnapshot(ctx: DaylightContext): Map<string, string> {
   return out;
 }
 
+function personOf(x: Inputs): BenchPerson {
+  if (!x.agents?.person) throw new StageBlocked('the scripted agents bring no person: every human act is theirs, never the benchmark\'s');
+  return x.agents.person;
+}
+
 type Stage = { id: StageId; run(x: Inputs, work: string): Promise<string> | string; needs: StageId[]; when?: (x: Inputs) => boolean };
 
 const STAGES: Stage[] = [
@@ -316,7 +346,8 @@ const STAGES: Stage[] = [
     return `${x.rev.id} with ${x.rev.docs.length} documents`;
   } },
   { id: 'extract', needs: ['register'], run: async (x) => {
-    const r = await extract(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: scriptedExtractor({ records: x.fixture.overlay.records }, { variant: { mock: 'exact', 'mock:b': 'drop5' } }) });
+    if (!x.agents) throw new StageBlocked('mock mode needs scripted agents (--extractor <script>)');
+    const r = await extract(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: x.agents.extract });
     bindKeys(x);
     const unbound = x.fixture.overlay.records.filter((o) => !x.irOf!(o.key)).length;
     return `${r.proposed.length} proposed, ${r.refused.length} refused, ${unbound} fixture record(s) not bound`;
@@ -331,7 +362,8 @@ const STAGES: Stage[] = [
       return { kind: f.kind as ReportedIrFinding['kind'], severity: f.severity, title: f.title, statement: f.statement, section: section ?? '',
         ...(irId ? { irId } : {}), ...(f.quote ? { quote: f.quote } : {}) };
     });
-    const r = await runIrReview(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: scriptedReviewer(findings) });
+    if (!x.agents?.review) throw new StageBlocked('the scripted agents bring no reviewer');
+    const r = await runIrReview(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: x.agents.review(findings) });
     return `${r.findings.length} finding(s), ${r.refused.length} refused`;
   } },
   { id: 'approve-ir', needs: ['extract'], run: (x) => {
@@ -350,8 +382,7 @@ const STAGES: Stage[] = [
     const set: ApproveIrSetV1 = { kind: 'daylight-approve-ir', version: 1, corpusId: x.corpusId!, revisionId: x.rev!.id,
       approve: recs.map((r) => r.id).filter((id) => !reject.includes(id)), reject, accept,
       dismiss: findings.map((f) => f.id).filter((id) => !accept.includes(id)), corrections };
-    const confirm = code8(confirmIngest(x.ctx!, 'approve-ir', x.corpusId!, { set }).digest);
-    approveIr(x.ctx!, { corpusId: x.corpusId!, actor: HUMAN, rationale: 'benchmark: scripted approve-ir set', confirm, env: CLEAN_ENV, set });
+    personOf(x).approveIr(x.ctx!, set);
     x.approved = new Set(x.ctx!.store.irRecords(x.corpusId!, { status: 'approved' }).map((r) => r.id));
     x.records = x.ctx!.store.irRecords(x.corpusId!);
     return `${x.approved.size} approved, ${reject.length} rejected`;
@@ -369,8 +400,7 @@ const STAGES: Stage[] = [
     fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`);
     const { blueprint, refusals } = importBlueprint(x.ctx!, x.corpusId!, file);
     if (refusals.length) throw new Error(`blueprint refused: ${refusals.map((r) => `${r.path} ${r.rule}`).join('; ')}`);
-    const confirm = code8(confirmIngest(x.ctx!, 'approve-blueprint', blueprint.id).digest);
-    approveBlueprint(x.ctx!, { blueprintId: blueprint.id, actor: HUMAN, rationale: 'benchmark: fixture blueprint', confirm, env: CLEAN_ENV });
+    personOf(x).approveBlueprint(x.ctx!, blueprint.id);
     x.blueprintId = blueprint.id;
     return blueprint.id;
   } },
@@ -388,43 +418,18 @@ const STAGES: Stage[] = [
     return `${packets.length} packets, plan ${path.basename(emitted.file)}`;
   } },
   { id: 'campaign', needs: ['packets'], run: (x) => {
+    const person = personOf(x);
     fs.writeFileSync(path.join(x.root!, 'daylight.plan.json'), `${JSON.stringify(x.plan, null, 2)}\n`);
     commitAll(x.root!, 'commit the emitted plan (a person, P2-R50 F1)');
     const imp = importPlan(x.ctx!, x.root!, 'daylight.plan.json');
     x.campaignId = imp.campaign.id;
-    approvePlan(x.ctx!, { campaignId: x.campaignId, actor: HUMAN, rationale: 'benchmark: plan read', env: CLEAN_ENV,
-      confirm: code8(confirmDigest(x.ctx!, 'approve-plan', x.campaignId).digest) });
-    const g: GateContext = { store: x.ctx!.store, artifacts: x.ctx!.artifacts, events: x.ctx!.events, repoRoot: x.root!, out: x.ctx!.out, env: CLEAN_ENV };
-    registerPlanGates(g, x.campaignId, x.plan!);
-    const c = x.ctx!.store.mission(x.campaignId)!;
-    for (const e of x.ctx!.store.experimentsFor(x.campaignId)) {
-      x.ctx!.store.recordGateEvaluation({ missionId: c.id, projectId: c.projectId, revision: c.baseRevision, experimentId: e.id, target: 'base', diffDigest: null,
-        harnessDigest: e.harnessDigest, executions: [], conclusion: 'falsified' });
-    }
-    const confirm = code8(confirmDigest(g, 'lock-campaign-gates', x.campaignId, { experimentIds: lockableIds(g, x.campaignId), ratchet: false }).digest);
-    lockCampaign(g, { campaignId: x.campaignId, actor: HUMAN, rationale: 'benchmark: gates read', ratchet: false, confirm, env: CLEAN_ENV });
+    person.approvePlan(x.ctx!, x.campaignId);
+    person.lock(x.ctx!, { root: x.root!, campaignId: x.campaignId, plan: x.plan! });
     return `${x.campaignId}: ${x.ctx!.store.ticketTrace(x.campaignId).length} trace rows`;
   } },
   { id: 'landing', needs: ['campaign'], run: (x) => {
-    const store = x.ctx!.store;
-    const c = store.mission(x.campaignId!)!;
-    const t = store.campaignTicket(c.id, x.fixture.bench.landing.ticket);
-    if (!t) throw new Error(`no ticket ${x.fixture.bench.landing.ticket} in the campaign`);
-    const m = store.authorizeMission({ missionId: store.createMission({ projectId: c.projectId, kind: 'implement', objective: `ticket ${t.ticketId}`,
-      baseRevision: c.baseRevision, parentId: c.id, workItemId: t.workItemId, scope: { paths: t.scope } }).id, actor: HUMAN, rationale: 'benchmark landing',
-    permissions: { write: true, execute: false }, maxUsd: 1 }).mission;
-    const rel = t.scope.find((s) => !s.endsWith('/')) ?? `${t.scope[0] ?? ''}landed.txt`;
-    const change = { [rel]: `landed by the benchmark for ${t.ticketId}\n` };
-    const tip = commitOn(x.root!, c.baseRevision, change, `land ${t.ticketId}`);
-    const cand = makeCandidate(x.ctx!, m, c.baseRevision, diffOf(x.root!, c.baseRevision, tip), filesOf(change));
-    const i = store.recordIntegration({ campaignId: c.id, missionId: m.id, candidateId: cand.id, ref: `refs/heads/daylight/campaign/${c.id}`, onto: c.baseRevision,
-      candidateBase: c.baseRevision });
-    store.updateIntegration(i.id, 'pending', { state: 'evaluating', method: 'apply', integratedCommit: tip, integratedTree: git(x.root!, 'rev-parse', `${tip}^{tree}`),
-      integratedDiffDigest: cand.diffArtifact.digest });
-    const d = rawDecision(store, { missionId: c.id, projectId: c.projectId, revision: tip, actor: `campaign:${c.id}`, kind: 'approve', rationale: 'benchmark landing',
-      scope: { operation: 'land-integration', integrationId: i.id }, artifactIds: [] });
-    x.landing = store.updateIntegration(i.id, 'evaluating', { state: 'integrated', decisionId: d.id });
-    return `${t.ticketId} landed at ${tip.slice(0, 12)}`;
+    x.landing = personOf(x).land(x.ctx!, { root: x.root!, campaignId: x.campaignId!, ticketId: x.fixture.bench.landing.ticket });
+    return `${x.fixture.bench.landing.ticket} landed at ${x.landing.integratedCommit?.slice(0, 12)}`;
   } },
   { id: 'trace', needs: ['landing'], run: (x) => {
     x.backward = traceBackward(x.ctx!, { commit: x.landing!.integratedCommit!, campaignId: x.campaignId });
@@ -467,11 +472,13 @@ const STAGES: Stage[] = [
 ];
 
 /** Run the benchmark on one fixture directory. Mock mode only; live modes throw `BenchRefused`. */
-export async function runBenchmark(dir: string, o: { mode: BenchMode; env?: Readonly<Record<string, string | undefined>>; workDir?: string; keep?: boolean } = { mode: 'mock' }): Promise<BenchReport> {
+export async function runBenchmark(dir: string, o: { mode: BenchMode; agents?: (f: BenchFixture) => BenchAgents; env?: Readonly<Record<string, string | undefined>>;
+  workDir?: string; keep?: boolean } = { mode: 'mock' }): Promise<BenchReport> {
   const refusal = liveRefusal(o.mode, o.env ?? process.env);
   if (refusal) throw new BenchRefused(refusal);
   const work = o.workDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-ingest-bench-')));
-  const x: Inputs = { fixture: loadFixture(dir) };
+  const fixture = loadFixture(dir);
+  const x: Inputs = { fixture, agents: o.agents ? o.agents(fixture) : null };
   const stages: StageResult[] = [];
   try {
     for (const s of STAGES) {
@@ -521,11 +528,6 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; env?: Read
   };
 }
 
-/** The fixtures this repository ships, by name. */
-export const BENCH_FIXTURES: Readonly<Record<string, string>> = {
-  olc: path.resolve(import.meta.dirname, '..', 'fixtures', 'ingest', 'olc-expected'),
-  harbor: path.resolve(import.meta.dirname, '..', 'fixtures', 'ingest', 'harbor'),
-};
 
 /** One line per check, for a person. */
 export function renderBenchText(r: BenchReport): string {

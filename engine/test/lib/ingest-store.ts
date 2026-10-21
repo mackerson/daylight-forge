@@ -8,7 +8,7 @@ import type { CorpusDoc, CorpusManifest, CorpusRevision, Integration, Mission, N
 import {
   diffOf, filesOf, commitOn, git, makeCampaign, makeCandidate, makeRepo, makeWorkItem, rawDecision, storeTicket, ticketRow,
 } from '../forge-campaign-run-fixture.ts';
-import { loadFixture, repoPathOf, resolveBlueprint, resolvePackets, type BenchFixture } from './bench-fixture.ts';
+import { loadFixture, repoPathOf, resolveBlueprint, resolvePackets, type BenchFixture } from '../../forge/bench-fixture.ts';
 
 /**
  * A fully linked ingestion store written straight from a benchmark fixture, through the step-0 rows

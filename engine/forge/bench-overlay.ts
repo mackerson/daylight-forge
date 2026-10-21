@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { IrAttrs, IrKind, IrSource } from '../../mission/types.ts';
+import type { IrAttrs, IrKind, IrSource } from '../mission/types.ts';
 
 /**
  * The mock IR of a benchmark corpus (spec ingestion §11.1–11.2): what a perfect extractor would

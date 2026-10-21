@@ -12,19 +12,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { harness } from './harness.ts';
-import { BENCH_FIXTURES, BenchRefused, CHECKS, liveRefusal, runBenchmark, type BenchReport } from './lib/ingest-bench.ts';
+import { spawnSync } from 'node:child_process';
+import { BenchRefused, CHECKS, liveRefusal, runBenchmark, type BenchReport } from '../forge/ingest-bench.ts';
+import agents from './ingest-bench-agents.ts';
 import { buildHarborCorpus, harborDigest } from './lib/synthetic-corpus.ts';
-import { fixtureProblems, invariantPlacement, loadFixture, planOfPackets, scopeLeaks, ticketRefResolution } from './lib/bench-fixture.ts';
+import { fixtureProblems, invariantPlacement, loadFixture, planOfPackets, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
 import { closureOf, hungarian, parseGroundTruth, planOfGroundTruth, scorePlan } from './lib/plan-score.ts';
 import { loadSeeds, missedSeeds } from './lib/seed-defects.ts';
-import { runIngestCommand } from '../ingest/commands.ts';
 
 const { check, section, done } = harness();
+const FIXTURES = path.join(import.meta.dirname, 'fixtures', 'ingest');
+const BENCH_FIXTURES: Record<string, string> = { olc: path.join(FIXTURES, 'olc-expected'), harbor: path.join(FIXTURES, 'harbor') };
+const AGENTS = path.join(import.meta.dirname, 'ingest-bench-agents.ts');
 
 const reports: Record<string, BenchReport> = {};
 for (const name of ['olc', 'harbor']) {
   section(`${name}: mock mode`);
-  const r = await runBenchmark(BENCH_FIXTURES[name], { mode: 'mock', env: {} });
+  const r = await runBenchmark(BENCH_FIXTURES[name], { mode: 'mock', agents, env: {} });
   reports[name] = r;
   const failed = r.checks.filter((c) => c.status === 'fail');
   check('no check fails', failed.length === 0, failed.map((c) => `${c.id}: ${c.detail} ${JSON.stringify(c.value)}`).join(' | '));
@@ -53,7 +57,7 @@ for (const mode of ['live-extract', 'live-full'] as const) {
   check(`${mode} is refused in an agent session`, /agent session/.test(liveRefusal(mode, { CLAUDECODE: '1' }) ?? ''));
   let threw: unknown = null;
   try {
-    await runBenchmark(BENCH_FIXTURES.olc, { mode, env: {} });
+    await runBenchmark(BENCH_FIXTURES.olc, { mode, agents, env: {} });
   } catch (err) {
     threw = err;
   }
@@ -170,28 +174,32 @@ check('nine clauses with 2–4 sub-clauses, six amendments, three decision recor
   && (a.get('hl-amendments.md')!.match(/^## Amendment A\d —/gm) ?? []).length === 6 && ['01', '02', '03'].every((n) => a.has(`decisions/DR-${n}.md`)));
 check('no file carries a CR byte', [...a.values()].every((t) => !t.includes('\r')));
 
-section('CLI: daylight ingest bench');
-const cap = async (args: string[], env: NodeJS.ProcessEnv) => {
-  const ow = process.stdout.write.bind(process.stdout);
-  const oe = console.error;
-  let out = '';
-  let err = '';
-  process.stdout.write = ((s: string) => { out += s; return true; }) as typeof process.stdout.write;
-  console.error = (...x: unknown[]) => { err += `${x.join(' ')}\n`; };
-  try {
-    return { code: await runIngestCommand(['bench', ...args] as ['bench', ...string[]], { process: env }), out, err };
-  } finally {
-    process.stdout.write = ow;
-    console.error = oe;
-  }
+section('CLI: daylight ingest bench takes the fixture and the scripted agents as inputs (P2-R57)');
+const cli = (args: string[], env: NodeJS.ProcessEnv) => {
+  const r = spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'cli.ts'), 'ingest', 'bench', ...args], {
+    encoding: 'utf8', env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, XDG_DATA_HOME: process.env.XDG_DATA_HOME, ...env }, maxBuffer: 64 * 1024 * 1024,
+  });
+  return { code: r.status ?? 1, out: r.stdout ?? '', err: r.stderr ?? '' };
 };
-const j = await cap(['harbor', '--mode', 'mock', '--format', 'json'], {});
-check('mock mode prints the report as JSON and exits 0', j.code === 0 && (JSON.parse(j.out) as BenchReport).corpus === 'harbor', j.err);
-const live = await cap(['olc', '--mode', 'live-full'], {});
+/** Ids, commits and digests differ between two runs (fresh repositories and stores); the report's shape and every result may not. */
+const normalise = (r: unknown) => JSON.parse(JSON.stringify(r)
+  .replace(/\b(cr|m|ir|bp|pk|i|c|a|t|d|rf)_[0-9a-f]{8,}\b/g, '$1_*').replace(/\b[0-9a-f]{40}\b|\b[0-9a-f]{12}\b/g, '<sha>').replace(/sha256:[0-9a-f]{64}/g, 'sha256:*'));
+for (const name of ['olc', 'harbor']) {
+  const run = cli(['--mode', 'mock', '--fixture', BENCH_FIXTURES[name], '--extractor', AGENTS, '--format', 'json'], { CLAUDECODE: '1' });
+  check(`${name}: ingest bench --mode mock --fixture … --extractor … exits 0 (mock runs in an agent session)`, run.code === 0, run.err);
+  const viaCli = run.code === 0 ? JSON.parse(run.out) as BenchReport : null;
+  check(`${name}: the CLI's report is the in-test run's report`, !!viaCli && JSON.stringify(normalise(viaCli)) === JSON.stringify(normalise(reports[name])),
+    viaCli ? JSON.stringify(normalise(viaCli)).slice(0, 300) : run.err);
+}
+const live = cli(['--mode', 'live-full', '--fixture', BENCH_FIXTURES.olc, '--extractor', AGENTS], {});
 check('a live mode is refused with exit 2 and one line naming P2-R7', live.code === 2 && /^refused: .*P2-R7/.test(live.err) && live.err.trim().split('\n').length === 1, live.err);
-const agent = await cap(['olc', '--mode', 'live-extract'], { DAYLIGHT_SESSION: 'x' });
-check('in an agent session the refusal says so', agent.code === 2 && /agent session/.test(agent.err));
-check('an unknown mode is a usage error', (await cap(['olc', '--mode', 'turbo'], {})).code === 2);
+const agent = cli(['--mode', 'live-extract', '--fixture', BENCH_FIXTURES.olc], { DAYLIGHT_SESSION: 'x' });
+check('in an agent session the refusal says so', agent.code === 2 && /agent session/.test(agent.err), agent.err);
+check('mock mode without --extractor is a usage error', cli(['--mode', 'mock', '--fixture', BENCH_FIXTURES.olc], {}).code === 2);
+check('an unknown mode is a usage error', cli(['--mode', 'turbo', '--fixture', BENCH_FIXTURES.olc], {}).code === 2);
+const blind = await runBenchmark(BENCH_FIXTURES.harbor, { mode: 'mock', env: {} });
+check('without scripted agents, extraction is blocked, never faked', blind.stages.find((s) => s.id === 'extract')?.status === 'blocked'
+  || blind.stages.find((s) => s.id === 'register')?.status === 'blocked');
 
 section('mock-mode scores (for the hand-off)');
 for (const [name, r] of Object.entries(reports)) {
