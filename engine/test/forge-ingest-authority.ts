@@ -114,7 +114,7 @@ section('the row-state table, case by case');
     && ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-review' && n.ref === review.id));
 
   const rev3 = addRevision(w, { std: doc({ ...REV2, '## Delta': ['- Delta stays.'] }).replace('### Delta part\n- Delta one must hold.\n\n', '').replace('## Delta\n', '## Delta again\n'), notes: '# Notes\n' },
-    { configDigest: digestOf('config:other') });
+    { config: { threshold: 0.6 } });
   check('an inferred record whose every basis section is gone is stale', isIrStale(ctx, inferredGone.id) && !isIrStale(ctx, inferredGone.id, rev2.id)
     && !isIrStale(ctx, inferredKept.id));
   const r3 = new Map(carryForward(ctx, corpus.id, rev2.id, rev3.id).map((r) => [r.irId, r]));

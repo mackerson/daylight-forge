@@ -6,6 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { digestOf } from '../mission/artifacts.ts';
 import type { BlueprintV1, IrRecord } from '../mission/types.ts';
 import { staleBlueprints } from '../forge/authority.ts';
 import {
@@ -19,6 +20,7 @@ import { harness } from './harness.ts';
 import { addRecord, addRevision, approveRecords, HUMAN, makeWorld, scriptedRunner, throws } from './lib/ingest-world.ts';
 
 const { check, section, done } = harness();
+const digestOfConfig = (w0: { ctx: typeof ctx }, digest: string) => digestOf(w0.ctx.artifacts.get(digest));
 const w = makeWorld('ingest-blueprint', { 'svc/dispatch/src/queue.ts': 'export {};\n', 'svc/tracking/src/scan.ts': 'export {};\n' });
 const { ctx, corpus } = w;
 
@@ -182,6 +184,19 @@ section('the store moves a blueprint only under a person\'s approve-blueprint de
     rationale: 'x', scope: { operation: 'approve-blueprint' }, artifactIds: [] });
   check('an approve-blueprint decision of another corpus is refused', /corpus/.test(throws(() => ctx.store.setBlueprintStatus(next.blueprint.id, 'superseded', elsewhere.id))?.message ?? ''));
   check('the blueprint did not move', ctx.store.blueprint(next.blueprint.id)!.status === 'proposed');
+}
+
+section('blueprintContext reads the corpus\'s own config: its milestone scheme is the vocabulary (r15-review M2)');
+{
+  const w2 = makeWorld('ingest-blueprint-config');
+  const rev2 = addRevision(w2, { svc: '# Svc\n\n## Dispatch\n\n- Every parcel must be assigned.\n' }, { config: { milestone: '^M\\d+$' } });
+  const bctx = blueprintContext(w2.ctx, w2.corpus.id);
+  check('the config is the revision\'s artifact, not a permissive default', bctx.config.milestone === '^M\\d+$' && rev2.configDigest === digestOfConfig(w2, rev2.configDigest));
+  const bp = (milestones: string[]): BlueprintV1 => ({ kind: 'daylight-blueprint', version: 1, title: 't', corpusDigest: rev2.corpusDigest, irSetDigest: 'sha256:' + '0'.repeat(64),
+    scope: { milestones }, ticketIdTemplate: '{component}.{k}', boundaries: [], components: [], interfaces: [], order: [], constraints: [], deferred: [], outOfScope: [] });
+  const vocab = (m: string[]) => validateBlueprint(bp(m), bctx).some((r) => r.rule === 'shape' && /milestone vocabulary/.test(r.detail));
+  check('a milestone outside the corpus scheme is refused; one inside it is not', vocab(['W1']) && !vocab(['M1']));
+  w2.ctx.close();
 }
 
 ctx.close();

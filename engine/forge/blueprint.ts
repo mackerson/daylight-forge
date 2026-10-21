@@ -10,6 +10,7 @@ import type {
 } from '../mission/types.ts';
 import { BLUEPRINT_KIND, isEntityId } from '../mission/types.ts';
 import { irSetDigestAt, isIrStale, revisionMaterial } from './authority.ts';
+import { corpusOf } from './corpus.ts';
 import { ingestOutbox, OUTBOX_TOOLS, type OutboxRefusal } from './outbox.ts';
 import { prefixOf, RESERVED_LANE, TICKET_ID } from './plan.ts';
 import { assertHumanDecision, DecisionRefused } from './policy.ts';
@@ -394,18 +395,14 @@ export function derivationOf(bp: BlueprintV1, blueprintId: string, approved: Rea
 
 // ---- rows ----------------------------------------------------------------------------------
 
-/**
- * A permissive configuration: milestones as free text. Until WS-R14's `corpusOf` exposes the
- * corpus's effective `SectionerConfig`, the milestone vocabulary is not checked here.
- */
-const FREE_CONFIG = { v: 1, threshold: 0.5, labels: [], xrefs: [], cues: [], imperatives: [], ruleSections: [], informative: [], openDecision: [], tags: [], milestone: null } as SectionerConfig;
-
 /** What a blueprint of this corpus is checked against now: approved records and the index at the current revision, the corpus commit's tree. */
 export function blueprintContext(ctx: DaylightContext, corpusId: string, invariantTags: readonly string[] = []) {
   const corpus = ctx.store.mission(corpusId);
   if (!corpus || corpus.kind !== 'corpus') throw new Error(`${corpusId} is not a corpus mission`);
   const rev = ctx.store.currentCorpusRevision(corpusId);
   if (!rev) throw new Error(`corpus ${corpusId} has no revision`);
+  // The corpus's effective sectioner config: its milestone schemes are the blueprint's vocabulary (P2-R54).
+  const { config } = corpusOf(ctx, corpusId, rev.id);
   const approved = new Map(ctx.store.irRecords(corpusId, { status: 'approved' }).map((r) => [r.id, r]));
   const root = mappedRoot(ctx.out);
   const commit = rev.commits[corpus.projectId] ?? corpus.baseRevision;
@@ -415,7 +412,7 @@ export function blueprintContext(ctx: DaylightContext, corpusId: string, invaria
   } catch {
     tree = new Set();
   }
-  return { corpus, rev, approved, index: revisionMaterial(ctx, rev.id).index, tree, config: FREE_CONFIG, invariantTags, isStale: (r: IrRecord) => isIrStale(ctx, r.id) };
+  return { corpus, rev, approved, index: revisionMaterial(ctx, rev.id).index, tree, config, invariantTags, isStale: (r: IrRecord) => isIrStale(ctx, r.id) };
 }
 
 /** Every refusal of a blueprint of this corpus now: its digests against the rows, then `validateBlueprint`. */

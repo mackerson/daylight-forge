@@ -14,11 +14,12 @@ import { canonicalJson, digestOf } from '../../mission/artifacts.ts';
 import { mappedProject, openDaylight, type DaylightContext } from '../../mission/context.ts';
 import type { OutboxRunner } from '../../mission/orchestrate.ts';
 import type {
-  CorpusDoc, CorpusRevision, ExtractWindow, IrKind, IrRecord, Mission, NormativeSentence, Section, SectionIndex, Task,
+  CorpusDoc, CorpusRevision, ExtractWindow, IrKind, IrRecord, Mission, NormativeSentence, Section, SectionerConfig, SectionIndex, Task,
 } from '../../mission/types.ts';
 import { outboxPathOf } from '../../mcp/outbox-server.ts';
 import { occurrencesIn, quoteDigestOf, sectionAt } from '../../forge/authority.ts';
 import { approveIr, planApproveIr } from '../../forge/ir-review.ts';
+import { sectionSetDigestOf } from '../../forge/sectioner.ts';
 import { confirmCodeOf } from '../../forge/policy.ts';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -103,7 +104,11 @@ export function indexDoc(key: string, text: string): { sections: Section[]; unit
 }
 
 /** The next revision of the corpus over these documents (each one `primary`, domain `d`). */
-export function addRevision(w: World, docs: Record<string, string>, o: { configDigest?: string; commit?: string } = {}): CorpusRevision {
+/** A permissive sectioner config (milestones free text) the test world's revisions record as a real artifact; `o.config` overrides fields. */
+export const TEST_CONFIG: SectionerConfig = { v: 1, threshold: 0.5, labels: [], xrefs: [], cues: [], imperatives: [], ruleSections: [], informative: [], openDecision: [], tags: [],
+  milestone: null } as unknown as SectionerConfig;
+
+export function addRevision(w: World, docs: Record<string, string>, o: { config?: Partial<SectionerConfig>; commit?: string } = {}): CorpusRevision {
   const { ctx, corpus, projectId } = w;
   const seq = (ctx.store.currentCorpusRevision(corpus.id)?.seq ?? 0) + 1;
   const commit = o.commit ?? w.commit;
@@ -113,7 +118,9 @@ export function addRevision(w: World, docs: Record<string, string>, o: { configD
     return { key, role: 'primary', domain: 'd', path: `${key}.md`, projectId, commit, artifact, digest: artifact.digest, bytes: Buffer.byteLength(text, 'utf8') };
   });
   const corpusDigest = digestOf(canonicalJson({ v: 1, docs: corpusDocs.map((d) => ({ key: d.key, digest: d.digest })) }));
-  const configDigest = o.configDigest ?? digestOf('config:test');
+  const configRef = ctx.artifacts.put(canonicalJson({ ...TEST_CONFIG, ...o.config }), { kind: 'report', projectId, revision: commit, label: 'sectioner-config', mediaType: 'application/json' });
+  ctx.store.recordArtifact(configRef);
+  const configDigest = configRef.digest;
   const per = corpusDocs.map((d) => ({ key: d.key, digest: d.digest, ...indexDoc(d.key, docs[d.key]) }));
   const index: SectionIndex = {
     v: 2, sectionerVersion: 'daylight-sectioner/2', configDigest, corpusDigest,
@@ -124,7 +131,7 @@ export function addRevision(w: World, docs: Record<string, string>, o: { configD
   return ctx.store.insertCorpusRevision({
     id: `cr_${sha(`${corpus.id}:${seq}:${corpusDigest}`).slice(0, 32)}`, corpusId: corpus.id, projectId, seq, manifestPath: 'daylight.corpus.json',
     manifestDigest: digestOf('manifest'), commits: { [projectId]: commit }, corpusDigest, docs: corpusDocs, precedence: [], dependencies: [], unordered: [],
-    sectionIndex: indexRef, sectionSetDigest: digestOf(canonicalJson(index.docs)), sectionerVersion: 'daylight-sectioner/2', configDigest,
+    sectionIndex: indexRef, sectionSetDigest: sectionSetDigestOf(index), sectionerVersion: 'daylight-sectioner/2', configDigest,
   });
 }
 
