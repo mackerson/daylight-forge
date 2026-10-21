@@ -12,7 +12,7 @@ import { TRACE_JOINS, type TraceReport } from '../mission/types.ts';
 import { renderTraceMarkdown, spanNodeId, spanOfNodeId, traceBackward, traceForward, traceMatrix } from '../forge/trace.ts';
 import { runTraceCommand } from '../forge/commands-trace.ts';
 import { harness } from './harness.ts';
-import { makeWorkItem, storeTicket, ticketRow } from './forge-campaign-run-fixture.ts';
+import { makeCampaign, makeWorkItem, rawDecision, storeTicket, ticketRow } from './forge-campaign-run-fixture.ts';
 import { seedIngestStore } from './lib/ingest-store.ts';
 
 const { check, section, done } = harness();
@@ -156,6 +156,38 @@ check('matrix --write is refused in an agent session with one line', w.code === 
 check('nothing was written under <out>/campaigns', !fs.existsSync(path.join(out, 'campaigns', olc.campaign.id, 'trace-matrix.json')));
 const bad = await capture(() => runTraceCommand(['frobnicate', '--out', out], {}));
 check('an unknown subcommand is a usage error', bad.code === 2);
+section('negative paths: a label naming a holdout is withheld; a tampered quote digest is named');
+{
+  const { campaign: other } = makeCampaign(ctx, olc.root, olc.commit);
+  const art = (text: string, kind: 'test' | 'expected', p?: string) => {
+    const a = ctx.artifacts.put(text, { kind, projectId: other.projectId, revision: olc.commit, path: p, label: kind });
+    ctx.store.recordArtifact(a);
+    return a;
+  };
+  // A holdout of another campaign whose basename is a section title the trace labels with.
+  const hx = ctx.store.createExperiment({ missionId: other.id, projectId: other.projectId, claimIds: [], subject: 'campaign', predicate: 'passes', hypothesis: 'h',
+    prediction: { exitCode: 0 }, baseRevision: olc.commit, testArtifact: art('holdout', 'test', 'tests/hidden/Layers'), expectedArtifact: art('{}', 'expected'),
+    harnessDigest: `sha256:${'7'.repeat(64)}`, command: ['node', '--test'], sandboxProfile: 'bwrap', limitations: [], role: 'holdout' });
+  rawDecision(ctx.store, { missionId: other.id, projectId: other.projectId, revision: olc.commit, actor: 'human:bench', kind: 'approve', rationale: 'lock',
+    scope: { operation: 'lock-campaign-gates', experimentIds: [hx.id], harnessDigests: { [hx.id]: hx.harnessDigest }, vacuousOverrides: [], bindings: {},
+      roles: { [hx.id]: 'holdout' }, ratchet: false, gateSetDigest: `sha256:${'8'.repeat(64)}` }, artifactIds: [] });
+  const layers = ctx.store.irRecord(olc.irOf('h016'))!;
+  const agents = ctx.store.irRecords(olc.corpusId).find((r) => r.span?.docKey === 'olc-agents' && /\/layers$/.test(r.span.sectionId))!;
+  const t = traceForward(ctx, { corpusId: olc.corpusId, docKey: 'olc-agents', sectionId: agents.span!.sectionId });
+  check('a section titled with another campaign\'s holdout basename is withheld, and the gap says so',
+    t.root.label === '[withheld: names a holdout path]' && t.gaps.some((g) => g.at === t.root.id && /holdout path/.test(g.why)) && !JSON.stringify(t).includes('Layers'), t.root.label);
+  check('the same section traces normally where no campaign holds that basename', layers.span !== null);
+
+  // A span row whose digest does not match the stored bytes: the trace names the record.
+  const tampered = olc.irOf('h001');
+  const cur = ctx.store.currentCorpusRevision(olc.corpusId)!;
+  const rev3 = ctx.store.insertCorpusRevision({ ...cur, id: `cr_${'f'.repeat(32)}`, seq: cur.seq + 1, corpusDigest: `sha256:${'f'.repeat(64)}` });
+  const s0 = ctx.store.irSpans(tampered)[0];
+  ctx.store.insertIrSpan({ ...s0, revisionId: rev3.id, quoteDigest: `sha256:${'0'.repeat(64)}`, carry: 'carried' });
+  const bad = traceForward(ctx, { irId: tampered });
+  check('a quote digest that does not match the stored bytes is a mismatch naming the record', bad.verified.mismatches.join() === tampered && bad.verified.quotesRehashed >= 1,
+    JSON.stringify(bad.verified));
+}
 ctx.close();
 
 section('Harbor Ledger: the same joins, a different label scheme');

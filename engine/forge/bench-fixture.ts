@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BlueprintV1, IrKind, PlanFile, WorkPacket } from '../mission/types.ts';
+import type { BlueprintV1, CorpusManifest, IrKind, PlanFile, SectionerConfig, WorkPacket } from '../mission/types.ts';
+import { IR_KINDS } from '../mission/types.ts';
 import { ASSIGNABLE } from './blueprint.ts';
 import { PACKETS_KIND } from './packets.ts';
 import { overlayProblems, readDocs, readOverlay, type OverlayFile, type OverlayRecord } from './bench-overlay.ts';
@@ -85,9 +86,59 @@ export function repoPathOf(bench: BenchSpec, fixturePath: string): { alias: stri
   return null;
 }
 
+/** The corpus's sectioner configuration, as its manifest names it (inline, or a `$ref` the fixture maps into the repository). */
+export function sectionerConfigOf(f: Pick<BenchFixture, 'dir' | 'bench'>): Partial<SectionerConfig> | null {
+  const file = path.join(f.dir, f.bench.manifest.file);
+  if (!fs.existsSync(file)) return null;
+  const m = JSON.parse(fs.readFileSync(file, 'utf8')) as CorpusManifest;
+  const sc = m.sectioner as (Partial<SectionerConfig> & { $ref?: string }) | undefined;
+  if (!sc) return null;
+  if (typeof sc.$ref !== 'string') return sc;
+  const main = f.bench.repos.find((r) => r.alias === null);
+  const src = main?.files[sc.$ref];
+  return src && fs.existsSync(path.join(f.dir, src)) ? JSON.parse(fs.readFileSync(path.join(f.dir, src), 'utf8')) as Partial<SectionerConfig> : null;
+}
+
+/** The milestone schemes a configuration declares, default and per domain (P2-R54). */
+export function milestoneSchemes(c: Partial<SectionerConfig> | null): RegExp[] {
+  return [c?.milestone, ...Object.values(c?.domains ?? {}).map((d) => d.milestone)].filter((x): x is string => typeof x === 'string').map((x) => new RegExp(x));
+}
+
+const IR_ATTR_KEYS = new Set(['tags', 'milestone', 'subject', 'polarity', 'numbers', 'interfaceName', 'dependency', 'deferral', 'decision', 'ticketRefs']);
+const strings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/** Why one overlay record is not an IR record a proposal could carry (§4.1), or null. Kinds and attrs are checked, not trusted. */
+export function overlayRecordProblem(r: OverlayRecord): string | null {
+  if (!(IR_KINDS as readonly string[]).includes(r.kind)) return `kind ${JSON.stringify(r.kind)} is not an IR kind`;
+  if (r.source !== 'extracted' && r.source !== 'inferred') return 'source is extracted or inferred';
+  if (!(typeof r.confidence === 'number' && r.confidence >= 0 && r.confidence <= 1)) return 'confidence is in 0..1';
+  if (typeof r.statement !== 'string' || !r.statement.trim()) return 'a statement is required';
+  const a = r.attrs as Record<string, unknown>;
+  if (!a || typeof a !== 'object') return 'attrs is an object';
+  const bad = Object.keys(a).find((k) => !IR_ATTR_KEYS.has(k));
+  if (bad) return `attrs.${bad} is not an IR attribute`;
+  if (a.tags !== undefined && !strings(a.tags)) return 'attrs.tags is a list of strings';
+  if (a.ticketRefs !== undefined && !strings(a.ticketRefs)) return 'attrs.ticketRefs is a list of strings';
+  if (a.milestone !== undefined && typeof a.milestone !== 'string') return 'attrs.milestone is a string';
+  if (a.polarity !== undefined && a.polarity !== 'positive' && a.polarity !== 'negative') return 'attrs.polarity is positive or negative';
+  const dfr = a.deferral as { to?: unknown } | undefined;
+  const dec = a.decision as { ref?: unknown; status?: unknown } | undefined;
+  const dep = a.dependency as { from?: unknown; to?: unknown } | undefined;
+  if (r.kind === 'deferral' && typeof dfr?.to !== 'string') return 'a deferral names where it defers to (attrs.deferral.to)';
+  if (dfr !== undefined && r.kind !== 'deferral') return 'only a deferral carries attrs.deferral';
+  if (r.kind === 'decision' && !(typeof dec?.ref === 'string' && ['proposed', 'accepted', 'superseded'].includes(dec?.status as string))) return 'a decision carries attrs.decision';
+  if (r.kind === 'dependency' && !(typeof dep?.from === 'string' && typeof dep?.to === 'string')) return 'a dependency carries attrs.dependency';
+  if (r.kind === 'contradiction' && !r.other) return 'a contradiction quotes its second passage';
+  return null;
+}
+
 /** Problems with the fixture itself: quotes not at their offsets, answer rows inside a corpus document, unknown keys in templates. */
 export function fixtureProblems(f: BenchFixture): string[] {
   const out = overlayProblems(f.docs, f.overlay.records);
+  for (const r of f.overlay.records) {
+    const why = overlayRecordProblem(r);
+    if (why) out.push(`${r.key}: ${why}`);
+  }
   for (const [k, b] of f.docs) for (const row of f.bench.groundTruthRows) if (b.includes(row)) out.push(`leak: ${k} contains the ground-truth row ${row}`);
   const keys = new Set(f.overlay.records.map((r) => r.key));
   const cite = (where: string, k: string) => keys.has(k) || out.push(`${where}: no overlay record ${k}`);
@@ -162,9 +213,12 @@ export function invariantPlacement(f: Pick<BenchFixture, 'overlay' | 'blueprint'
 }
 
 /** Ticket ids the corpus names (check 13): in-scope ones must be packets; others are expected out of scope. */
-export function ticketRefResolution(records: readonly OverlayRecord[], packetIds: ReadonlySet<string>, scope: readonly string[]): { inScope: string[]; resolved: string[]; unresolved: string[]; outOfScope: string[] } {
+export function ticketRefResolution(records: readonly OverlayRecord[], packetIds: ReadonlySet<string>, scope: readonly string[], milestones: readonly RegExp[]):
+  { inScope: string[]; resolved: string[]; unresolved: string[]; outOfScope: string[] } {
   const refs = [...new Set(records.flatMap((r) => r.attrs.ticketRefs ?? []))].sort();
-  const inScope = refs.filter((r) => scope.includes(r.split('.')[0]));
+  // A ticket id's milestone is its segment the corpus's milestone scheme matches (P2-R54), wherever it sits.
+  const milestoneOf = (ref: string) => ref.split('.').find((seg) => milestones.some((re) => re.test(seg)));
+  const inScope = refs.filter((r) => { const m = milestoneOf(r); return m !== undefined && scope.includes(m); });
   return { inScope, resolved: inScope.filter((r) => packetIds.has(r)), unresolved: inScope.filter((r) => !packetIds.has(r)), outOfScope: refs.filter((r) => !inScope.includes(r)) };
 }
 

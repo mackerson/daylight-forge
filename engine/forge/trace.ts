@@ -105,7 +105,12 @@ export function spanOfNodeId(nodeId: string): { revisionId: string; docKey: stri
 /** Re-hash a span's bytes from the revision's document artifact; a mismatch is recorded by record id. */
 function rehash(ctx: DaylightContext, g: Graph, rev: CorpusRevision, irId: string, s: Pick<IrSpanRef, 'docKey' | 'start' | 'end' | 'quoteDigest'>): void {
   const doc = rev.docs.find((d) => d.key === s.docKey);
-  const bytes = doc && ctx.artifacts.has(doc.artifact) ? ctx.artifacts.get(doc.artifact) : null;
+  let bytes: Buffer | null = null;
+  try {
+    bytes = doc && ctx.artifacts.has(doc.artifact) ? ctx.artifacts.get(doc.artifact) : null;
+  } catch {
+    bytes = null;   // a document artifact corrupt on disk verifies nothing: the record is a mismatch
+  }
   g.verified.quotesRehashed++;
   if (!bytes || s.end > bytes.length || digestOf(bytes.subarray(s.start, s.end)) !== s.quoteDigest) {
     if (!g.verified.mismatches.includes(irId)) g.verified.mismatches.push(irId);

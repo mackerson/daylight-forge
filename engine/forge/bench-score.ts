@@ -115,10 +115,46 @@ const jaccard = (a: readonly string[], b: readonly string[]): number => {
   return union === 0 ? 0 : inter / union;
 };
 
-/** Requirement labels a text names: `§11.3`, `§7`, `ADR 0004`, `Clause 7.2`. */
-export const labelsIn = (text: string): string[] =>
-  [...new Set([...text.matchAll(/§\s?(\d+(?:\.\d+)?[A-Z]?)|ADR\s+(\d{4})|Clause\s+(\d+(?:\.\d+)?)/g)]
-    .map((m) => (m[1] ? `§${m[1]}` : m[2] ? `ADR ${m[2]}` : `Clause ${m[3]}`)))];
+/** A corpus's label scheme, as its sectioner configuration states it (P2-R53 D-e): nothing here names one. */
+export interface LabelScheme { labels: ReadonlyArray<{ heading: string; label: string }> }
+
+/** The first capturing group of a regex source, parentheses included; null when it has none. */
+function firstGroup(src: string): string | null {
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === '\\') { i++; continue; }
+    if (src[i] !== '(' || src[i + 1] === '?') continue;
+    let depth = 0;
+    for (let j = i; j < src.length; j++) {
+      if (src[j] === '\\') { j++; continue; }
+      if (src[j] === '(') depth++;
+      if (src[j] === ')' && --depth === 0) return src.slice(i, j + 1);
+    }
+    return null;
+  }
+  return null;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * How a text cites the corpus's labels: each label template (`§$1`, `ADR $1`, `Clause $1`) around
+ * the value its heading pattern captures. Read from the configuration, so a corpus brings its own.
+ */
+export function labelPatternsOf(scheme: LabelScheme | null): RegExp[] {
+  const out: RegExp[] = [];
+  for (const l of scheme?.labels ?? []) {
+    const group = firstGroup(l.heading);
+    const at = l.label.indexOf('$1');
+    if (!group || at < 0) continue;
+    const [pre, post] = [l.label.slice(0, at), l.label.slice(at + 2)];
+    out.push(new RegExp(`${escapeRe(pre).replace(/ /g, '\\s+')}${group}${escapeRe(post)}`, 'g'));
+  }
+  return out;
+}
+
+/** The labels a text cites, by the corpus's own patterns. */
+export const labelsIn = (text: string, patterns: readonly RegExp[]): string[] =>
+  [...new Set(patterns.flatMap((re) => [...text.matchAll(new RegExp(re.source, 'g'))].map((m) => m[0].replace(/\s+/g, ' '))))];
 
 /** Minimum-cost assignment of rows to columns (Kuhn–Munkres) over `cost[r][c]`; the column per row, or -1. */
 export function hungarian(cost: number[][]): number[] {
@@ -209,7 +245,7 @@ export function covers(scope: string, gtPath: string, tolerance: 'parent-dir'): 
  * Dependency recall: GT direct edges inside the closure of the generated graph (mapped to GT ids);
  * precision: generated direct edges inside the closure of the GT graph.
  */
-export function scorePlan(gt: GtPlan, plan: PlanFile, o: { pathTolerance: 'parent-dir' }): PlanScore {
+export function scorePlan(gt: GtPlan, plan: PlanFile, o: { pathTolerance: 'parent-dir'; labels?: readonly RegExp[] }): PlanScore {
   const byGt = new Map(gt.tickets.map((t) => [t.id, t]));
   const planTickets = plan.tickets;
   const matched: PlanScore['matched'] = [];
@@ -224,7 +260,7 @@ export function scorePlan(gt: GtPlan, plan: PlanFile, o: { pathTolerance: 'paren
   const planLeft = planTickets.filter((t) => !planToGt.has(t.id));
   const textOf = (s: string | string[]) => (Array.isArray(s) ? s.join(' ') : s);
   const sim = gtLeft.map((g) => planLeft.map((p) =>
-    0.6 * jaccard(g.scope.map(normPath), p.scope.map(normPath)) + 0.4 * jaccard(labelsIn(g.title), labelsIn(`${p.title} ${textOf(p.statement)}`))));
+    0.6 * jaccard(g.scope.map(normPath), p.scope.map(normPath)) + 0.4 * jaccard(labelsIn(g.title, o.labels ?? []), labelsIn(`${p.title} ${textOf(p.statement)}`, o.labels ?? []))));
   hungarian(sim.map((row) => row.map((s) => 1 - s))).forEach((c, r) => {
     if (c < 0 || sim[r][c] < 0.5) return;
     planToGt.set(planLeft[c].id, gtLeft[r].id);

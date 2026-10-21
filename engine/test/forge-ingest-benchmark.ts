@@ -23,7 +23,8 @@ import { applyCandidate } from '../forge/apply.ts';
 import { BenchRefused, CHECKS, liveRefusal, runBenchmark, type BenchReport } from '../forge/ingest-bench.ts';
 import { writeExtractorScript } from './lib/bench-extractor.ts';
 import { buildHarborCorpus, harborDigest } from './lib/synthetic-corpus.ts';
-import { fixtureProblems, invariantPlacement, loadFixture, packetsFileOf, planOfPackets, resolveBlueprint, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
+import { fixtureProblems, invariantPlacement, loadFixture, milestoneSchemes, packetsFileOf, planOfPackets, resolveBlueprint, scopeLeaks, sectionerConfigOf, ticketRefResolution } from '../forge/bench-fixture.ts';
+import { labelPatternsOf, labelsIn, type LabelScheme } from '../forge/bench-score.ts';
 import { ASSIGNABLE } from '../forge/blueprint.ts';
 import { PACKETS_KIND } from '../forge/packets.ts';
 import { closureOf, hungarian, parseGroundTruth, planOfGroundTruth, scorePlan } from './lib/plan-score.ts';
@@ -134,7 +135,8 @@ const noPrivacyBoundary = { ...olc, blueprint: { ...olc.blueprint, body: { ...ol
 }) })) } } };
 check('an invariant with no record on a boundary fails placement', invariantPlacement(noPrivacyBoundary).find((r) => r.tag === 'privacy')?.ok === false
   && invariantPlacement(olc).every((r) => r.ok));
-check('a corpus ticket ref with no packet is unresolved', ticketRefResolution(olc.overlay.records, new Set(olc.packets.map((p) => p.ticketId).filter((t) => t !== 'M0.P5')), ['M0']).unresolved.join() === 'M0.P5');
+check('a corpus ticket ref with no packet is unresolved', ticketRefResolution(olc.overlay.records, new Set(olc.packets.map((p) => p.ticketId).filter((t) => t !== 'M0.P5')), ['M0'],
+  milestoneSchemes(sectionerConfigOf(olc))).unresolved.join() === 'M0.P5');
 const shifted = { ...olc, overlay: { ...olc.overlay, records: olc.overlay.records.map((r, i) => (i === 0 ? { ...r, at: r.at + 1 } : r)) } };
 check('a quote moved off its offset is a fixture problem', fixtureProblems(shifted).some((p) => /h001: quote is not at byte/.test(p)));
 const leaky = { ...olc, docs: new Map([...olc.docs].map(([k, v]) => [k, k === 'olc-spec' ? Buffer.concat([v, Buffer.from('\n| M0.S1 | leaked |\n')]) : v])) };
@@ -318,6 +320,55 @@ section('the bench never acts as a person: bench:<step> actors on a marked store
     { mode: 'mock', extractor: EXTRACTOR.harbor, env: {}, workDir: path.dirname(work) }), /not empty/));
   const src = ['../ingest/bench.ts', '../forge/ingest-bench.ts'].map((f) => fs.readFileSync(path.join(import.meta.dirname, f), 'utf8')).join('\n');
   check('the extractor script is never imported by product code', !/\bimport\s*\(/.test(src));
+}
+
+section('mediums: labels pinned to §11.3, overlay kinds checked, every falsifiable bar falsified, schemes from config');
+{
+  const SECTION_11_3_BY_CONSTRUCTION = ['boundaries', 'dep-precision', 'dep-recall', 'id-exactness', 'paths', 'recall', 'scope', 'ticket-refs'];
+  check('OLC names exactly §11.3\'s by-construction checks, plus coverage (units rule)', JSON.stringify(reports.olc.nonFalsifiable.map((c) => c.id).sort())
+    === JSON.stringify([...SECTION_11_3_BY_CONSTRUCTION, 'coverage'].sort()), reports.olc.nonFalsifiable.map((c) => c.id).join());
+  check('Harbor names exactly §11.3\'s by-construction checks', JSON.stringify(reports.harbor.nonFalsifiable.map((c) => c.id).sort())
+    === JSON.stringify(SECTION_11_3_BY_CONSTRUCTION), reports.harbor.nonFalsifiable.map((c) => c.id).join());
+
+  const mutate = (patch: (r: (typeof olc.overlay.records)[number]) => object, key = 'h001') => fixtureProblems({ ...olc, overlay: { ...olc.overlay,
+    records: olc.overlay.records.map((r) => (r.key === key ? { ...r, ...patch(r) } as typeof r : r)) } });
+  check('a garbage kind is a fixture problem', mutate(() => ({ kind: 'banana' })).some((p) => /h001: kind "banana"/.test(p)));
+  check('an unknown attribute is a fixture problem', mutate((r) => ({ attrs: { ...r.attrs, colour: 'red' } })).some((p) => /attrs.colour/.test(p)));
+  check('tags that are not strings are a fixture problem', mutate(() => ({ attrs: { tags: [1] } })).some((p) => /attrs.tags/.test(p)));
+  check('a deferral without its target is a fixture problem', mutate(() => ({ attrs: {} }), 'e9').some((p) => /e9: a deferral names/.test(p)));
+  check('a decision without attrs.decision is a fixture problem', mutate(() => ({ attrs: {} }), 'h101').some((p) => /h101: a decision carries/.test(p)));
+  check('a contradiction without its second passage is a fixture problem', mutate(() => ({ other: undefined }), 'h105').some((p) => /h105: a contradiction/.test(p)));
+  check('the committed overlays have no such problem', fixtureProblems(olc).length === 0 && fixtureProblems(hlFix).length === 0,
+    [...fixtureProblems(olc), ...fixtureProblems(hlFix)].slice(0, 3).join(' | '));
+
+  // Each falsifiable bar, fed one input it must fail: a bar made trivially true goes red here.
+  const bar = (id: string, x: object, mode: 'mock' | 'live-extract' = 'mock') => CHECKS.find((c) => c.id === id)!.run(x as never, mode).ok;
+  check('coverage bar fails one unmapped unit in mock mode', !bar('coverage', { coverage: { totals: { normative: 3, mapped: 2 }, unmapped: [{}] } }));
+  check('coverage bar fails broken arithmetic', !bar('coverage', { coverage: { totals: { normative: 3, mapped: 3 }, unmapped: [{}] } }, 'live-extract'));
+  check('seeds bar fails a missed seed', !bar('seeds', { seeds: [{ id: 's1', expect: ['hedge'] }], coverage: { seeded: [{ id: 's1', detected: false, by: [] }] } }));
+  check('trace bar fails a quote mismatch', !bar('trace', { roundTrip: true, backward: { verified: { quotesRehashed: 3, mismatches: ['ir_x'] } } }));
+  check('trace bar fails a broken round trip', !bar('trace', { roundTrip: false, backward: { verified: { quotesRehashed: 3, mismatches: [] } } }));
+  check('revise bar fails a changed row', !bar('revise', { fixture: olc, revise: { staleKeys: olc.bench.revise.staleKeys, staleTickets: olc.bench.revise.staleTickets, changedRows: ['ir_records:x'] } }));
+  check('revise bar fails an extra stale ticket', !bar('revise', { fixture: olc, revise: { staleKeys: olc.bench.revise.staleKeys, staleTickets: ['M0.L3', 'M0.P2'], changedRows: [] } }));
+  check('holdout bar fails a leak into packet context', !bar('holdout', { holdout: { leakedToContext: true, withheld: 1, excerptWithheld: true } }));
+  check('holdout bar fails an excerpt that was not withheld', !bar('holdout', { holdout: { leakedToContext: false, withheld: 1, excerptWithheld: false } }));
+  check('scope bar fails a leaking packet', !bar('scope', { fixture: { ...olc, packets: withShell } }));
+  check('invariants bar fails an unplaced invariant', !bar('invariants', { fixture: noPrivacyBoundary }));
+  check('dag bar fails an order that is not the Kahn layers', !bar('dag', { fixture: { ...olc, blueprint: { ...olc.blueprint, body: { ...olc.blueprint.body, order: [['S', 'E']] } } } }));
+  check('fixture bar fails a moved quote', !bar('fixture', { fixture: shifted }));
+  check('recall bar (live-full) fails three missing tickets', !CHECKS.find((c) => c.id === 'recall')!.run({ fixture: olc, labels: [],
+    plan: { ...perfect, tickets: perfect.tickets.slice(3) } } as never, 'live-full').ok);
+
+  const olcLabels = labelPatternsOf(sectionerConfigOf(olc) as LabelScheme);
+  const hlLabels = labelPatternsOf(sectionerConfigOf(hlFix) as LabelScheme);
+  check('OLC\'s label patterns come from its sectioner config and find its labels only', labelsIn('spec §11.3, ADR 0004; Clause 7.2', olcLabels).join() === '§11.3,ADR 0004');
+  check('Harbor\'s find Clause and Amendment labels, not §', labelsIn('spec §11.3; Clause 7.2 and Amendment A3', hlLabels).includes('Clause 7.2')
+    && labelsIn('spec §11.3', hlLabels).length === 0);
+  check('with no configuration the scorer knows no label', labelsIn('§11.3 ADR 0004 Clause 7.2', labelPatternsOf(null)).length === 0);
+  check('milestone schemes come from config: OLC M<n> and Foundry F<n>, Harbor W<n>', milestoneSchemes(sectionerConfigOf(olc)).map(String).sort().join() === '/^F\\d+$/,/^M\\d+$/'
+    && milestoneSchemes(sectionerConfigOf(hlFix)).map(String).join() === '/^W\\d+$/');
+  check('a ticket ref whose milestone the scheme does not know is out of scope', ticketRefResolution([{ ...olc.overlay.records[0], attrs: { ticketRefs: ['Q7.S1'] } }],
+    new Set(), ['M0'], milestoneSchemes(sectionerConfigOf(olc))).outOfScope.join() === 'Q7.S1');
 }
 
 section('mock-mode scores (for the hand-off)');

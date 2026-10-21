@@ -27,10 +27,10 @@ import { isPlanRefusals, parsePlan, topoOrder } from './plan.ts';
 import { spanOfNodeId, traceBackward, traceForward } from './trace.ts';
 import { buildOverlay, formatOverlay } from './bench-overlay.ts';
 import {
-  effectiveMilestones, fixtureProblems, packetsFileOf, repoPathOf, invariantPlacement, kahnLayers, loadFixture, planOfPackets, resolveBlueprint, resolvePackets, scopeLeaks,
+  effectiveMilestones, fixtureProblems, milestoneSchemes, packetsFileOf, sectionerConfigOf, repoPathOf, invariantPlacement, kahnLayers, loadFixture, planOfPackets, resolveBlueprint, resolvePackets, scopeLeaks,
   ticketRefResolution, type BenchFixture,
 } from './bench-fixture.ts';
-import { scorePlan, type PlanScore } from './bench-score.ts';
+import { labelPatternsOf, scorePlan, type LabelScheme, type PlanScore } from './bench-score.ts';
 import { loadSeeds, missedSeeds } from './bench-seeds.ts';
 
 /**
@@ -91,6 +91,8 @@ class StageBlocked extends Error {}
 
 interface Inputs {
   fixture: BenchFixture; extractor: string | null; env: Readonly<Record<string, string | undefined>>;
+  /** The corpus's label patterns and milestone schemes, from its sectioner configuration (P2-R53 D-e, P2-R54). */
+  labels: RegExp[]; milestones: RegExp[];
   ctx?: DaylightContext; root?: string; projects?: Record<string, string>; rev?: CorpusRevision; corpusId?: string;
   irOf?: (key: string) => string | null; records?: IrRecord[]; units?: Array<{ docKey: string; start: number; end: number }>; approved?: Set<string>; coverage?: CoverageReport; seeds?: SeededDefect[];
   blueprintId?: string; byTicket?: Map<string, string[]>; plan?: PlanFile; campaignId?: string; landing?: Integration; backward?: TraceReport; forward?: TraceReport; roundTrip?: boolean;
@@ -112,7 +114,7 @@ const F = (mock: Falsifiable, extract: Falsifiable = mock, full: Falsifiable = e
 const B = (mock: string, extract = mock, full = extract): Record<BenchMode, string> => ({ mock, 'live-extract': extract, 'live-full': full });
 const ratioScore = (s: PlanScore) => ({ recall: s.recall, idExactness: s.idExactness, depRecall: s.depRecall, depPrecision: s.depPrecision,
   pathCoverage: s.pathCoverage, scopeInLane: s.scopeInLane, matched: s.matched.length, missing: s.missing, extra: s.extra });
-const emittedScore = (x: Inputs) => scorePlan(x.fixture.gt, x.plan!, { pathTolerance: 'parent-dir' });
+const emittedScore = (x: Inputs) => scorePlan(x.fixture.gt, x.plan!, { pathTolerance: 'parent-dir', labels: x.labels });
 const BY_CONSTRUCTION = 'mock mode cannot fail this: the fixture was written from the answer, so it tests only the scorer and the import path';
 
 export const CHECKS: readonly CheckDef[] = [
@@ -216,7 +218,7 @@ export const CHECKS: readonly CheckDef[] = [
   { id: 'ticket-refs', n: 13, title: 'ticket ids the corpus names resolve to packets (in scope) or are out of scope', needs: ['fixture'],
     falsifiable: F('by-construction', 'not-measured', 'falsifiable'), bar: B('all in-scope refs resolve', 'not measured', 'reported'),
     run: (x) => {
-      const r = ticketRefResolution(x.fixture.overlay.records, new Set(x.fixture.packets.map((p) => p.ticketId)), x.fixture.blueprint.body.scope.milestones);
+      const r = ticketRefResolution(x.fixture.overlay.records, new Set(x.fixture.packets.map((p) => p.ticketId)), x.fixture.blueprint.body.scope.milestones, x.milestones);
       return { ok: r.unresolved.length === 0, value: r, detail: r.inScope.length ? '' : 'vacuous: the corpus names no in-scope ticket id' };
     } },
   { id: 'trace', n: 14, title: 'backward trace from a landing reaches quoted passages (digests verified); forward from that passage reaches the landing', needs: ['trace'],
@@ -588,7 +590,9 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; extractor?
   if (refusal) throw new BenchRefused(refusal);
   const work = benchWorkDir(o.workDir);
   const fixture = loadFixture(dir);
-  const x: Inputs = { fixture, extractor: o.extractor ? path.resolve(o.extractor) : null, env };
+  const config = sectionerConfigOf(fixture);
+  const x: Inputs = { fixture, extractor: o.extractor ? path.resolve(o.extractor) : null, env, labels: labelPatternsOf(config as LabelScheme | null),
+    milestones: milestoneSchemes(config) };
   const stages: StageResult[] = [];
   try {
     for (const s of STAGES) {
@@ -634,8 +638,8 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; extractor?
     kind: 'daylight-ingest-bench-report', v: 1, corpus: x.fixture.bench.name, mode: o.mode, stages, checks,
     nonFalsifiable: CHECKS.filter((c) => falsifiableOf(c) === 'by-construction')
       .map((c) => ({ id: c.id, title: c.title, why: c.byConstructionFor?.(x.fixture, o.mode) ?? BY_CONSTRUCTION })),
-    scores: { fixture: ratioScore(scorePlan(x.fixture.gt, fixturePlan, { pathTolerance: 'parent-dir' })),
-      emitted: x.plan ? ratioScore(scorePlan(x.fixture.gt, x.plan, { pathTolerance: 'parent-dir' })) : null },
+    scores: { fixture: ratioScore(scorePlan(x.fixture.gt, fixturePlan, { pathTolerance: 'parent-dir', labels: x.labels })),
+      emitted: x.plan ? ratioScore(scorePlan(x.fixture.gt, x.plan, { pathTolerance: 'parent-dir', labels: x.labels })) : null },
     summary: { pass: checks.filter((c) => c.status === 'pass').length, fail: checks.filter((c) => c.status === 'fail').length,
       blocked: checks.filter((c) => c.status === 'blocked').length, notMeasured: checks.filter((c) => c.status === 'not-measured').length },
   };
