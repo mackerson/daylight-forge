@@ -107,7 +107,7 @@ const extra: Record<string, string> = {
   'crates/core/build.rs': 'fn main() {}\n',
   'crates/core/src/build.rs': 'pub fn build() {}\n',
   '.github/x.yml': 'on: push\n',
-  'plans/version.json': JSON.stringify({ ...samplePlan(), version: 2 }),
+  'plans/version.json': JSON.stringify({ ...samplePlan(), version: 3 }),
   'plans/notjson.json': `{ "title": "${SENTINEL}" `,
   'plans/too-many.json': JSON.stringify({ ...samplePlan(), tickets: Array.from({ length: MAX_TICKETS + 1 }, (_, i) => ({ ...samplePlan().tickets[0], id: `T${i}` })) }),
   'plans/too-large.json': JSON.stringify({ ...samplePlan(), title: 'x'.repeat(MAX_PLAN_BYTES) }),
