@@ -16,6 +16,7 @@ import { runWorkItemCommand } from './commands-work-item.ts';
 import { runDecideCommand } from './commands-decide.ts';
 import { runDepsCommand } from './commands-deps.ts';
 import { runAssumptionCommand, runCampaignCommand } from './commands-campaign.ts';
+import { runCorpusCommand } from './commands-corpus.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -476,6 +477,8 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
         return await runCampaignCommand(args, env);
       case 'assumption':
         return await runAssumptionCommand(args, env);
+      case 'corpus':
+        return await runCorpusCommand(rest, env);
       case 'confirm': {
         const cp = parse(rest);
         asJson = last(cp, 'format') === 'json';
