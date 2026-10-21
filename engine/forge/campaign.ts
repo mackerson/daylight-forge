@@ -17,7 +17,8 @@ import { assertHumanDecision, DecisionRefused, pathViolations } from './policy.t
 import { authorLimits, ProjectPolicyError } from './project-policy.ts';
 import { specRevisionOf } from './spec.ts';
 import { seedPlanAssumptions } from './assumptions.ts';
-import { authorityChainOf, isIrStale, packetSetDigestOf, staleBlueprints, ticketIrRefs } from './authority.ts';
+import { authorityChainOf, irSetDigestAt, isIrStale, packetSetDigestOf, staleBlueprints, ticketIrRefs } from './authority.ts';
+import { digestOf } from '../mission/artifacts.ts';
 import { unboundObligations } from './campaign-gates.ts';
 
 /**
@@ -269,6 +270,8 @@ export interface EnvelopeFlags {
   identity?: CampaignEnvelope['identity'];
   /** `<ticket>:ob<n>` acceptance obligations a person lets run with no locked gate bound (P2-R50 F3); recorded in the envelope. */
   unboundObligations?: string[];
+  /** The current approved IR set's digest, when a person proceeds although the specification moved under the plan (P2-R59); recorded in the envelope. */
+  acceptIrDrift?: string;
 }
 
 /** `72h` / `3d` as milliseconds, at most 30 days, or null. */
@@ -283,7 +286,7 @@ export function notAfterSpan(s: string): number | null {
  * The envelope `campaign authorize` would record now, from the flags and the rows. `notAfter`
  * is rounded up to the hour, so the preview a person reads and the act they confirm agree.
  */
-export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: EnvelopeFlags, now = ctx.store.clock()): CampaignEnvelope & { unboundObligations?: string[] } {
+export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: EnvelopeFlags, now = ctx.store.clock()): CampaignEnvelope & { unboundObligations?: string[]; acceptIrDrift?: string } {
   const plan = planOf(ctx, campaignId);
   const span = notAfterSpan(f.notAfter ?? '72h');
   if (span === null) throw new DecisionRefused('refused: --not-after is <n>h or <n>d, at most 30 days');
@@ -302,6 +305,7 @@ export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: Envel
     notAfter: Math.ceil((now + span) / HOUR_MS) * HOUR_MS,
     // Only when named, so every envelope without one confirms and records as it always did.
     ...(f.unboundObligations?.length ? { unboundObligations: [...new Set(f.unboundObligations)].sort() } : {}),
+    ...(f.acceptIrDrift ? { acceptIrDrift: f.acceptIrDrift } : {}),
   };
 }
 
@@ -340,7 +344,13 @@ export function authorizeCampaign(ctx: DaylightContext, input: GuardedInput & { 
   const bounds = envelopeBoundsRefusal(ctx, envelope, planOf(ctx, c.id).commit);
   if (bounds) throw new DecisionRefused(`refused: ${bounds}`);
   // A traced plan's chain must hold before a grant is made on it (fail closed); the envelope link is this act's.
-  const chain = authorityChainOf(ctx, c.id).breaks.filter((b) => b.link !== 'envelope');
+  const drift = (envelope as { acceptIrDrift?: string }).acceptIrDrift;
+  const plan = planOf(ctx, c.id).plan;
+  if (drift !== undefined) {
+    const current = plan.derivation ? irSetDigestAt(ctx, plan.derivation.corpusId) ?? digestOf('') : null;
+    if (drift !== current) throw new DecisionRefused(`refused: --accept-ir-drift names ${drift}; the current approved IR set is ${current ?? 'none (the plan is untraced)'}`);
+  }
+  const chain = authorityChainOf(ctx, c.id, { acceptIrDrift: drift ?? null, ticketIds: envelope.ticketIds }).breaks.filter((b) => b.link !== 'envelope');
   if (chain.length) throw new DecisionRefused(`refused: the authority chain is broken at ${chain.map((b) => `${b.link} (${b.why})`).join('; ')}`);
   // P2-R50 F3: every acceptance obligation of the tickets is discharged by a locked gate, or named here.
   const unbound = unboundObligations(ctx, c.id, envelope.ticketIds);

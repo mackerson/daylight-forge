@@ -13,10 +13,10 @@ import { DAYLIGHT_DB } from '../mission/db.ts';
 import type { BlueprintV1, PlanFile, WorkPacket } from '../mission/types.ts';
 import type { GateContext } from '../forge/gate.ts';
 import {
-  carryForward, diffCorpus, ingestNeeds, irSetDigestAt, isIrStale, staleBlueprints, stalePackets, staleTickets,
+  authorityChainOf, carryForward, diffCorpus, ingestNeeds, irSetDigestAt, isIrStale, staleBlueprints, stalePackets, staleTickets,
 } from '../forge/authority.ts';
 import { approveBlueprint, importBlueprint } from '../forge/blueprint.ts';
-import { approvePlan, importPlan } from '../forge/campaign.ts';
+import { approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, type EnvelopeFlags } from '../forge/campaign.ts';
 import { campaignLockConfirm, lockCampaign, registerPlanGates } from '../forge/campaign-gates.ts';
 import { confirmIngest, corpusReviewReadOnly } from '../forge/commands-corpus-review.ts';
 import { confirmDigest } from '../forge/confirm.ts';
@@ -165,6 +165,13 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   lockCampaign(g, { campaignId: campaign.id, actor: HUMAN, rationale: 'gates', ratchet: false, experimentIds: [suite.id], obligations, env: {},
     confirm: campaignLockConfirm(g, campaign.id, [suite.id], false, obligations).digest8 });
   check('before any revision nothing is stale', !staleTickets(ctx, campaign.id).size && !staleBlueprints(ctx, corpus.id).size && !ingestNeeds(ctx, campaign).length);
+  const lockDecision = ctx.store.campaignLockDecision(campaign.id)!;
+  const flags: EnvelopeFlags = { expectedGateSetDigest: lockDecision.scope.gateSetDigest as string, roster: ['mock'], maxUsdTotal: 10, maxUsdPerMission: 2,
+    maxTurns: 10, timeoutSeconds: 600, maxAttemptsPerTicket: 2, concurrency: 1, execute: false, autoApply: 'integration-ref', tickets: ['W1.D1'], notAfter: '24h' };
+  const auth = (f: EnvelopeFlags) => authorizeCampaign(ctx, { campaignId: campaign.id, actor: HUMAN, rationale: 'go', env: {}, flags: f,
+    confirm: confirmDigest(ctx, 'authorize-campaign', campaign.id, { envelope: buildEnvelope(ctx, campaign.id, f) }).digest8 });
+  auth(flags);
+  check('authorized over a current IR set, the director may act', campaignAuthorizationRefusal(ctx, campaign.id) === null);
 
   const V2 = V1.replace('more than ten parcels', 'more than twelve parcels');
   const rev2 = addRevision(w, { svc: V2 });
@@ -184,6 +191,31 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   check('staleTickets derives it for the director (TicketStatus stale lands with R16)', staleTickets(ctx, campaign.id).get('W1.D1')?.join() === r2.id);
   check('the campaign needs the gate looked at; the corpus the record and its interpretation', ingestNeeds(ctx, campaign).some((n) => n.kind === 'gate-stale' && n.ref === suite.id)
     && ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-stale' && n.ref === r2.id) && ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-stale' && n.ref === u.id));
+  const drift = authorityChainOf(ctx, campaign.id).breaks.find((x) => x.link === 'ir');
+  check('P2-R59: a stale cited record breaks the chain\'s ir link, naming it', !!drift && drift.why.includes(r2.id), JSON.stringify(authorityChainOf(ctx, campaign.id).breaks));
+  check('P2-R59: the director pass after the revision is refused, naming the stale record', (campaignAuthorizationRefusal(ctx, campaign.id) ?? '').includes(r2.id));
+  check('P2-R59: authorizing again over the drifted IR is refused', (() => {
+    try {
+      auth(flags);
+      return false;
+    } catch (err) {
+      return (err as Error).message.includes(r2.id) && /accept-ir-drift/.test((err as Error).message);
+    }
+  })());
+  const now = irSetDigestAt(ctx, corpus.id) ?? digestOf('');
+  check('--accept-ir-drift naming another digest is refused', /accept-ir-drift/.test((() => {
+    try {
+      auth({ ...flags, acceptIrDrift: digestOf('elsewhere') });
+      return '';
+    } catch (err) {
+      return (err as Error).message;
+    }
+  })()));
+  const accepted = auth({ ...flags, acceptIrDrift: now });
+  check('a person accepting the current digest proceeds; the envelope records it', accepted.scope.acceptIrDrift === now
+    && campaignAuthorizationRefusal(ctx, campaign.id) === null);
+  check('the acceptance is in the confirm digest', confirmDigest(ctx, 'authorize-campaign', campaign.id, { envelope: buildEnvelope(ctx, campaign.id, { ...flags, acceptIrDrift: now }) }).digest
+    !== confirmDigest(ctx, 'authorize-campaign', campaign.id, { envelope: buildEnvelope(ctx, campaign.id, flags) }).digest);
   check('nothing was approved, rejected or superseded by the revision', ctx.store.irRecord(r2.id)!.status === 'approved' && ctx.store.decisions(corpus.id).length === decisionsBefore);
 
   const r2b = addRecord(w, { kind: 'acceptance-condition', docKey: 'svc', quote: 'A courier must never carry more than twelve parcels.', statement: 'Twelve.' });
@@ -191,6 +223,7 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   check('recovery is a person\'s: approve-ir supersedes the stale record with the new one', ctx.store.irRecord(r2.id)!.status === 'superseded'
     && ctx.store.irRecord(r2b.id)!.status === 'approved' && !ingestNeeds(ctx, corpus).some((n) => n.ref === r2.id));
   check('the old blueprint stays stale until a person approves a new one', staleBlueprints(ctx, corpus.id).has(b.id));
+  check('P2-R59: drift past the accepted digest stops the director again', /ir \(/.test(campaignAuthorizationRefusal(ctx, campaign.id) ?? ''));
   w.ctx.close();
 }
 

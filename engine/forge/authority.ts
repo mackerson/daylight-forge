@@ -456,7 +456,7 @@ export function reviseCorpus(ctx: DaylightContext, repo: string, corpusId: strin
  * The campaign's authority chain, every link re-derived from rows and artifacts, with the links
  * that do not hold. A version-1 plan has no chain (empty digests, no breaks): untraced, not broken.
  */
-export function authorityChainOf(ctx: DaylightContext, campaignId: string): AuthorityChain {
+export function authorityChainOf(ctx: DaylightContext, campaignId: string, o: { acceptIrDrift?: string | null; ticketIds?: readonly string[] } = {}): AuthorityChain {
   const chain: AuthorityChain = {
     corpusDigest: '', sectionSetDigest: '', configDigest: '', irVersions: [], irSetDigest: null, blueprintId: null, blueprintDigest: null,
     packetSetDigest: null, planDigest: null, approvePlanDecisionId: null, authorizeDecisionId: null, lockDecisionId: null, breaks: [],
@@ -497,6 +497,20 @@ export function authorityChainOf(ctx: DaylightContext, campaignId: string): Auth
   chain.irVersions = [...new Set(cited.map((id) => ctx.store.irRecord(id)?.irVersion).filter((v): v is string => !!v))].sort();
   const irApproved = corpus ? ctx.store.decisions(corpus.id).some((x) => x.scope.operation === 'approve-ir' && x.scope.irSetDigest === d.irSetDigest) : false;
   if (!irApproved) br('ir', `no approve-ir decision on corpus ${d.corpusId} names IR set ${d.irSetDigest}`);
+  // P2-R59: the specification must still be the one the plan was derived from, or a person accepts the drift by its digest.
+  const envScope = (auth?.scope ?? {}) as { acceptIrDrift?: unknown; ticketIds?: unknown };
+  const accept = o.acceptIrDrift !== undefined ? o.acceptIrDrift : typeof envScope.acceptIrDrift === 'string' ? envScope.acceptIrDrift : null;
+  const tickets = new Set(o.ticketIds ?? (Array.isArray(envScope.ticketIds) ? envScope.ticketIds as string[] : at.plan.tickets.map((t) => t.id)));
+  const current = (corpus ? irSetDigestAt(ctx, corpus.id) : null) ?? digestOf('');
+  const staleCited = corpus ? staleAt(ctx, cited.filter((id) => ctx.store.irRecord(id)?.corpusId === corpus.id)) : [];
+  const bpStale = corpus ? staleBlueprints(ctx, corpus.id).has(d.blueprintId) : false;
+  const staleTix = [...staleTickets(ctx, campaignId).keys()].filter((t) => tickets.has(t)).sort();
+  if ((current !== d.irSetDigest || staleCited.length || bpStale || staleTix.length) && accept !== current) {
+    br('ir', `the specification moved under this plan: the approved IR set is ${current}, the plan was derived from ${d.irSetDigest}`
+      + (staleCited.length ? `; stale records ${staleCited.join(', ')}` : '') + (bpStale ? `; blueprint ${d.blueprintId} is stale` : '')
+      + (staleTix.length ? `; stale tickets ${staleTix.join(', ')}` : '')
+      + `; re-derive the plan, or a person proceeds with \`campaign authorize --accept-ir-drift ${current}\``);
+  }
 
   const bp = ctx.store.blueprint(d.blueprintId);
   if (!bp || bp.corpusId !== d.corpusId) br('blueprint', `blueprint ${d.blueprintId} is not a blueprint of corpus ${d.corpusId}`);
