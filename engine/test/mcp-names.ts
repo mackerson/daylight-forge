@@ -12,6 +12,7 @@ import { CLAUDE, mcpConfig } from '../swarm/adapters.ts';
 import { buildFocusPrompt, SYSTEM_RULES } from '../swarm/driver.ts';
 import { FIXTURE_DIR } from '../demo/fixture.ts';
 import { ROLE_MCP_TOOLS } from '../forge/decompose.ts';
+import { OUTBOX_TOOLS } from '../forge/outbox.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -56,6 +57,15 @@ check('a wave reviewer is allowed report_finding and nothing that reads (§6.2)'
 check('a reviewer and an author are never allowed report_finding',
   !allowedTools.has('report_finding') && !ROLE_MCP_TOOLS.review.includes('report_finding') && !ROLE_MCP_TOOLS.author.some((t) => t === 'report_finding'));
 check('the author role still lists request_dependency (R4)', ROLE_MCP_TOOLS.author.includes('request_dependency'));
+
+section('spec-ingestion outbox roles (§13.0): one append-only tool each, never a reader\'s');
+for (const role of ['extract', 'ir-review', 'architect', 'packetize'] as const) {
+  const tools = ROLE_MCP_TOOLS[role];
+  check(`${role} is allowed exactly its outbox tool ${OUTBOX_TOOLS[role]}`, tools.length === 1 && tools[0] === OUTBOX_TOOLS[role], tools.join(','));
+  check(`${role}'s tool is not a reviewer's, a decomposer's or an author's`,
+    !allowedTools.has(tools[0]) && !registered.has(tools[0]) && !ROLE_MCP_TOOLS.author.includes(tools[0]) && !ROLE_MCP_TOOLS.decompose.includes(tools[0]));
+}
+check('the four outbox tools are distinct', new Set(Object.values(OUTBOX_TOOLS)).size === 4);
 
 const prompts: Array<[string, string]> = [
   ['the fixture reviewer prompt', fs.readFileSync(path.join(FIXTURE_DIR, 'review-prompts', 'reviewer.md'), 'utf8')],

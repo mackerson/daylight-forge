@@ -422,6 +422,14 @@ export const NEED_WORDS: Record<Need['kind'], string> = {
   'assumption-pending': 'confirm assumption',
   'owner-decision': 'owner decision',
   'forgery-shape-review': 'review forgery shape',
+  'ir-undecided': 'decide spec records',
+  'ir-interpretation': 'decide spec reading',
+  'ir-finding-open': 'decide spec finding',
+  'blueprint-undecided': 'decide blueprint',
+  'spec-review': 'review spec change',
+  'spec-stale': 'spec changed',
+  'evidence-stale': 'evidence stale',
+  'gate-stale': 'gate stale',
 };
 
 // ---- guarded acts -------------------------------------------------------------------------
