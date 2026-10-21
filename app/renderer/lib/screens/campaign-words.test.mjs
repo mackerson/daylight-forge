@@ -17,7 +17,7 @@ import {
 import { ledgerUsd, NEED_WORDS, needTarget } from './forge-words.ts';
 import {
   CAMPAIGN_NEEDS, FORGE_ASSUMPTIONS, FORGE_CAMPAIGN_LIST, FORGE_CAMPAIGN_SHOW, FORGE_CAMPAIGN_STATUS, FORGE_DRY_RUN, FORGED_CANDIDATE,
-  SAMPLE_CAMPAIGN, SAMPLE_HOLDOUT_ID, U_OPEN, U_PENDING, CAMPAIGN_MISSIONS,
+  SAMPLE_CAMPAIGN, SAMPLE_HOLDOUT_BASENAME, SAMPLE_HOLDOUT_ID, U_OPEN, U_PENDING, CAMPAIGN_MISSIONS,
 } from '../fixtures/forge-campaign.sample.ts';
 import { FORGE_WAVE_REPORT } from '../fixtures/forge-campaign-report.sample.ts';
 import { FORGE_REFINE, FORGE_REFINE_MAP } from '../fixtures/forge-campaign-refine.sample.ts';
@@ -182,6 +182,14 @@ section('fixtures: synthetic, every status and bucket, no holdout');
   check('holdouts are counts', FORGE_WAVE_REPORT.holdouts.locked === 2 && FORGE_WAVE_REPORT.holdouts.atTip.supported === 2);
   const text = JSON.stringify(all);
   check('no fixture string names the sample lock\'s holdout', !text.includes(SAMPLE_HOLDOUT_ID) && !text.includes(SAMPLE_HOLDOUT_ID.slice(2, 14)));
+  // The basename is planted once, in the campaign mission's scope, which no campaign screen
+  // draws; the five DOM checks assert the page never shows it. This is a fixture check: the
+  // engine withholds holdout basenames (P2-R37), the screens must not draw what they are given.
+  check('the holdout basename sentinel is planted exactly once, in the campaign mission scope',
+    text.split(SAMPLE_HOLDOUT_BASENAME).length === 2 && FORGE_CAMPAIGN_SHOW.campaign.scope.paths.some((p) => p.endsWith(SAMPLE_HOLDOUT_BASENAME)));
+  const screens = ['Campaigns.tsx', 'CampaignDetail.tsx', 'CampaignDag.tsx', 'WaveReport.tsx', 'Assumptions.tsx', 'Refine.tsx']
+    .map((f) => fs.readFileSync(path.join(here, f), 'utf8'));
+  check('no campaign screen draws the campaign mission\'s scope', screens.every((src) => !/campaign\.scope/.test(src)));
 }
 
 section('the new screens render text, never markup');

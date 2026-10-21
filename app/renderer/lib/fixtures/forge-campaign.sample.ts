@@ -26,6 +26,12 @@ const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
 const commit = (seed: string) => seed.repeat(40).slice(0, 40);
 
 export const SAMPLE_HOLDOUT_ID = id('x', '9e');
+/**
+ * A holdout test's basename, planted in the one sample field no campaign screen draws (the
+ * campaign mission's scope, below), so the DOM checks' "no holdout on the page" can go red if a
+ * screen starts drawing it. The engine withholds such basenames (P2-R37); this guards the screens.
+ */
+export const SAMPLE_HOLDOUT_BASENAME = 'holdout_9e9e9e9e_sentinel.rs';
 export const CAMPAIGN_RUNNING = id('m', 'c1');
 export const SAMPLE_CAMPAIGN = id('m', 'c2');
 export const BASE = commit('b0');
@@ -130,7 +136,7 @@ export const CAMPAIGN_NEEDS: Need[] = [
 
 export const FORGE_CAMPAIGN_SHOW: ForgeCampaignShow & { _sample: typeof SAMPLE_MARK } = {
   _sample: SAMPLE_MARK,
-  campaign: mission(SAMPLE_CAMPAIGN, 'Status API and page (sample)', 'running'),
+  campaign: { ...mission(SAMPLE_CAMPAIGN, 'Status API and page (sample)', 'running'), scope: { paths: ['src/', `tests/holdout/${SAMPLE_HOLDOUT_BASENAME}`] } },
   title: 'Status API and page (sample)', planDigest: sha('9a'), commit: BASE, approved: true,
   authorization: null,
   order: TICKETS.filter((t) => t.origin === 'plan').map((t) => t.ticketId),
