@@ -168,7 +168,8 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
       case 'run': {
         const r = await withCtx((ctx) => runCampaign(ctx, {
           campaignId, repo: repoOf(ctx, p.positionals[1]), concurrency: num(last(p, 'concurrency')), maxWaves: num(last(p, 'max-waves')),
-          dryRun: last(p, 'dry-run') === 'true', host: hostOf(ctx), env, ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
+          // Any spelling of --dry-run is a dry run (wave2 L1): a typo must never become a real run.
+          dryRun: p.flags.has('dry-run'), host: hostOf(ctx), env, ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
         }));
         if (asJson) json(r);
         else {

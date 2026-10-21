@@ -42,7 +42,8 @@ daylight campaign run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run]
 
 Started by a person from a terminal: under `CLAUDECODE` or `DAYLIGHT_SESSION` it is refused
 unless `--dry-run` (P2-R9, P2-R24). A dry run writes no row, no event and no ref; it prints each
-ticket's status and what the first pass would dispatch with each reservation.
+ticket's status and what the first pass would dispatch with each reservation. In a person's
+shell any spelling (`--dry-run`, `--dry-run=true`, `--dry-run=1`) is a dry run.
 
 A real run is refused, before anything starts, when the authorization is missing, expired or
 halted, when the lock it names is stale (recomputed against the gates as they are now), when
