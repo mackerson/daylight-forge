@@ -175,6 +175,14 @@ const paraIndex = buildSectionIndex({ docs: [doc('p', 'primary', 'd', PARA)], co
 const paraParts = windowsOf(paraIndex, () => PARA).flatMap((w) => w.parts ?? []);
 check('a single paragraph over 40 KiB is split at unit starts', paraParts.length >= 2 && paraParts.slice(1).every((p) => PARA.subarray(p.start, p.start + 5).toString() === 'Item '));
 
+section('a UTF-8 BOM is skipped, offsets kept (review L-3)');
+const BOMDOC = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('# Title\n\n## Rules\n\nThe pack must be signed.\n')]);
+const bomSections = sectionDocument('b', BOMDOC, DEFAULT_SECTIONER_CONFIG);
+check('the first heading after a BOM is a heading, and the document title', bomSections.length === 3 && bomSections[0].title === 'Title' && bomSections[1].start === 3);
+const bomUnits = scoredUnitsOf({ key: 'b', bytes: BOMDOC }, bomSections, DEFAULT_SECTIONER_CONFIG);
+check('no unit holds the heading, and unit spans are still the document\'s bytes', bomUnits.length === 1
+  && BOMDOC.subarray(bomUnits[0].start, bomUnits[0].end).toString() === 'The pack must be signed.');
+
 section('configuration refusals');
 check('a pattern that does not compile is refused', (() => {
   try {

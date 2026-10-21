@@ -131,9 +131,12 @@ export function configForDomain(c: SectionerConfig, domain: string): SectionerCo
 
 interface Line { text: string; start: number; end: number /* bytes, excluding the newline */; next: number /* byte after the newline */ }
 
+const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+
+/** Lines with byte offsets; a leading UTF-8 BOM is skipped (offsets stay the document's), so a first heading is still a heading. */
 function linesOf(bytes: Buffer): Line[] {
   const out: Line[] = [];
-  let start = 0;
+  let start = bytes.subarray(0, 3).equals(BOM) ? 3 : 0;
   for (;;) {
     let nl = bytes.indexOf(0x0a, start);
     if (nl < 0) nl = bytes.length;
