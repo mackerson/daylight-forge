@@ -499,7 +499,7 @@ export function planApproveIr(ctx: DaylightContext, corpusId: string, set: Appro
   for (const [old, next] of Object.entries(supersede)) {
     const r = recordOf(old);
     if (!r) refusals.push(`${old} is not a record of corpus ${corpusId}`);
-    else if (r.status !== 'approved' && r.status !== 'proposed') refusals.push(`${old} is ${r.status}; it cannot be superseded`);
+    else if (r.status !== 'approved') refusals.push(`${old} is ${r.status}; only an approved record is superseded (reject a proposed one)`);
     if (!(next in approve)) refusals.push(`${old} is superseded by ${next}, which this act does not approve`);
   }
 

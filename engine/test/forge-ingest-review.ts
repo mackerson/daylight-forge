@@ -204,6 +204,11 @@ section('the CLI has no agreement selector (review M4)');
 }
 
 section('supersede replaces an approved record only with one approved in the same act');
+{
+  const spare = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'A transfer must never', statement: 'Spare.' });
+  const spare2 = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'exceed the balance', statement: 'Spare two.' });
+  check('review L2: a proposed record is rejected, never superseded', /only an approved record is superseded/.test(throws(() => act(set({ approve: [spare2.id], supersede: { [spare.id]: spare2.id } })))?.message ?? ''));
+}
 const reworded = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'Transfers are recorded in the audit log.', statement: 'Each transfer is recorded in the audit log.' });
 const sup = act(set({ approve: [reworded.id], supersede: { [close.id]: reworded.id } }));
 check('the old record is superseded and the new one approved under one decision', ctx.store.irRecord(close.id)!.status === 'superseded'
