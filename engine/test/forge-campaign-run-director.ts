@@ -29,7 +29,8 @@ import { baselineCampaign, lockCampaign, lockableIds, registerCampaignGate, regi
 import { confirmDigest } from '../forge/confirm.ts';
 import { requestOutboxFile } from '../forge/dependency-requests.ts';
 import { campaignStatus, renderCampaignStatus } from '../forge/campaign-status.ts';
-import { campaignRunNeeds, campaignSpend, campaignSpendRefusal, runCampaign, ticketStates, type DirectorOptions } from '../forge/director.ts';
+import { retryScopeOf } from '../forge/campaign.ts';
+import { campaignRunNeeds, campaignSpend, campaignSpendRefusal, runCampaign, ticketStates, type CampaignHost, type DirectorOptions } from '../forge/director.ts';
 import type { GateContext } from '../forge/gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, InjectedCrash, integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
@@ -39,7 +40,7 @@ import type { CampaignTicket, Mission, PlanFileV1 } from '../mission/types.ts';
 import { DecisionRefused } from '../forge/policy.ts';
 import { harness } from './harness.ts';
 import {
-  ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, tempDir, testHost, ticketRow,
+  ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, storeTicket, tempDir, testHost, ticketRow,
 } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
@@ -481,6 +482,42 @@ section('a ready ticket refused at preflight closes inconclusive once, with a bl
   check('it was not dispatched again', namesOf(w).filter((n) => n === 'campaign.ticket.dispatched').length === 1 && r.statuses.A === 'blocked');
   check('one blocked event', namesOf(w).filter((n) => n === 'campaign.ticket.blocked').length === 1);
   check('campaignRunNeeds names it for a person to retry', campaignRunNeeds(w.ctx, w.campaign, testHost(w.ctx, w.campaign, w.plan, w.tickets)).some((n) => n.kind === 'blocked' && /campaign retry/.test(n.why)));
+  w.ctx.close();
+}
+
+section('campaign retry releases a closed ticket and the director dispatches it again (P2-R25, P2-R27, wave2 H3 p4)');
+{
+  const w = nodeWorld('retry', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  const base = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  // The first mission's grant carries no write: a refusal at the ticket's own preflight (P2-R23).
+  const noWrite: CampaignHost = {
+    ...base,
+    startTicketMission: (_c, ticketId, at) => {
+      const t = w.tickets.find((x) => x.ticketId === ticketId)!;
+      storeTicket(w.ctx, t);
+      const m = w.ctx.store.createMission({
+        projectId: w.campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: at, parentId: w.campaign.id, workItemId: t.workItemId, scope: { paths: t.scope },
+      });
+      return w.ctx.store.authorizeMission({ missionId: m.id, actor: ACTOR, rationale: 'no write', permissions: { write: false, execute: false }, maxUsd: 1 }).mission;
+    },
+  };
+  const r1 = await run(w, author, { host: noWrite });
+  const closed = w.ctx.store.missions(w.campaign.projectId).find((m) => m.parentId === w.campaign.id)!;
+  check('the refused ticket is closed inconclusive and blocked', closed.outcome === 'inconclusive' && r1.statuses.A === 'blocked', JSON.stringify(r1.statuses));
+  const retry = w.ctx.store.retryTicket(w.campaign.id, { actor: ACTOR, rationale: 'grant fixed', scope: retryScopeOf(w.ctx, w.campaign.id, 'A') });
+  check('after the retry the ticket is ready again', ticketStates(w.ctx, w.campaign.id, w.repo, base).get('A')?.status === 'ready');
+  check('its blocked need is gone', !campaignRunNeeds(w.ctx, w.campaign, base).some((n) => n.ref === closed.id), JSON.stringify(campaignRunNeeds(w.ctx, w.campaign, base)));
+  const dry = await runCampaign(w.ctx, { campaignId: w.campaign.id, repo: w.repo, dryRun: true, host: base });
+  check('a dry run schedules it', dry.schedule.map((x) => x.ticketId).join(',') === 'A', JSON.stringify(dry.schedule));
+  const r2 = await run(w, author);
+  check('the next run dispatches it and it lands', r2.landed.join(',') === 'A' && r2.statuses.A === 'landed', JSON.stringify({ landed: r2.landed, statuses: r2.statuses, refused: r2.refused }));
+  const fresh = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id && m.id !== closed.id);
+  const ev = fresh.flatMap((m) => w.ctx.events.forMission(m.id));
+  check('one new mission, which names the retry decision', fresh.length === 1
+    && ev.some((e) => e.name === 'campaign.ticket.retried' && e.payload.retryDecisionId === retry.id && e.payload.releasedMissionId === closed.id)
+    && ev.some((e) => e.name === 'campaign.ticket.dispatched' && e.payload.retryDecisionId === retry.id), JSON.stringify(ev.map((e) => [e.name, e.payload.retryDecisionId])));
   w.ctx.close();
 }
 

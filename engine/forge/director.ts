@@ -107,9 +107,22 @@ export function haltOf(store: Pick<MissionStore, 'decisions'>, campaignId: strin
   return halt ? { decision: halt, reason: halt.scope.reason as CampaignHaltReason } : null;
 }
 
-/** The ticket's implement missions under this campaign, oldest first. */
+/**
+ * The ticket's implement missions under this campaign, oldest first, less any a person released
+ * with `campaign retry` (P2-R25, P2-R27): a released mission no longer speaks for its ticket, so
+ * the ticket is ready again and a new mission builds it.
+ */
 function missionsOf(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, t: CampaignTicket): Mission[] {
-  return ctx.store.missions(campaign.projectId).filter((m) => m.parentId === campaign.id && m.kind === 'implement' && m.workItemId === t.workItemId);
+  const released = ctx.store.releasedMissions(campaign.projectId);
+  return ctx.store.missions(campaign.projectId)
+    .filter((m) => m.parentId === campaign.id && m.kind === 'implement' && m.workItemId === t.workItemId && !released.has(m.id));
+}
+
+/** The latest `retry-ticket` decision that released a mission of this ticket, if any. */
+function retryOf(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, t: CampaignTicket): Decision | undefined {
+  const released = ctx.store.releasedMissions(campaign.projectId);
+  return ctx.store.decisions(campaign.id)
+    .filter((d) => d.scope.operation === 'retry-ticket' && d.scope.ticketId === t.ticketId && released.has(String(d.scope.closedMissionId))).at(-1);
 }
 
 const authorAttempts = (store: MissionStore, m: Mission) =>
@@ -572,9 +585,13 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const t = s.ticket;
       let m = s.mission;
       const tipNow = integrationTip(root, campaign.id)!;
+      let retry: Decision | undefined;
       if (!m) {
         try {
+          retry = retryOf(ctx, campaign, t);
           m = host.startTicketMission(campaign.id, t.ticketId, tipNow);
+          // The new mission names the person's retry that released its predecessor (P2-R27).
+          if (retry) emit(m, 'lifecycle', 'campaign.ticket.retried', { ticketId: t.ticketId, retryDecisionId: retry.id, releasedMissionId: retry.scope.closedMissionId });
         } catch (err) {
           // P2-R36: R5 refusing the grant blocks this ticket for the run; the loop goes on.
           if (!(err instanceof DecisionRefused)) throw err;
@@ -590,7 +607,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const repair = attempt === 1 ? undefined
         : prior && prior.attemptId === lastAttempt?.id ? repairBrief(ctx, prior.id, attempt)
           : lastAttempt ? captureRefusedBrief(attempt, lastAttempt.failure ?? 'the attempt left no capturable candidate') : undefined;
-      emit(m, 'lifecycle', 'campaign.ticket.dispatched', { ticketId: t.ticketId, missionId: m.id, attempt, base: tipNow, tool });
+      emit(m, 'lifecycle', 'campaign.ticket.dispatched', { ticketId: t.ticketId, missionId: m.id, attempt, base: tipNow, tool, ...(retry ? { retryDecisionId: retry.id } : {}) });
       try {
         const r = await runImplement(ctx, {
           missionId: m.id, repo: root, tool, base: tipNow, ticket: t, brief: 'campaign', evaluate: false, repair, reserveUsd: reserve,
