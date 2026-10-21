@@ -672,6 +672,8 @@ export interface Need {
   kind: NeedKind;
   ref: string;
   why: string;
+  /** `campaign-halted`: the commit adopt-tip would leave the integration ref at; `ref` stays the halt or campaign id. */
+  commit?: string;
 }
 
 // ---- campaign integration, waves and the director (WS-R6) --------------------
@@ -815,7 +817,8 @@ export interface CampaignRunResult {
 export interface CampaignStatusReport {
   kind: 'daylight-campaign-status'; campaignId: string; projectId: string; planRevision: string;
   integration: { ref: string; base: string; tip: string; landed: number; mergeHint: string };
-  authorization: { decisionId: string | null; notAfter: number | null; halted: CampaignHaltReason | null };
+  /** `haltDecisionId`: the unanswered halt that resume and adopt-tip name. */
+  authorization: { decisionId: string | null; notAfter: number | null; halted: CampaignHaltReason | null; haltDecisionId: string | null };
   lanes: Array<{ lane: string; total: number; byStatus: Record<TicketStatus, number> }>;
   tickets: Array<{ id: string; lane: string; status: TicketStatus; missionId?: string; attempts: number; commit?: string; reason?: string }>;
   assumptions: { open: number; pending: number; confirmed: number; overturned: number; items: Assumption[] };
@@ -863,8 +866,9 @@ export interface SpendLine {
   /** Stdout-scan figures: shown beside, never inside, a known figure. */
   scannedUsd: number;
   scannedCount: number; unknownCount: number; runningCount: number;
-  /** Attempts charged at their reservation (cost_source 'reservation', P2-R44). */
+  /** Attempts charged at their reservation (cost_source 'reservation', P2-R44), and those dollars (in spentUsd). */
   reservationCount: number;
+  reservationUsd: number;
 }
 /** The run claim `<out>/mission-run.<id>.pid`: a live pid is a run in progress; a dead one, a claim left behind. */
 export interface RunClaim { pid: number; alive: boolean }
@@ -924,6 +928,13 @@ export interface ReportForgeryShapes {
   heuristic: true;
 }
 
+/** `forge candidate` and the approve/override confirm preview: forgery-shape warnings by class and path, never matched text. */
+export interface CandidateForgeryShapes {
+  /** Paths per class. */
+  byClass: Record<ForgeryClass | 'unclassified', number>;
+  items: Array<{ path: string; classes: Array<ForgeryClass | 'unclassified'> }>;
+}
+
 export interface WaveReport {
   kind: 'daylight-wave-report'; version: 1;
   campaignId: string; projectId: string; title: string; planRevision: string;
@@ -965,7 +976,7 @@ export interface ForgeCampaignRow {
   id: string; projectId: string; title: string | null; state: MissionState; createdAt: number;
   planRevision: string | null; planApproved: boolean;
   /** campaignAuthorizationRefusal, verbatim. */
-  authorization: { decisionId: string | null; refusal: string | null; notAfter: number | null };
+  authorization: { decisionId: string | null; refusal: string | null; notAfter: number | null; haltDecisionId: string | null };
   halted: CampaignHaltReason | null;
   run: RunClaim | null;
   /** `daylight campaign run <id> <root> --out <out>`, built by the engine. */

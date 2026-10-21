@@ -186,7 +186,7 @@ export function lockCampaign(ctx: GateContext, input: CampaignLockInput): Decisi
   const ids = input.experimentIds ?? lockableIds(ctx, m.id);
   if (!ids.length) throw new GateRefused(`campaign ${m.id} has no gate to lock; run \`daylight campaign baseline\` first`);
   if (typeof input.ratchet !== 'boolean') throw new GateRefused('--ratchet or --no-ratchet is required and has no default');
-  const preview = confirmDigest(ctx, 'lock-campaign-gates', m.id, { experimentIds: ids, ratchet: input.ratchet });
+  const preview = confirmDigest(ctx, 'lock-campaign-gates', m.id, { experimentIds: ids, ratchet: input.ratchet, acceptVacuous: input.acceptVacuous ?? [] });
   assertHumanDecision(input.env ?? ctx.env ?? process.env, input.actor, input.confirm, preview.digest);
   const gates = ids.map((id) => ctx.store.experiment(id)!);
   const vacuous = [...new Set(input.acceptVacuous ?? [])];

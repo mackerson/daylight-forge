@@ -15,7 +15,9 @@ import { runGateCommand } from './commands-gate.ts';
 import { runWorkItemCommand } from './commands-work-item.ts';
 import { runDecideCommand } from './commands-decide.ts';
 import { runDepsCommand } from './commands-deps.ts';
-import { runAssumptionCommand, runCampaignCommand } from './commands-campaign.ts';
+import { CAMPAIGN_CONFIRM_OPS, campaignConfirm, runAssumptionCommand, runCampaignCommand, type CampaignConfirmOp } from './commands-campaign.ts';
+import { CAMPAIGN_RUN_CONFIRM_OPS, campaignRunConfirm, type CampaignRunConfirmOp } from './commands-campaign-run.ts';
+import { candidateForgeryShapes } from './forgery-classes.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -160,6 +162,9 @@ const OPERATIONS: readonly (ConfirmOperation | 'adjudicate')[] = [
   'authorize-mission', 'adhoc-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
   'approve-candidate', 'reject-candidate', 'override-candidate', 'apply', 'adjudicate', 'resolve-dependency-request',
   'acknowledge-forgery-shape',
+  // Campaign and assumption acts (P2-R40, P2-R45 D6): the GUI confirms only through here.
+  'approve-plan', 'authorize-campaign', 'retry-ticket', 'record-assumption', 'confirm-assumption', 'decide-assumption', 'overturn-assumption',
+  'lock-campaign-gates', 'resume-campaign', 'adopt-integration-tip',
 ];
 
 /**
@@ -191,6 +196,15 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
       const c = resolveConfirm(findDependencyRequest(ctx, subjectId), { declined: last(p, 'declined') === 'true' });
       return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
     }
+    const campaignOp = (CAMPAIGN_CONFIRM_OPS as readonly string[]).includes(operation);
+    if (campaignOp || (CAMPAIGN_RUN_CONFIRM_OPS as readonly string[]).includes(operation)) {
+      const get = (k: string) => last(p, k);
+      const named = last(p, 'repo');
+      const c = campaignOp
+        ? campaignConfirm(ctx, operation as CampaignConfirmOp, subjectId, get)
+        : campaignRunConfirm(ctx, operation as CampaignRunConfirmOp, subjectId, get, named && named !== 'true' ? path.resolve(named) : mappedRoot(ctx.out));
+      return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
+    }
     let opts = {};
     if (operation === 'authorize-mission') opts = { permissions: { write, execute }, maxUsd: num(last(p, 'max-usd')) ?? null };
     if (operation === 'lock-gates') {
@@ -211,7 +225,10 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
       ? [...c.lines, ...possible.map((p) => `possible secret in ${p}: acknowledge it (--acknowledge-possible-secret) to ${operation === 'approve-candidate' ? 'approve' : 'override'}`)]
       : c.lines;
     const refusal = guardCheck(env, actor, c.digest8, c.digest) ?? (operation === 'authorize-mission' && execute && !write ? EXEC_WITHOUT_WRITE : null);
-    return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines, refusal, possibleSecrets: possible };
+    return {
+      operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines, refusal, possibleSecrets: possible,
+      ...(candidate ? { forgeryShapes: candidateForgeryShapes(ctx.artifacts, candidate) } : {}),
+    };
   });
 }
 
@@ -375,6 +392,7 @@ async function forge(sub: string | undefined, p: Parsed, out: () => string, asJs
         return {
           candidate: v.candidate,
           possibleSecrets: v.possibleSecrets,
+          forgeryShapes: v.forgeryShapes,
           diff: { text: v.diff.text, truncated: v.diff.truncated },
           gateEvaluations: publicGateEvaluations(ctx, ctx.store.gateEvaluations({ candidateId })),
         };

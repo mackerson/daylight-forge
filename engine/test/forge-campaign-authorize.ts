@@ -76,14 +76,16 @@ section('agent sessions write nothing (P2-R9, P2-R24, P2-R25)');
     check(`${v}: assumption list runs`, list.code === 0 && JSON.parse(list.out).length === 2, list.err);
   }
   const confirmed = { positionals: [], flags: new Map([['confirm', '00000000']]) };
-  check('the read-only set is show, validate, status, gate list, run --dry-run and a guarded act\'s preview',
+  check('the read-only set is show, validate, status, gate list, run --dry-run, list, report, refine and a guarded act\'s preview',
     ['show', 'validate', 'status'].every((x) => campaignReadOnly(x))
       && campaignReadOnly('gate', { positionals: ['list'], flags: new Map() })
       && campaignReadOnly('run', { positionals: [], flags: new Map([['dry-run', 'true']]) })
       && !campaignReadOnly('gate', { positionals: ['register'], flags: new Map() })
       && !campaignReadOnly('status', { positionals: [], flags: new Map([['write', 'true']]) })
       && ['approve-plan', 'authorize', 'retry', 'lock', 'resume', 'adopt-tip'].every((x) => campaignReadOnly(x) && !campaignReadOnly(x, confirmed))
-      && !['import', 'baseline', 'halt', 'run'].some((x) => campaignReadOnly(x)));
+      && !['import', 'baseline', 'halt', 'run'].some((x) => campaignReadOnly(x))
+      && ['list', 'report', 'refine'].every((x) => campaignReadOnly(x))
+      && !campaignReadOnly('report', { positionals: [], flags: new Map([['write', 'true']]) }));
   check('sessionRefusal is null in a clean environment', sessionRefusal(CLEAN_ENV, 'x') === null && sessionRefusal({ CLAUDECODE: '' }, 'x') === null);
 }
 

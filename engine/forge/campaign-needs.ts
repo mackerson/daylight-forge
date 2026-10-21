@@ -2,6 +2,7 @@ import type { DaylightContext } from '../mission/context.ts';
 import type { CampaignEnvelope, Mission, Need } from '../mission/types.ts';
 import { assumptionNeeds } from './assumptions.ts';
 import { campaignRunNeeds } from './director.ts';
+import { integrationRefFor, refTarget } from './integrate.ts';
 
 /**
  * What a person has to do for a campaign to move (§2.4), derived from rows on every read: approve
@@ -17,8 +18,14 @@ export function campaignNeeds(ctx: DaylightContext, campaign: Mission): Need[] {
     out.push({ kind: 'plan-approval', ref: campaign.id, why: `campaign ${campaign.id}'s plan at ${plan.commit.slice(0, 12)} is not approved; a person runs \`daylight campaign approve-plan\`` });
   }
   const halts = ctx.store.campaignHalts(campaign.id);
+  const root = ctx.store.project(campaign.projectId)?.root;
   for (const h of halts) {
-    out.push({ kind: 'campaign-halted', ref: h.id, why: `campaign ${campaign.id} is halted (${String(h.scope.reason)}); a person reads why and resumes it` });
+    // An integration-moved halt is answered by adopt-tip, which adopts the ref where it is now.
+    const at = h.scope.reason === 'integration-moved' && root ? refTarget(root, integrationRefFor(campaign.id)) : null;
+    out.push({
+      kind: 'campaign-halted', ref: h.id, why: `campaign ${campaign.id} is halted (${String(h.scope.reason)}); a person reads why and resumes it`,
+      ...(at ? { commit: at } : {}),
+    });
   }
   if (planApproved) {
     const auth = ctx.store.campaignAuthorization(campaign.id);

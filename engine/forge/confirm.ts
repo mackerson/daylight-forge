@@ -52,6 +52,8 @@ export interface ConfirmOptions {
   experimentIds?: readonly string[];
   /** `lock-campaign-gates`: whether the lock ratchets (P2-R17), with `experimentIds`. Required. */
   ratchet?: boolean;
+  /** `lock-campaign-gates`: gates accepted although they pass at base (`--accept-vacuous`); part of what is confirmed. */
+  acceptVacuous?: readonly string[];
   /** `adopt-integration-tip`: the move being adopted and the halt it answers. Required. */
   adopt?: { ref: string; from: string; to: string; haltDecisionId: string };
   /** `authorize-mission`: what will be granted. Required. */
@@ -123,11 +125,15 @@ export function confirmDigest(
       // The gate-set digest, which covers bindings, roles and the ratchet flag: what the lock records.
       const { experiments, bindings, gateSetDigest } = store.campaignGateSet.call(ctx.store, subjectId, opts.experimentIds, opts.ratchet);
       const holdouts = experiments.filter((x) => x.role === 'holdout').length;
-      return out(gateSetDigest, [
+      // Accepting a vacuous gate is part of the act: a code confirmed without it never confirms a lock with it.
+      const vacuous = [...new Set(opts.acceptVacuous ?? [])].sort();
+      const hidden = new Set(experiments.filter((x) => x.role === 'holdout').map((x) => x.id));
+      return out(vacuous.length ? digestOf(canonicalJson({ operation, gateSetDigest, acceptVacuous: vacuous })) : gateSetDigest, [
         `lock ${experiments.length} campaign gate(s) on campaign ${subjectId}, ratchet ${opts.ratchet ? 'on' : 'off'}`,
         ...experiments.filter((x) => x.role !== 'holdout')
           .map((x) => `${x.role} ${x.id} ${bindings[x.id] ? `ticket ${bindings[x.id]}` : 'every ticket'} harness ${x.harnessDigest}`),
         ...(holdouts ? [`${holdouts} holdout(s), counted, not named`] : []),
+        ...(vacuous.length ? [`accept as vacuous (passes at base): ${vacuous.map((v) => (hidden.has(v) ? 'a holdout' : v)).join(', ')}`] : []),
       ]);
     }
     case 'adopt-integration-tip': {

@@ -2,7 +2,7 @@ import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
 import { campaignNeeds } from './campaign-needs.ts';
-import { runClaimOf, statusTable } from './campaign-report.ts';
+import { campaignSpendWords, capWords, runClaimOf, statusTable, statusTableLines } from './campaign-report.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, landedRegressions, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
@@ -64,7 +64,8 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
       ref, base: campaign.baseRevision, tip, landed: landedCount,
       mergeHint: `git merge --ff-only ${ref}`,
     },
-    authorization: { decisionId: auth?.id ?? null, notAfter: auth ? envelopeOf(auth).notAfter : null, halted: haltOf(ctx.store, campaignId)?.reason ?? null },
+    authorization: { decisionId: auth?.id ?? null, notAfter: auth ? envelopeOf(auth).notAfter : null, halted: haltOf(ctx.store, campaignId)?.reason ?? null,
+      haltDecisionId: haltOf(ctx.store, campaignId)?.decision.id ?? null },
     lanes: [...byLane].sort(([a], [b]) => (a < b ? -1 : 1)).map(([lane, byStatus]) => ({ lane, total: Object.values(byStatus).reduce((n, x) => n + x, 0), byStatus })),
     tickets: [...states.values()].map((s) => ({
       id: s.ticket.ticketId, lane: s.ticket.lane, status: s.status, ...(s.mission ? { missionId: s.mission.id } : {}), attempts: s.attempts,
@@ -88,23 +89,17 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
   };
 }
 
-const money = (n: number) => `$${n.toFixed(2)}`;
 
-/** STATUS.md in kitkraft's shape: landed per lane, assumptions pending, needs, spend, waves. No timestamp. */
+/** STATUS.md in kitkraft's shape: the STATUS table per lane, tickets, assumptions pending, needs, spend, waves. No timestamp. */
 export function renderCampaignStatus(r: CampaignStatusReport): string {
-  const notes = [
-    r.spend.unknownCount ? `${r.spend.unknownCount} unknown` : '',
-    r.spend.reservationCount ? `${money(r.spend.reservationUsd)} charged at reservation for ${r.spend.reservationCount} unfinished attempt(s)` : '',
-  ].filter(Boolean);
-  const spend = notes.length ? `≥ ${money(r.spend.spentUsd)} (${notes.join('; ')})` : money(r.spend.spentUsd);
   const lines = [
     `# Campaign ${r.campaignId}`, '',
     `Plan ${r.planRevision}. Integration ${r.integration.ref} at ${r.integration.tip.slice(0, 12)} (base ${r.integration.base.slice(0, 12)}), ${r.integration.landed} landed.`,
     `Merge it yourself: \`${r.integration.mergeHint}\``, '',
     r.authorization.decisionId ? `Authorized by ${r.authorization.decisionId}${r.authorization.halted ? `; halted (${r.authorization.halted})` : ''}.` : 'Not authorized.',
-    `Spend ${spend} of ${money(r.spend.capUsd)}.`, '',
-    '## Lanes', '',
-    ...r.lanes.map((l) => `- ${l.lane}: ${l.byStatus.landed + l.byStatus.regressed}/${l.total} landed${l.byStatus.regressed ? `, ${l.byStatus.regressed} regressed` : ''}${l.byStatus.blocked ? `, ${l.byStatus.blocked} blocked` : ''}${l.byStatus.running ? `, ${l.byStatus.running} running` : ''}`),
+    `Spend ${campaignSpendWords(r.spend)}; ${capWords(r.spend)}.`, '',
+    '## Status', '',
+    ...statusTableLines(r.table),
     '', '## Tickets', '',
     ...r.tickets.map((t) => `- ${t.id} (${t.lane}) ${t.status}${t.commit ? ` ${t.commit.slice(0, 12)}` : ''}${t.attempts ? `, ${t.attempts} attempt(s)` : ''}${t.reason ? `: ${t.reason}` : ''}`),
     '', '## Assumptions pending the owner', '',

@@ -148,6 +148,10 @@ section('campaign commands take the default out from their repo argument, not th
   check('campaign import without --out writes under the repo\'s default out', !!id && fs.existsSync(path.join(repoOut, 'daylight.db')), imported.out.slice(-300));
   check('and nothing under the cwd\'s', !fs.existsSync(path.join(defaultOut(elsewhere, ENV), 'daylight.db')));
   check('campaign validate names its repo second and opens no store', run(['campaign', 'validate', 'daylight.plan.json', planRepo]).code === 0);
+  const listed = run(['campaign', 'list', planRepo, '--format', 'json']);
+  check('campaign list without --out reads the repo\'s default out', listed.code === 0 && listed.out.includes(id), listed.out.slice(-300));
+  check('campaign report and refine --rows-only take the out from their repo argument',
+    run(['campaign', 'report', id, planRepo, '--format', 'json']).code === 0 && run(['campaign', 'refine', id, planRepo, '--rows-only', '--format', 'json']).code === 0);
   const explicit = path.join(tmp, 'campaign-explicit-out');
   const mapped = run(['map', planRepo, '--out', explicit, '--top', '0']);
   check('map with --out', mapped.code === 0, mapped.out.slice(-400));

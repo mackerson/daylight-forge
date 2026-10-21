@@ -214,6 +214,14 @@ fails on the tip is shown `regressed`, with a need: at the end of every run the 
 each earlier landing's public gates once on the tip and records them there (without a ratchet no
 landing looks; nothing lands or moves on the result). `--write` puts STATUS.md
 under `<out>/campaigns/<id>/`; nothing is ever written into the target repository (P2-R13).
+STATUS.md and `--format json` (`table`) carry kitkraft's STATUS table over the same states, and
+`run` is the run claim when one exists.
+
+## Reports and refine
+
+`campaign report` (a wave, the open landings or the whole campaign), `campaign list` and
+`campaign refine` (maps of the base and the tip, compared, and the focus ranking) are the REFINE
+stage: see [REFINE.md](REFINE.md).
 
 ## Events
 
