@@ -5,6 +5,7 @@ import { createWaveReviewServer } from '../mcp/server.ts';
 import type { DaylightContext } from '../mission/context.ts';
 import { roleAllowlist, runMission } from '../mission/orchestrate.ts';
 import type { Attempt, CampaignTicket, CampaignWave, Finding, Integration, Mission } from '../mission/types.ts';
+import { parseSpec, specKey } from '../swarm/adapters.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import { gitIn } from './apply.ts';
 import type { CampaignHost } from './director.ts';
@@ -71,6 +72,22 @@ export function buildWaveReviewPrompt(w: CampaignWave, files: readonly string[])
   ].join('\n');
 }
 
+/**
+ * The roster as the reviewers it names: a repeated `mock` entry is another reviewer (wave2 L3),
+ * so it gets a key of its own instead of collapsing into the first. A repeated real provider is
+ * the same source and still collapses where the mission's roster is planned.
+ */
+export function reviewRosterOf(roster: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  return roster.map((entry) => {
+    const spec = parseSpec(entry);
+    const key = specKey(spec);
+    const n = (seen.get(key) ?? 0) + 1;
+    seen.set(key, n);
+    return n === 1 || spec.tool !== 'mock' ? entry : `mock:${spec.model ?? 'default'}-${n}`;
+  });
+}
+
 /** Files `from..to` changed, by name; read from git objects. */
 function changedFiles(repo: string, from: string, to: string): string[] {
   return gitIn({ repo }, ['diff', '--name-only', '--no-renames', '-z', from, to, '--']).toString('utf8').split('\0').filter(Boolean).sort();
@@ -112,7 +129,7 @@ export async function runWaveReview(ctx: DaylightContext, campaignId: string, se
   try {
     const serve = (attempt: Attempt): McpServer => createWaveReviewServer({ dir: ctx.out, attemptId: attempt.id, paths: files }).server;
     await runMission(ctx, {
-      missionId: review.id, repo: o.repo, tools: o.roster, role: 'review', prompt: buildWaveReviewPrompt(w, files), sandbox: o.sandbox,
+      missionId: review.id, repo: o.repo, tools: reviewRosterOf(o.roster), role: 'review', prompt: buildWaveReviewPrompt(w, files), sandbox: o.sandbox,
       tree: tree.tree, reviewServer: { serve, allowedTools: roleAllowlist('waveReview') }, timeoutMs: o.timeoutMs,
       // All reviewers at once, each reserving its share of the review's budget.
       concurrency: o.roster.length,

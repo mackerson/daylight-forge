@@ -152,7 +152,8 @@ attempt would not cure it.
 A wave closes every `waveSize` landings, and at quiescence with at least one landing since the
 last. With a non-empty `reviewRoster`, its review is an `audit` mission under the campaign: one
 blind reviewer per roster entry, under the `review` profile with no network and no write, over a
-materialised tree of the wave's last commit (not the checkout). A reviewer's one tool is
+materialised tree of the wave's last commit (not the checkout); a repeated `mock` entry is a
+second reviewer (a repeated real provider is one source and runs once). A reviewer's one tool is
 `report_finding`, which reads nothing back; findings are re-validated and redacted on the host
 (a path the wave changed, a severity, a one-line title, at most 4 KiB of statement), recorded
 once each, and marked corroborated when another reviewer filed the same path and title. Review

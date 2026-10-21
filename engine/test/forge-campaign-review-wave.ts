@@ -23,7 +23,7 @@ import { findingOutboxFile } from '../forge/finding.ts';
 import type { GateContext } from '../forge/gate.ts';
 import { integrationTip } from '../forge/integrate.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
-import { ingestFindings } from '../forge/wave.ts';
+import { ingestFindings, runWaveReview } from '../forge/wave.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { PlanFileV1 } from '../mission/types.ts';
 import { harness } from './harness.ts';
@@ -204,6 +204,17 @@ section('a wave whose review never ran is reviewed by the next run (L4)');
   check('wave 2 got its review, closed, under a reservation', !!w2.reviewMissionId && ctx.store.mission(w2.reviewMissionId)!.state === 'closed'
     && ctx.store.tasks(w2.reviewMissionId).flatMap((t) => ctx.store.attempts(t.id)).every((a) => (a.maxCostUsd ?? 0) > 0), JSON.stringify(r2.statuses));
   check('and nothing was dispatched (--max-waves 0)', !ctx.store.missions(campaign.projectId).some((m) => m.parentId === campaign.id && m.kind === 'implement' && m.objective.startsWith('ticket FIX')));
+}
+
+section('a roster of mock,mock runs two reviewers, not one (wave2 L3, p17b)');
+{
+  const tip = integrationTip(repo, campaign.id)!;
+  ctx.store.recordWave({ campaignId: campaign.id, seq: 3, fromCommit: wave.fromCommit, toCommit: tip, ticketIds: [] });
+  const { reviewMission } = await runWaveReview(ctx, campaign.id, 3, { repo, roster: ['mock', 'mock'], sandbox: live, env: { ...human, DAYLIGHT_MOCK_ADAPTER: both }, reserveUsd: 1 });
+  const rs = ctx.store.tasks(reviewMission.id).flatMap((t) => ctx.store.attempts(t.id));
+  check('two reviewer attempts with distinct ids, both completed', rs.length === 2 && new Set(rs.map((a) => a.id)).size === 2 && rs.every((a) => a.state === 'completed'),
+    JSON.stringify(rs.map((a) => [a.runnerId, a.state])));
+  check('each filed its own findings', new Set(ctx.store.findings(campaign.id, { waveSeq: 3 }).map((f) => f.attemptId)).size === 2);
 }
 
 ctx.close();
