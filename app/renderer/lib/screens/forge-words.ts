@@ -307,6 +307,7 @@ export const RULE_WORDS: Record<PolicyRule, string> = {
   'too-many-files': 'too many files',
   'too-large': 'diff too large',
   'secret-in-diff': 'secret in diff (redacted)',
+  'gate-forgery-shape': 'looks like forged test output (heuristic)',
 };
 
 export interface DiffLine { n: number; text: string; kind: 'add' | 'del' | 'hunk' | 'meta' | 'ctx' }

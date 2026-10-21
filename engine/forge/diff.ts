@@ -1,10 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ArtifactStore } from '../mission/artifacts.ts';
 import { digestOf } from '../mission/artifacts.ts';
 import { redact } from '../mission/redact.ts';
 import type {
   ArtifactRef, CandidateFile, FileMode, PolicyRule, PolicyViolation,
 } from '../mission/types.ts';
-import { checkPolicy, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
+import { checkPolicy, forgeryShapes, forgeryWhy, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
 import { siblingGit, walkTree, type Workspace } from './workspace.ts';
 
 /**
@@ -127,6 +129,46 @@ function candidateFiles(raw: RawEntry[], numstat: ReturnType<typeof parseNumstat
  * Split a patch into its per-file parts, in order. `diff --git` only ever starts a line at a
  * file boundary: a content line inside a hunk carries a ` `, `+` or `-` prefix.
  */
+/** The post-image line numbers (1-based) a file's part of the diff adds. */
+export function addedLines(part: string): number[] {
+  const out: number[] = [];
+  let n = 0;
+  let inHunk = false;
+  for (const l of part.split('\n')) {
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (h) {
+      n = Number(h[1]);
+      inHunk = true;
+    } else if (!inHunk) continue;
+    else if (l.startsWith('+')) out.push(n++);
+    else if (l.startsWith(' ')) n++;
+    else if (!l.startsWith('-') && !l.startsWith('\\') && l !== '') inHunk = false;
+  }
+  return out;
+}
+
+const MAX_SCANNED_BYTES = 2 * 1024 * 1024;
+const SCANNED = /\.(?:rs|[cm]?[jt]s|[jt]sx)$/;
+
+/**
+ * A changed file's post-image for the forgery scan: read from the tree when it is a regular file
+ * of bounded size; otherwise only its added lines, at their line numbers, so no test context
+ * is found and every shape on them counts (fail closed).
+ */
+function postImageOf(ws: Workspace, rel: string, part: string, added: number[]): string {
+  try {
+    const abs = path.join(ws.tree, rel);
+    const st = fs.lstatSync(abs);
+    if (st.isFile() && st.size <= MAX_SCANNED_BYTES) return fs.readFileSync(abs, 'utf8');
+  } catch {
+    // fall through to the diff's own lines
+  }
+  const plus = part.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++ '));
+  const lines: string[] = [];
+  added.forEach((n, i) => { lines[n - 1] = Buffer.from(plus[i] ?? '', 'latin1').toString('utf8').slice(1); });
+  return Array.from(lines, (l) => l ?? '').join('\n');
+}
+
 function fileParts(patch: string): string[] {
   const starts: number[] = [];
   const re = /^diff --git /gm;
@@ -200,6 +242,20 @@ export function captureCandidate(
     maxBytes: MAX_DIFF_BYTES, maxFiles: MAX_DIFF_FILES, ...ctx, diffBytes: patch.length,
   };
   const violations = checkPolicy(files, policyCtx);
+  // P2-R43: library code shaped like a test runner's output, a heuristic (POLICY.md).
+  const forged = new Set<string>();
+  if (aligned) {
+    files.forEach((f, i) => {
+      if (f.change === 'deleted' || !SCANNED.test(f.path)) return;
+      const added = addedLines(parts[i]);
+      if (!added.length) return;
+      const shapes = forgeryShapes(f.path, postImageOf(ws, f.path, parts[i], added), added);
+      if (shapes.length) {
+        violations.push({ rule: 'gate-forgery-shape', path: f.path, why: forgeryWhy(shapes) });
+        forged.add(f.path);
+      }
+    });
+  }
   if (secretHits) {
     if (aligned) for (const p of hitsByPath.keys()) violations.push({ rule: 'secret-in-diff', path: p });
     else violations.push({ rule: 'secret-in-diff', path: null });
@@ -213,6 +269,7 @@ export function captureCandidate(
     const rules = [...new Set(pathViolations(f, policyCtx))];
     const hits = hitsByPath.get(f.path) ?? 0;
     if (hits) rules.push('secret-in-diff');
+    if (forged.has(f.path)) rules.push('gate-forgery-shape');
     return {
       path: f.path, protected: rules.some((r) => PROTECTED_RULES.has(r)), rules,
       secretHits: hits, possibleSecretHits: possibleByPath.get(f.path) ?? 0,

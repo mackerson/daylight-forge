@@ -96,6 +96,34 @@ Under a policy, a `protected-path` violation also says which set matched, for ex
 `protected by the rust set` or `protected by the project set` for a glob. Without one the
 violation row is unchanged.
 
+## Test-output forgery shapes (a heuristic)
+
+A gate is judged from its run's exit code and output, and the code under test runs inside that
+run. Library code can therefore print a test runner's summary, write to fd 1 behind the runner's
+back, or exit the process early, and make a failing gate look like a pass (P2-R43). Capture
+looks for that shape in the lines a candidate adds to files that are not tests, and records an
+uncurable `gate-forgery-shape` violation naming the file and the shapes found:
+
+- Rust (`.rs`): `from_raw_fd(1)` (including `File::from_raw_fd(1)`), `libc::write(1`,
+  `std::process::exit(`, and the libtest strings `test result: ok.` and `running 0 tests`.
+  `std::process::exit(` is allowed in a binary's entry point, `main.rs` or `bin/*.rs`; the other
+  shapes are not.
+- JavaScript and TypeScript (`.js`, `.cjs`, `.mjs`, `.ts`, `.cts`, `.mts`, `.jsx`, `.tsx`):
+  `process.exit(0)` outside every function body (at module scope, or in a module-scope block),
+  `process.stdout.write(` with a string holding `# pass`, `# fail 0` or `ok 1`,
+  `fs.writeSync(1,`, and the literal `TAP version`.
+
+A test file is not scanned: anything under a `tests/` or `__tests__/` directory, any file named
+`*.test.*`, and, in a `.rs` file, the lines of a `#[cfg(test)]` item from its attribute to its
+closing brace.
+
+This is a heuristic, matched line by line on the text. It is evaded by code that spells a shape
+another way (`use std::process::exit; exit(0)`), and it can fire on library code with a
+legitimate reason to write one of these lines. Such code is expected to be rare. Like every
+policy rule the violation is uncurable: no approve or override waves it through. A false
+positive is a person's call, made outside the candidate: rewrite the line in a new candidate, or
+make the change by hand. The violation's `why` says it is a heuristic and which shapes matched.
+
 ## Asking for a dependency
 
 An author cannot add a crate or a package: every manifest and lockfile is protected. When it

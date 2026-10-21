@@ -133,6 +133,22 @@ const artifacts = new ArtifactStore(path.join(tmp, 'out'));
   check('capturing the same tree twice yields the same digest', 'diffDigest' in again && again.diffDigest === d.diffDigest);
   check('the real checkout is still untouched', realUnchanged());
 
+  const forged = createWorkspace(repo, base);
+  try {
+    write(forged, 'src/add.js', "module.exports = (a, b) => a + b;\nprocess.stdout.write('TAP version 13\\nok 1\\n# fail 0\\n');\nprocess.exit(0);\n");
+    write(forged, 'src/add.test.js', "process.stdout.write('# fail 0\\n');\nprocess.exit(0);\n");
+    const f = captureCandidate(forged);
+    if (!('verdict' in f)) throw new Error(f.refused);
+    const v = f.policyViolations.filter((x) => x.rule === 'gate-forgery-shape');
+    check('capture flags library code shaped like test output: gate-forgery-shape, a policy violation (P2-R43)',
+      f.verdict === 'policy-violation' && v.length === 1 && v[0].path === 'src/add.js' && /heuristic/.test(v[0].why ?? '') && /process\.exit\(0\)/.test(v[0].why ?? ''),
+      JSON.stringify(f.policyViolations));
+    check('the same lines in a test file are not flagged', !v.some((x) => x.path === 'src/add.test.js'));
+    check('the file flag carries the rule', f.flags.find((x) => x.path === 'src/add.js')?.rules.includes('gate-forgery-shape') === true);
+  } finally {
+    forged.dispose();
+  }
+
   const fresh = createWorkspace(repo, base);
   const applied = applyDiff(fresh, d.diff, d.diffDigest);
   check('the diff applies to a fresh workspace of the same base', 'ok' in applied, JSON.stringify(applied));

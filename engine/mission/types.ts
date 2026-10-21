@@ -540,7 +540,7 @@ export interface CandidateFile {
 export type PolicyRule =
   | 'protected-path' | 'gate-path' | 'spec-path' | 'outside-scope' | 'path-escape'
   | 'symlink' | 'gitlink' | 'exec-mode' | 'empty-diff' | 'too-many-files' | 'too-large'
-  | 'secret-in-diff';
+  | 'secret-in-diff' | 'gate-forgery-shape';
 
 /** `path` is null for a rule about the diff as a whole (empty, too large, too many files). */
 export interface PolicyViolation {

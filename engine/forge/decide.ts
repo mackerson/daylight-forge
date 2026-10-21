@@ -33,7 +33,7 @@ export type CandidateOperation = CandidateDecisionScope['operation'];
 const EVERY_RULE: Record<PolicyRule, true> = {
   'protected-path': true, 'gate-path': true, 'spec-path': true, 'outside-scope': true, 'path-escape': true,
   symlink: true, gitlink: true, 'exec-mode': true, 'empty-diff': true, 'too-many-files': true, 'too-large': true,
-  'secret-in-diff': true,
+  'secret-in-diff': true, 'gate-forgery-shape': true,
 };
 export const UNCURABLE_RULES: readonly PolicyRule[] = Object.keys(EVERY_RULE) as PolicyRule[];
 
