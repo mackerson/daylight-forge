@@ -1,0 +1,39 @@
+{
+  "v": 1,
+  "threshold": 0.5,
+  "labels": [
+    { "id": "numbered", "heading": "^(\\d+(?:\\.\\d+)*[A-Z]?)\\.?(?:\\s|$)", "label": "§$1" },
+    { "id": "adr", "heading": "^ADR[- ]?0*(\\d{1,4})\\b", "label": "ADR $1" },
+    { "id": "errata", "heading": "^(E\\d{1,2})\\b", "label": "$1", "roles": ["errata"] },
+    { "id": "plate", "heading": "^Plate ([A-Z])\\b", "label": "Plate $1" },
+    { "id": "foundry-milestone", "heading": "^(F\\d+)\\b", "label": "$1" },
+    { "id": "spec-version", "heading": "^What (v\\d+\\.\\d+) deliberately changes", "label": "$1" }
+  ],
+  "xrefs": [
+    { "id": "doc-version", "pattern": "\\b(v\\d+\\.\\d+)\\b", "kind": "doc-version", "label": "$1", "scope": "domain" },
+    { "id": "section", "pattern": "§§?\\s?(\\d+(?:\\.\\d+)*[A-Z]?)", "kind": "section", "label": "§$1", "scope": "domain" },
+    { "id": "adr", "pattern": "\\bADRs?[- ]?0*(\\d{1,4})\\b", "kind": "decision", "label": "ADR $1", "scope": "domain" },
+    { "id": "errata", "pattern": "\\b(E\\d{1,2})\\b", "kind": "errata", "label": "$1", "scope": "domain" },
+    { "id": "correction", "pattern": "\\b(C\\d{1,2})\\b", "kind": "correction", "label": "$1", "scope": "domain" },
+    { "id": "plate", "pattern": "\\bPlates?\\s([A-J])\\b", "kind": "plate", "label": "Plate $1", "scope": "domain" },
+    { "id": "ticket", "pattern": "\\b(M\\d\\.[A-Z]\\d+)\\b", "kind": "ticket", "label": "$1", "scope": "domain" },
+    { "id": "foundry-milestone", "pattern": "\\b(F\\d)\\b", "kind": "milestone", "label": "$1", "scope": "doc" }
+  ],
+  "cues": [
+    { "id": "must", "pattern": "must|shall|never|required|refuses?|refused|forbids?|forbidden", "weight": 0.9, "type": "normative" },
+    { "id": "only", "pattern": "only|cannot|can ?not|may not|always|no\\s+\\p{L}{3,}", "weight": 0.7, "type": "normative" },
+    { "id": "should", "pattern": "should", "weight": 0.45, "type": "normative" },
+    { "id": "hedge", "pattern": "where possible|if possible|as appropriate|ideally|typically|to be decided|tbd|unclear", "weight": 0, "type": "hedge" },
+    { "id": "defaults", "pattern": "implementation defaults|defaults? rather than", "weight": 0, "type": "hedge" }
+  ],
+  "imperatives": ["define", "build", "verify", "refuse", "reject", "record", "ensure", "provide", "keep", "use", "validate", "store", "emit",
+    "display", "expose", "support", "implement", "check", "return", "include", "track", "preserve", "prevent", "avoid", "require", "allow",
+    "create", "install", "publish", "sign", "compute", "render", "log", "report", "treat", "test"],
+  "ruleSections": ["rule", "test", "requirement", "boundar", "invariant", "acceptance", "constraint", "principle", "decision", "milestone"],
+  "informative": ["informative", "non-normative", "illustrative", "example", "history"],
+  "openDecision": ["open decision", "open design decision", "open question", "future adr", "owner decision"],
+  "tags": ["offline", "privacy", "accessibility", "federation"],
+  "milestone": null,
+  "domains": { "olc": { "milestone": "^M\\d+$" }, "foundry": { "milestone": "^F\\d+$" } },
+  "xrefKinds": ["plate"]
+}
