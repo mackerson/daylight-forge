@@ -10,9 +10,9 @@ import {
   approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, PlanInvalid, planOf, retryScopeOf, retryTicket,
   type EnvelopeFlags,
 } from './campaign.ts';
-import { actorFor } from './commands.ts';
+import { actorFor, Usage } from './commands.ts';
 import { CAMPAIGN_RUN_SUBCOMMANDS, runCampaignRunCommand } from './commands-campaign-run.ts';
-import { confirmDigest } from './confirm.ts';
+import { confirmDigest, type ConfirmDigest } from './confirm.ts';
 import { topoOrder, validatePlanAt, wavesPreview } from './plan.ts';
 import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
 
@@ -53,7 +53,6 @@ export const ASSUMPTION_SUBCOMMANDS = ['list', 'record', 'confirm', 'decide', 'o
 const CAMPAIGN_GUARDED: readonly string[] = ['approve-plan', 'authorize', 'retry', 'lock', 'resume', 'adopt-tip'];
 const ASSUMPTION_GUARDED: readonly string[] = ['record', 'confirm', 'decide', 'overturn'];
 
-class Usage extends Error {}
 
 interface Parsed {
   positionals: string[];
@@ -204,6 +203,20 @@ function identityOf(s: string | undefined): CampaignEnvelope['identity'] | undef
   return { name: m[1].trim(), email: m[2] };
 }
 
+/** A flag's last value; `''` and `'true'` are passed through as given (a bare flag reads `'true'`). */
+export type FlagGet = (flag: string) => string | undefined;
+
+/** The envelope flags over a getter, so `campaign authorize` and `confirm authorize-campaign` read them alike. */
+export function envelopeFlagsFrom(get: FlagGet): EnvelopeFlags {
+  const p: Parsed = { positionals: [], flags: new Map() };
+  for (const k of ['auto-apply', 'roster', 'expected-gate-set', 'review-roster', 'max-usd-total', 'max-usd-per-mission', 'max-turns', 'timeout',
+    'max-attempts', 'concurrency', 'wave-size', 'execute', 'fix-lane', 'tickets', 'not-after', 'identity']) {
+    const v = get(k);
+    if (v !== undefined) p.flags.set(k, v);
+  }
+  return envelopeFlags(p);
+}
+
 function envelopeFlags(p: Parsed): EnvelopeFlags {
   const autoApply = need(p, 'auto-apply');
   if (autoApply !== 'integration-ref' && autoApply !== 'none') throw new Usage('--auto-apply is integration-ref or none');
@@ -217,6 +230,54 @@ function envelopeFlags(p: Parsed): EnvelopeFlags {
     fixLane: fixLaneOf(flag(p, 'fix-lane')), tickets: list(flag(p, 'tickets')), notAfter: flag(p, 'not-after'),
     identity: identityOf(flag(p, 'identity')),
   };
+}
+
+// ---- confirm (P2-R40, P2-R45 D6) ------------------------------------------------------
+
+export type CampaignConfirmOp = 'approve-plan' | 'authorize-campaign' | 'retry-ticket' | 'record-assumption'
+  | 'confirm-assumption' | 'decide-assumption' | 'overturn-assumption';
+export const CAMPAIGN_CONFIRM_OPS: readonly CampaignConfirmOp[] = [
+  'approve-plan', 'authorize-campaign', 'retry-ticket', 'record-assumption', 'confirm-assumption', 'decide-assumption', 'overturn-assumption',
+];
+
+/**
+ * The digest `daylight confirm <op>` prints for one of WS-R5's acts: computed from the same
+ * flags, read by the same rules, as the act's own preview, so the code it shows is the one the
+ * act accepts. Read-only. `--ticket` names the ticket for `retry-ticket` (the act's positional).
+ */
+export function campaignConfirm(ctx: DaylightContext, op: CampaignConfirmOp, subjectId: string, get: FlagGet): ConfirmDigest {
+  const flagOf = (k: string) => {
+    const v = get(k);
+    return v === 'true' ? undefined : v;
+  };
+  const needOf = (k: string) => {
+    const v = flagOf(k);
+    if (v === undefined) throw new Usage(`--${k} is required`);
+    return v;
+  };
+  switch (op) {
+    case 'approve-plan':
+      return confirmDigest(ctx, 'approve-plan', subjectId);
+    case 'authorize-campaign':
+      return confirmDigest(ctx, 'authorize-campaign', subjectId, { envelope: buildEnvelope(ctx, subjectId, envelopeFlagsFrom(get)) });
+    case 'retry-ticket':
+      return confirmDigest(ctx, 'retry-ticket', subjectId, { retry: retryScopeOf(ctx, subjectId, needOf('ticket')) });
+    case 'record-assumption': {
+      const ticketId = flagOf('ticket');
+      return confirmDigest(ctx, 'record-assumption', subjectId, { assumption: { question: needOf('question'), default: get('default') ?? '', ...(ticketId ? { ticketId } : {}) } });
+    }
+    case 'confirm-assumption':
+    case 'decide-assumption':
+    case 'overturn-assumption': {
+      const value = op === 'confirm-assumption' ? undefined : needOf('value');
+      const statement = flagOf('follow-up');
+      if (op === 'overturn-assumption' && statement === undefined) throw new Usage("overturn-assumption needs --follow-up '<statement>'");
+      const followUp = statement !== undefined ? { lane: flagOf('lane'), scope: list(flagOf('scope')) } : undefined;
+      return confirmDigest(ctx, op, subjectId, {
+        value: value ?? ctx.store.assumption(subjectId)?.default, followUp: statement, followUpLane: followUp?.lane, followUpScope: followUp?.scope,
+      });
+    }
+  }
 }
 
 // ---- campaign --------------------------------------------------------------------------

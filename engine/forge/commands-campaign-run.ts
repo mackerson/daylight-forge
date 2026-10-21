@@ -10,11 +10,12 @@ import {
 import { haltCampaign, resumeCampaign } from './campaign.ts';
 import { campaignStatus, r5StatusHost, renderCampaignStatus, type StatusHost } from './campaign-status.ts';
 import { actorFor, parse, Usage } from './commands.ts';
-import { confirmDigest } from './confirm.ts';
+import { confirmDigest, type ConfirmDigest } from './confirm.ts';
 import { DirectorRefused, runCampaign } from './director.ts';
 import { GateRefused, type GateContext } from './gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, IntegrationRefused } from './integrate.ts';
 import { DecisionRefused } from './policy.ts';
+import type { FlagGet } from './commands-campaign.ts';
 
 /**
  * `daylight campaign gate|baseline|lock|run|status|halt|resume|adopt-tip` (§3.1, §4.1, §7; WS-R6).
@@ -62,6 +63,37 @@ const num = (s: string | undefined): number | undefined => {
   if (!Number.isFinite(n)) throw new Usage(`not a number: ${s}`);
   return n;
 };
+
+export type CampaignRunConfirmOp = 'lock-campaign-gates' | 'resume-campaign' | 'adopt-integration-tip';
+export const CAMPAIGN_RUN_CONFIRM_OPS: readonly CampaignRunConfirmOp[] = ['lock-campaign-gates', 'resume-campaign', 'adopt-integration-tip'];
+
+/**
+ * The digest `daylight confirm <op>` prints for one of WS-R6's acts, computed as the act's own
+ * preview computes it. `repo` (from `--repo`, else the out dir's mapped root) is needed by
+ * `adopt-integration-tip` only, which reads where the integration ref is now.
+ */
+export function campaignRunConfirm(ctx: DaylightContext, op: CampaignRunConfirmOp, subjectId: string, get: FlagGet, repo: string | null): ConfirmDigest {
+  const needOf = (k: string) => {
+    const v = get(k);
+    if (v === undefined || v === 'true') throw new Usage(`--${k} is required`);
+    return v;
+  };
+  switch (op) {
+    case 'lock-campaign-gates': {
+      const ratchet = get('ratchet') === 'true' ? true : get('no-ratchet') === 'true' ? false : undefined;
+      if (ratchet === undefined) throw new Usage('--ratchet or --no-ratchet is required');
+      return confirmDigest(ctx, 'lock-campaign-gates', subjectId, { experimentIds: lockableIds(ctx, subjectId), ratchet });
+    }
+    case 'resume-campaign':
+      return confirmDigest(ctx, 'resume-campaign', subjectId, { haltDecisionId: needOf('halt') });
+    case 'adopt-integration-tip': {
+      const haltDecisionId = needOf('halt');
+      if (!repo) throw new Usage(`${ctx.out} holds no map; name the repository with --repo`);
+      const s = adoptScopeOf({ store: ctx.store, repoRoot: repo }, subjectId, haltDecisionId);
+      return confirmDigest(ctx, 'adopt-integration-tip', subjectId, { adopt: { ref: s.ref, from: s.from, to: s.to, haltDecisionId } });
+    }
+  }
+}
 
 /** `argv` starts at the subcommand, as `runCampaignCommand`'s does. Returns the exit code. */
 export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessEnv = process.env, deps: CampaignRunDeps = {}): Promise<number> {
