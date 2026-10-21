@@ -335,6 +335,10 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   check('a review line carries the review mission\'s spend', r.spend.reviews.some((l) => l.key === 'review:1' && l.knownUsd === 0.02));
   check('wave 1\'s line is its tickets\' missions', r.spend.waves.length === 1 && r.spend.waves[0].attempts === 2);
   const uiWords = md.split('\n').find((l) => l.startsWith('- lane UI:')) ?? '';
+  check('a line with nothing known and something beside keeps the floor (L3)', uiWords.startsWith('- lane UI: ≥ unknown (1 attempt(s) reported no cost); '), uiWords);
+  const campWords = md.split('\n').find((l) => l.startsWith('- campaign:')) ?? '';
+  check('the campaign line leads with the ≥ total counted against the cap, the breakdown after (L4)',
+    campWords.startsWith(`- campaign: ≥ $${camp.spentUsd.toFixed(2)} counted against the $${camp.capUsd.toFixed(2)} cap (≥ `) && !/running of \$/.test(campWords), campWords);
   check('markdown prints unknown spend as unknown, never $0.00, scanned and reserved beside', /unknown/.test(uiWords) && !/\$0\.00/.test(uiWords)
     && /scanned, not known/.test(uiWords) && /\$0\.50 charged at reservation for 1 unfinished/.test(uiWords), uiWords);
   check('spendWords: unknown alone, a floor with some known, a dash for nothing',

@@ -135,44 +135,54 @@ export function spendLineOf(ctx: Pick<DaylightContext, 'store'>, key: string, mi
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
+interface SpendFigures {
+  knownUsd: number; scannedUsd: number; scannedCount: number; reservationUsd: number; reservationCount: number;
+  unknownCount: number; runningCount: number;
+}
+
+/**
+ * The shared words: the known figure first, a floor `≥` whenever something is unknown or still
+ * running (also when nothing is known and only scanned or reserved dollars stand beside), scanned
+ * and reservation-charged dollars beside, never inside, and never `$0.00` for spend nobody reported.
+ */
+function wordsOf(f: SpendFigures, allUnknown: boolean): string {
+  const running = f.runningCount ? ` +${f.runningCount} running` : '';
+  const beside = [
+    f.scannedCount ? `${money(f.scannedUsd)} scanned, not known` : '',
+    f.reservationCount ? `${money(f.reservationUsd)} charged at reservation for ${f.reservationCount} unfinished` : '',
+  ].filter(Boolean);
+  if (allUnknown && !beside.length) return `unknown${running}`;
+  const floor = f.unknownCount > 0 || f.runningCount > 0;
+  const noCost = f.unknownCount ? `${f.unknownCount} attempt(s) reported no cost` : '';
+  const lead = f.knownUsd > 0 || !beside.length ? `${money(f.knownUsd)}${f.unknownCount ? ` (${f.unknownCount} unknown)` : ''}`
+    : noCost ? `unknown (${noCost})` : '';
+  const out = [lead, ...beside].filter(Boolean).join('; ') + running;
+  return floor ? `≥ ${out}` : out;
+}
+
 /**
  * A spend line as words a reader cannot misread (the ledger's rule, `ledger.ts` dollarsOf):
- * `—` for no attempt, `unknown` when nothing finished reported a figure, a floor `≥` when some
- * did not or some still run; scanned and reservation-charged dollars beside, never inside.
+ * `—` for no attempt, `unknown` when nothing finished reported a figure, otherwise `wordsOf`.
  */
 export function spendWords(l: SpendLine): string {
   if (l.attempts === 0) return '—';
   const finished = l.attempts - l.runningCount;
-  const running = l.runningCount ? ` +${l.runningCount} running` : '';
   if (finished === 0) return `${l.runningCount} running, nothing reported yet`;
-  const beside = [
-    l.scannedCount ? `${money(l.scannedUsd)} scanned, not known` : '',
-    l.reservationCount ? `${money(l.reservationUsd)} charged at reservation for ${l.reservationCount} unfinished` : '',
-  ].filter(Boolean);
-  if (l.unknownCount === finished && !beside.length) return `unknown${running}`;
-  const unknown = l.unknownCount ? `${l.unknownCount} unknown` : '';
-  const known = l.knownUsd > 0 || !beside.length ? money(l.knownUsd) : '';
-  const floor = l.unknownCount || l.runningCount ? '≥ ' : '';
-  const lead = known ? `${floor}${known}${unknown ? ` (${unknown})` : ''}` : unknown;
-  return [lead, ...beside].filter(Boolean).join('; ') + running;
+  return wordsOf(l, l.unknownCount === finished);
 }
 
-/**
- * `CampaignSpend` as words for STATUS.md, by the same rules as `spendWords`: scanned and
- * reservation-charged dollars beside the known figure, never inside it, and no `$0.00` for spend
- * nobody reported.
- */
+/** `CampaignSpend` as words for STATUS.md, by the same rules as `spendWords`. */
 export function campaignSpendWords(s: CampaignSpend): string {
   const scannedUsd = round(s.spentUsd - s.knownUsd - s.reservationUsd);
-  const beside = [
-    s.scannedCount ? `${money(scannedUsd)} scanned, not known` : '',
-    s.reservationCount ? `${money(s.reservationUsd)} charged at reservation for ${s.reservationCount} unfinished` : '',
-  ].filter(Boolean);
-  const running = s.runningCount ? ` +${s.runningCount} running` : '';
-  if (s.knownUsd === 0 && s.unknownCount && !beside.length) return `unknown (${s.unknownCount} attempt(s) reported no cost)${running}`;
-  const floor = s.unknownCount || s.runningCount ? '≥ ' : '';
-  const known = s.knownUsd > 0 || !beside.length ? `${floor}${money(s.knownUsd)}${s.unknownCount ? ` (${s.unknownCount} unknown)` : ''}` : '';
-  return [known, ...beside].filter(Boolean).join('; ') + running;
+  if (s.knownUsd === 0 && s.unknownCount && !s.scannedCount && !s.reservationCount) {
+    return `unknown (${s.unknownCount} attempt(s) reported no cost)${s.runningCount ? ` +${s.runningCount} running` : ''}`;
+  }
+  return wordsOf({ ...s, scannedUsd }, false);
+}
+
+/** What counts against the cap, in words: `spentUsd` (known + scanned + reservation charges), a floor when anything is unknown or running. */
+export function capWords(s: CampaignSpend): string {
+  return `${s.unknownCount || s.runningCount ? '≥ ' : ''}${money(s.spentUsd)} counted against the ${money(s.capUsd)} cap`;
 }
 
 // ---- git --------------------------------------------------------------------------------
@@ -485,7 +495,7 @@ export function renderWaveReport(r: WaveReport): string {
     `- ${fl.filed} filed; ${fl.admittedDerived} admitted by the envelope, ${fl.approvedByPerson} approved by a person; ${fl.landed} landed, ${fl.waiting} waiting, ${fl.rejected} rejected`);
   const c = r.spend.campaign;
   out.push('', '## Spend', '',
-    `- campaign: ${spendWords(campaignLine(r))} of ${money(c.capUsd)}${c.reservedUsd ? `, ${money(c.reservedUsd)} reserved by running attempts` : ''}`,
+    `- campaign: ${capWords(c)} (${spendWords(campaignLine(r))})${c.reservedUsd ? `; ${money(c.reservedUsd)} reserved by running attempts` : ''}`,
     `- this scope: ${spendWords(r.spend.scope)}`,
     ...r.spend.lanes.map((l) => `- lane ${l.key}: ${spendWords(l)}`),
     ...r.spend.reviews.map((l) => `- ${l.key}: ${spendWords(l)}`));

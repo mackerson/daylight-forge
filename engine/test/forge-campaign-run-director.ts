@@ -459,6 +459,9 @@ section('spend: a director killed mid-attempt; the orphan is charged at its rese
     taskId: task.id, runnerId: 'agent:mock:default', maxCostUsd: 1,
     sandbox: { profile: 'author', network: 'none', write: true, exec: false, authorizeDecisionId: w.ctx.store.authorizeDecision(am.id)!.id },
   });
+  // A known figure on the same mission, so the status lead has something to print (review m14).
+  const known = w.ctx.store.createTask({ missionId: am.id, role: 'custom', objective: 'a known cost' });
+  w.ctx.store.finishAttempt(w.ctx.store.startAttempt({ taskId: known.id, runnerId: 'agent:mock:default' }).id, { state: 'completed', costUsd: 0.25, costSource: 'provider' });
   const r = await run(w, author, { concurrency: 1 });
   check('the next run neither halts nor wedges: A and B land', r.halted === null && r.refused === null && r.statuses.A === 'landed' && r.statuses.B === 'landed',
     JSON.stringify({ halted: r.halted, refused: r.refused, statuses: r.statuses }));
@@ -471,8 +474,11 @@ section('spend: a director killed mid-attempt; the orphan is charged at its rese
   check('no halt decision was recorded', !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
   const status = renderCampaignStatus(campaignStatus(w.ctx, w.campaign.id, w.repo, host));
   // STATUS spend uses the report's words (WS-R8): scanned and reservation-charged dollars beside, never inside, the known figure.
-  check('status lists the reservation charge separately', /^Spend .*\$1\.00 charged at reservation for 1 unfinished/m.test(status) && !/^Spend ≥ \$1\./m.test(status),
-    status.split('\n').find((l) => l.startsWith('Spend')));
+  const scanned = (spend.spentUsd - spend.knownUsd - spend.reservationUsd).toFixed(2);
+  const lead = `$${spend.knownUsd.toFixed(2)}${spend.scannedCount ? `; $${scanned} scanned, not known` : ''}`;
+  check('status leads with the known figure, lists the reservation charge apart, then the total against the cap',
+    status.split('\n').includes(`Spend ${lead}; $1.00 charged at reservation for 1 unfinished; $${spend.spentUsd.toFixed(2)} counted against the $5.00 cap.`)
+      && spend.knownUsd >= 0.25, status.split('\n').find((l) => l.startsWith('Spend')));
   const l = ledger(w.ctx, { projectId: w.campaign.projectId, group: 'mission' });
   const row = l.rows.find((x) => x.key === am.id)!;
   check('the ledger lists it apart: reservationCount, not unknown, not known', row.reservationCount === 1 && row.usdReservation === 1 && row.usdUnknownCount === 0

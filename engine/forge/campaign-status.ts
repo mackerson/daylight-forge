@@ -2,7 +2,7 @@ import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
 import { campaignNeeds } from './campaign-needs.ts';
-import { campaignSpendWords, runClaimOf, statusTable, statusTableLines } from './campaign-report.ts';
+import { campaignSpendWords, capWords, runClaimOf, statusTable, statusTableLines } from './campaign-report.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, landedRegressions, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
@@ -89,7 +89,6 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
   };
 }
 
-const money = (n: number) => `$${n.toFixed(2)}`;
 
 /** STATUS.md in kitkraft's shape: the STATUS table per lane, tickets, assumptions pending, needs, spend, waves. No timestamp. */
 export function renderCampaignStatus(r: CampaignStatusReport): string {
@@ -98,7 +97,7 @@ export function renderCampaignStatus(r: CampaignStatusReport): string {
     `Plan ${r.planRevision}. Integration ${r.integration.ref} at ${r.integration.tip.slice(0, 12)} (base ${r.integration.base.slice(0, 12)}), ${r.integration.landed} landed.`,
     `Merge it yourself: \`${r.integration.mergeHint}\``, '',
     r.authorization.decisionId ? `Authorized by ${r.authorization.decisionId}${r.authorization.halted ? `; halted (${r.authorization.halted})` : ''}.` : 'Not authorized.',
-    `Spend ${campaignSpendWords(r.spend)} of ${money(r.spend.capUsd)}.`, '',
+    `Spend ${campaignSpendWords(r.spend)}; ${capWords(r.spend)}.`, '',
     '## Status', '',
     ...statusTableLines(r.table),
     '', '## Tickets', '',

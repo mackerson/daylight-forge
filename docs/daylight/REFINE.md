@@ -30,7 +30,8 @@ daylight campaign report <c> [<repo>] [--wave <n> | --open | --all] [--format js
   attempt rows. Lanes and reviews close: Σ lanes + Σ reviews equals the campaign on spent, known,
   unknown, scanned and running. Scanned dollars and reservation charges (P2-R44) are shown beside
   the known figure, never inside it; unknown spend is a count and reads `unknown` or `≥ $X (N
-  unknown)`, never `$0.00`.
+  unknown)`, never `$0.00`; a line with nothing known keeps the floor (`≥ unknown (…)`). The campaign
+  line (and STATUS.md's) leads with `spentUsd`, what counts against the cap, then the breakdown.
 - **Blocked.** Every blocked, waiting-dependency or waiting-owner ticket with its reason verbatim
   and the act it needs: `retry` (closed at preflight), `resolve-dependency`, `owner-decision`,
   `approve-work-item`, `authorize` or `read`.
