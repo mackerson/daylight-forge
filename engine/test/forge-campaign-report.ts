@@ -415,6 +415,10 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
 
   const holdoutPath = w.holdout.testArtifact.path ?? '';
   check('holdouts are counted: one locked, not run at the tip', r.holdouts.locked === 1 && r.holdouts.atTip['not-run'] === 1);
+  check('the holdouts key set is counts only: locked and atTip by conclusion, every value a number (P2-R64)',
+    Object.keys(r.holdouts).sort().join() === 'atTip,locked' && typeof r.holdouts.locked === 'number'
+    && Object.keys(r.holdouts.atTip).sort().join() === 'falsified,inconclusive,invalid,not-run,pending,supported'
+    && Object.values(r.holdouts.atTip).every((n) => typeof n === 'number'));
   check('a holdout named in free text is redacted in every echoed field (M2)', r.title === 'Report fixture ([holdout])'
     && r.landed.some((l) => l.title === 'Second api change near [holdout]') && r.assumptions.open.some((a) => a.question === 'Blocking question about [holdout]?')
     && r.findings.some((f) => f.path === 'src/api/[holdout]' && f.title === 'compare with [holdout]' && f.statement.includes('[holdout]'))
