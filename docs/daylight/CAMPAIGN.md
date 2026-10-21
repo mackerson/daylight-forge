@@ -90,6 +90,11 @@ one **proposed** work item and one ticket row per ticket, and one `open` assumpt
 decision. A work item's id is derived from the campaign, the ticket and its content, so importing
 the same plan twice changes nothing.
 
+Plan text is shown as written (`campaign show`, `forge candidate`, `mission list`). When it names
+the basename of a holdout already registered in the store, `validate` and `import` print a
+warning on stderr with the count, never the name, and go on (`validate --format json` gives it as
+`holdoutNames`). Rename the plan's mention if the holdout should stay unnamed (P2-R60).
+
 A **revision** is `campaign import … --campaign <m>` at a later commit. Unchanged tickets keep their
 work item; a changed ticket gets a new one, and the next `approve-plan` supersedes the old. A
 revision that changes or drops a ticket whose mission is still open is refused. Any plan change

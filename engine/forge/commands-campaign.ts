@@ -10,6 +10,7 @@ import {
   approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, PlanInvalid, planOf, retryScopeOf, retryTicket,
   type EnvelopeFlags,
 } from './campaign.ts';
+import { holdoutNamesIn } from './campaign-gates.ts';
 import { actorFor, Usage } from './commands.ts';
 import { CAMPAIGN_REPORT_SUBCOMMANDS, runCampaignReportCommand } from './commands-campaign-report.ts';
 import { CAMPAIGN_RUN_SUBCOMMANDS, runCampaignRunCommand } from './commands-campaign-run.ts';
@@ -154,7 +155,8 @@ async function run(
     }
     const explicit = flag(p, 'out');
     let resolved: string | undefined;
-    const out = () => (resolved ??= explicit ? path.resolve(explicit) : defaultOut(sub === 'import' ? (p.positionals[0] ?? process.cwd()) : process.cwd()));
+    const repoArg = sub === 'import' ? p.positionals[0] : sub === 'validate' ? p.positionals[1] : undefined;
+    const out = () => (resolved ??= explicit ? path.resolve(explicit) : defaultOut(repoArg ?? process.cwd()));
     return await body(sub, p, out, asJson);
   } catch (err) {
     if (err instanceof Usage) {
@@ -183,6 +185,13 @@ function withCtx<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
 function readCtx<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
   if (!fs.existsSync(path.join(out(), DAYLIGHT_DB))) throw new Error(`${out()} holds no Daylight database; nothing to read`);
   return withCtx(out, fn);
+}
+
+/** A warning on stderr, never a refusal, when plan text names a registered holdout (P2-R60): a count, never the name. */
+function warnHoldoutNames(ctx: DaylightContext, bytes: Buffer | null): number {
+  const n = bytes ? holdoutNamesIn(ctx, bytes.toString('utf8')) : 0;
+  if (n) console.error(`warning: the plan text names ${n} registered holdout file(s) by basename; plan text is shown as written, so the name is no longer hidden`);
+  return n;
 }
 
 /** Without `--confirm`: show what would be confirmed, and stop with exit 2 (P2-R45). */
@@ -306,7 +315,9 @@ export async function runCampaignCommand(argv: string[], env: NodeJS.ProcessEnv 
         const [rel, repo] = p.positionals;
         if (!rel || !repo) throw new Usage('campaign validate needs <plan> <repo>');
         const v = validatePlanAt(path.resolve(repo), rel, flag(p, 'rev') ?? 'HEAD');
-        if (asJson) json({ ok: !v.refusals.length, planDigest: v.planDigest, commit: v.commit, refusals: v.refusals });
+        // Only an existing store has holdouts to compare with; validate never creates one.
+        const holdoutNames = fs.existsSync(path.join(out(), DAYLIGHT_DB)) ? readCtx(out, (ctx) => warnHoldoutNames(ctx, v.bytes)) : 0;
+        if (asJson) json({ ok: !v.refusals.length, planDigest: v.planDigest, commit: v.commit, refusals: v.refusals, holdoutNames });
         else {
           for (const r of v.refusals) say(`${r.path}  ${r.rule}: ${r.detail}`);
           say(v.refusals.length ? `${v.refusals.length} refusal(s); nothing recorded` : `${rel} at ${v.commit.slice(0, 12)} is a valid plan (${v.planDigest})`);
@@ -316,7 +327,11 @@ export async function runCampaignCommand(argv: string[], env: NodeJS.ProcessEnv 
       case 'import': {
         const repo = p.positionals[0];
         if (!repo) throw new Usage('campaign import needs <repo> --file <plan>');
-        const r = withCtx(out, (ctx) => importPlan(ctx, path.resolve(repo), need(p, 'file'), { rev: flag(p, 'rev'), campaignId: flag(p, 'campaign') }));
+        const r = withCtx(out, (ctx) => {
+          const imported = importPlan(ctx, path.resolve(repo), need(p, 'file'), { rev: flag(p, 'rev'), campaignId: flag(p, 'campaign') });
+          warnHoldoutNames(ctx, ctx.artifacts.get(imported.planArtifact));
+          return imported;
+        });
         if (asJson) json(r);
         else {
           say(`campaign ${r.campaign.id} (${r.campaign.state}): plan ${r.planDigest} at ${r.commit.slice(0, 12)}`);

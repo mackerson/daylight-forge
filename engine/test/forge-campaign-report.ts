@@ -271,6 +271,34 @@ function reportWorld(name: string) {
   return { root, out, base, ctx, id, holdout, land, plan };
 }
 
+section('campaign validate|import warn when plan text names a registered holdout (P2-R60)');
+{
+  const w = reportWorld('plan-holdout');
+  w.ctx.close();
+  const text = fs.readFileSync(path.join(w.root, 'daylight.plan.json'), 'utf8');
+  fs.writeFileSync(path.join(w.root, 'again.plan.json'), text);
+  fs.writeFileSync(path.join(w.root, 'clean.plan.json'), text.split(HOLDOUT_BASENAME).join('ordinary_file.test.js'));
+  git(w.root, 'add', '-A');
+  git(w.root, 'commit', '-q', '-m', 'two more plans');
+  const warned = (r: { err: string }) => /warning: the plan text names 1 registered holdout file\(s\) by basename/.test(r.err);
+  const named = (r: { out: string; err: string }) => r.out.includes(HOLDOUT_BASENAME) || r.err.includes(HOLDOUT_BASENAME) || r.err.includes(w.holdout.id);
+  const v = cli(['campaign', 'validate', 'again.plan.json', w.root, '--out', w.out]);
+  check('validate warns, exits 0, and names neither the holdout nor its id', v.code === 0 && warned(v) && !named(v), `${v.code} ${v.err}`);
+  const vj = cli(['campaign', 'validate', 'again.plan.json', w.root, '--out', w.out, '--format', 'json']);
+  check('validate --format json counts it', vj.code === 0 && json<{ ok: boolean; holdoutNames: number }>(vj)?.holdoutNames === 1 && json<{ ok: boolean }>(vj)?.ok === true, vj.out);
+  const vAgent = cli(['campaign', 'validate', 'again.plan.json', w.root, '--out', w.out], { CLAUDECODE: '1' });
+  check('validate warns in an agent session too, still a count', vAgent.code === 0 && warned(vAgent) && !named(vAgent), `${vAgent.code} ${vAgent.err}`);
+  const vClean = cli(['campaign', 'validate', 'clean.plan.json', w.root, '--out', w.out]);
+  check('a plan that names no holdout is not warned about', vClean.code === 0 && !/warning/.test(vClean.err), vClean.err);
+  const noStore = path.join(tmp, 'plan-holdout-nostore');
+  const vNoStore = cli(['campaign', 'validate', 'again.plan.json', w.root, '--out', noStore]);
+  check('validate with no store compares nothing and creates nothing', vNoStore.code === 0 && !/warning/.test(vNoStore.err) && !fs.existsSync(noStore), vNoStore.err);
+  const imp = cli(['campaign', 'import', w.root, '--file', 'again.plan.json', '--out', w.out]);
+  check('import warns and still imports (a warning, not a refusal)', imp.code === 0 && warned(imp) && /^campaign /.test(imp.out) && !named(imp), `${imp.code} ${imp.err}`);
+  const impClean = cli(['campaign', 'import', w.root, '--file', 'clean.plan.json', '--out', w.out]);
+  check('import of a plan that names no holdout is not warned about', impClean.code === 0 && !/warning/.test(impClean.err), impClean.err);
+}
+
 /** `git diff --numstat` read independently of the report. */
 const numstat = (repo: string, a: string, b: string) => {
   const rows = git(repo, 'diff', '--numstat', '--no-renames', a, b).split('\n').filter(Boolean).map((l) => l.split('\t'));

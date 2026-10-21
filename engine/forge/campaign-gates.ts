@@ -267,6 +267,19 @@ export function holdoutPaths(ctx: Pick<GateContext, 'store'>, campaignId: string
     .map((x) => x!.testArtifact.path).filter((p): p is string => !!p);
 }
 
+/**
+ * How many registered holdout basenames, across every campaign in this store, plan text names
+ * (P2-R60, the r8-review M2 residue). Plan text is shown as written by `campaign show` and
+ * `forge candidate`, so `campaign validate|import` warn; a count, never the name (P2-R45 D7).
+ */
+export function holdoutNamesIn(ctx: Pick<GateContext, 'store'>, text: string): number {
+  const names = new Set<string>();
+  for (const c of ctx.store.missions().filter((m) => m.kind === 'campaign')) {
+    for (const x of ctx.store.experimentsFor(c.id, 'holdout')) if (x.testArtifact.path) names.add(path.posix.basename(x.testArtifact.path));
+  }
+  return [...names].filter((n) => n.length >= 3 && text.includes(n)).length;
+}
+
 // ---- acceptance ------------------------------------------------------------------------------
 
 type TicketGates = Pick<CampaignTicket, 'ticketId' | 'acceptance'>;
