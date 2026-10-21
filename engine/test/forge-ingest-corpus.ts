@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDaylight } from '../mission/context.ts';
+import { exportMission, importMission } from '../mission/export.ts';
 import { corpusOf, CorpusRefused, parseCorpusManifest, readCorpusDoc, registerCorpus } from '../forge/corpus.ts';
 import { runCorpusCommand } from '../forge/commands-corpus.ts';
 import { harness } from './harness.ts';
@@ -53,6 +54,22 @@ check('corpus.registered records ids, digests and counts, and the excluded paths
   && JSON.stringify((ev.payload as { excluded: unknown }).excluded).includes('plan/execution-plan.md'));
 const c = corpusOf(ctx, rev.corpusId);
 check('corpusOf re-reads the index and the config from their artifacts', c.index.docs.length === 20 && c.config.domains?.olc?.milestone === '^M\\d+$');
+
+section('a corpus never travels by file (§12, the P2-R14 analog)');
+const throwsMsg = (fn: () => unknown) => {
+  try {
+    fn();
+    return '';
+  } catch (err) {
+    return (err as Error).message;
+  }
+};
+check('a corpus mission is not exported', /corpus missions are not exported/.test(throwsMsg(() => exportMission(ctx, rev.corpusId))));
+const review = ctx.store.createMission({ projectId: mission.projectId, kind: 'audit', objective: 'review IR', baseRevision: mission.baseRevision, parentId: rev.corpusId });
+check('a corpus\'s review mission is not exported', /not exported/.test(throwsMsg(() => exportMission(ctx, review.id))));
+const plain = ctx.store.createMission({ projectId: mission.projectId, kind: 'explore', objective: 'look', baseRevision: mission.baseRevision });
+const plainFile = exportMission(ctx, plain.id);
+check('a file whose mission is a corpus is not imported', /corpus missions are not imported/.test(throwsMsg(() => importMission(ctx, { ...plainFile, mission: { ...plainFile.mission, kind: 'corpus' } }, { force: true }))));
 
 section('the corpus digest is the content, not the run');
 const B = olcRepos(path.join(tmp, 'b'));
