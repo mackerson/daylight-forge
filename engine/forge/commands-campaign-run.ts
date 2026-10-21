@@ -70,7 +70,7 @@ export const CAMPAIGN_RUN_CONFIRM_OPS: readonly CampaignRunConfirmOp[] = ['lock-
 /**
  * The digest `daylight confirm <op>` prints for one of WS-R6's acts, computed as the act's own
  * preview computes it. `repo` (from `--repo`, else the out dir's mapped root) is needed by
- * `adopt-integration-tip` only, which reads where the integration ref is now.
+ * `adopt-integration-tip` only, which reads where the integration ref is now (or `--to`).
  */
 export function campaignRunConfirm(ctx: DaylightContext, op: CampaignRunConfirmOp, subjectId: string, get: FlagGet, repo: string | null): ConfirmDigest {
   const needOf = (k: string) => {
@@ -89,7 +89,8 @@ export function campaignRunConfirm(ctx: DaylightContext, op: CampaignRunConfirmO
     case 'adopt-integration-tip': {
       const haltDecisionId = needOf('halt');
       if (!repo) throw new Usage(`${ctx.out} holds no map; name the repository with --repo`);
-      const s = adoptScopeOf({ store: ctx.store, repoRoot: repo }, subjectId, haltDecisionId);
+      // `--to` restores the ref to a named commit; the digest covers it, as the act's own preview does.
+      const s = adoptScopeOf({ store: ctx.store, repoRoot: repo }, subjectId, haltDecisionId, get('to'));
       return confirmDigest(ctx, 'adopt-integration-tip', subjectId, { adopt: { ref: s.ref, from: s.from, to: s.to, haltDecisionId } });
     }
   }

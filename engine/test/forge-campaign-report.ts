@@ -147,6 +147,18 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   const viaRepo = json<Confirmed>(cli(['confirm', 'adopt-integration-tip', id, '--halt', haltId, '--repo', s.root, '--out', s.out, '--format', 'json']));
   check('adopt-integration-tip reads the repo from --repo, else the out dir\'s map, to the same digest', !!viaMap && viaMap.digest === viaRepo?.digest);
   confirmsAct('adopt-integration-tip', s.out, ['adopt-integration-tip', id, '--halt', haltId, '--repo', s.root], ['campaign', 'adopt-tip', id, s.root, '--halt', haltId, '--rationale', 'reviewed']);
+
+  // Moved again; this time a person restores the ref to the adopted commit with --to.
+  git(s.root, 'update-ref', integrationRefFor(id), git(s.root, 'commit-tree', `${moved}^{tree}`, '-p', moved, '-m', 'by hand again'));
+  reopen(s.out, (ctx) => {
+    haltId = haltCampaign(ctx, id, HUMAN, 'integration-moved').id;
+  });
+  const without = json<Confirmed>(cli(['confirm', 'adopt-integration-tip', id, '--halt', haltId, '--out', s.out, '--format', 'json']));
+  const withTo = json<Confirmed>(cli(['confirm', 'adopt-integration-tip', id, '--halt', haltId, '--to', moved, '--out', s.out, '--format', 'json']));
+  check('--to changes the adopt-integration-tip digest', !!without && !!withTo && without.digest !== withTo.digest && withTo.lines[0].includes(moved), JSON.stringify(withTo?.lines));
+  confirmsAct('adopt-integration-tip --to', s.out, ['adopt-integration-tip', id, '--halt', haltId, '--to', moved],
+    ['campaign', 'adopt-tip', id, s.root, '--halt', haltId, '--to', moved, '--rationale', 'restored']);
+  check('and the act put the ref back on the named commit', git(s.root, 'rev-parse', integrationRefFor(id)) === moved);
 }
 
 
