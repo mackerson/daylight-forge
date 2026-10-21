@@ -664,6 +664,11 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const from = ctx.store.attempt(ctx.store.candidate(item.candidateId)?.attemptId ?? '');
       // P2-R35: an unknown-cost candidate never lands, whatever queued it.
       if (!from || unknownCost(from)) return;
+      // Never build on a commit no row explains: the ref moved outside the director (§4.4).
+      if (integrationTip(root, campaign.id) !== expectedTip(ctx.store, campaign.id)) {
+        halt('integration-moved');
+        return;
+      }
       let i: Integration;
       try {
         i = prepareIntegration(ictx, item.candidateId, { ticketId: t.ticketId, deps: host.integrate });
@@ -694,7 +699,10 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
           landedNow.push(t.ticketId);
           emit(campaign, 'lifecycle', 'campaign.ticket.landed', { ticketId: t.ticketId, missionId: m.id, commit: r.landed.integratedCommit });
         } else if (integrationTip(root, campaign.id) !== i.onto) {
-          queue.push(item);
+          // The compare-and-swap lost: the row is abandoned and the candidate stays accepted. A tip
+          // the rows explain is integrated onto again; any other is a person's to adopt (P2-R35).
+          if (integrationTip(root, campaign.id) === expectedTip(ctx.store, campaign.id)) queue.push(item);
+          else halt('integration-moved');
         } else {
           stopped = r.refused;
         }
