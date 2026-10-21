@@ -162,8 +162,10 @@ before it starts, its audit mission's budget is `maxUsdPerMission` within what t
 and each reviewer records its share on `attempts.max_cost_usd`. A wave whose review never ran or
 was cut off by a crash is reviewed by the next run.
 
-Each finding becomes one proposed fix ticket, filed by WS-R5 (`FIX.<wave>.<n>`, lane `FIX`, scope
-the finding's path, the plan's default acceptance). WS-R5's envelope admits a High one only, at most
+Each path a wave's findings name becomes one proposed fix ticket, filed by WS-R5 for its most
+severe finding (`FIX.<wave>.<n>`, lane `FIX`, scope the path, the plan's default acceptance); the
+other findings on that path point at the same ticket, so one reviewer cannot spend the wave's fix
+budget on one file. WS-R5's envelope admits a High one only, at most
 `fixLane.maxTicketsPerWave` (≤ 5) a wave (P2-R10); anything else waits for a person. A finding
 never changes a verdict or a landed commit (ADR-19): it only creates work that passes the same
 gates, and a reviewer's text reaches the fix author fenced, redacted and capped.

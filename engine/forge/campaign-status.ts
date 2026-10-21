@@ -72,7 +72,8 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
       return {
         seq: w.seq, tickets: w.ticketIds.length,
         findings: Object.fromEntries(FINDING_SEVERITIES.map((sev) => [sev, fs.filter((f) => f.severity === sev).length])) as Record<FindingSeverity, number>,
-        fixTickets: fs.filter((f) => f.fixTicketId).length,
+        // Several findings on one path share one fix ticket (wave2 L5): tickets, not findings.
+        fixTickets: new Set(fs.map((f) => f.fixTicketId).filter(Boolean)).size,
       };
     }),
   };
