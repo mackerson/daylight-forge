@@ -1,0 +1,13 @@
+These files are test data for Daylight's specification-ingestion tests and benchmark (P2-R52).
+They are copied verbatim, byte for byte, and are not part of Daylight.
+
+Source, supplied by the owner (Michael Ackerson):
+- Open Learning Commons scaffold repository, licensed MPL-2.0 (its LICENSE-MPL-2.0.txt):
+    docs/spec/open_learning_commons_spec_v0_8.md, docs/spec/errata-v0_8.md,
+    plan/adr/0001..0015 (15 ADRs), AGENTS.md, docs/architecture.md
+- OLC Corpus Foundry specification, Working Draft v0.1, 20 October 2026
+    (foundry/OLC_Corpus_Foundry_Spec_v0_1.md), licence per the owner.
+
+Deliberately absent (answer leakage for the benchmark, or not needed): the execution plan,
+STATUS, corrections, plates and older spec versions. Licence terms are the owner's and the
+source repository's; the paths above mirror the source layout.
