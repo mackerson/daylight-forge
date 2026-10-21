@@ -312,7 +312,10 @@ function rowSnapshot(ctx: DaylightContext): Map<string, string> {
   const tables = ['corpus_revisions', 'ir_records', 'ir_spans', 'ir_observations', 'ir_links', 'ir_findings', 'blueprints', 'blueprint_derivations', 'packets',
     'ticket_trace', 'campaign_tickets', 'work_items', 'assumptions', 'experiments', 'decisions', 'candidates', 'integrations', 'missions'];
   for (const t of tables) {
-    for (const row of db.prepare(`SELECT * FROM ${t}`).all() as Array<Record<string, unknown>>) {
+    for (const raw of db.prepare(`SELECT * FROM ${t}`).all() as Array<Record<string, unknown>>) {
+      // A corpus mission's scope and base revision follow its current revision (WS-R14 F-2): the one
+      // row a revision moves by design; every other column of it, and every other row, must hold.
+      const row = t === 'missions' && raw.kind === 'corpus' ? { ...raw, scope: null, base_revision: null, updated_at: null } : raw;
       const json = JSON.stringify(row);
       const key = `${t}:${'id' in row ? String(row.id) : createHash('sha256').update(json).digest('hex')}`;
       out.set(key, createHash('sha256').update(json).digest('hex'));
