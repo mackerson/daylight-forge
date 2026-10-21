@@ -15,7 +15,7 @@ import type { GateContext } from '../forge/gate.ts';
 import {
   authorityChainOf, carryForward, diffCorpus, ingestNeeds, irSetDigestAt, isIrStale, staleBlueprints, stalePackets, staleTickets,
 } from '../forge/authority.ts';
-import { approveBlueprint, importBlueprint } from '../forge/blueprint.ts';
+import { approveBlueprint, blueprintContext, importBlueprint, validateBlueprint } from '../forge/blueprint.ts';
 import { approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, type EnvelopeFlags } from '../forge/campaign.ts';
 import { campaignLockConfirm, lockCampaign, registerPlanGates } from '../forge/campaign-gates.ts';
 import { confirmIngest, corpusReviewReadOnly } from '../forge/commands-corpus-review.ts';
@@ -69,7 +69,7 @@ section('the row-state table, case by case');
   const inferredKept = rec('', { source: 'inferred', basisSections: ['std:zeta'], statement: 'Zeta implies a ledger.' });
   const inferredGone = rec('', { source: 'inferred', basisSections: ['std:omega', 'std:delta'], statement: 'Omega implies an audit.' });
   ctx.store.insertIrLink({ fromIr: errata.id, toIr: overridden.id, kind: 'overrides', basis: 'precedence', createdAt: 1 });
-  approveRecords(w, [carried, review, moved, ambiguous, split, renamed, missing, overridden, errata, removed, contra].map((r) => r.id), { reject: [rejected.id] });
+  approveRecords(w, [carried, review, moved, ambiguous, split, renamed, missing, overridden, errata, removed, contra, inferredKept, inferredGone].map((r) => r.id), { reject: [rejected.id] });
 
   const REV2 = {
     '## Alpha': BASE['## Alpha'], '## Beta': ['- Beta one must hold.', '- Beta two must hold.'], '## Gamma': BASE['## Gamma'],
@@ -119,6 +119,16 @@ section('the row-state table, case by case');
     && !isIrStale(ctx, inferredKept.id));
   const r3 = new Map(carryForward(ctx, corpus.id, rev2.id, rev3.id).map((r) => [r.irId, r]));
   check('a config change re-sections; records carry by quote, the reason says why', r3.get(carried.id)?.status === 'carried' && r3.get(carried.id)?.reason === 'config-changed');
+  const u = ctx.store.recordAssumption({ campaignId: corpus.id, ownerDecisionId: 'OIR.' + inferredGone.id.slice(3, 13).toUpperCase(), question: 'q', default: '',
+    rationale: 'test', status: 'open', blocking: true, source: 'ir-interpretation', recordedBy: 'daylight', irId: inferredGone.id });
+  const d3 = diffCorpus(ctx, corpus.id, rev2.id, rev3.id);
+  check('review L1: an inferred record going stale is in the diff, and its interpretation invalidated', d3.records.some((r) => r.irId === inferredGone.id && r.status === 'stale')
+    && d3.invalidated.assumptions.includes(u.id) && d3.records.some((r) => r.irId === inferredKept.id && r.status === 'carried'));
+  const bpCtx = blueprintContext(ctx, corpus.id);
+  const cites = (id: string) => validateBlueprint({ kind: 'daylight-blueprint', version: 1, title: 't', corpusDigest: rev3.corpusDigest, irSetDigest: digestOf('x'),
+    scope: { milestones: [] }, ticketIdTemplate: '{component}.{k}', boundaries: [], components: [], interfaces: [], order: [], constraints: [{ irIds: [id], appliesTo: [] }],
+    deferred: [], outOfScope: [] }, bpCtx).some((r) => r.rule === 'ir-stale');
+  check('review L1: the blueprint rules use the one staleness rule (a lost second passage, an inferred record with no basis left)', cites(contra.id) && cites(inferredGone.id));
   check('a record stale at the last revision is not brought back', !r3.has(missing.id) && isIrStale(ctx, missing.id));
   w.ctx.close();
 }

@@ -230,7 +230,7 @@ export const ticketIdOf = (bp: Pick<BlueprintV1, 'ticketIdTemplate'>, milestone:
  * owned, reachable, and the only way across a boundary; the invariant tags placed.
  */
 export function validateBlueprint(bp: BlueprintV1, ctx: { approved: ReadonlyMap<string, IrRecord>; index: SectionIndex; tree: ReadonlySet<string>;
-  config: SectionerConfig; invariantTags: readonly string[] }): BlueprintRefusal[] {
+  config: SectionerConfig; invariantTags: readonly string[]; isStale?: (r: IrRecord) => boolean }): BlueprintRefusal[] {
   const r = new Refusals();
   const sections = new Set(ctx.index.docs.flatMap((d) => d.sections.map((s) => s.id)));
   const boundaries = new Map(bp.boundaries.map((b) => [b.id, b]));
@@ -255,7 +255,8 @@ export function validateBlueprint(bp: BlueprintV1, ctx: { approved: ReadonlyMap<
     ...bp.deferred.map((d, i) => [d.irId, `$.deferred[${i}].irId`]),
     ...bp.outOfScope.map((d, i) => [d.irId, `$.outOfScope[${i}].irId`]),
   ] as Array<[string, string]>;
-  const stale = (rec: IrRecord) => rec.source === 'extracted' && rec.span === null;
+  // The one staleness rule (P2-R58) comes from the store through `blueprintContext`; without it, the span-only part of it.
+  const stale = ctx.isStale ?? ((rec: IrRecord) => rec.source === 'extracted' && rec.span === null);
   for (const [id, at] of named) {
     const rec = ctx.approved.get(id);
     if (!rec) r.add(at, 'ir-not-approved', 'not an approved record of this corpus');
@@ -364,7 +365,7 @@ export function validateBlueprint(bp: BlueprintV1, ctx: { approved: ReadonlyMap<
 
   // The template yields plan ticket ids.
   const t = bp.ticketIdTemplate;
-  const sample = renderTicketId(t, { milestone: bp.scope.milestones[0] ?? 'M0', component: bp.components[0]?.id ?? 'A', k: 1 });
+  const sample = renderTicketId(t, { milestone: bp.scope.milestones[0] ?? 'X', component: bp.components[0]?.id ?? 'A', k: 1 });
   if (!t.includes('{component}') || !t.includes('{k}') || !TICKET_ID.test(sample) || sample.length > 32) {
     r.add('$.ticketIdTemplate', 'ticket-template', 'names {component} and {k} and yields a plan ticket id');
   }
@@ -414,7 +415,7 @@ export function blueprintContext(ctx: DaylightContext, corpusId: string, invaria
   } catch {
     tree = new Set();
   }
-  return { corpus, rev, approved, index: revisionMaterial(ctx, rev.id).index, tree, config: FREE_CONFIG, invariantTags };
+  return { corpus, rev, approved, index: revisionMaterial(ctx, rev.id).index, tree, config: FREE_CONFIG, invariantTags, isStale: (r: IrRecord) => isIrStale(ctx, r.id) };
 }
 
 /** Every refusal of a blueprint of this corpus now: its digests against the rows, then `validateBlueprint`. */

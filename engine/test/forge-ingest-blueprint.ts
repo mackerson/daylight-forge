@@ -97,7 +97,7 @@ check('the tags are an input: none given, none checked', !rules(mutate((b) => { 
 check('a template that yields no ticket id: ticket-template', rules(mutate((b) => { b.ticketIdTemplate = '{milestone}-{component}'; })).includes('ticket-template'));
 check('citing a record not approved: ir-not-approved', rules(mutate((b) => { b.constraints = [{ irIds: [pending.id], appliesTo: ['D'] }]; })).includes('ir-not-approved'));
 const staleMap = new Map<string, IrRecord>([...vctx().approved].map(([id, r]) => [id, id === r1.id ? { ...r, span: null } : r]));
-check('citing an approved record with no span now: ir-stale', validateBlueprint(base(), { ...vctx(), approved: staleMap }).some((r) => r.rule === 'ir-stale'));
+check('citing an approved record with no span now: ir-stale', validateBlueprint(base(), { ...vctx(), approved: staleMap, isStale: (r) => r.span === null }).some((r) => r.rule === 'ir-stale'));
 
 section('derivation: which element rests on which record');
 const rows = derivationOf(base(), 'bp_' + '0'.repeat(32), vctx().approved);

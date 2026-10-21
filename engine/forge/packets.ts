@@ -159,7 +159,7 @@ const isRefusals = (v: PacketBody | PacketRefusal[]): v is PacketRefusal[] => Ar
  * its scope, and its digest and id the ones its body yields.
  */
 export function validatePacket(p: WorkPacket, ctx: { blueprint: BlueprintV1; approved: ReadonlyMap<string, IrRecord>; tree: ReadonlySet<string>;
-  policy: ProjectPolicy | null }): PacketRefusal[] {
+  policy: ProjectPolicy | null; isStale?: (r: IrRecord) => boolean }): PacketRefusal[] {
   const out: PacketRefusal[] = [];
   const add = (path: string, rule: string, detail: string) => out.push({ path, rule, detail });
   const shape = parsePacketBody(Object.fromEntries(Object.entries(p).filter(([k]) => !['id', 'packetDigest', 'status'].includes(k))));
@@ -173,7 +173,7 @@ export function validatePacket(p: WorkPacket, ctx: { blueprint: BlueprintV1; app
   const current = (id: string, at: string, kinds?: readonly IrKind[]) => {
     const r = ctx.approved.get(id);
     if (!r) return add(at, 'ir-not-approved', 'not an approved record');
-    if (r.source === 'extracted' && r.span === null) add(at, 'ir-stale', 'has no span at the current revision');
+    if (ctx.isStale ? ctx.isStale(r) : r.source === 'extracted' && r.span === null) add(at, 'ir-stale', 'is stale at the current revision');
     if (kinds && !kinds.includes(r.kind)) add(at, 'obligation-kind', `an obligation cites ${kinds.join(', ')} records`);
   };
   p.requirementIds.forEach((id, i) => {
@@ -321,7 +321,7 @@ export function importPackets(ctx: DaylightContext, blueprintId: string, file: s
     if (isRefusals(body)) return refusals.push(...body);
     if (body.blueprintId !== bp.id) return refusals.push({ path: `$.packets[${i}].blueprintId`, rule: 'blueprint', detail: 'names another blueprint' });
     const p = asPacket(body, 'proposed');
-    refusals.push(...validatePacket(p, { blueprint: bp.body, approved: c.approved, tree: c.tree, policy }).map((r) => ({ ...r, path: r.path.replace(/^\$/, `$.packets[${i}]`) })));
+    refusals.push(...validatePacket(p, { blueprint: bp.body, approved: c.approved, tree: c.tree, policy, isStale: c.isStale }).map((r) => ({ ...r, path: r.path.replace(/^\$/, `$.packets[${i}]`) })));
     packets.push(p);
   });
   if (!refusals.length) refusals.push(...setRefusals(ctx, bp.body, bp.projectId, packets, c.approved));
@@ -422,7 +422,7 @@ export async function proposePackets(ctx: DaylightContext, blueprintId: string, 
         return;
       }
       const p = asPacket(body, 'proposed');
-      const why = validatePacket(p, { blueprint: bp.body, approved: c.approved, tree: c.tree, policy });
+      const why = validatePacket(p, { blueprint: bp.body, approved: c.approved, tree: c.tree, policy, isStale: c.isStale });
       if (why.length) extra.push({ attemptId: a.id, field: why[0].path, reason: `${why[0].rule}: ${why[0].detail}`, line });
       else accepted.push({ p, attemptId: a.id, runner: `agent:${task.runnerHint ?? 'unknown'}` });
     },

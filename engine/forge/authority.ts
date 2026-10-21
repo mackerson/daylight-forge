@@ -386,6 +386,11 @@ export function diffCorpus(ctx: DaylightContext, corpusId: string, fromRevision:
       return { ...o, status, row: have, reason: status === o.status ? o.reason : null };
     });
     if (roles.length) records.push(summarise(r.id, roles));
+    else if (r.source === 'inferred' && !recordStale(ctx, r, from.rev.id)) {
+      // An inferred record has no span to carry; it follows its basis sections (P2-R58).
+      const now = recordStale(ctx, ctx.store.irRecord(r.id, to.rev.id)!, to.rev.id);
+      records.push({ irId: r.id, status: now ? 'stale' : 'carried', to: null, reason: now ? 'section-removed' : null });
+    }
   }
 
   const staleIds = new Set(records.filter((x) => x.status === 'stale').map((x) => x.irId));
