@@ -21,6 +21,12 @@ export interface OverlayRecord extends OverlaySpan {
   other?: OverlaySpan;
 }
 export interface MechanicalRule {
+  /**
+   * `lines`: a cue-bearing body line is a unit (needs no sectioner). `units`: the sectioner's
+   * normative units at the fixture's revision are (so coverage is exact; regenerating needs the
+   * sectioner's index). The regex fields apply to `lines`; `negative` to both.
+   */
+  source?: 'lines' | 'units';
   /** Case-insensitive cue regex; a line is a unit when it matches. */
   cues: string;
   /** Lines matching this (case-insensitive) make a record a `constraint` rather than a `requirement`. */
@@ -143,9 +149,35 @@ export function formatOverlay(o: OverlayFile): string {
   return `${head},\n "records": [\n${o.records.map((r) => `  ${JSON.stringify(r)}`).join(',\n')}\n ]\n}\n`;
 }
 
-/** Hand (or generated) records plus the mechanical records their rule yields over `docs`. */
-export function buildOverlay(corpus: string, docs: ReadonlyMap<string, Buffer>, written: readonly OverlayRecord[], rule: MechanicalRule): OverlayFile {
-  return { kind: 'daylight-ir-overlay', v: 1, corpus, mechanical: rule, records: [...written, ...mechanicalRecords(docs, written, rule)] };
+/**
+ * One record per sectioner unit no written record overlaps, quoting the unit's bytes (cut at the
+ * last sentence end under the quote cap), in document then byte order.
+ */
+export function mechanicalFromUnits(docs: ReadonlyMap<string, Buffer>, written: readonly OverlayRecord[], rule: MechanicalRule,
+  units: ReadonlyArray<{ docKey: string; start: number; end: number }>): OverlayRecord[] {
+  const neg = new RegExp(rule.negative, 'i');
+  const spans = written.flatMap((r) => [r, ...(r.other ? [r.other] : [])]).map((s) => ({ doc: s.docKey, a: s.at, b: s.at + Buffer.byteLength(s.quote, 'utf8') }));
+  const out: OverlayRecord[] = [];
+  for (const u of [...units].sort((x, y) => (x.docKey < y.docKey ? -1 : x.docKey > y.docKey ? 1 : x.start - y.start))) {
+    if (spans.some((s) => s.doc === u.docKey && s.a < u.end && u.start < s.b)) continue;
+    let quote = docs.get(u.docKey)!.subarray(u.start, u.end).toString('utf8').replace(/\s+$/, '');
+    while (Buffer.byteLength(quote, 'utf8') > MAX_QUOTE_BYTES) {
+      const cut = quote.slice(0, quote.length - 1).search(/[.!?](?=[^.!?]*$)/);
+      quote = cut > 0 ? quote.slice(0, cut + 1) : quote.slice(0, 1024);
+    }
+    if (!quote.trim()) continue;
+    out.push({ key: `u:${u.docKey}:${u.start}`, check: 'mechanical', docKey: u.docKey, at: u.start, quote, kind: neg.test(quote) ? 'constraint' : 'requirement',
+      source: 'extracted', statement: quote.replace(/\s+/g, ' ').slice(0, 160), confidence: 0.6, attrs: {} });
+  }
+  return out;
+}
+
+/** Hand (or generated) records plus the mechanical records their rule yields over `docs` (and, for a `units` rule, the sectioner's units). */
+export function buildOverlay(corpus: string, docs: ReadonlyMap<string, Buffer>, written: readonly OverlayRecord[], rule: MechanicalRule,
+  units?: ReadonlyArray<{ docKey: string; start: number; end: number }>): OverlayFile {
+  if (rule.source === 'units' && !units) throw new Error('a units rule regenerates only against a section index');
+  const mech = rule.source === 'units' ? mechanicalFromUnits(docs, written, rule, units!) : mechanicalRecords(docs, written, rule);
+  return { kind: 'daylight-ir-overlay', v: 1, corpus, mechanical: rule, records: [...written, ...mech] };
 }
 
 /** The documents a fixture names, by key, as bytes. */

@@ -16,7 +16,7 @@
    "severity": "medium",
    "title": "Record states more than the text",
    "statement": "The record adds a requirement the passage does not make.",
-   "irKey": "m:adr-0004:8"
+   "irKey": "u:adr-0004:412"
   },
   {
    "kind": "contradiction",
@@ -42,7 +42,7 @@
   3
  ],
  "reject": [
-  "m:adr-0004:8"
+  "u:adr-0004:412"
  ],
  "corrections": [
   {
