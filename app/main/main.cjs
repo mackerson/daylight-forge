@@ -1319,6 +1319,8 @@ require('./forge.cjs').register(ipcMain, {
   showMessageBox: (opts) => (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts)),
   showOpenDialog: (opts) => (win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts)),
   sample: !!process.env.DAYLIGHT_MISSION_SAMPLE,
+  readJsonIn,
+  watchMission: (id) => watchMission(id),
 });
 
 // ---- live events: a projection of daylight.db, polled -----------------------------
@@ -1400,7 +1402,10 @@ function scheduleDaylightPoll() {
   dlWatch.timer = setTimeout(pollDaylight, jobs.size > 0 ? 1000 : 5000);
 }
 
-ipcMain.handle('daylight:mission-watch', (_e, missionId) => {
+ipcMain.handle('daylight:mission-watch', (_e, missionId) => watchMission(missionId));
+
+/** Poll one mission's events (a campaign is a mission), or none. */
+function watchMission(missionId) {
   const mid = idOf(missionId);
   if (mid !== dlWatch.missionId) {
     dlWatch.missionId = mid;
@@ -1413,7 +1418,7 @@ ipcMain.handle('daylight:mission-watch', (_e, missionId) => {
   // events, not a blank pane for a second.
   if (mid) void pollDaylight();
   return { watching: dlWatch.missionId };
-});
+}
 
 app.whenReady().then(() => {
   protocol.handle('app', (request) => {
