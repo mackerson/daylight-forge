@@ -2803,7 +2803,7 @@ export class MissionStore {
     const corpus = this.requireMission(r.corpusId);
     if (corpus.kind !== 'corpus' || corpus.projectId !== r.projectId) throw new Error(`${r.corpusId} is not a corpus mission of project ${r.projectId}`);
     if (!isEntityId('corpusRevision', r.id)) throw new Error(`${r.id} is not a corpus revision id`);
-    if (this.corpusRevisionByDigest(r.corpusId, r.corpusDigest)) throw new Error(`corpus ${r.corpusId} already has a revision at ${r.corpusDigest}`);
+    if (this.corpusRevisionByDigest(r.corpusId, r.corpusDigest, r.configDigest)) throw new Error(`corpus ${r.corpusId} already has a revision at ${r.corpusDigest} and that config`);
     this.db
       .prepare(
         `INSERT INTO corpus_revisions (id, corpus_id, project_id, seq, manifest_path, manifest_digest, commits, corpus_digest, docs, precedence,
@@ -2834,8 +2834,11 @@ export class MissionStore {
     return r ? this.rowToCorpusRevision(r) : null;
   }
 
-  corpusRevisionByDigest(corpusId: string, corpusDigest: string): CorpusRevision | null {
-    const r = this.db.prepare('SELECT * FROM corpus_revisions WHERE corpus_id=? AND corpus_digest=?').get(corpusId, corpusDigest) as
+  /** A revision is keyed by (corpus digest, config digest) (P2-R63); without the config, the latest revision of those documents. */
+  corpusRevisionByDigest(corpusId: string, corpusDigest: string, configDigest?: string): CorpusRevision | null {
+    const r = (configDigest === undefined
+      ? this.db.prepare('SELECT * FROM corpus_revisions WHERE corpus_id=? AND corpus_digest=? ORDER BY seq DESC LIMIT 1').get(corpusId, corpusDigest)
+      : this.db.prepare('SELECT * FROM corpus_revisions WHERE corpus_id=? AND corpus_digest=? AND config_digest=?').get(corpusId, corpusDigest, configDigest)) as
       Record<string, unknown> | undefined;
     return r ? this.rowToCorpusRevision(r) : null;
   }
