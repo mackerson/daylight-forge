@@ -1,6 +1,8 @@
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { CandidateFile, MissionScope, PolicyRule, PolicyViolation } from '../mission/types.ts';
-import { isHumanActor } from '../mission/types.ts';
+import { isBenchActor, isHumanActor } from '../mission/types.ts';
+import { protectedBy, type CrateLayout, type ProjectPolicy } from './project-policy.ts';
 
 /**
  * The Forge's pure rules: which paths a candidate diff may touch (ADR-21), and whether a
@@ -14,16 +16,12 @@ import { isHumanActor } from '../mission/types.ts';
 // ---- candidate paths ---------------------------------------------------------
 
 export const GATE_DIR = '.daylight-gates';
-export const INVARIANTS_FILE = 'daylight.invariants.json';
+export { INVARIANTS_FILE } from './project-policy.ts';
 export const MAX_DIFF_BYTES = 1024 * 1024;
 export const MAX_DIFF_FILES = 200;
-
-/** Lockfiles by basename, at any depth: each pins what an install would fetch and run. */
-const LOCKFILES = new Set([
-  'pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
-  'Cargo.lock', 'poetry.lock', 'uv.lock', 'Pipfile.lock', 'Gemfile.lock', 'composer.lock', 'go.sum',
-  'flake.lock',
-]);
+/** A captured path longer than this is refused as `path-escape` (review M2). */
+export const MAX_PATH_COMPONENTS = 64;
+export const MAX_PATH_BYTES = 1024;
 
 export interface PolicyContext {
   /** The mission's scope; an empty or absent `paths` admits every path. */
@@ -34,31 +32,39 @@ export interface PolicyContext {
   diffBytes?: number;
   maxBytes?: number;
   maxFiles?: number;
+  /**
+   * The project's `daylight.policy.json`, loaded by the host. Absent: the `always` and `node`
+   * sets, exactly as before policies existed.
+   */
+  policy?: ProjectPolicy | null;
+  /**
+   * The crates of the tree the path is judged against (P2-R41). Absent or null: every `build.rs`
+   * is protected, since the check cannot tell a crate root.
+   */
+  crates?: CrateLayout | null;
 }
 
 /**
  * Why a single path is refused, every reason at once.
  *
- * Protected (fail-closed, at any depth): `package.json`, lockfiles, anything under
+ * Protected (fail-closed): every set in `PROTECTED_SETS`, whatever the policy's `languages`,
+ * plus the policy's own globs: among them `package.json`, lockfiles, anything under
  * `node_modules`, any component starting `.git` (`.git/`, `.github/`, `.gitignore`,
- * `.gitattributes`, `.gitmodules`), the invariants file, and `scripts/` at the root. Each one
- * is a way to make an install, a hook, a CI job or a check run the author's code, or to hide
- * files from the host's `add -A`.
+ * `.gitattributes`, `.gitmodules`), Cargo manifests and build scripts, the invariants and
+ * policy files, and `scripts/` at the root. Each one is a
+ * way to make an install, a hook, a CI job or a check run the author's code, or to hide files
+ * from the host's `add -A`.
  */
 export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): PolicyRule[] {
   const rules: PolicyRule[] = [];
   const p = file.path;
   const parts = p.split('/');
   const escapes = !p || p.includes('\0') || p.includes('\\') || path.posix.isAbsolute(p)
-    || parts.some((s) => s === '..' || s === '.' || s === '');
+    || parts.some((s) => s === '..' || s === '.' || s === '')
+    || parts.length > MAX_PATH_COMPONENTS || Buffer.byteLength(p) > MAX_PATH_BYTES;
   if (escapes) rules.push('path-escape');
 
-  const base = parts.at(-1) ?? '';
-  if (base === 'package.json' || LOCKFILES.has(base) || base === INVARIANTS_FILE
-    || parts.includes('node_modules') || parts.some((s) => s.startsWith('.git'))
-    || parts[0] === 'scripts') {
-    rules.push('protected-path');
-  }
+  if (protectedBy(p, ctx.policy, ctx.crates).length) rules.push('protected-path');
   if (parts[0] === GATE_DIR) rules.push('gate-path');
   if (ctx.specPath !== undefined && p === normalise(ctx.specPath)) rules.push('spec-path');
 
@@ -81,12 +87,179 @@ export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): Po
 export function checkPolicy(files: readonly CandidateFile[], ctx: PolicyContext = {}): PolicyViolation[] {
   const out: PolicyViolation[] = [];
   for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
-    for (const rule of new Set(pathViolations(f, ctx))) out.push({ rule, path: f.path });
+    for (const rule of new Set(pathViolations(f, ctx))) {
+      // Which set matched is said only under a loaded policy, so a repository without one
+      // records exactly the rows it did before policies existed.
+      const why = rule === 'protected-path' && ctx.policy ? `protected by the ${protectedBy(f.path, ctx.policy, ctx.crates).join(' and ')} set` : undefined;
+      out.push(why ? { rule, path: f.path, why } : { rule, path: f.path });
+    }
   }
   if (!files.length) out.push({ rule: 'empty-diff', path: null });
   if (files.length > (ctx.maxFiles ?? MAX_DIFF_FILES)) out.push({ rule: 'too-many-files', path: null });
   if ((ctx.diffBytes ?? 0) > (ctx.maxBytes ?? MAX_DIFF_BYTES)) out.push({ rule: 'too-large', path: null });
   return out;
+}
+
+// ---- gate-forgery shapes (P2-R43) ------------------------------------------------
+
+/**
+ * What a `gate-forgery-shape` warning says (P2-R43, P2-R49). A heuristic: library code that writes
+ * to fd 1 directly, exits the process, or prints a test runner's summary can make a gate's run
+ * look like a pass from inside the code under test. Expected to be rare in library code. Curable:
+ * the candidate never lands on its own; a person acknowledges the shapes or rejects them.
+ */
+export const forgeryWhy = (shapes: readonly string[]): string =>
+  `heuristic (P2-R43): added non-test code has ${shapes.join(', ')}, a shape that can forge a gate's pass; a person acknowledges it or rejects it`;
+
+const RUST_SHAPES: ReadonlyArray<[string, RegExp]> = [
+  ['from_raw_fd(1)', /from_raw_fd\(\s*1\s*\)/],
+  ['libc::write(1', /libc::write\(\s*1\b/],
+  ['std::process::exit(', /std::process::exit\s*\(/],
+  ['test result: ok.', /test result: ok\./],
+  ['running 0 tests', /running 0 tests/],
+];
+const JS_SHAPES: ReadonlyArray<[string, RegExp]> = [
+  ['process.stdout.write( with a test summary', /process\.stdout\.write\(\s*['"`][^'"`]*(?:# pass|# fail 0|ok 1)/],
+  ['fs.writeSync(1,', /\bfs\.writeSync\(\s*1\s*,/],
+  ['TAP version', /TAP version/],
+];
+const PROCESS_EXIT_0 = /\bprocess\.exit\(\s*0\s*\)/;
+const JS_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
+/** A test file by its path: under `tests/` or `__tests__/`, or named `*.test.*`. */
+export function isTestPath(p: string): boolean {
+  const parts = p.split('/');
+  return parts.slice(0, -1).some((s) => s === 'tests' || s === '__tests__') || /\.test\.[^/]+$/.test(parts.at(-1) ?? '');
+}
+
+/** A binary's entry point, where `std::process::exit` is how a program ends: `main.rs`, `bin/*.rs`. */
+const rustEntryPoint = (p: string) => /(^|\/)main\.rs$/.test(p) || /(^|\/)bin\/[^/]+\.rs$/.test(p);
+
+/**
+ * The 1-based lines of a Rust file inside a `#[cfg(test)]` item's braces (the attribute line on),
+ * by a small lexer that skips comments, strings, raw strings and char literals.
+ */
+export function rustTestLines(src: string): Set<number> {
+  const out = new Set<number>();
+  let line = 1;
+  let depth = 0;
+  let pendingFrom = 0;
+  let open: { depth: number; from: number } | null = null;
+  const attr = /^#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '\n') { line++; continue; }
+    if (ch === '/' && src[i + 1] === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+      i--;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      let nest = 1;
+      i += 2;
+      while (i < src.length && nest > 0) {
+        if (src[i] === '\n') line++;
+        if (src[i] === '/' && src[i + 1] === '*') { nest++; i++; } else if (src[i] === '*' && src[i + 1] === '/') { nest--; i++; }
+        i++;
+      }
+      i--;
+      continue;
+    }
+    const raw = (ch === 'r' || ch === 'b') && (i === 0 || !/\w/.test(src[i - 1])) ? /^b?r(#*)"/.exec(src.slice(i, i + 260)) : null;
+    if (raw) {
+      const close = `"${raw[1]}`;
+      const end = src.indexOf(close, i + raw[0].length);
+      const stop = end < 0 ? src.length : end + close.length;
+      for (let k = i; k < stop; k++) if (src[k] === '\n') line++;
+      i = stop - 1;
+      continue;
+    }
+    if (ch === '"') {
+      i++;
+      while (i < src.length && src[i] !== '"') {
+        if (src[i] === '\\') i++;
+        if (src[i] === '\n') line++;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '\'') {
+      if (src[i + 1] === '\\') {
+        i += 2;
+        while (i < src.length && src[i] !== '\'' && src[i] !== '\n') i++;
+      } else if (src[i + 2] === '\'') i += 2;
+      continue;
+    }
+    if (ch === '#' && attr.test(src.slice(i, i + 40))) {
+      if (!open) pendingFrom = line;
+      continue;
+    }
+    if (ch === ';' && pendingFrom && !open) { pendingFrom = 0; continue; }
+    if (ch === '{') {
+      depth++;
+      if (pendingFrom && !open) { open = { depth, from: pendingFrom }; pendingFrom = 0; }
+      continue;
+    }
+    if (ch === '}') {
+      if (open && depth === open.depth) {
+        for (let n = open.from; n <= line; n++) out.add(n);
+        open = null;
+      }
+      depth--;
+    }
+  }
+  if (open) for (let n = open.from; n <= line; n++) out.add(n);
+  return out;
+}
+
+type Ts = typeof import('typescript');
+let tsModule: Ts | null = null;
+/** Loaded on first use: most candidates never call `process.exit(0)`, and policy is imported widely. */
+const typescript = (): Ts => (tsModule ??= createRequire(import.meta.url)('typescript') as Ts);
+
+/** The 1-based lines holding a `process.exit(0)` call outside every function body. */
+function topLevelExits(p: string, src: string): Set<number> {
+  const ts = typescript();
+  const sf = ts.createSourceFile(p, src, ts.ScriptTarget.Latest, true);
+  const out = new Set<number>();
+  const visit = (n: import('typescript').Node, inFunction: boolean): void => {
+    const fn = inFunction || ts.isFunctionLike(n);
+    if (!fn && ts.isCallExpression(n) && n.expression.getText(sf).replace(/\s+/g, '') === 'process.exit'
+      && n.arguments.length === 1 && n.arguments[0].getText(sf).trim() === '0') {
+      out.add(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1);
+    }
+    ts.forEachChild(n, (c) => visit(c, fn));
+  };
+  visit(sf, false);
+  return out;
+}
+
+/**
+ * The forgery shapes on `added` lines (1-based, of `postImage`) of one non-test file, by name;
+ * empty for a test file, a file of another language, or added lines without any.
+ */
+export function forgeryShapes(p: string, postImage: string, added: readonly number[]): string[] {
+  if (!added.length || isTestPath(p)) return [];
+  const lines = postImage.split('\n');
+  const found = new Set<string>();
+  if (p.endsWith('.rs')) {
+    const inTests = rustTestLines(postImage);
+    for (const n of added) {
+      if (inTests.has(n)) continue;
+      for (const [name, re] of RUST_SHAPES) {
+        if (name === 'std::process::exit(' && rustEntryPoint(p)) continue;
+        if (re.test(lines[n - 1] ?? '')) found.add(name);
+      }
+    }
+  } else if (JS_FILE.test(p)) {
+    let exits: Set<number> | null = null;
+    for (const n of added) {
+      const text = lines[n - 1] ?? '';
+      for (const [name, re] of JS_SHAPES) if (re.test(text)) found.add(name);
+      if (PROCESS_EXIT_0.test(text) && (exits ??= topLevelExits(p, postImage)).has(n)) found.add('process.exit(0) outside a function');
+    }
+  }
+  return [...found];
 }
 
 const normalise = (p: string) => path.posix.normalize(p.trim()).replace(/^(\.\/)+/, '').replace(/\/+$/, '');
@@ -120,11 +293,14 @@ export function confirmCodeOf(digest: string): string {
  * agent approving its own work by accident, not a person determined to lie.
  */
 export function assertHumanDecision(
-  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string,
+  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string, store?: BenchMarked,
 ): void {
-  const why = guardCheck(env, actor, confirm, digest);
+  const why = guardCheck(env, actor, confirm, digest, store);
   if (why !== null) throw new DecisionRefused(why);
 }
+
+/** What the guard asks of a store about the bench (P2-R61): only the store knows whether `ingest bench` created it. */
+export interface BenchMarked { isBench(): boolean }
 
 /**
  * The same rules as `assertHumanDecision`, answered rather than enforced: the reason the act
@@ -132,13 +308,20 @@ export function assertHumanDecision(
  * is disabled before anyone presses it (R12.5). Never a substitute for the assert at the act.
  */
 export function guardCheck(
-  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string,
+  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string, store?: BenchMarked,
 ): string | null {
-  const set = AGENT_SESSION_VARS.filter((k) => env[k] !== undefined && env[k] !== '');
-  if (set.length) {
-    return `refused: ${set.join(' and ')} is set, so an agent is running this; a human decides this from their own shell`;
+  if (isBenchActor(actor)) {
+    // P2-R61: the benchmark's scripted step, never a person, and only on the store it created. It
+    // does not pass for a person, so the agent-session rule (which protects people) does not apply.
+    if (!store?.isBench()) return `refused: ${actor} decides only on a store \`ingest bench\` created, and this is not one`;
+  } else {
+    const set = AGENT_SESSION_VARS.filter((k) => env[k] !== undefined && env[k] !== '');
+    if (set.length) {
+      return `refused: ${set.join(' and ')} is set, so an agent is running this; a human decides this from their own shell`;
+    }
+    if (!isHumanActor(actor)) return `refused: the actor must be human:<name>, not ${actor}`;
+    if (store?.isBench()) return 'refused: a bench store records the bench\'s scripted steps only; a person decides on their own store';
   }
-  if (!isHumanActor(actor)) return `refused: the actor must be human:<name>, not ${actor}`;
   let code: string;
   try {
     code = confirmCodeOf(digest);

@@ -12,6 +12,7 @@ import {
 import type { ArtifactStore } from '../mission/artifacts.ts';
 import { redact } from '../mission/redact.ts';
 import type { ArtifactRef, Attempt, NetworkMode } from '../mission/types.ts';
+import { cargoMounts, CargoRefused, isCargoTree, readSnapshot, snapshotRefusal } from './cargo.ts';
 
 /**
  * The Forge's bubblewrap profiles (F-1 as amended by R9.1, R11.1, R11.2).
@@ -49,6 +50,9 @@ const SENSITIVE_HOME = [
   '.ssh', '.gnupg', '.aws', '.claude', '.netrc', '.npmrc', '.git-credentials', '.config/gh',
   '.config/daylight', '.local/share/daylight',
 ];
+
+/** Where Daylight keeps its own data under `$HOME`: the default `<out>` lives in the first. */
+const DAYLIGHT_HOME_DIRS = ['.local/share/daylight', '.config/daylight'];
 
 export class SandboxRefused extends Error {
   constructor(message: string) {
@@ -134,17 +138,27 @@ const resolved = (p: string): string => {
  * directory or of `<out>` (which would bring them in), anything under `<out>`, and the home
  * directory's credential stores (always), and anything else under the home directory that
  * `allow` does not name.
+ *
+ * `outAllow` names exact directories strictly inside `<out>` that may be bound anyway: the
+ * crate snapshot and one build cache (forge/cargo.ts). Only those paths themselves, never
+ * `<out>` or a parent; and the Daylight data directory that holds `<out>` is passed over only
+ * for them, every other credential store still refuses.
  */
-export function mountRefusal(src: string, o: { home: string; out: string; allow?: string[] }): string | null {
+export function mountRefusal(src: string, o: { home: string; out: string; allow?: string[]; outAllow?: string[] }): string | null {
   const p = resolved(src);
   const home = resolved(o.home);
   const out = resolved(requireOut(o.out));
+  const outAllowed = p !== out && within(p, out) && (o.outAllow ?? []).some((a) => resolved(a) === p);
   if (p === '/') return 'the root filesystem';
   if (within(home, p)) return `${p} contains the home directory`;
+  if (outAllowed && within(home, out)) return `${p} is under an <out> that is the home directory or contains it`;
   for (const rel of SENSITIVE_HOME) {
-    if (within(p, path.join(home, rel))) return `${p} is under ~/${rel}`;
+    const dir = path.join(home, rel);
+    // Only Daylight's own directories are passed over for an <out> inside them; an <out> under
+    // ~/.ssh or any other credential store never makes a bind there acceptable.
+    if (within(p, dir) && !(outAllowed && DAYLIGHT_HOME_DIRS.includes(rel) && within(out, dir))) return `${p} is under ~/${rel}`;
   }
-  if (within(p, out)) return `${p} is under <out>`;
+  if (within(p, out) && !outAllowed) return `${p} is under <out>`;
   if (within(out, p)) return `${p} contains <out>`;
   // Deny by default under $HOME: dotfiles there hold credentials nobody listed in advance.
   if (within(p, home) && !(o.allow ?? []).some((a) => within(p, resolved(a)))) {
@@ -417,6 +431,12 @@ export function execRefusal(attempt: Pick<Attempt, 'id' | 'sandbox'>): string | 
 const MAX_EXEC_ARGS = 64;
 const MAX_EXEC_ARG = 4096;
 
+/**
+ * Refused by name (review I3). bwrap's no_new_privs already makes setuid inert; naming them keeps
+ * an author from spending its turns on them and the transcript from reading as if it could.
+ */
+const PRIVILEGE_BINARIES = new Set(['sudo', 'su', 'doas', 'pkexec', 'mount', 'chroot', 'nsenter', 'unshare', 'setpriv']);
+
 /** `node` (ours) or a system binary by absolute path; no shell string, ever. */
 export function checkExecCommand(command: unknown): { ok: true; argv: string[] } | { ok: false; why: string } {
   if (!Array.isArray(command) || !command.length) return { ok: false, why: 'the command is a non-empty argv array' };
@@ -426,18 +446,57 @@ export function checkExecCommand(command: unknown): { ok: true; argv: string[] }
   }
   const head = command[0] as string;
   if (head === 'node') return { ok: true, argv: [nodeBinary(), ...command.slice(1)] };
-  if (/^\/usr\/bin\/[A-Za-z0-9._+-]+$/.test(head)) return { ok: true, argv: command as string[] };
+  if (/^\/usr\/bin\/[A-Za-z0-9._+-]+$/.test(head)) {
+    const base = head.slice('/usr/bin/'.length);
+    if (PRIVILEGE_BINARIES.has(base)) return { ok: false, why: `\`${base}\` changes privileges or namespaces and is never run` };
+    return { ok: true, argv: command as string[] };
+  }
   return { ok: false, why: `\`${head}\` is neither \`node\` nor a binary under /usr/bin` };
 }
 
 /**
  * The exec sandbox: the same tree read-write at `/work`, `--unshare-all` with no
  * `--share-net` under any option, prlimit, no MCP socket, nothing fed in. Gate tests are
- * never in the tree (the workspace refuses a holdout at base) and nothing else is mounted.
+ * never in the tree (the workspace refuses a holdout at base). A tree with a `Cargo.toml` at
+ * its root also gets the author's cargo binds (forge/cargo.ts): the crate snapshot read-only
+ * and the author build cache, never the gates'. Nothing else is mounted.
  */
 export function execLaunch(
   profile: SandboxProfile,
-  attempt: Pick<Attempt, 'id' | 'sandbox'>,
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox'>,
+  o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
+): SandboxLaunch {
+  try {
+    return execLaunchUnchecked(profile, attempt, o);
+  } catch (err) {
+    if (err instanceof SandboxRefused) throw new SandboxRefused(hostless(o.tree, o.out, o.home ?? os.homedir())(err.message));
+    throw err;
+  }
+}
+
+/**
+ * `msg` with every host path the `run` tool's caller could learn from it spelled as a
+ * placeholder: `<out>`, the snapshot's `<repo>`, the tree as `/work`, the home as `~` (review L1,
+ * L2). The author reads every exec refusal; the operator reads the same line.
+ */
+export function hostless(tree: string, out: string, home: string): (msg: string) => string {
+  let repo: string | undefined;
+  try {
+    repo = readSnapshot(out)?.repo;
+  } catch {
+    // No readable record: nothing more to spell.
+  }
+  // Any of these may be missing when the refusal is that it is missing.
+  const spelled = ([[out, '<out>'], [tree, '/work'], [repo, '<repo>'], [home, '~']] as Array<[unknown, string]>)
+    .filter((e): e is [string, string] => typeof e[0] === 'string' && e[0].length > 1)
+    .flatMap(([p, to]) => [[p, to], [resolved(p), to]])
+    .filter(([p]) => p.length > 1).sort((a, b) => b[0].length - a[0].length);
+  return (msg: string) => spelled.reduce((m, [p, to]) => m.split(p).join(to), msg);
+}
+
+function execLaunchUnchecked(
+  profile: SandboxProfile,
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox'>,
   o: { tree: string; command: string[]; limits?: SandboxLimits; home?: string; out: string },
 ): SandboxLaunch {
   if (!profile.available) throw new SandboxRefused(`sandbox unavailable: ${profile.why ?? 'no profile'}`);
@@ -447,19 +506,47 @@ export function execLaunch(
   if (!cmd.ok) throw new SandboxRefused(cmd.why);
   const tree = resolved(o.tree);
   if (!fs.statSync(tree, { throwIfNoEntry: false })?.isDirectory()) throw new SandboxRefused(`${tree} is not a directory`);
-  if (fs.existsSync(path.join(tree, '.git'))) throw new SandboxRefused(`${tree} has a .git; exec runs over a detached workspace only`);
+  // lstat, so a planted symlink named .git is caught as well as a directory.
+  if (fs.lstatSync(path.join(tree, '.git'), { throwIfNoEntry: false })) throw new SandboxRefused('/work has a .git; exec runs over a detached workspace only');
   const treeWhy = mountRefusal(tree, { home: o.home ?? os.homedir(), out: o.out, allow: [tree] });
   if (treeWhy) throw new SandboxRefused(`refusing to mount the exec tree: ${treeWhy}`);
   const limits = { ...DEFAULT_LIMITS, ...o.limits };
-  const b = baseSandbox(profile, limits, {});
+  const cargo = isCargoTree(tree) ? authorCargo(tree, o.out, o.home ?? os.homedir(), attempt.missionId) : null;
+  const b = baseSandbox(profile, limits, cargo?.env ?? {});
   b.rw(tree, WORK);
+  for (const m of cargo?.binds ?? []) {
+    if (m.kind === 'rw') b.rw(m.src, m.dest);
+    else b.ro(m.src, m.dest);
+  }
   b.argv.push('--remount-ro', '/', '--chdir', WORK, '--', ...cmd.argv);
   const bins = sandboxBinaries(profile);
   return { bin: bins.scope ?? bins.prlimit, argv: b.argv, env: { PATH: SYSTEM_PATH, ...scopeEnv() }, feeds: [], mounts: b.mounts };
 }
 
+/**
+ * The author profile's cargo binds for `tree`, each through `mountRefusal`, or a refusal: no
+ * snapshot, or a `Cargo.lock` that is not the one the snapshot was fetched for.
+ */
+function authorCargo(tree: string, out: string, home: string, mission: string): ReturnType<typeof cargoMounts> {
+  // Every refusal here reaches the author through execLaunch, which spells host paths away.
+  const why = snapshotRefusal(tree, out, readSnapshot(out)?.repo ?? '<repo>');
+  if (why) throw new SandboxRefused(why);
+  let m: ReturnType<typeof cargoMounts>;
+  try {
+    m = cargoMounts('author', out, { mission });
+  } catch (err) {
+    if (err instanceof CargoRefused) throw new SandboxRefused(err.message);
+    throw err;
+  }
+  for (const bind of m.binds) {
+    const refused = mountRefusal(bind.src, { home, out, allow: [bind.src], outAllow: [bind.src] });
+    if (refused) throw new SandboxRefused(`refusing to mount the cargo ${bind.dest}: ${refused}`);
+  }
+  return m;
+}
+
 export function execArgv(
-  profile: SandboxProfile, attempt: Pick<Attempt, 'id' | 'sandbox'>, o: { tree: string; command: string[]; out: string; limits?: SandboxLimits },
+  profile: SandboxProfile, attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox'>, o: { tree: string; command: string[]; out: string; limits?: SandboxLimits },
 ): string[] {
   return execLaunch(profile, attempt, o).argv;
 }
@@ -532,7 +619,7 @@ export function spawnLaunch(
  * shortened for the agent.
  */
 export async function runExec(
-  attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>,
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox' | 'projectId'>,
   o: { tree: string; command: string[]; out: string; timeoutMs?: number; profile?: SandboxProfile; artifacts?: ArtifactStore; limits?: SandboxLimits },
 ): Promise<ExecResult> {
   const launch = execLaunch(o.profile ?? detectSandbox(), attempt, o);
@@ -560,7 +647,7 @@ export async function runExec(
 export function registerRunTool(
   server: McpServer,
   ctx: {
-    attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; out: string;
+    attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox' | 'projectId'>; tree: string; out: string;
     profile?: SandboxProfile; artifacts?: ArtifactStore; onRun?: (r: ExecResult, command: string[]) => void;
   },
 ): void {
@@ -598,7 +685,8 @@ export function registerRunTool(
           }],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: (err as Error).message }) }], isError: true };
+        const text = hostless(ctx.tree, ctx.out, os.homedir())((err as Error).message);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: text }) }], isError: true };
       }
     },
   );

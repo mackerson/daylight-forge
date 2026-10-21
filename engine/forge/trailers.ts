@@ -1,5 +1,6 @@
 import { trailersFor } from '../mission/ledger.ts';
 import type { CandidateFile } from '../mission/types.ts';
+import { isEntityId } from '../mission/types.ts';
 
 /**
  * The commit message `apply` writes (PLAN F-5 as narrowed by RULINGS R4 Q3a).
@@ -60,6 +61,38 @@ export interface CommitMessageInput {
   missionId: string;
   attemptId: string;
   runnerId: string;
+  /** A campaign landing's trailers (§4.4): ids only, never dollars (ADR-29). */
+  campaign?: CampaignTrailers;
+}
+
+export interface CampaignTrailers {
+  campaignId: string;
+  ticketId: string;
+  integrationId: string;
+  onto: string;
+  method: 'apply' | 'three-way';
+  /** The human `authorize-campaign` decision the director lands under, and whose it is. */
+  authorizationId: string;
+  authorizedBy: string;
+}
+
+/**
+ * The campaign trailers. The `integrate-candidate` decision names this commit, so it is
+ * recorded after it and cannot be named in it; the trailer names the human grant it derives
+ * from instead, and the decision is found from the integration id.
+ */
+export function campaignTrailersFor(t: CampaignTrailers): string[] {
+  for (const [kind, id] of [['mission', t.campaignId], ['integration', t.integrationId], ['decision', t.authorizationId]] as const) {
+    if (!isEntityId(kind, id)) throw new Error(`not a ${kind} id: ${JSON.stringify(id)}`);
+  }
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(t.onto)) throw new Error(`not a commit: ${JSON.stringify(t.onto)}`);
+  if (!/^[A-Z][A-Z0-9]*(\.[A-Z0-9]+)*$/.test(t.ticketId) || t.ticketId.length > 32) throw new Error(`not a ticket id: ${JSON.stringify(t.ticketId)}`);
+  return [
+    `Daylight-Campaign: ${t.campaignId}`,
+    `Daylight-Ticket: ${t.ticketId}`,
+    `Daylight-Integration: ${t.integrationId} onto ${t.onto.slice(0, 12)} (${t.method})`,
+    `Daylight-Decision: integrate-candidate by campaign:${t.campaignId} (from ${t.authorizationId} by ${oneLine(t.authorizedBy)})`,
+  ];
 }
 
 export function commitMessage(i: CommitMessageInput): string {
@@ -69,6 +102,7 @@ export function commitMessage(i: CommitMessageInput): string {
     ...bodyOf(i.files),
     '',
     ...trailersFor(i.missionId, i.attemptId),
+    ...(i.campaign ? campaignTrailersFor(i.campaign) : []),
     coAuthorOf(i.runnerId),
     '',
   ].join('\n');

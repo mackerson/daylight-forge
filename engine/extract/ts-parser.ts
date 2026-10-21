@@ -1,6 +1,7 @@
 import ts from 'typescript';
 import type { FunctionRecord, GraphNode, LiteralRecord, NodeKind, ShapeRecord } from '../graph/types.ts';
 import type { CallSite, ImportBinding, ParsedFile, Parser } from './parser.ts';
+import { minhashSignature } from './signature.ts';
 
 const SCRIPT_KINDS: Record<string, ts.ScriptKind> = {
   '.ts': ts.ScriptKind.TS,
@@ -27,11 +28,6 @@ function nameOf(node: ts.Node | undefined, sf: ts.SourceFile): string {
 function isExported(decl: ts.Declaration): boolean {
   return (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0;
 }
-
-const SIGNATURE_WIDTH = 12;
-const SHINGLE = 5;
-/** Bodies shorter than this are boilerplate — a one-line arrow is not copy-paste. */
-const MIN_BODY_TOKENS = 24;
 
 /**
  * A function whose whole body is one literal is *data*, not logic.
@@ -82,23 +78,7 @@ function bodySignature(node: ts.Node, sf: ts.SourceFile): { sig: number[]; token
     n.forEachChild(walk);
   };
   node.forEachChild(walk);
-  if (tokens.length < MIN_BODY_TOKENS) return null;
-
-  const hash = (s: string, seed: number): number => {
-    let h = seed >>> 0;
-    for (let i = 0; i < s.length; i++) h = (Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0);
-    return h >>> 0;
-  };
-
-  const sig = new Array<number>(SIGNATURE_WIDTH).fill(0xffffffff);
-  for (let i = 0; i + SHINGLE <= tokens.length; i++) {
-    const shingle = tokens.slice(i, i + SHINGLE).join(',');
-    for (let k = 0; k < SIGNATURE_WIDTH; k++) {
-      const h = hash(shingle, k * 2654435761);
-      if (h < sig[k]) sig[k] = h;
-    }
-  }
-  return { sig, tokens: tokens.length };
+  return minhashSignature(tokens);
 }
 
 /** Leftmost identifier of `a.b.c()` → `a`. Used to match callees against imports. */

@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import type {
-  ForgeCandidatePayload, GuardedResult, IngestSourcesPayload, LedgerGroup, LedgerJson, WorkItemsPayload,
+  AssumptionDecideForm, CampaignAuthorizeForm, CampaignRunResult, ForgeAssumptionRow, ForgeCampaignList, ForgeCampaignPayload,
+  ForgeCandidatePayload, ForgeRefineMap, GuardedResult, IngestSourcesPayload, InvariantResult, LedgerGroup, LedgerJson, RefineReport,
+  ReportWave, WaveReport, WorkItemsPayload,
 } from '../types.ts';
+import { FORGE_ASSUMPTIONS, FORGE_CAMPAIGN_LIST, FORGE_CAMPAIGN_SHOW, FORGE_CAMPAIGN_STATUS, FORGE_DRY_RUN } from '../fixtures/forge-campaign.sample.ts';
+import { FORGE_WAVE_REPORT } from '../fixtures/forge-campaign-report.sample.ts';
+import { FORGE_REFINE, FORGE_REFINE_MAP } from '../fixtures/forge-campaign-refine.sample.ts';
 import { CONFIRM_REFUSED, FORGE_CANDIDATES } from '../fixtures/forge-implement.sample.ts';
 import { FORGE_WORK_ITEMS } from '../fixtures/forge-work-items.sample.ts';
 import { FORGE_INGEST, FORGE_LEDGER, FORGE_LEDGER_BY_MODEL } from '../fixtures/forge-ledger.sample.ts';
@@ -28,6 +33,26 @@ export interface ForgeApi {
   run(p: { id: string; tool: string; maxCost?: number }): Promise<{ id?: string; error?: string }>;
   specRegister(): Promise<{ error?: string; canceled?: boolean }>;
   ingest(p?: { session?: string }): Promise<{ id?: string; error?: string }>;
+  forgeryReview(p: { id: string; declined: boolean; rationale: string }): Promise<GuardedResult>;
+
+  // ---- campaigns ----
+  campaigns(): Promise<ForgeCampaignList & { error?: string }>;
+  campaign(id: string): Promise<ForgeCampaignPayload & { error?: string }>;
+  report(p: { id: string; wave?: ReportWave }): Promise<WaveReport & { error?: string }>;
+  dryRun(id: string): Promise<CampaignRunResult & { error?: string }>;
+  assumptions(id: string): Promise<ForgeAssumptionRow[] | { error: string }>;
+  refine(id: string): Promise<RefineReport & { error?: string }>;
+  refineMap(p: { id: string; which: 'base' | 'rev' }): Promise<ForgeRefineMap & { error?: string }>;
+  refineTryInvariant(p: { id: string; which: 'base' | 'rev'; predicate: string }): Promise<InvariantResult & { error?: string }>;
+  refineRun(id: string): Promise<{ id?: string; error?: string }>;
+  watchCampaign(id: string | null): Promise<{ watching: string | null; error?: string }>;
+  approvePlan(p: { id: string; rationale: string }): Promise<GuardedResult>;
+  authorizeCampaign(p: CampaignAuthorizeForm): Promise<GuardedResult>;
+  retry(p: { id: string; ticketId: string; rationale: string }): Promise<GuardedResult>;
+  resume(p: { id: string; haltId: string; rationale: string }): Promise<GuardedResult>;
+  adoptTip(p: { id: string; haltId: string; to?: string; rationale: string }): Promise<GuardedResult>;
+  halt(p: { id: string }): Promise<GuardedResult>;
+  assumptionDecide(p: AssumptionDecideForm): Promise<GuardedResult>;
 }
 
 /**
@@ -60,6 +85,28 @@ export function forgeApi(sample: boolean): ForgeApi {
       run: sampleJob,
       specRegister: sampleJob,
       ingest: sampleJob,
+      forgeryReview: async (p) => sampleRefusal('acknowledge-forgery-shape', p.id),
+      campaigns: async () => FORGE_CAMPAIGN_LIST,
+      campaign: async (id) => (id === FORGE_CAMPAIGN_SHOW.campaign.id
+        ? { show: FORGE_CAMPAIGN_SHOW, status: FORGE_CAMPAIGN_STATUS }
+        : { error: 'the sample opens one campaign; this one is listed only' } as ForgeCampaignPayload & { error: string }),
+      report: async ({ wave }) => (wave === undefined || wave === 2 ? FORGE_WAVE_REPORT
+        : wave === 'all' ? { ...FORGE_WAVE_REPORT, scope: { kind: 'all' } }
+        : { error: 'the sample holds the wave 2 report only' } as WaveReport & { error: string }),
+      dryRun: async () => FORGE_DRY_RUN,
+      assumptions: async () => FORGE_ASSUMPTIONS,
+      refine: async () => FORGE_REFINE,
+      refineMap: async ({ which }) => (which === 'rev' ? FORGE_REFINE_MAP : { ...FORGE_REFINE_MAP, rev: FORGE_REFINE.base }),
+      refineTryInvariant: async () => ({ error: 'the sample is on screen; nothing was evaluated' } as InvariantResult & { error: string }),
+      refineRun: sampleJob,
+      watchCampaign: async () => ({ watching: null }),
+      approvePlan: async (p) => sampleRefusal('approve-plan', p.id),
+      authorizeCampaign: async (p) => sampleRefusal('authorize-campaign', p.id),
+      retry: async (p) => sampleRefusal('retry-ticket', `${p.id} ${p.ticketId}`),
+      resume: async (p) => sampleRefusal('resume-campaign', p.id),
+      adoptTip: async (p) => sampleRefusal('adopt-integration-tip', p.id),
+      halt: async () => ({ error: 'the sample is on screen; nothing was changed', operation: 'halt-campaign' }),
+      assumptionDecide: async (p) => sampleRefusal(`${p.kind}-assumption`, p.id),
     };
   }
   const d = window.daylight;
@@ -76,6 +123,24 @@ export function forgeApi(sample: boolean): ForgeApi {
     run: (p) => d.forgeRun(p),
     specRegister: () => d.specRegister(),
     ingest: (p) => d.ingest(p),
+    forgeryReview: (p) => d.forgeCampaignForgeryReview(p),
+    campaigns: () => d.forgeCampaigns(),
+    campaign: (id) => d.forgeCampaign({ id }),
+    report: (p) => d.forgeCampaignReport(p),
+    dryRun: (id) => d.forgeCampaignDryRun({ id }),
+    assumptions: (id) => d.forgeAssumptions({ id }),
+    refine: (id) => d.forgeRefine({ id }),
+    refineMap: (p) => d.forgeRefineMap(p),
+    refineTryInvariant: (p) => d.forgeRefineTryInvariant(p),
+    refineRun: (id) => d.forgeRefineRun({ id }),
+    watchCampaign: (id) => d.forgeCampaignWatch({ id }),
+    approvePlan: (p) => d.forgeCampaignApprovePlan(p),
+    authorizeCampaign: (p) => d.forgeCampaignAuthorize(p),
+    retry: (p) => d.forgeCampaignRetry(p),
+    resume: (p) => d.forgeCampaignResume(p),
+    adoptTip: (p) => d.forgeCampaignAdoptTip(p),
+    halt: (p) => d.forgeCampaignHalt(p),
+    assumptionDecide: (p) => d.forgeAssumptionDecide(p),
   };
 }
 

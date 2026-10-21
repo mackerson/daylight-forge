@@ -1,9 +1,9 @@
 import type { DaylightContext } from '../mission/context.ts';
-import { workItemContentDigest } from '../mission/store.ts';
+import { movesWorkItem, workItemContentDigest } from '../mission/store.ts';
 import type {
   Decision, Mission, MissionBudget, MissionScope, Need, WorkItem, WorkItemDecisionScope, WorkItemStatus,
 } from '../mission/types.ts';
-import { isHumanActor } from '../mission/types.ts';
+import { isCampaignActor, isHumanActor } from '../mission/types.ts';
 import { ambiguities } from './decompose.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
@@ -50,9 +50,12 @@ function requireItem(ctx: DaylightContext, id: string): WorkItem {
   return w;
 }
 
-/** Implement missions in the item's project that name it. More than one is a broken invariant. */
-function consumers(ctx: DaylightContext, w: WorkItem): Mission[] {
-  return ctx.store.missions(w.projectId).filter((m) => m.kind === 'implement' && m.workItemId === w.id);
+/**
+ * Implement missions in the item's project that name it. More than one is a broken invariant,
+ * except a mission a `campaign retry` released (closed inconclusive or cancelled, P2-R27).
+ */
+function consumers(ctx: DaylightContext, w: WorkItem, released = ctx.store.releasedMissions(w.projectId)): Mission[] {
+  return ctx.store.missions(w.projectId).filter((m) => m.kind === 'implement' && m.workItemId === w.id && !released.has(m.id));
 }
 
 const intact = (w: WorkItem) => workItemContentDigest(w) === w.contentDigest;
@@ -132,8 +135,8 @@ export function assertImplementable(ctx: DaylightContext, workItemId: string): W
   if (w.status !== 'approved') throw new Error(`work item ${w.id} is ${w.status}; only an approved item is built`);
   if (!intact(w)) throw new Error(`work item ${w.id}'s fields no longer hash to the digest that was approved`);
   const d = w.decisionId ? ctx.store.decision(w.decisionId) : null;
-  const scope = d?.scope as { operation?: unknown; contentDigest?: unknown } | undefined;
-  if (!d || d.kind !== 'approve' || scope?.operation !== 'approve-work-item' || scope.contentDigest !== w.contentDigest) {
+  // A person's approve-work-item, a person's approve-plan listing it, or a derived admission.
+  if (!d || d.kind !== 'approve' || d.missionId !== w.missionId || !movesWorkItem(d, w, 'approved')) {
     throw new Error(`work item ${w.id} has no approve-work-item decision naming ${w.contentDigest}`);
   }
   const taken = ctx.store.workItemConsumer(w.id) ?? consumers(ctx, w)[0]?.id;
@@ -208,17 +211,18 @@ export function specIntakeViolations(ctx: DaylightContext, projectId: string): s
   for (const w of ctx.store.workItems(projectId)) {
     if (w.status === 'proposed') continue;
     const d = w.decisionId ? ctx.store.decision(w.decisionId) : null;
-    const scope = d?.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown } | undefined;
     const op = w.status === 'approved' ? 'approve-work-item' : 'reject-work-item';
-    if (!d || !isHumanActor(d.actor) || scope?.operation !== op || scope.workItemId !== w.id || scope.contentDigest !== w.contentDigest) {
+    // A campaign actor's admission is checked against its grant by derivationRefusals.
+    if (!d || d.missionId !== w.missionId || !(isHumanActor(d.actor) || isCampaignActor(d.actor)) || !movesWorkItem(d, w, w.status)) {
       out.push(`work item ${w.id} is ${w.status} without a human ${op} decision naming ${w.contentDigest}`);
     }
   }
+  const released = ctx.store.releasedMissions(projectId);
   const missions = ctx.store.missions(projectId);
   const named = new Map<string, string[]>();
   for (const m of missions) {
     if (m.kind === 'spec' && ctx.store.experiments(m.id).length) out.push(`spec mission ${m.id} holds an experiment`);
-    if (m.kind !== 'implement') continue;
+    if (m.kind !== 'implement' || released.has(m.id)) continue;
     if (m.workItemId) {
       named.set(m.workItemId, [...(named.get(m.workItemId) ?? []), m.id]);
       const w = ctx.store.workItem(m.workItemId);

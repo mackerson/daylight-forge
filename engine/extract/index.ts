@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Graph, GraphNode } from '../graph/types.ts';
 import type { CallSite, ImportBinding, ParsedFile, Parser } from './parser.ts';
 import { aliasesFromTsconfig, Resolver } from './resolve.ts';
+import { crateFromManifest, isLocalRustSpec, type RustCrate } from './rust-resolve.ts';
 import { activeParsers, parserFor } from './registry.ts';
 
 const IGNORED_DIRS = new Set([
@@ -32,9 +33,20 @@ export interface ExtractOptions {
   includeDeclarations?: boolean;
   /** Skip test files, which legitimately duplicate shapes and names. */
   includeTests?: boolean;
+  /**
+   * `false`: walk the directory and run no git. For a tree materialised outside its repository
+   * (refine), where git would resolve whatever repository encloses it. Default true.
+   */
+  tracked?: boolean;
 }
 
-const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)\//;
+/**
+ * Rust integration tests live in a crate's `tests/`, never under `src/`: a `tests/` directory
+ * under `src/` is a module tree its parent declares, and dropping it would leave that `mod`
+ * unresolved. `#[cfg(test)]` modules are only knowable after parsing, so they stay in the map,
+ * reached through their `mod` declaration.
+ */
+const TEST_RE = /(^|[./-])(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|__mocks__)\/|^(?!(.*\/)?src\/)(.*\/)?tests\/.+\.rs$/;
 
 /** Bundler-handled non-code imports. Not edges, and not resolution failures either. */
 const ASSET_RE = /\.(css|scss|sass|less|styl|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|mp[34]|webm|wasm|txt|md|ya?ml|graphql|gql)(\?.*)?$/i;
@@ -42,17 +54,15 @@ const ASSET_RE = /\.(css|scss|sass|less|styl|svg|png|jpe?g|gif|webp|avif|ico|wof
 /**
  * A vendored bundle is not authored code, and letting one in wrecks every downstream
  * number — a single copy of three.js contributed ~8000 symbols to a 25-file repo and
- * buried the real findings. Detected by shape rather than by name so it generalises:
- * bundles are large and have very long lines.
+ * buried the real findings. Vendor status needs a vendoring path (node_modules, vendor/,
+ * third_party/, dist/, *.min.*) or 1 MiB of source; size alone below that never decides,
+ * so a large authored file is still mapped (P2-R62).
  */
-export function looksVendored(source: string): boolean {
-  // Size alone is decisive with room to spare: in this repo the largest authored
-  // source file is ~17KB and the vendored three.js builds are 650KB and 1.4MB.
-  if (source.length > 200_000) return true;
-  // Minified bundles can be smaller but give themselves away by line length.
-  if (source.length < 50_000) return false;
-  const newlines = source.split('\n').length;
-  return source.length / Math.max(newlines, 1) > 200;
+const VENDOR_PATH_RE = /(^|\/)(node_modules|vendor|third_party|dist)\/|\.min\.[^/]+$/;
+const VENDOR_BYTES = 1024 * 1024;
+
+export function looksVendored(rel: string, source: string): boolean {
+  return VENDOR_PATH_RE.test(rel) || Buffer.byteLength(source, 'utf8') >= VENDOR_BYTES;
 }
 
 /** Files git already ignores are not ours to analyse. Falls back to a walk. */
@@ -72,8 +82,8 @@ function gitTracked(root: string): string[] | null {
   }
 }
 
-export function walk(root: string): string[] {
-  const tracked = gitTracked(root);
+export function walk(root: string, o: { tracked?: boolean } = {}): string[] {
+  const tracked = o.tracked === false ? null : gitTracked(root);
   if (tracked) {
     return tracked.filter((f) => !f.split('/').some((seg) => IGNORED_DIRS.has(seg))).sort();
   }
@@ -138,6 +148,18 @@ function saveCache(dir: string | undefined, cache: ParseCache, live: Set<string>
   }
 }
 
+/**
+ * Per file, for every provider (review L5): a generated or vendored file this size is ordinary,
+ * and parsing one costs seconds and gigabytes for nothing a map can show.
+ */
+export const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+
+/** Why `rel` is skipped for its size, or null. Checked before the file is read. */
+function oversize(root: string, rel: string): string | null {
+  const size = fs.statSync(path.join(root, rel), { throwIfNoEntry: false })?.size ?? 0;
+  return size > MAX_SOURCE_BYTES ? `skipped: ${size} bytes, over the ${MAX_SOURCE_BYTES / 1024 / 1024} MB per-file cap` : null;
+}
+
 export function extract(options: ExtractOptions): Graph {
   const { root, includeDeclarations = false, includeTests = false, includeVendored = false } = options;
   // Several providers may be in play; each file goes to whichever claims its extension.
@@ -145,7 +167,7 @@ export function extract(options: ExtractOptions): Graph {
   const cache = loadCache(options.cacheDir, parsers.map((p) => p.name).sort().join('+'));
   const liveHashes = new Set<string>();
 
-  const allFiles = walk(root);
+  const allFiles = walk(root, { tracked: options.tracked });
   const parseable = allFiles.filter((f) => {
     if (!parserFor(parsers, f)) return false;
     if (!includeDeclarations && f.endsWith('.d.ts')) return false;
@@ -155,7 +177,7 @@ export function extract(options: ExtractOptions): Graph {
   const testFiles = includeTests ? [] : parseable.filter((f) => TEST_RE.test(f));
 
   const aliases = readAliases(root, allFiles);
-  const resolver = new Resolver(sourceFiles, aliases);
+  const resolver = new Resolver(sourceFiles, aliases, readCrates(root, allFiles));
 
   const graph: Graph = {
     root,
@@ -181,6 +203,11 @@ export function extract(options: ExtractOptions): Graph {
   const perFileBindings = new Map<string, ImportBinding[]>();
 
   for (const rel of sourceFiles) {
+    const over = oversize(root, rel);
+    if (over) {
+      graph.diagnostics.push({ file: rel, message: over });
+      continue;
+    }
     let source: string;
     try {
       source = fs.readFileSync(path.join(root, rel), 'utf8');
@@ -189,7 +216,7 @@ export function extract(options: ExtractOptions): Graph {
       continue;
     }
 
-    if (!includeVendored && looksVendored(source)) {
+    if (!includeVendored && looksVendored(rel, source)) {
       graph.stats.vendoredSkipped++;
       continue;
     }
@@ -241,6 +268,7 @@ export function extract(options: ExtractOptions): Graph {
       graph.edges.push({ from: rel, to: node.id, kind: 'contains' });
     }
 
+    for (const message of parsed.diagnostics ?? []) graph.diagnostics.push({ file: rel, message });
     graph.shapes.push(...parsed.shapes);
     graph.functions.push(...parsed.functions);
     graph.literals.push(...parsed.literals);
@@ -263,9 +291,13 @@ export function extract(options: ExtractOptions): Graph {
       graph.stats.imports++;
 
       const target = resolver.resolve(spec, rel);
+      // `use super::*` inside an inline `mod tests` names this very file: resolved, but no edge.
+      if (target === rel && rel.endsWith('.rs')) continue;
       if (target) {
-        graph.edges.push({ from: rel, to: target, kind: 'imports', spec });
-      } else if (spec.startsWith('.')) {
+        // A Rust `mod x;` declares a child module: containment in the module tree, not a use.
+        const kind = spec.startsWith('mod ') ? 'contains' : 'imports';
+        graph.edges.push({ from: rel, to: target, kind, spec });
+      } else if (spec.startsWith('.') || isLocalRustSpec(spec)) {
         // A relative specifier we failed to resolve is our bug, not an external package.
         graph.stats.unresolvedImports++;
         graph.diagnostics.push({ file: rel, message: `unresolved relative import: ${spec}` });
@@ -312,13 +344,18 @@ export function extract(options: ExtractOptions): Graph {
   // in files the tool had refused to open. Parsing them costs one pass and buys the difference
   // between "nothing uses this" and "only the tests use this", which are different findings.
   for (const rel of testFiles) {
+    const over = oversize(root, rel);
+    if (over) {
+      graph.diagnostics.push({ file: rel, message: over });
+      continue;
+    }
     let source: string;
     try {
       source = fs.readFileSync(path.join(root, rel), 'utf8');
     } catch {
       continue; // A test we cannot read is not worth a diagnostic; it is not part of the map.
     }
-    if (!includeVendored && looksVendored(source)) continue;
+    if (!includeVendored && looksVendored(rel, source)) continue;
 
     const contentHash = createHash('sha256').update(source).digest('hex').slice(0, 12);
     // Keyed by provider as well: two providers producing different records for the same
@@ -377,4 +414,18 @@ function readAliases(root: string, allFiles: string[]): ReturnType<typeof aliase
     }
   }
   return aliases;
+}
+
+/** Every `[package]` in the tree, so `crate::` and cross-crate paths have somewhere to land. */
+function readCrates(root: string, allFiles: string[]): RustCrate[] {
+  const crates: RustCrate[] = [];
+  for (const manifest of allFiles.filter((f) => /(^|\/)Cargo\.toml$/.test(f))) {
+    try {
+      const crate = crateFromManifest(manifest, fs.readFileSync(path.join(root, manifest), 'utf8'));
+      if (crate) crates.push(crate);
+    } catch {
+      // An unreadable manifest just means that crate's paths stay unresolved.
+    }
+  }
+  return crates;
 }

@@ -47,10 +47,10 @@ export function resolveCommit(root: string, rev = 'HEAD'): string {
 
 /**
  * The spec's bytes at `commit`. Refused: a path outside the repository, a non-Markdown name,
- * anything that is not a regular blob (symlink, gitlink, directory), more than 512 KB, NUL
- * bytes, or bytes that are not UTF-8.
+ * anything that is not a regular blob (symlink, gitlink, directory), more than `maxBytes` (512 KB
+ * for a spec; a corpus document passes its own cap), NUL bytes, or bytes that are not UTF-8.
  */
-export function readSpecBlob(root: string, commit: string, rel: string): Buffer {
+export function readSpecBlob(root: string, commit: string, rel: string, maxBytes = MAX_SPEC_BYTES): Buffer {
   const why = repoPathRefusal(rel);
   if (why) throw new SpecRefused(`spec path refused: ${why}`);
   if (!SPEC_EXTENSIONS.test(rel)) throw new SpecRefused('a spec is a Markdown document (.md or .markdown)');
@@ -62,11 +62,11 @@ export function readSpecBlob(root: string, commit: string, rel: string): Buffer 
   if (mode === '160000' || type === 'commit') throw new SpecRefused(`${rel} is a submodule at ${commit.slice(0, 12)}`);
   if (type !== 'blob' || (mode !== '100644' && mode !== '100755')) throw new SpecRefused(`${rel} is not a regular file`);
   const size = Number(git(root, ['cat-file', '-s', oid]).toString('utf8').trim());
-  if (!Number.isFinite(size) || size > MAX_SPEC_BYTES) {
-    throw new SpecRefused(`${rel} is ${size} bytes; a spec is at most ${MAX_SPEC_BYTES}`);
+  if (!Number.isFinite(size) || size > maxBytes) {
+    throw new SpecRefused(`${rel} is ${size} bytes; a spec is at most ${maxBytes}`);
   }
-  const bytes = git(root, ['cat-file', 'blob', oid], MAX_SPEC_BYTES + 1);
-  if (bytes.length > MAX_SPEC_BYTES) throw new SpecRefused(`${rel} is over ${MAX_SPEC_BYTES} bytes`);
+  const bytes = git(root, ['cat-file', 'blob', oid], maxBytes + 1);
+  if (bytes.length > maxBytes) throw new SpecRefused(`${rel} is over ${maxBytes} bytes`);
   if (bytes.includes(0)) throw new SpecRefused(`${rel} has NUL bytes; a spec is text`);
   try {
     new TextDecoder('utf-8', { fatal: true }).decode(bytes);

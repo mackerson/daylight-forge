@@ -7,12 +7,12 @@ import type { Readable, Writable } from 'node:stream';
 import { ArtifactStore, canonicalJson } from '../mission/artifacts.ts';
 import type {
   ArtifactRef, DaylightEventInput, ExpectedObservation, Experiment, ExperimentConclusion,
-  ExperimentRole, NewExperiment,
+  ExperimentRole, GateHarness, NewExperiment,
 } from '../mission/types.ts';
 import { concludeFrom } from './conclude.ts';
 import {
   checkAllowlist, DEFAULT_LIMITS, detectSandbox, NO_SCOPE_LIMITATION, SANDBOX_LIMITATIONS, sandboxArgv,
-  sandboxBinaries, scopeEnv, SYSTEM_PATH, WORK, type SandboxLimits, type SandboxProfile,
+  sandboxBinaries, scopeEnv, SYSTEM_PATH, WORK, type SandboxBind, type SandboxLimits, type SandboxProfile,
 } from './sandbox.ts';
 import type { ExecutionRecord, ExecutionStatus, ExecutionTarget, Observation } from './types.ts';
 
@@ -81,9 +81,17 @@ export interface RegisterInput {
   role?: ExperimentRole;
   /** Minted first (`newId('experiment')`) when the test path has to name the experiment. */
   id?: string;
+  /** `cargo` for a gate run by `cargo test`. Defaults to `node`; a probe is always `node`. */
+  harness?: GateHarness;
+  /**
+   * A cargo gate's second placement: repo-relative, under a crate's `tests/`, where cargo finds
+   * the registered test as an integration test target. Covered by the expectation's digest.
+   */
+  cargoTestPath?: string;
 }
 
-const isForgeRole = (role: ExperimentRole | undefined): boolean => role === 'gate' || role === 'holdout';
+const isForgeRole = (role: ExperimentRole | undefined): boolean =>
+  role === 'gate' || role === 'holdout' || role === 'regression' || role === 'acceptance';
 
 const isEmptyPrediction = (p: ExpectedObservation): boolean =>
   p.exitCode === undefined && !p.stdoutIncludes?.length && !p.stderrIncludes?.length;
@@ -109,7 +117,7 @@ export function harnessDigestOf(
  */
 export function harnessHolds(
   x: Experiment, artifacts: ArtifactStore,
-): { ok: true; legacy: boolean } | { ok: false; why: string } {
+): { ok: true; legacy: boolean; cargoTestPath?: string } | { ok: false; why: string } {
   const edited = (what: string) => ({
     ok: false as const,
     why: `the harness digest no longer holds: ${what} on the experiment row is not what was registered`,
@@ -123,8 +131,12 @@ export function harnessHolds(
   } catch (err) {
     return { ok: false, why: `the registered prediction cannot be read: ${(err as Error).message}` };
   }
-  const { testPath, role, baseRevision, ...prediction } = registered;
+  const { testPath, role, baseRevision, harness, cargoTestPath, ...prediction } = registered;
   if (canonicalJson(prediction) !== canonicalJson(x.prediction)) return edited('the prediction');
+  // The harness is in the expectation too, so a row re-stamped from node to cargo (or back) is
+  // a different harness, not a different runner for the same one. Absent means node.
+  if ((harness ?? 'node') !== (x.harness ?? 'node')) return edited('the harness');
+  if ((x.harness === 'cargo') !== (typeof cargoTestPath === 'string')) return edited('the cargo test path');
   // A gate's role and base are in its expectation, so an UPDATE turning a holdout into a gate,
   // a probe into either, or re-pointing its base is a different harness. Probes carry neither.
   if (role !== undefined || baseRevision !== undefined || isForgeRole(x.role)) {
@@ -133,7 +145,24 @@ export function harnessHolds(
   }
   if (testPath === undefined) return { ok: true, legacy: true };
   if (testPath !== x.testArtifact.path) return edited('the test path');
-  return { ok: true, legacy: false };
+  return { ok: true, legacy: false, ...(typeof cargoTestPath === 'string' ? { cargoTestPath } : {}) };
+}
+
+/** What stands for a holdout's test path in an event (P2-R37): its basename never leaves the gate runner. */
+export const HOLDOUT_REDACTED = '<holdout>';
+
+/**
+ * `payload` with every occurrence of a holdout's test path, in any string at any depth, replaced
+ * by `<holdout>`. Events are read outside the gate runner; the path names the holdout's file.
+ * A payload of any other role is returned as it is.
+ */
+export function withholdHoldoutPath<T>(role: ExperimentRole | undefined, testPath: string | undefined, payload: T): T {
+  if (role !== 'holdout' || !testPath) return payload;
+  const walk = (v: unknown): unknown => typeof v === 'string' ? v.split(testPath).join(HOLDOUT_REDACTED)
+    : Array.isArray(v) ? v.map(walk)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))
+    : v;
+  return walk(payload) as T;
 }
 
 export function registerExperiment(input: RegisterInput): Experiment {
@@ -143,12 +172,23 @@ export function registerExperiment(input: RegisterInput): Experiment {
         'run will show if the hypothesis is true',
     );
   }
+  const harness = input.harness ?? 'node';
+  if (harness !== 'node' && !isForgeRole(input.role)) throw new InvalidExperiment(`the ${harness} harness runs gates and holdouts only`);
   // The worktree does not exist yet; containment is a property of the path, not the tree.
-  const allowed = checkAllowlist(input.command, '/work');
+  const allowed = checkAllowlist(input.command, '/work', harness);
   if (!allowed.ok) throw new InvalidExperiment(allowed.why);
   const rel = path.posix.normalize(input.testPath);
   if (path.posix.isAbsolute(rel) || rel.startsWith('..')) {
     throw new InvalidExperiment(`testPath must be repo-relative and inside the worktree: ${input.testPath}`);
+  }
+  let cargoRel: string | undefined;
+  if (harness === 'cargo') {
+    cargoRel = path.posix.normalize(input.cargoTestPath ?? '');
+    if (!input.cargoTestPath || path.posix.isAbsolute(cargoRel) || cargoRel.startsWith('..') || !/(^|\/)tests\/[A-Za-z0-9_-]+\.rs$/.test(cargoRel)) {
+      throw new InvalidExperiment(`a cargo gate places its test under a crate's tests/ as <name>.rs, repo-relative: ${String(input.cargoTestPath)}`);
+    }
+  } else if (input.cargoTestPath !== undefined) {
+    throw new InvalidExperiment('a cargo test path belongs to a cargo gate');
   }
 
   const profile = input.sandboxProfile ?? 'bwrap';
@@ -160,7 +200,10 @@ export function registerExperiment(input: RegisterInput): Experiment {
   // and, through that artifact's digest, of the harness digest. A gate's role and base are
   // too; a probe's expectation is exactly what P0 wrote, so its digests do not move.
   const expectation = isForgeRole(input.role)
-    ? { ...input.prediction, testPath: rel, role: input.role, baseRevision: input.baseRevision }
+    ? {
+        ...input.prediction, testPath: rel, role: input.role, baseRevision: input.baseRevision,
+        ...(harness === 'cargo' ? { harness, cargoTestPath: cargoRel } : {}),
+      }
     : { ...input.prediction, testPath: rel };
   const expectedArtifact = input.artifacts.put(JSON.stringify(expectation, null, 2), {
     ...meta, kind: 'expected', label: 'prediction', mediaType: 'application/json',
@@ -182,6 +225,7 @@ export function registerExperiment(input: RegisterInput): Experiment {
     harnessDigest: harnessDigestOf(testArtifact.digest, expectedArtifact.digest, input.command, profile),
     command: input.command,
     sandboxProfile: profile,
+    harness,
     limitations: [...SANDBOX_LIMITATIONS],
   });
 
@@ -191,10 +235,10 @@ export function registerExperiment(input: RegisterInput): Experiment {
     category: 'experiment',
     name: 'experiment.registered',
     artifactIds: [testArtifact.id, expectedArtifact.id],
-    payload: {
+    payload: withholdHoldoutPath(input.role, rel, {
       experimentId: experiment.id, subject: input.subject, predicate: input.predicate,
       harnessDigest: experiment.harnessDigest, command: input.command,
-    },
+    }),
   });
   return experiment;
 }
@@ -580,7 +624,9 @@ function recorder(
       category: 'experiment',
       name,
       artifactIds,
-      payload: { experimentId: experiment.id, ...(target ? { target: target.kind, diffDigest: target.diffDigest } : {}), ...payload },
+      payload: withholdHoldoutPath(experiment.role, experiment.testArtifact.path, {
+        experimentId: experiment.id, ...(target ? { target: target.kind, diffDigest: target.diffDigest } : {}), ...payload,
+      }),
     });
   const record = (r: ExecutionRecord) => {
     const full: ExecutionRecord = target ? { ...r, target } : r;
@@ -626,7 +672,9 @@ interface RunLoop {
   /** After each run: why the tree under test is no longer the one it was, or null. */
   treeDrift?: () => string | null;
   /** After a run that finished: why its output cannot be read as a result, or null. */
-  unreadable?: (stdout: string) => string | null;
+  unreadable?: (stdout: string, stderr: string, signal: string | null) => string | null;
+  /** Everything one cargo run needs beside `/work`, made fresh for each run and disposed after it. */
+  cargo?: Pick<GateCargo, 'forRun'>;
 }
 
 /** The runs themselves: the registered test, bound in from memory, `runs` times. */
@@ -636,46 +684,69 @@ async function runRegistered(o: RunLoop): Promise<void> {
   if (!binaries.scope) o.limitations.push(NO_SCOPE_LIMITATION);
   for (let i = 0; i < o.runs; i++) {
     const runStarted = rec.now();
-    // The test is bound into the sandbox from the verified buffer on every run. The worktree
-    // copy is only the mount point, and a same-uid process can rewrite it between runs.
-    const argv = sandboxArgv(o.profile, {
-      worktree: o.worktree,
-      command: experiment.command,
-      limits: ctx.limits ?? DEFAULT_LIMITS,
-      env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id },
-      files: [{ fd: TEST_FD, path: o.testRel }],
-      statusFd: STATUS_FD,
-    });
-    const shown = argv.map((a) => (a === o.worktree || a === o.root ? '<worktree>' : a));
-    rec.emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
-
-    const run = await execute(argv, o.timeoutMs, o.registered, binaries.scope ?? binaries.prlimit);
-    const label = (s: string) => `run ${i} ${s}`;
-    const stdoutRef = ctx.artifacts.put(run.stdout, { ...rec.meta, kind: 'log', label: label('stdout') });
-    const stderrRef = ctx.artifacts.put(run.stderr, { ...rec.meta, kind: 'log', label: label('stderr') });
-    if (run.truncated) o.limitations.push(`run ${i}: output exceeded ${STREAM_CAP} bytes and was cut`);
-    const { observed, matches } = observe(experiment.prediction, run);
-    // Something rewrote the copy while we held the worktree. The bytes that ran were still
-    // the registered ones, but a harness under attack is not one to draw a conclusion from.
-    const drifted = !sameFile(o.placed, o.registered);
-    const moved = drifted ? null : o.treeDrift?.() ?? null;
-    const unstarted = launchFailure(run);
-    const unreadable = drifted || moved || unstarted || run.timedOut ? null : o.unreadable?.(run.stdout) ?? null;
-    const status: ExecutionStatus = drifted || moved || unstarted || unreadable ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
-    rec.record({
-      experimentId: experiment.id, runIndex: i,
-      status,
-      why: drifted
-        ? `the worktree copy of ${o.testRel} changed during the experiment; something else is writing to it`
-        : moved ?? unstarted ?? unreadable ?? (run.timedOut ? `killed at the ${o.timeoutMs}ms wall-clock ceiling` : undefined),
-      command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
-      sandboxBinaries: binaries,
-      exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
-      durationMs: rec.now() - runStarted, stdoutRef, stderrRef,
-      prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,
-      harnessDigest: experiment.harnessDigest, startedAt: runStarted, finishedAt: rec.now(),
-    });
+    let cargo: ReturnType<GateCargo['forRun']> | undefined;
+    try {
+      cargo = o.cargo?.forRun(i);
+    } catch (err) {
+      rec.refuse('invalid', `run ${i}: ${(err as Error).message}`, runStarted);
+      continue;
+    }
+    try {
+      await runOnce(o, i, runStarted, binaries, cargo);
+    } finally {
+      cargo?.dispose();
+    }
   }
+}
+
+/** One run of `runRegistered`, with the cargo binds made for it alone. */
+async function runOnce(
+  o: RunLoop, i: number, runStarted: number, binaries: ReturnType<typeof sandboxBinaries>,
+  cargo: { binds: SandboxBind[]; env: Record<string, string> } | undefined,
+): Promise<void> {
+  const { experiment, ctx, rec } = o;
+  // The test is bound into the sandbox from the verified buffer on every run. The worktree
+  // copy is only the mount point, and a same-uid process can rewrite it between runs.
+  const argv = sandboxArgv(o.profile, {
+    worktree: o.worktree,
+    command: experiment.command,
+    limits: ctx.limits ?? DEFAULT_LIMITS,
+    env: { DAYLIGHT_RUN_INDEX: String(i), DAYLIGHT_EXPERIMENT: experiment.id, ...cargo?.env },
+    files: [{ fd: TEST_FD, path: o.testRel }],
+    statusFd: STATUS_FD,
+    harness: experiment.harness ?? 'node',
+    binds: cargo?.binds,
+  });
+  const shown = argv.map((a) => (a === o.worktree || a === o.root ? '<worktree>' : a));
+  rec.emit('experiment.run.started', { runIndex: i, command: experiment.command, sandboxArgv: shown });
+
+  const run = await execute(argv, o.timeoutMs, o.registered, binaries.scope ?? binaries.prlimit);
+  const label = (s: string) => `run ${i} ${s}`;
+  const stdoutRef = ctx.artifacts.put(run.stdout, { ...rec.meta, kind: 'log', label: label('stdout') });
+  const stderrRef = ctx.artifacts.put(run.stderr, { ...rec.meta, kind: 'log', label: label('stderr') });
+  if (run.truncated) o.limitations.push(`run ${i}: output exceeded ${STREAM_CAP} bytes and was cut`);
+  const { observed, matches } = observe(experiment.prediction, run);
+  // Something rewrote the copy while we held the worktree. The bytes that ran were still
+  // the registered ones, but a harness under attack is not one to draw a conclusion from.
+  const driftedAt = !sameFile(o.placed, o.registered) ? o.testRel : null;
+  const drifted = driftedAt !== null;
+  const moved = drifted ? null : o.treeDrift?.() ?? null;
+  const unstarted = launchFailure(run);
+  const unreadable = drifted || moved || unstarted || run.timedOut ? null : o.unreadable?.(run.stdout, run.stderr, run.signal) ?? null;
+  const status: ExecutionStatus = drifted || moved || unstarted || unreadable ? 'invalid' : run.timedOut ? 'timeout' : 'ran';
+  rec.record({
+    experimentId: experiment.id, runIndex: i,
+    status,
+    why: drifted
+      ? `the worktree copy of ${driftedAt} changed during the experiment; something else is writing to it`
+      : moved ?? unstarted ?? unreadable ?? (run.timedOut ? `killed at the ${o.timeoutMs}ms wall-clock ceiling` : undefined),
+    command: experiment.command, sandboxArgv: shown, sandboxProfile: experiment.sandboxProfile,
+    sandboxBinaries: binaries,
+    exitCode: run.exitCode, signal: run.signal, timedOut: run.timedOut,
+    durationMs: rec.now() - runStarted, stdoutRef, stderrRef,
+    prediction: experiment.prediction, observed, matchesPrediction: status === 'ran' && matches,
+    harnessDigest: experiment.harnessDigest, startedAt: runStarted, finishedAt: rec.now(),
+  });
 }
 
 export async function runExperiment(experiment: Experiment, ctx: RunContext): Promise<Experiment> {
@@ -859,6 +930,19 @@ export interface GateRunContext extends RunContext {
   target: ExecutionTarget;
   /** Builds the tree to run in. Throws to refuse: the run is then `invalid`. */
   materialise: () => GateTree;
+  /**
+   * What a cargo gate runs with (forge/gate.ts builds it from forge/cargo.ts): `forRun` gives
+   * one run its binds and environment, a build cache of its own (P2-R42), and `dispose`, called
+   * when that run ends, whatever happened; it throws to refuse the run. `preflight` checks the
+   * materialised tree (its `Cargo.lock` against the snapshot). `refused` says why there is
+   * none; a cargo gate without this is `invalid`, never run bare.
+   */
+  cargo?: GateCargo | { refused: string };
+}
+
+export interface GateCargo {
+  forRun: (index: number) => { binds: SandboxBind[]; env: Record<string, string>; dispose: () => void };
+  preflight: (tree: string) => string | null;
 }
 
 export interface GateRunResult {
@@ -882,6 +966,49 @@ export function noTestsReported(stdout: string): string | null {
   const m = TESTS_SUMMARY.exec(stdout);
   if (!m) return 'the test runner printed no tests summary; a suite that never reports crashed at load, which is not a failing gate';
   if (Number(m[1]) === 0) return 'the test runner reported 0 tests; an empty gate is not evidence either way';
+  return null;
+}
+
+const CARGO_RESULT = /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed;/gm;
+const CARGO_RUNNING = /^\s+Running (.*)$/gm;
+/** What a process killed by a resource ceiling leaves in cargo's stderr: rustc, the linker or the test binary. */
+const RESOURCE_KILL = /\bsignal: (?:9|24|25)\b|\bsignal (?:9|24|25)\b|SIGKILL|SIGXCPU|SIGXFSZ|File size limit exceeded|CPU time limit exceeded|memory allocation of \d+ bytes failed/;
+
+/**
+ * The cargo counterpart of `noTestsReported`: `cargo test` prints `test result: ok. N passed;
+ * M failed; …` per test binary, and N + M summed is how many tests ran. None ran is `invalid`.
+ * A result is read only when stderr names exactly one binary run, `Running
+ * tests/<target>.rs (…)`: the placed test. A `[[test]]` entry that gives the target's name to
+ * another file, or a second target, is `invalid` (P2-R30).
+ * No result line at all is `invalid` too, with one exception: the gate's own test target
+ * failing to compile (`error: could not compile … (test "<target>")`). That is what a gate
+ * calling a function the base lacks looks like in Rust, and it is a failing gate. A workspace
+ * that does not build anywhere else, or a run that never got to cargo, says nothing either way.
+ */
+export function noCargoTestsReported(stdout: string, stderr: string, target: string, signal: string | null = null): string | null {
+  const t = target.replace(/[^A-Za-z0-9_-]/g, '');
+  // A ceiling killing cargo, rustc, the linker or the test is the harness's limit, not the change.
+  if (signal) return `cargo was killed by ${signal}; a resource limit is not a failing gate`;
+  const kill = RESOURCE_KILL.exec(stderr);
+  if (kill) return `a resource limit killed part of the build or the test (${kill[0]}); that is not a failing gate`;
+  const results = [...stdout.matchAll(CARGO_RESULT)];
+  const running = [...stderr.matchAll(CARGO_RUNNING)].map((m) => m[1]);
+  if (!results.length && !running.length) {
+    // Only a rustc diagnostic located in the placed test itself: a linker failure or anything
+    // else that also ends in `could not compile … (test "<target>")` is not the change failing.
+    const own = new RegExp(`^error: could not compile \`[^\`\n]+\` \\(test "${t}"\\)`, 'm');
+    const located = new RegExp(`^\\s*--> (?:\\S*/)?tests/${t}\\.rs:\\d+:\\d+`, 'm');
+    const diagnostic = /^error(?:\[E\d+\])?: (?!could not compile|linking with)/m;
+    if (own.test(stderr) && located.test(stderr) && diagnostic.test(stderr)) return null;
+    return 'cargo printed no test result and the gate\'s own test target is not what failed to build; the workspace did not build or the run never started, which is not a failing gate';
+  }
+  if (running.length !== 1 || !running[0].startsWith(`tests/${t}.rs (`)) {
+    return `the target that ran is not the placed test: cargo ran ${running.length} binar${running.length === 1 ? 'y' : 'ies'} (${running.map((r) => r.split(' (')[0]).join(', ').slice(0, 200) || 'none'}), not tests/${t}.rs alone`;
+  }
+  if (!results.length) return 'the placed test ran but printed no test result; it did not finish, which is not a failing gate';
+  if (results.length !== 1) return `cargo printed ${results.length} test results for one binary; the output is not the placed test's alone`;
+  const ran = results.reduce((n, m) => n + Number(m[1]) + Number(m[2]), 0);
+  if (ran === 0) return 'cargo reported 0 tests run; an empty gate is not evidence either way';
   return null;
 }
 
@@ -967,8 +1094,22 @@ export async function runGate(x: Experiment, ctx: GateRunContext): Promise<GateR
   const harness = harnessHolds(x, ctx.artifacts);
   if (!harness.ok) return refuse(harness.why);
   if (harness.legacy) return refuse('a gate\'s expectation must name its test path, role and base; this one names no path');
-  const allowed = checkAllowlist(x.command, WORK);
+  const kind = x.harness ?? 'node';
+  const allowed = checkAllowlist(x.command, WORK, kind);
   if (!allowed.ok) return refuse(`command refused: ${allowed.why}`);
+  const cargoRel = harness.cargoTestPath;
+  let cargo: GateCargo | undefined;
+  if (kind === 'cargo') {
+    if (!cargoRel) return refuse('a cargo gate\'s expectation names no crate test path');
+    if (!ctx.cargo) return refuse('a cargo gate runs only with its crate snapshot and gate build cache, and none was given');
+    if ('refused' in ctx.cargo) return refuse(ctx.cargo.refused);
+    cargo = ctx.cargo;
+  }
+  // A cargo gate is placed once, where cargo finds integration tests, never under
+  // .daylight-gates/ as well: that copy served nothing and named the gate's file to the code
+  // under test (P2-R42, review L6).
+  const placeRel = cargo && cargoRel ? cargoRel : testRel;
+  const whose = cargo ? 'a cargo gate\'s' : 'a gate\'s';
 
   let tree: GateTree;
   try {
@@ -982,31 +1123,38 @@ export async function runGate(x: Experiment, ctx: GateRunContext): Promise<GateR
     let link: string | null;
     try {
       root = fs.realpathSync(tree.tree);
-      link = symlinkOnPath(root, testRel);
+      link = symlinkOnPath(root, placeRel);
     } catch (err) {
       return refuse(`the tree under test cannot be read: ${(err as Error).message}`);
     }
-    const placed = path.resolve(root, testRel);
-    if (!placed.startsWith(`${root}${path.sep}`)) return refuse(`test path ${testRel} escapes the tree under test`);
+    const placed = path.resolve(root, placeRel);
+    if (!placed.startsWith(`${root}${path.sep}`)) return refuse(`${cargo ? 'cargo ' : ''}test path ${placeRel} escapes the tree under test`);
     if (link) return refuse(`${link} is a symlink in the tree under test; the test is never placed through one`);
     // The gate's path is the gate's alone. Anything already there came from the base or the
     // diff, and either way it is not the registered test, identical or not.
-    if (lexists(placed)) return refuse(`a file is already at ${testRel} in the tree under test; a gate's test path belongs to the gate`);
+    if (lexists(placed)) return refuse(`a file is already at ${placeRel} in the tree under test; ${whose} test path belongs to the gate`);
     let registered: Buffer;
     try {
       registered = ctx.artifacts.get(x.testArtifact);
       placeExclusive(root, placed, registered);
     } catch (err) {
-      return refuse(`the registered test could not be placed at ${testRel}: ${(err as Error).message}`);
+      return refuse(`the registered test could not be placed at ${placeRel}: ${(err as Error).message}`);
     }
-    const before = treeDriftOf(tree, testRel);
+    if (cargo) {
+      const lock = cargo.preflight(root);
+      if (lock) return refuse(lock);
+    }
+    const before = treeDriftOf(tree, placeRel);
     if (before) return refuse(before);
-    const here = checkAllowlist(x.command, root);
+    const here = checkAllowlist(x.command, root, kind);
     if (!here.ok) return refuse(`command refused: ${here.why}`);
 
+    const target = cargoRel ? path.posix.basename(cargoRel, '.rs') : '';
     await runRegistered({
-      experiment: x, ctx, profile, rec, worktree: tree.tree, root, testRel, placed, registered, runs, timeoutMs,
-      limitations, treeDrift: () => treeDriftOf(tree, testRel), unreadable: noTestsReported,
+      experiment: x, ctx, profile, rec, worktree: tree.tree, root, testRel: placeRel, placed, registered, runs, timeoutMs,
+      limitations, treeDrift: () => treeDriftOf(tree, placeRel),
+      unreadable: kind === 'cargo' ? (stdout, stderr, signal) => noCargoTestsReported(stdout, stderr, target, signal) : noTestsReported,
+      ...(cargo ? { cargo } : {}),
     });
     return done();
   } finally {

@@ -23,12 +23,13 @@ screens.
 
 Needs Node 24+, pnpm, git, and for experiments `bwrap` (bubblewrap) and `prlimit`
 (util-linux). Without the last two every experiment concludes `invalid: sandbox unavailable`;
-nothing runs in the open.
+nothing runs in the open. `test:all` also needs the system cargo at `/usr/bin/cargo` and fetches
+one crate from crates.io per run (`DAYLIGHT_OFFLINE=1` skips those cases).
 
 ```bash
 pnpm install
 pnpm ui:build
-pnpm typecheck && pnpm test:all        # ~3,100 assertions in 55 files; includes the acceptance checklist
+pnpm typecheck && pnpm test:all        # ~5,900 assertions in 87 files; includes the acceptance checklist
 ```
 
 ## The guided demo, in order
@@ -229,3 +230,68 @@ What to point at:
   that write `<out>` directly pass `--no-review-sandbox`, which is accepted only for an all-`mock`
   roster and recorded on each attempt as profile `none`, reason `no-review-sandbox`. Sec H5 stays
   open until the live spike.
+
+## Campaign walkthrough (mocks)
+
+A campaign builds a whole plan of tickets under one human authorization (P2). Everything here
+runs with mock authors and reviewers; live providers stay `unavailable`. The guide is
+[CAMPAIGN.md](CAMPAIGN.md) for the plan file, `approve-plan`, `authorize`, assumptions and
+`retry`, and [CAMPAIGN-RUN.md](CAMPAIGN-RUN.md) for gates, the lock, `campaign run`,
+integration, repair, wave review, halts, resume and status. [REFINE.md](REFINE.md) covers the
+reports and the Refine view. The executable form is `engine/test/forge-campaign-e2e.ts`, which
+`test:all` runs. It drives every step below through the CLI under bwrap and lands a three-ticket
+plan, a repair, a fix ticket from a wave finding and an assumption's follow-up on
+`refs/heads/daylight/campaign/<id>`, with HEAD, the index and the worktree untouched.
+
+```bash
+O="--out $HOME/daylight-forge-out"
+daylight campaign validate daylight.plan.json <repo>                 # read-only; allowed in an agent session
+daylight campaign import <repo> --file daylight.plan.json $O         # → campaign c
+daylight campaign approve-plan <c> --rationale '…' --confirm <c8> $O
+daylight campaign gate register <c> --role holdout --file <host path> --expect-exit 0 --expect-stdout '# fail 0' $O
+daylight campaign baseline <c> <repo> $O
+daylight campaign lock <c> --no-ratchet --rationale '…' --confirm <c8> $O
+daylight campaign authorize <c> --expected-gate-set <digest> --roster mock --max-usd-total N --max-usd-per-mission N \
+  --max-turns N --timeout s --max-attempts N --concurrency N --auto-apply integration-ref --rationale '…' --confirm <c8> $O
+daylight campaign run <c> <repo> --dry-run $O                       # what the first pass would dispatch; allowed in a session
+DAYLIGHT_MOCK_ADAPTER=<author.cjs> daylight campaign run <c> <repo> $O
+daylight campaign status <c> <repo> $O
+daylight campaign report <c> <repo> --all $O
+daylight campaign refine <c> <repo> $O                               # maps under <out> only
+```
+
+Every act needs `--confirm <c8>`. Run it once without (exit 2) or use `daylight confirm` to see
+the digest. `campaign run`, and every act that writes a row or moves a ref, is refused under
+`CLAUDECODE` or `DAYLIGHT_SESSION`. A person starts it from their own terminal (P2-R9). The
+integration ref is not a reviewed branch: a candidate can forge a gate pass from inside the code
+under test, and the forgery-shape heuristic catches only the obvious spellings (P2-R43, P2-R49).
+Read what landed (`campaign report`, `campaign refine`) before merging any of it.
+
+## Ingest walkthrough (mocks)
+
+Spec ingestion turns a specification corpus into a version-2 plan that `campaign import` checks
+against its packets. The guide is [INGEST.md](INGEST.md). It covers the corpus and its sectioner
+config, extraction and coverage, IR review and `approve-ir`, blueprint and packets, the
+authority chain and `corpus revise`, `trace`, and the benchmark. Extractors, reviewers and
+architects are mocks in every test. `corpus register`, `extract` and `review` are refused in an
+agent session unless every tool is a mock (P2-R50 Q5).
+
+The quickest end-to-end look is the benchmark in mock mode. It runs the whole pipeline on a
+throwaway store, from register through a landing, a trace and a revision, and scores it. Its
+extractor is a script generated from the fixture:
+
+```bash
+f=engine/test/fixtures/ingest/harbor          # or engine/test/fixtures/ingest/olc-expected
+X=$(node --input-type=module -e "const { loadFixture } = await import('./engine/forge/bench-fixture.ts');
+  const { writeExtractorScript } = await import('./engine/test/lib/bench-extractor.ts');
+  console.log(writeExtractorScript(loadFixture(process.argv[1])));" $f)
+TMPDIR=/tmp node engine/cli.ts ingest bench --mode mock --fixture $f --extractor "$X"
+```
+
+Run it from the Daylight checkout. It prints 17 checks and then the list of those mock mode
+cannot fail: eight on Harbor, nine on OLC, where coverage is also by construction. A pass on those
+proves the scorer and the import path, not extraction or planning. `--mode live-extract` and
+`--mode live-full` are refused until live spend is authorised (P2-R7). The test form is
+`engine/test/forge-ingest-benchmark.ts`. `engine/test/forge-ingest-revise.ts` walks one corpus
+revision end to end: register, approve, emit, import, lock and authorize; then one document
+changes, the authority chain breaks, and `--accept-ir-drift` or a re-emitted plan clears it.

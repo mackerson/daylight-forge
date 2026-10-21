@@ -18,9 +18,10 @@ import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { detectSandbox } from '../experiment/sandbox.ts';
 import { openDaylight } from '../mission/context.ts';
-import type { Attempt, Candidate, Decision, Mission, Need, WorkItem } from '../mission/types.ts';
+import type { Attempt, Candidate, Decision, Experiment, Mission, Need, WorkItem } from '../mission/types.ts';
 import { ImplementRefused, runImplement } from '../forge/orchestrate.ts';
 import { runMission } from '../mission/orchestrate.ts';
 import { harness } from './harness.ts';
@@ -707,6 +708,69 @@ section('no sandbox: reviews are refused, not run open, unless a person opts out
   }
 }
 
+section('a project policy (P2-R6): the rust set and the author limits come from daylight.policy.json');
+{
+  const policyFile = path.join(repo, 'daylight.policy.json');
+  const rustEdit = path.join(tmp, 'mock-author-rust.cjs');
+  fs.writeFileSync(rustEdit, author({
+    'src/add.js': 'module.exports = (a, b) => a + b;\n',
+    'crates/x/Cargo.toml': '[package]\nname = "x"\n[dependencies]\nevil = "1"\n',
+    'crates/x/build.rs': 'fn main() {}\n',
+  }));
+  const objective = 'make add return the sum (rust policy)';
+  const c0 = confirmOf('adhoc-mission', objective);
+  const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective,
+    '--rationale', 'policy fixture', '--confirm', c0.digest8, '--out', out, '--format', 'json']));
+  const c1 = confirmOf('authorize-mission', m.id, ['--write']);
+  run(['mission', 'authorize', m.id, '--out', out, '--write', '--rationale', 'r', '--confirm', c1.digest8]);
+  run(['gate', 'add', m.id, '--role', 'gate', '--test', path.join(tmp, 'add.test.js'), '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out]);
+  run(['gate', 'baseline', m.id, repo, '--out', out]);
+  const c2 = confirmOf('lock-gates', m.id);
+  run(['gate', 'lock', m.id, '--out', out, '--rationale', 'r', '--confirm', c2.digest8]);
+  try {
+    fs.writeFileSync(policyFile, '{ "schema": "daylight.policy/v1", "languages": ["rust"], "surprise": true }');
+    const bad = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
+    check('a policy with an unknown key refuses the run, in one line naming the file',
+      bad.code === 1 && /daylight\.policy\.json: unknown key "surprise"/.test(bad.err), bad.err.slice(-300));
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust', 'node'], author: { maxTurns: 300, timeoutSeconds: 3600 } }));
+    const r = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
+    const res = json<{ candidate: Candidate; verdict: string; attempt: Attempt }>(r);
+    const v = res.candidate.policyViolations;
+    check('a crate manifest and a build script are protected-path under the rust set', res.verdict === 'policy-violation'
+      && ['crates/x/Cargo.toml', 'crates/x/build.rs'].every((p) => v.some((x) => x.rule === 'protected-path' && x.path === p && x.why === 'protected by the rust set')),
+      JSON.stringify(v));
+    const started = inspect(m.id).events.find((e) => e.name === 'attempt.started' && e.attemptId === res.attempt.id);
+    check('the run event records the limits the policy set', started?.payload.maxTurns === 300 && started?.payload.timeoutMs === 3_600_000
+      && JSON.stringify(started?.payload.limitSources) === '{"maxTurns":"policy","timeoutMs":"policy"}', JSON.stringify(started?.payload));
+    const flagged = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json', '--timeout', '120'], { DAYLIGHT_MOCK_ADAPTER: rustEdit });
+    const again = json<{ attempt: Attempt }>(flagged);
+    const second = inspect(m.id).events.find((e) => e.name === 'attempt.started' && e.attemptId === again.attempt.id);
+    check('a --timeout flag overrides the policy, and nothing is recorded as clamped',
+      second?.payload.timeoutMs === 120_000 && second?.payload.maxTurns === 300 && JSON.stringify(second?.payload.clamped) === '[]', JSON.stringify(second?.payload));
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust'], gate: { harness: 'cargo' } }));
+    const gm = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', 'gate harness from policy',
+      '--rationale', 'policy fixture', '--confirm', confirmOf('adhoc-mission', 'gate harness from policy').digest8, '--out', out, '--format', 'json']));
+    const rsTest = path.join(tmp, 'padded.rs');
+    fs.writeFileSync(rsTest, '#[test]\nfn padded() {}\n');
+    const fromPolicy = json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--test', rsTest, '--expect-exit', '0',
+      '--expect-stdout', 'test result: ok.', '--out', out, '--format', 'json']));
+    const fromFlag = json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--harness', 'node', '--test', path.join(tmp, 'add.test.js'),
+      '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out, '--format', 'json']));
+    check('gate add takes the policy\'s gate.harness when --harness is not given, and the flag wins over it',
+      fromPolicy.harness === 'cargo' && (fromFlag.harness ?? 'node') === 'node', `${fromPolicy.harness} ${fromFlag.harness}`);
+    const addRs = () => json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--test', rsTest, '--expect-exit', '0',
+      '--expect-stdout', 'test result: ok.', '--out', out, '--format', 'json']));
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust'] }));
+    check('with no gate.harness, languages ["rust"] makes gate add default to cargo (P2-R32, P2-R37)', addRs().harness === 'cargo');
+    fs.writeFileSync(policyFile, JSON.stringify({ schema: 'daylight.policy/v1', languages: ['rust', 'node'] }));
+    const both = json<Experiment>(run(['gate', 'add', gm.id, '--role', 'gate', '--test', path.join(tmp, 'add.test.js'),
+      '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', 'add.test.js', '--out', out, '--format', 'json']));
+    check('and ["rust", "node"] to node', (both.harness ?? 'node') === 'node' && both.testArtifact.path?.endsWith('add.test.js') === true);
+  } finally {
+    fs.rmSync(policyFile, { force: true });
+  }
+}
+
 section('negative: no sandbox means no author attempt');
 {
   const d = openDaylight(out);
@@ -727,6 +791,56 @@ section('negative: no sandbox means no author attempt');
   } finally {
     d.close();
   }
+}
+
+section('a holdout committed at the base (P2-R45 D7): refused by count, its path in no output');
+{
+  const objective = 'holdout at base';
+  const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective,
+    '--rationale', 'r', '--confirm', confirmOf('adhoc-mission', objective).digest8, '--out', out, '--format', 'json']));
+  run(['mission', 'authorize', m.id, '--out', out, '--write', '--rationale', 'r', '--confirm', confirmOf('authorize-mission', m.id, ['--write']).digest8]);
+  for (const [role, file] of [['gate', 'add.test.js'], ['holdout', 'holdout.test.js']]) {
+    run(['gate', 'add', m.id, '--role', role, '--test', path.join(tmp, file), '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', file, '--out', out]);
+  }
+  run(['gate', 'baseline', m.id, repo, '--out', out]);
+  run(['gate', 'lock', m.id, '--out', out, '--rationale', 'r', '--confirm', confirmOf('lock-gates', m.id).digest8]);
+  let holdout!: { id: string; path: string };
+  {
+    const d = openDaylight(out);
+    try {
+      const x = d.store.experimentsFor(m.id, 'holdout')[0];
+      holdout = { id: x.id, path: x.testArtifact.path! };
+    } finally {
+      d.close();
+    }
+  }
+  // A base that carries the holdout's file, as a later commit on a side branch would.
+  git(['checkout', '-q', '-b', 'holdout-at-base', base]);
+  fs.mkdirSync(path.join(repo, path.dirname(holdout.path)), { recursive: true });
+  fs.writeFileSync(path.join(repo, holdout.path), HOLDOUT_TEST);
+  git(['add', '-A']);
+  git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@daylight.invalid', 'commit', '-q', '-m', 'holdout committed']);
+  const leaky = git(['rev-parse', 'HEAD']);
+  git(['checkout', '-q', 'main']);
+  {
+    const d = openDaylight(out);
+    try {
+      (d.store as unknown as { db: DatabaseSync }).db.prepare('UPDATE missions SET base_revision = ? WHERE id = ?').run(leaky, m.id);
+    } finally {
+      d.close();
+    }
+  }
+  const r = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: fixer });
+  // The id is listed by design (inspect, the lock); the path and its basename never are.
+  const leaks = (text: string) => [path.basename(holdout.path), holdout.path, SENTINEL].filter((s) => text.includes(s));
+  const err = (() => { try { return JSON.parse(r.out) as { error: string; refused: boolean }; } catch { return null; } })();
+  check('forge run refuses: no workspace, by count', r.code === 1 && err?.refused === true && /1 holdout file present at base/.test(err.error), r.out + r.err.slice(-300));
+  check('the JSON error and stderr name no holdout path or basename', leaks(r.out + r.err).length === 0, leaks(r.out + r.err).join(' '));
+  const events = run(['events', '--out', out, '--mission', m.id, '--limit', '100000', '--format', 'json']);
+  check('nor does any event of the mission', events.code === 0 && /present at base/.test(events.out) && leaks(events.out).length === 0,
+    `${events.code} ${leaks(events.out).join(' ')} ${events.err.slice(-200)}`);
+  const seen = run(['mission', 'inspect', m.id, '--out', out, '--format', 'json']).out;
+  check('nor the failed attempt\'s recorded failure in mission inspect', /present at base/.test(seen) && leaks(seen).length === 0, leaks(seen).join(' '));
 }
 
 done();

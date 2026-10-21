@@ -24,8 +24,10 @@ import { SAMPLE_ARTIFACTS, SAMPLE_INSPECT, SAMPLE_LIST } from './fixtures/missio
 import { mergeMissionUpdate, needsPerson } from './screens/mission-words.ts';
 import { Forge } from './screens/Forge.tsx';
 import { forgeApi } from './screens/ForgeParts.tsx';
-import type { ForgeScreen, ImplementTab, NeedTarget } from './screens/forge-words.ts';
+import type { CampaignTab, ForgeScreen, ImplementTab, NeedTarget } from './screens/forge-words.ts';
+import { campaignOfNeedFrom } from './screens/campaign-words.ts';
 import { FORGE_IMPLEMENT } from './fixtures/forge-implement.sample.ts';
+import { CAMPAIGN_MISSIONS, CAMPAIGN_NEEDS, SAMPLE_CAMPAIGN } from './fixtures/forge-campaign.sample.ts';
 import type {
   Belief, DaylightEvent, Job, LoadPayload, Mission, MissionCreateOptions, MissionInspect,
   MissionList, QueryPayload, AgentEvent,
@@ -71,16 +73,26 @@ const TAB_ALIASES: Record<string, View> = {
   candidate: 'missions',
   ledger: 'missions',
   ingest: 'missions',
+  campaigns: 'missions',
+  campaign: 'missions',
+  'wave-report': 'missions',
+  assumptions: 'missions',
+  refine: 'missions',
 };
 
 /** Where each Forge `DAYLIGHT_TAB` lands inside Mission Control. The implement ones open the sample mission. */
-const FORGE_TABS: Record<string, { screen: ForgeScreen; tab?: ImplementTab }> = {
+const FORGE_TABS: Record<string, { screen: ForgeScreen; tab?: ImplementTab; campaign?: CampaignTab }> = {
   'work-items': { screen: 'work-items' },
   ledger: { screen: 'ledger' },
   ingest: { screen: 'ingest' },
   implement: { screen: 'missions', tab: 'attempts' },
   gates: { screen: 'missions', tab: 'gates' },
   candidate: { screen: 'missions', tab: 'candidate' },
+  campaigns: { screen: 'campaigns' },
+  campaign: { screen: 'campaigns', campaign: 'overview' },
+  'wave-report': { screen: 'campaigns', campaign: 'report' },
+  assumptions: { screen: 'campaigns', campaign: 'assumptions' },
+  refine: { screen: 'campaigns', campaign: 'refine' },
 };
 
 /** Events held per open mission. Enough to read a run back; bounded so a long one cannot grow the window. */
@@ -151,6 +163,8 @@ export function App() {
   /** Which Forge screen Mission Control is on, and where an implement mission should open. */
   const [forgeScreen, setForgeScreen] = useState<ForgeScreen>('missions');
   const [forgeLanding, setForgeLanding] = useState<{ tab: ImplementTab | null; candidate: string | null }>({ tab: null, candidate: null });
+  /** The campaign open on the campaigns screen, and which of its tabs. */
+  const [openCampaign, setOpenCampaign] = useState<{ id: string | null; tab: CampaignTab }>({ id: null, tab: 'overview' });
   const [missionEvents, setMissionEvents] = useState<DaylightEvent[]>([]);
   /** Which job is running which mission, so the detail can show its output and stop it. */
   const [missionJobs, setMissionJobs] = useState<Record<string, string>>({});
@@ -219,8 +233,8 @@ export function App() {
     if (sample) {
       setMissions({
         ...SAMPLE_LIST,
-        missions: [FORGE_IMPLEMENT.mission, ...SAMPLE_LIST.missions],
-        needs: { ...SAMPLE_LIST.needs, [FORGE_IMPLEMENT.mission.id]: FORGE_IMPLEMENT.needs ?? [] },
+        missions: [FORGE_IMPLEMENT.mission, ...CAMPAIGN_MISSIONS, ...SAMPLE_LIST.missions],
+        needs: { ...SAMPLE_LIST.needs, [FORGE_IMPLEMENT.mission.id]: FORGE_IMPLEMENT.needs ?? [], [SAMPLE_CAMPAIGN]: CAMPAIGN_NEEDS },
       });
       setMissionError(null);
       return;
@@ -344,6 +358,7 @@ export function App() {
           setForgeLanding({ tab: f.tab, candidate: null });
           setOpenMission(FORGE_IMPLEMENT.mission.id);
         }
+        if (f.campaign && data.missionSample) setOpenCampaign({ id: SAMPLE_CAMPAIGN, tab: f.campaign });
       }
     }
   }, [data?.initialTab, data?.missionSample]);
@@ -353,7 +368,9 @@ export function App() {
     setForgeScreen(t.screen);
     setForgeLanding({ tab: t.tab ?? null, candidate: t.candidateId ?? null });
     setOpenMission(t.missionId ?? null);
+    if (t.screen === 'campaigns') setOpenCampaign({ id: t.campaignId ?? null, tab: t.campaignTab ?? 'overview' });
   };
+  const campaignOfNeed = useMemo(() => campaignOfNeedFrom(missions?.missions ?? [], missions?.needs), [missions]);
 
   const seededArb = useRef(false);
   useEffect(() => {
@@ -793,6 +810,9 @@ export function App() {
                 running={missionsRunning}
                 missionNeeds={missions?.needs}
                 missionOfCandidate={(id) => (sample && FORGE_IMPLEMENT.candidates?.some((c) => c.id === id) ? FORGE_IMPLEMENT.mission.id : undefined)}
+                campaignOfNeed={campaignOfNeed}
+                campaign={openCampaign}
+                onCampaign={setOpenCampaign}
                 onOpen={openForgeTarget}
               >
                 <Missions

@@ -1,0 +1,2 @@
+# Harbor Ledger synthetic workspace (test data).
+members = ["lib/ledger", "svc/berth", "svc/tariff", "svc/audit"]

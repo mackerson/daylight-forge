@@ -38,8 +38,18 @@ export const ROLE_MCP_TOOLS = Object.freeze({
     'flag_contradiction', 'propose_cluster', 'propose_elision', 'defend_node', 'propose_invariant',
   ]),
   decompose: Object.freeze(['propose_work_item']),
-  /** The author's tools are WS2's (`run`, R11.1); none of the claim or proposal tools. */
-  author: Object.freeze([] as string[]),
+  /**
+   * `request_dependency` (P2-R4), registered by `authorServer`; `run` (R11.1) is granted per
+   * attempt by `authorTools`. None of the claim or proposal tools.
+   */
+  author: Object.freeze(['request_dependency']),
+  /** A wave reviewer files findings about the files a wave changed, and reads nothing back (§6.2). */
+  waveReview: Object.freeze(['report_finding']),
+  /** Spec ingestion (§13.0): one append-only outbox tool each, keyed by the `TaskRole`; `OUTBOX_TOOLS` names the same. */
+  extract: Object.freeze(['propose_ir_record']),
+  'ir-review': Object.freeze(['report_ir_finding']),
+  architect: Object.freeze(['propose_blueprint']),
+  packetize: Object.freeze(['propose_packet']),
 }) satisfies Readonly<Record<string, readonly string[]>>;
 
 /** The spec text a decompose prompt carries, at most. Larger specs are split by a person. */

@@ -23,6 +23,9 @@ importers:
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
+      web-tree-sitter:
+        specifier: 0.26.13
+        version: 0.26.13
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -779,6 +782,9 @@ packages:
       yaml:
         optional: true
 
+  web-tree-sitter@0.26.13:
+    resolution: {integrity: sha512-5bUZ7vbQ1kcondet96wzP974+JfCZDeQ7bTpacICm2nnvHpa5cO0ByRsoMcAhUP+743vpkb4m0BFlVSm+Ye9VA==}
+
   which@2.0.2:
     resolution: {integrity: sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==}
     engines: {node: '>= 8'}
@@ -1436,6 +1442,8 @@ snapshots:
     optionalDependencies:
       '@types/node': 26.2.0
       fsevents: 2.3.3
+
+  web-tree-sitter@0.26.13: {}
 
   which@2.0.2:
     dependencies:

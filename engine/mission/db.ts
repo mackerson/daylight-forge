@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import { DAYLIGHT_DB_VERSION } from './types.ts';
+import { DAYLIGHT_DB_VERSION, isBenchActor } from './types.ts';
 
 /**
  * The Daylight database: one `daylight.db` beside `claims.db` in an output directory.
@@ -102,10 +102,12 @@ CREATE TABLE attempts (
   cache_read_tokens  INTEGER,
   cache_write_tokens INTEGER,
   usage_source       TEXT NOT NULL DEFAULT 'none' CHECK (usage_source IN ('provider','transcript','none')),
-  cost_source        TEXT NOT NULL DEFAULT 'none' CHECK (cost_source IN ('provider','stdout-scan','none')),
+  cost_source        TEXT NOT NULL DEFAULT 'none' CHECK (cost_source IN ('provider','stdout-scan','reservation','none')),
   model              TEXT,
   parent_attempt_id  TEXT REFERENCES attempts(id),
   gate_set_digest    TEXT,
+  -- The spend ceiling the runner was given: a campaign's reservation (P2-R18).
+  max_cost_usd       REAL CHECK (max_cost_usd IS NULL OR max_cost_usd >= 0),
   pid                INTEGER,
   heartbeat_at       INTEGER,
   origin             TEXT NOT NULL DEFAULT 'daylight' CHECK (origin IN ('daylight','ingested')),
@@ -123,6 +125,8 @@ CREATE TABLE attempts (
   mcp_token_digest   TEXT UNIQUE,
   -- A cost nobody reported is not a cost (R10.2).
   CHECK (cost_source <> 'none' OR cost_usd IS NULL),
+  -- An unfinished attempt is charged at its reservation only when it had one (P2-R44).
+  CHECK (cost_source <> 'reservation' OR (max_cost_usd IS NOT NULL AND cost_usd = max_cost_usd AND state <> 'completed')),
   CHECK ((origin = 'ingested') = (sandbox_profile IS NULL)),
   CHECK ((sandbox_profile IS NULL) = (sandbox_network IS NULL)
     AND (sandbox_profile IS NULL) = (sandbox_write IS NULL)
@@ -171,10 +175,11 @@ CREATE TABLE experiments (
   harness_digest    TEXT NOT NULL,
   command           TEXT NOT NULL,
   sandbox_profile   TEXT NOT NULL,
+  harness           TEXT NOT NULL DEFAULT 'node' CHECK (harness IN ('node','cargo')),
   executions        TEXT NOT NULL,
   conclusion        TEXT NOT NULL,
   limitations       TEXT NOT NULL,
-  role              TEXT NOT NULL DEFAULT 'probe' CHECK (role IN ('probe','gate','holdout')),
+  role              TEXT NOT NULL DEFAULT 'probe' CHECK (role IN ('probe','gate','holdout','regression','acceptance')),
   locked_by         TEXT REFERENCES decisions(id),
   started_at        INTEGER,
   created_at        INTEGER NOT NULL,
@@ -256,6 +261,31 @@ CREATE TABLE work_items (
 );
 CREATE INDEX work_items_project ON work_items(project_id, created_at);
 
+-- Campaigns (WS-R5). A ticket is a plan entry bound to the work item it became; the plan
+-- itself is an artifact, and every list column is JSON.
+CREATE TABLE campaign_tickets (
+  campaign_id TEXT NOT NULL REFERENCES missions(id), ticket_id TEXT NOT NULL, project_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL UNIQUE REFERENCES work_items(id), origin TEXT NOT NULL CHECK (origin IN ('plan','fix','follow-up')),
+  lane TEXT NOT NULL, depends_on TEXT NOT NULL, scope TEXT NOT NULL, acceptance TEXT NOT NULL, budget TEXT NOT NULL,
+  blocks_on TEXT NOT NULL, ticket_digest TEXT NOT NULL, source_ref TEXT, created_at INTEGER NOT NULL,
+  PRIMARY KEY (campaign_id, ticket_id)
+);
+-- P2-R12: a row nobody human recorded is never pending, except a plan default a human
+-- approved with the plan (its decision_id is that approve-plan).
+CREATE TABLE assumptions (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, campaign_id TEXT NOT NULL REFERENCES missions(id),
+  mission_id TEXT REFERENCES missions(id), ticket_id TEXT, owner_decision_id TEXT,
+  question TEXT NOT NULL, default_value TEXT NOT NULL, rationale TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('open','pending','confirmed','overturned')), blocking INTEGER NOT NULL CHECK (blocking IN (0,1)),
+  source TEXT NOT NULL CHECK (source IN ('plan-default','operator','ir-interpretation')), recorded_by TEXT NOT NULL,
+  decision_id TEXT REFERENCES decisions(id), follow_up_work_item_id TEXT, ir_id TEXT REFERENCES ir_records(id),
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (status IN ('open','pending') OR decision_id IS NOT NULL),
+  CHECK (status <> 'confirmed' OR default_value <> ''),
+  CHECK (status <> 'pending' OR recorded_by GLOB 'human:*' OR (source = 'plan-default' AND decision_id IS NOT NULL))
+);
+CREATE INDEX assumptions_campaign ON assumptions(campaign_id, status);
+
 CREATE TABLE candidates (
   id                 TEXT PRIMARY KEY,
   mission_id         TEXT NOT NULL REFERENCES missions(id),
@@ -286,8 +316,9 @@ CREATE TABLE gate_evaluations (
   revision       TEXT NOT NULL,
   experiment_id  TEXT NOT NULL REFERENCES experiments(id),
   candidate_id   TEXT REFERENCES candidates(id),
-  target         TEXT NOT NULL CHECK (target IN ('base','candidate')),
+  target         TEXT NOT NULL CHECK (target IN ('base','candidate','integrated')),
   diff_digest    TEXT,
+  integration_id TEXT REFERENCES integrations(id),
   harness_digest TEXT NOT NULL,
   executions     TEXT NOT NULL,
   conclusion     TEXT NOT NULL,
@@ -327,6 +358,78 @@ CREATE TABLE ingest_sources (
   PRIMARY KEY (session_id, agent_id)
 );
 CREATE INDEX ingest_sources_project ON ingest_sources(project_id, mission_id);
+
+-- A campaign candidate on its way onto the integration ref (WS-R6). An integrated row names the
+-- derived decision that landed it; a candidate lands at most once.
+CREATE TABLE integrations (
+  id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES missions(id), project_id TEXT NOT NULL, mission_id TEXT NOT NULL REFERENCES missions(id),
+  candidate_id TEXT NOT NULL REFERENCES candidates(id), ref TEXT NOT NULL, onto TEXT NOT NULL, candidate_base TEXT NOT NULL,
+  method TEXT CHECK (method IN ('apply','three-way')), integrated_commit TEXT, integrated_tree TEXT, integrated_diff_digest TEXT,
+  state TEXT NOT NULL CHECK (state IN ('pending','evaluating','integrated','conflict','rejected','abandoned')),
+  conflict_paths TEXT NOT NULL DEFAULT '[]', acceptance_vacuous INTEGER, decision_id TEXT REFERENCES decisions(id),
+  application_id TEXT REFERENCES applications(id), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (state <> 'integrated' OR (integrated_commit IS NOT NULL AND decision_id IS NOT NULL)));
+CREATE INDEX integrations_campaign ON integrations(campaign_id, created_at);
+CREATE UNIQUE INDEX integrations_landed ON integrations(candidate_id) WHERE state = 'integrated';
+CREATE TABLE campaign_waves (campaign_id TEXT NOT NULL REFERENCES missions(id), seq INTEGER NOT NULL, from_commit TEXT NOT NULL,
+  to_commit TEXT NOT NULL, ticket_ids TEXT NOT NULL, review_mission_id TEXT REFERENCES missions(id), closed_at INTEGER NOT NULL,
+  PRIMARY KEY (campaign_id, seq));
+CREATE TABLE findings (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, campaign_id TEXT NOT NULL REFERENCES missions(id),
+  wave_seq INTEGER NOT NULL, review_mission_id TEXT NOT NULL REFERENCES missions(id), attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  path TEXT NOT NULL, severity TEXT NOT NULL CHECK (severity IN ('high','medium','low')), title TEXT NOT NULL, statement TEXT NOT NULL,
+  finding_artifact TEXT NOT NULL, corroborated_by TEXT NOT NULL DEFAULT '[]', fix_ticket_id TEXT, created_at INTEGER NOT NULL);
+
+-- Spec ingestion (WS-R14/R15/R16). Staleness has no column: it is the absence of an ir_spans row at
+-- the corpus's current revision (P2-R53). Rows here are added, never rewritten, by a revision.
+CREATE TABLE corpus_revisions (id TEXT PRIMARY KEY, corpus_id TEXT NOT NULL REFERENCES missions(id), project_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  manifest_path TEXT NOT NULL, manifest_digest TEXT NOT NULL, commits TEXT NOT NULL, corpus_digest TEXT NOT NULL, docs TEXT NOT NULL, precedence TEXT NOT NULL,
+  dependencies TEXT NOT NULL, unordered TEXT NOT NULL, section_index TEXT NOT NULL REFERENCES artifacts(id), section_set_digest TEXT NOT NULL,
+  sectioner_version TEXT NOT NULL, config_digest TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (corpus_id, seq), UNIQUE (corpus_id, corpus_digest, config_digest));
+CREATE TABLE ir_records (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
+  kind TEXT NOT NULL CHECK (kind IN ('requirement','invariant','constraint','interface','acceptance-condition','decision','dependency','non-goal','deferral',
+    'open-question','ambiguity','contradiction')),
+  source TEXT NOT NULL CHECK (source IN ('extracted','inferred')), doc_key TEXT, quote TEXT NOT NULL, other_quote TEXT, statement TEXT NOT NULL,
+  attrs TEXT NOT NULL DEFAULT '{}', basis_sections TEXT NOT NULL DEFAULT '[]', confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+  content_digest TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected','superseded')), ir_version TEXT NOT NULL,
+  proposed_by TEXT NOT NULL, first_revision TEXT NOT NULL REFERENCES corpus_revisions(id), proposal_artifact TEXT, decision_id TEXT REFERENCES decisions(id),
+  assumption_id TEXT REFERENCES assumptions(id), overridden_by TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (status NOT IN ('approved','rejected','superseded') OR decision_id IS NOT NULL),
+  CHECK (source = 'inferred' OR (quote <> '' AND doc_key IS NOT NULL)),
+  CHECK (status <> 'approved' OR source = 'extracted' OR basis_sections <> '[]' OR assumption_id IS NOT NULL));
+CREATE INDEX ir_records_corpus ON ir_records(corpus_id, status, kind);
+CREATE TABLE ir_spans (ir_id TEXT NOT NULL REFERENCES ir_records(id), revision_id TEXT NOT NULL REFERENCES corpus_revisions(id),
+  role TEXT NOT NULL CHECK (role IN ('primary','other')), doc_key TEXT NOT NULL, section_id TEXT NOT NULL, start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL,
+  quote_digest TEXT NOT NULL, carry TEXT NOT NULL CHECK (carry IN ('proposed','carried','moved','review')),
+  CHECK (start_byte >= 0 AND end_byte > start_byte), PRIMARY KEY (ir_id, revision_id, role));
+CREATE INDEX ir_spans_locate ON ir_spans(revision_id, doc_key, start_byte);
+CREATE TABLE ir_observations (ir_id TEXT NOT NULL REFERENCES ir_records(id), attempt_id TEXT NOT NULL REFERENCES attempts(id), runner_id TEXT NOT NULL,
+  window_id TEXT NOT NULL, confidence REAL NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (ir_id, attempt_id));
+CREATE TABLE ir_links (from_ir TEXT NOT NULL REFERENCES ir_records(id), to_ir TEXT NOT NULL REFERENCES ir_records(id),
+  kind TEXT NOT NULL CHECK (kind IN ('contradicts','overrides','duplicates','refines','depends-on','same-contract','ambiguous-with')),
+  basis TEXT NOT NULL CHECK (basis IN ('extractor','detector','precedence','dependency','review','human')), created_at INTEGER NOT NULL, PRIMARY KEY (from_ir, to_ir, kind));
+CREATE TABLE ir_findings (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
+  review_mission_id TEXT NOT NULL REFERENCES missions(id), attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  kind TEXT NOT NULL CHECK (kind IN ('omission','contradiction','invented-requirement','wrong-dependency','infeasible-boundary','wrong-kind','wrong-span','ambiguity')),
+  severity TEXT NOT NULL CHECK (severity IN ('high','medium','low')), ir_id TEXT REFERENCES ir_records(id), element_id TEXT, span TEXT, title TEXT NOT NULL,
+  statement TEXT NOT NULL, finding_artifact TEXT NOT NULL, corroborated_by TEXT NOT NULL DEFAULT '[]', decision_id TEXT REFERENCES decisions(id),
+  disposition TEXT NOT NULL CHECK (disposition IN ('open','accepted','dismissed')), created_at INTEGER NOT NULL, CHECK (disposition = 'open' OR decision_id IS NOT NULL));
+CREATE TABLE blueprints (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
+  revision_id TEXT NOT NULL REFERENCES corpus_revisions(id), ir_set_digest TEXT NOT NULL, body_artifact TEXT NOT NULL, blueprint_digest TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected','superseded')), proposed_by TEXT NOT NULL, attempt_id TEXT REFERENCES attempts(id),
+  decision_id TEXT REFERENCES decisions(id), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (status NOT IN ('approved','rejected') OR decision_id IS NOT NULL));
+CREATE TABLE blueprint_derivations (blueprint_id TEXT NOT NULL REFERENCES blueprints(id), element_id TEXT NOT NULL, ir_id TEXT NOT NULL REFERENCES ir_records(id),
+  role TEXT NOT NULL CHECK (role IN ('bounds','invariant','requirement','interface','constraint','deferred','out-of-scope')), PRIMARY KEY (blueprint_id, element_id, ir_id, role));
+CREATE INDEX blueprint_derivations_ir ON blueprint_derivations(ir_id);
+CREATE TABLE packets (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, blueprint_id TEXT NOT NULL REFERENCES blueprints(id), component_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL, packet_digest TEXT NOT NULL, body_artifact TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('proposed','emitted','superseded')),
+  proposed_by TEXT NOT NULL, attempt_id TEXT REFERENCES attempts(id), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE (blueprint_id, ticket_id, packet_digest));
+CREATE TABLE ticket_trace (campaign_id TEXT NOT NULL REFERENCES missions(id), ticket_id TEXT NOT NULL, ir_id TEXT NOT NULL REFERENCES ir_records(id),
+  role TEXT NOT NULL CHECK (role IN ('requirement','obligation','interface','artifact','context')), detail TEXT, packet_id TEXT REFERENCES packets(id),
+  hand_edited INTEGER NOT NULL DEFAULT 0 CHECK (hand_edited IN (0,1)), PRIMARY KEY (campaign_id, ticket_id, ir_id, role));
+CREATE INDEX ticket_trace_ir ON ticket_trace(ir_id);
+CREATE INDEX assumptions_owner_decision ON assumptions(project_id, owner_decision_id);
 `;
 
 /**
@@ -469,4 +572,24 @@ export function parseJson<T>(text: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Whether `ingest bench` created this store: a throwaway whose decisions are the bench's (P2-R61). */
+export function isBenchDb(db: DatabaseSync): boolean {
+  const r = db.prepare("SELECT value FROM daylight_meta WHERE key='bench'").get() as { value: string } | undefined;
+  return r?.value === '1';
+}
+
+/** Mark a fresh store as a bench store; refused once it holds any mission or decision. */
+export function markBenchDb(db: DatabaseSync): void {
+  const used = db.prepare('SELECT (SELECT COUNT(*) FROM missions) + (SELECT COUNT(*) FROM decisions) AS n').get() as { n: number };
+  if (used.n > 0) throw new Error('only a fresh store becomes a bench store');
+  db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('bench', '1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
+}
+
+/** P2-R61: the bench's stand-in decides only on a store `ingest bench` created, and there only it decides. */
+export function benchActorRefusal(db: DatabaseSync, actor: string): void {
+  const bench = isBenchDb(db);
+  if (isBenchActor(actor) && !bench) throw new Error(`a ${actor} decision is recorded only on a bench store; this store is not one`);
+  if (bench && !isBenchActor(actor)) throw new Error(`a bench store records bench:<step> decisions only, not ${actor}`);
 }

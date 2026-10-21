@@ -1,0 +1,61 @@
+{
+ "kind": "daylight-review-script",
+ "v": 1,
+ "note": "The scripted reviewer (§11.2): four findings. The scripted approve-ir set accepts two and dismisses two, matched to the stored findings by record id, kind and quote digest (P2-R61), never by order. Accepting the invented-requirement finding rejects that record and a correction re-covers its passage with an honest statement; the omission gets a correction of its own.",
+ "findings": [
+  {
+   "kind": "omission",
+   "severity": "medium",
+   "title": "Hostile input rule not extracted",
+   "statement": "The never-panic rule for pack bytes is normative.",
+   "docKey": "olc-agents",
+   "quote": "Packs come from USB sticks.",
+   "disposition": "accept"
+  },
+  {
+   "kind": "invented-requirement",
+   "severity": "medium",
+   "title": "Record states more than the text",
+   "statement": "The record adds a requirement the passage does not make.",
+   "irKey": "u:adr-0004:412",
+   "disposition": "accept"
+  },
+  {
+   "kind": "contradiction",
+   "severity": "low",
+   "title": "Catalog vs MCP timing",
+   "statement": "ADR 0014 and §26 disagree on MCP timing.",
+   "irKey": "h080",
+   "disposition": "dismiss"
+  },
+  {
+   "kind": "wrong-dependency",
+   "severity": "low",
+   "title": "Engine depends on learner",
+   "statement": "E4 should not need L4.",
+   "irKey": "h159",
+   "disposition": "dismiss"
+  }
+ ],
+ "reject": [
+  "u:adr-0004:412"
+ ],
+ "corrections": [
+  {
+   "kind": "constraint",
+   "source": "extracted",
+   "statement": "Pack bytes are hostile input.",
+   "confidence": 1,
+   "docKey": "olc-agents",
+   "quote": "Packs come from USB sticks."
+  },
+  {
+   "kind": "requirement",
+   "source": "extracted",
+   "statement": "Every content revision carries a validation record naming its proof kind.",
+   "confidence": 1,
+   "docKey": "adr-0004",
+   "quote": "`validation`: `{ proof_kind, checks_passed[], tool_versions, report: RevisionDigest }`."
+  }
+ ]
+}

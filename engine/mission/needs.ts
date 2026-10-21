@@ -1,4 +1,7 @@
 import { ambiguities } from '../forge/decompose.ts';
+import { ingestNeeds } from '../forge/authority.ts';
+import { campaignNeeds, directorApplies } from '../forge/campaign-needs.ts';
+import { dependencyNeeds } from '../forge/dependency-requests.ts';
 import type { DaylightContext } from './context.ts';
 import { compare, missionClaims, type Comparison } from './disputes.ts';
 import type { Candidate, Decision, Experiment, GateEvaluation, Mission, Need } from './types.ts';
@@ -130,13 +133,18 @@ function candidateNeeds(ctx: DaylightContext, mission: Mission): Need[] {
 
 function implementNeeds(ctx: DaylightContext, mission: Mission): Need[] {
   const out: Need[] = [];
+  // A campaign child whose director integrates: its grant, verdict and apply are the director's.
+  const parent = mission.parentId ? ctx.store.mission(mission.parentId) : null;
+  if (parent?.kind === 'campaign' && directorApplies(ctx, parent)) {
+    return [...gateNeeds(ctx, mission), ...dependencyNeeds(ctx, mission)];
+  }
   if (mission.state === 'draft' && !ctx.store.authorizeDecision(mission.id)) {
     out.push({
       kind: 'mission-awaiting-authorize', ref: mission.id,
       why: `implement mission ${mission.id} is a draft without write; a person authorizes it before anything runs`,
     });
   }
-  return [...out, ...gateNeeds(ctx, mission), ...candidateNeeds(ctx, mission)];
+  return [...out, ...gateNeeds(ctx, mission), ...candidateNeeds(ctx, mission), ...dependencyNeeds(ctx, mission)];
 }
 
 export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Comparison): Need[] {
@@ -147,6 +155,8 @@ export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Com
   switch (mission.kind) {
     case 'spec': return specNeeds(ctx, mission);
     case 'implement': return implementNeeds(ctx, mission);
+    case 'campaign': return campaignNeeds(ctx, mission);
+    case 'corpus': return ingestNeeds(ctx, mission);
     case 'work': return [];
     default: return disputeNeeds(ctx, mission, comparison);
   }

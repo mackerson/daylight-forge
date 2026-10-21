@@ -38,11 +38,21 @@ export interface ParsedFile {
   functions: FunctionRecord[];
   calls: CallSite[];
   literals: LiteralRecord[];
+  /**
+   * Problems the provider recovered from, e.g. a syntax error an error-tolerant parser parsed
+   * around. Reported as graph diagnostics; the records above are still whatever it could read.
+   */
+  diagnostics?: string[];
 }
 
 export interface Parser {
   name: string;
   /** File extensions this provider claims, with leading dot. */
   extensions: string[];
+  /**
+   * One-time async setup, e.g. compiling a WebAssembly grammar. `loadParsers()` awaits it for
+   * every provider; `parse()` stays synchronous and may throw if called before it settles.
+   */
+  init?(): Promise<void>;
   parse(relPath: string, source: string, contentHash: string): ParsedFile;
 }

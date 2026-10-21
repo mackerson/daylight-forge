@@ -111,6 +111,13 @@ export function findEntrypoints(graph: Graph, files: Set<string>): string[] {
       found.add(f);
     }
     if (/\.config\.[cm]?[jt]s$/.test(base)) found.add(f);
+    // Cargo fixes a crate's roots by layout rather than declaring them, at any depth — the
+    // same set `crateRoot()` in extract/rust-resolve.ts treats as roots.
+    if (/(^|\/)(src\/(main|lib)|src\/bin\/[^/]+|build)\.rs$/.test(f)) found.add(f);
+    // Integration tests, examples and benches are roots only beside a Cargo.toml; a `tests/`
+    // directory elsewhere is an ordinary module directory.
+    const target = /^(?:(.*)\/)?(tests|examples|benches)\/[^/]+(\/main)?\.rs$/.exec(f);
+    if (target && fs.existsSync(path.join(graph.root, target[1] ?? '', 'Cargo.toml'))) found.add(f);
   }
 
   return [...found].sort();
@@ -123,7 +130,11 @@ function literalCorpus(graph: Graph): Set<string> {
   return out;
 }
 
-export function detectStructure(graph: Graph): StructureReport {
+/**
+ * `churn: false` runs no git at all: a materialised tree (refine's map at a revision) has no
+ * history of its own, and git run there would find whatever repository encloses it.
+ */
+export function detectStructure(graph: Graph, opts: { churn?: boolean } = {}): StructureReport {
   const files = new Set(graph.nodes.filter((n) => n.kind === 'file').map((n) => n.id));
   // HTML is not parsed into the graph, so offer it to entrypoint discovery separately.
   const htmlFiles = new Set([...files]);
@@ -145,8 +156,10 @@ export function detectStructure(graph: Graph): StructureReport {
   // ---- reachability ----------------------------------------------------------
   const outgoing = new Map<string, Set<string>>();
   const incoming = new Map<string, Set<string>>();
+  // Containment counts here: a file→symbol edge folds to its own file and drops out, while a
+  // Rust `mod x;` (file→file) is how a module file is reached at all.
   for (const e of graph.edges) {
-    if (e.external || e.kind === 'contains') continue;
+    if (e.external) continue;
     const from = fileOf(e.from);
     const to = fileOf(e.to);
     if (!files.has(from) || !files.has(to) || from === to) continue;
@@ -247,6 +260,27 @@ export function detectStructure(graph: Graph): StructureReport {
   }
 
   // ---- cycles (Tarjan over the file graph) -----------------------------------
+  /**
+   * Dependencies only. A Rust `mod x;` is containment, and a child's `use super::…`, `impl` or
+   * supertrait back to the file that declared it is the module tree's parent link; counting
+   * either would report every crate's module tree as a cycle. Every other edge, calls
+   * included, counts.
+   */
+  const declares = new Set(
+    graph.edges.filter((e) => e.kind === 'contains' && files.has(e.to)).map((e) => `${e.from}\n${e.to}`),
+  );
+  const dependsOn = new Map<string, Set<string>>();
+  for (const e of graph.edges) {
+    if (e.external || e.kind === 'contains') continue;
+    // Heritage edges are symbol-level, so both kinds of parent link compare as files.
+    if ((e.spec?.startsWith('super::') || e.kind === 'implements' || e.kind === 'extends') &&
+      declares.has(`${fileOf(e.to)}\n${fileOf(e.from)}`)) continue;
+    const from = fileOf(e.from);
+    const to = fileOf(e.to);
+    if (!files.has(from) || !files.has(to) || from === to) continue;
+    (dependsOn.get(from) ?? dependsOn.set(from, new Set()).get(from)!).add(to);
+  }
+
   const cycles: Cycle[] = [];
   {
     const index = new Map<string, number>();
@@ -262,7 +296,7 @@ export function detectStructure(graph: Graph): StructureReport {
       stack.push(v);
       onStack.add(v);
 
-      for (const w of outgoing.get(v) ?? []) {
+      for (const w of dependsOn.get(v) ?? []) {
         if (!index.has(w)) {
           strongconnect(w);
           low.set(v, Math.min(low.get(v)!, low.get(w)!));
@@ -282,7 +316,7 @@ export function detectStructure(graph: Graph): StructureReport {
         if (component.length > 1) {
           const members = new Set(component);
           let internal = 0;
-          for (const m of component) for (const t of outgoing.get(m) ?? []) if (members.has(t)) internal++;
+          for (const m of component) for (const t of dependsOn.get(m) ?? []) if (members.has(t)) internal++;
           cycles.push({ members: component.sort(), internalEdges: internal });
         }
       }
@@ -329,7 +363,7 @@ export function detectStructure(graph: Graph): StructureReport {
     if (n.kind === 'file') continue;
     symbolsPerFile.set(n.file, (symbolsPerFile.get(n.file) ?? 0) + 1);
   }
-  const churn = churnByFile(graph.root);
+  const churn = opts.churn === false ? new Map<string, number>() : churnByFile(graph.root);
   const fanIns = [...files].map((f) => incoming.get(f)?.size ?? 0).sort((a, b) => a - b);
   // Relative, not absolute: "a lot of dependents" only means anything for this codebase.
   const p90 = fanIns[Math.floor(fanIns.length * 0.9)] ?? 0;

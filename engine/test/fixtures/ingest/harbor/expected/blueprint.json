@@ -1,0 +1,175 @@
+{
+ "kind": "daylight-blueprint-template",
+ "v": 1,
+ "note": "By construction from the README map.",
+ "rest": "not placed: rationale or context",
+ "body": {
+  "kind": "daylight-blueprint",
+  "version": 1,
+  "title": "Harbor Ledger W1–W2",
+  "scope": {
+   "milestones": [
+    "W1",
+    "W2"
+   ]
+  },
+  "ticketIdTemplate": "{milestone}.{component}{k}",
+  "boundaries": [
+   {
+    "id": "ledger-core",
+    "title": "Ledger library",
+    "domain": "harbor",
+    "lifecycle": "in-repo",
+    "owns": [
+     "lib/ledger/"
+    ],
+    "bounds": [
+     "ir:hl-req-003"
+    ],
+    "invariants": [
+     "ir:hl-req-002",
+     "ir:hl-req-003"
+    ]
+   },
+   {
+    "id": "port-services",
+    "title": "Berth and tariff services",
+    "domain": "harbor",
+    "lifecycle": "in-repo",
+    "owns": [
+     "svc/berth/",
+     "svc/tariff/"
+    ],
+    "bounds": [
+     "ir:hl-req-001"
+    ],
+    "invariants": [
+     "ir:hl-req-001"
+    ]
+   },
+   {
+    "id": "audit",
+    "title": "Audit service",
+    "domain": "harbor",
+    "lifecycle": "in-repo",
+    "owns": [
+     "svc/audit/"
+    ],
+    "bounds": [
+     "ir:hl-req-060"
+    ],
+    "invariants": []
+   }
+  ],
+  "components": [
+   {
+    "id": "K",
+    "boundary": "ledger-core",
+    "title": "Ledger",
+    "owns": [
+     "lib/ledger/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:hl-req-010",
+     "ir:hl-req-011",
+     "ir:hl-req-012",
+     "ir:dr01",
+     "ir:dr01-c",
+     "ir:hl-req-020",
+     "ir:hl-req-022",
+     "ir:am-a2",
+     "ir:hl-req-023",
+     "ir:hl-req-080",
+     "ir:hl-req-081"
+    ],
+    "dependsOn": [],
+    "provides": [
+     "ledger.append"
+    ],
+    "consumes": []
+   },
+   {
+    "id": "V",
+    "boundary": "port-services",
+    "title": "Port services",
+    "owns": [
+     "svc/berth/",
+     "svc/tariff/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:hl-req-030",
+     "ir:hl-req-031",
+     "ir:am-a1",
+     "ir:hl-req-040",
+     "ir:hl-req-041",
+     "ir:hl-req-042",
+     "ir:hl-req-043",
+     "ir:dr02",
+     "ir:dr02-c",
+     "ir:am-a4",
+     "ir:hl-req-050",
+     "ir:hl-req-051",
+     "ir:dr03",
+     "ir:dr03-c",
+     "ir:am-a5",
+     "ir:hl-req-052"
+    ],
+    "dependsOn": [
+     "K"
+    ],
+    "provides": [],
+    "consumes": [
+     "ledger.append"
+    ]
+   },
+   {
+    "id": "Q",
+    "boundary": "audit",
+    "title": "Audit",
+    "owns": [
+     "svc/audit/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:hl-req-060",
+     "ir:hl-req-061",
+     "ir:hl-req-070",
+     "ir:hl-req-071",
+     "ir:am-a6"
+    ],
+    "dependsOn": [
+     "K"
+    ],
+    "provides": [],
+    "consumes": [
+     "ledger.append"
+    ]
+   }
+  ],
+  "interfaces": [
+   {
+    "id": "ledger.append",
+    "owner": "K",
+    "irIds": [
+     "ir:hl-req-021"
+    ],
+    "summary": "Append an entry; refused on a predecessor mismatch.",
+    "crossesBoundary": true
+   }
+  ],
+  "order": [
+   [
+    "K"
+   ],
+   [
+    "Q",
+    "V"
+   ]
+  ],
+  "constraints": [],
+  "deferred": [],
+  "outOfScope": []
+ }
+}

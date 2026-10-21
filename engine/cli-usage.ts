@@ -12,7 +12,7 @@ export const COMMANDS = [
   'extract', 'invariants', 'focus', 'map', 'export', 'import', 'adopt', 'check', 'plan', 'derive', 'query',
   'save-invariant', 'try-invariant', 'arbitrate', 'agent', 'run', 'adapters', 'quality',
   'mission', 'experiment', 'artifact', 'events', 'report', 'demo',
-  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest',
+  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest', 'deps', 'campaign', 'assumption', 'corpus', 'trace',
 ] as const;
 
 export const USAGE = `Daylight Software Forge — get all the data, then focus it down.
@@ -57,12 +57,46 @@ usage:
   node engine/cli.ts mission    create <repo> --kind implement (--work-item <w> | --no-work-item --objective '<o>' --rationale '<why>')
                                 authorize <m> --write [--execute] [--max-usd N] --rationale '<why>' --confirm <c>
   node engine/cli.ts gate       add <m> --role gate|holdout --test <file> --expect-exit 0 --expect-stdout '# fail 0'
+                                [--harness node|cargo] [--crate <dir>]   # cargo: --expect-stdout 'test result: ok.'
                                 baseline <m> [repo] | lock <m> --rationale '<why>' --confirm <c> | list <m> | evaluate <c>
+                                try <repo> --harness node|cargo --test <file> [--crate <dir>] [--expect-exit n --expect-stdout s] [--rev r]
+                                    # baseline one test in the sandbox; no store, no mission, no rows; allowed in an agent session
   node engine/cli.ts forge      run <m> <repo> --tools mock[:model] [--max-cost <usd>] [--timeout s] [--keep-workspace]
                                 evaluate <c> | candidate <c> [--max-bytes N]
                                 approve|reject|override <c> --rationale '<why>' --confirm <c> | apply <c> <repo> --confirm <c>
+                                | acknowledge-forgery <c> --rationale '<why>' --confirm <c> [--declined]
   node engine/cli.ts confirm    <operation> <subject> [--write] [--execute] [--max-usd N] [--only x,…]   # what --confirm checks
   node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
+                                bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json]   # live modes refused (P2-R7)
+  node engine/cli.ts deps       snapshot <repo> [--out <dir>]   # cargo fetch --locked on the host, with network
+                                status <repo> [--out <dir>]     # recorded digest, Cargo.lock match, cache sizes
+                                requests [--mission <m>]        # dependencies authors asked for
+                                resolve <request-id> [--declined] --rationale '<why>' --confirm <c>
+  node engine/cli.ts campaign   validate <plan> <repo> [--rev HEAD] | import <repo> --file <plan> [--rev HEAD] [--campaign <c>] | show <c>
+                                approve-plan <c> --rationale '<why>' --confirm <c8> | retry <c> <ticket> --rationale '<why>' --confirm <c8>
+                                authorize <c> --expected-gate-set <digest> --roster mock --max-usd-total N --max-usd-per-mission N
+                                  --max-turns N --timeout s --max-attempts N --concurrency N --auto-apply integration-ref|none
+                                  [--execute] [--wave-size N] [--review-roster a,b] [--fix-lane 5:1.5|off] [--tickets A,B]
+                                  [--not-after 72h] [--identity 'Name <email>'] [--regression-check full|scoped|off]
+                                  --rationale '<why>' --confirm <c8>
+                                gate register <c> --role holdout|gate|regression --file <host path> [--ticket T] --expect-exit n --expect-stdout s | gate list <c>
+                                baseline <c> <repo> | lock <c> --ratchet|--no-ratchet --rationale '<why>' [--accept-vacuous x,…]
+                                  [--obligations T:ob1,x_…=T:ob2] --confirm <c8>   # binds acceptance obligations to locked gates
+                                run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run] | status <c> [<repo>] [--write]
+                                halt <c> --rationale '<why>' | resume <c> --halt <d> --rationale '<why>' --confirm <c8>
+                                adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
+                                list [<repo>] | report <c> [<repo>] [--wave n | --open | --all] [--format json|md] [--write]
+                                refine <c> [<repo>] [--rev <sha>] [--rows-only | --cached]   # maps under <out> only; allowed in an agent session
+  node engine/cli.ts assumption list <c> [--status open|pending|confirmed|overturned]
+                                record <c> --question '<q>' --default '<d>' [--ticket T] --rationale '<why>' --confirm <c8>
+                                confirm <u> | decide <u> --value '<v>' | overturn <u> --value '<v>' --follow-up '<s>' [--lane L] [--scope a,b]
+                                  (each --rationale '<why>' --confirm <c8>)
+  node engine/cli.ts corpus     register <repo> --manifest <path> [--rev R] [--project alias=<repo>[@rev]]…
+                                show|sections <corpus> [--revision cr_…] [--doc K] | ir list <corpus> [--status s] [--kind k] [--stale]
+                                extract <corpus> <repo> --tools a,b [--windows w,…] [--force] [--timeout s] | coverage <corpus> [--format json|md] [--write]
+  node engine/cli.ts trace      passage <corpus> --doc K (--section <id> | --label <label> | --range a-b) [--revision cr_…]
+                                | requirement <ir_…> | ticket <c> <ticket> | landing <commit | i_… | c_…> [--campaign <c>]
+                                | matrix <c> [--write]   # all read-only, [--format json|md]; --write is refused in an agent session
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>

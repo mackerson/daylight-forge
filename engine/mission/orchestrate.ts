@@ -211,6 +211,31 @@ export function planMissionRoster(tools: string[], model?: string): RosterPlan {
   return { runnable, unavailable };
 }
 
+/** An outbox run's roster: each named task of its role on the mission, by its runner hint. */
+function outboxRoster(ctx: DaylightContext, missionId: string, outbox: OutboxRun, model?: string): RosterPlan {
+  const runnable: Array<RosterPlan['runnable'][number] & { taskId: string }> = [];
+  const unavailable: string[] = [];
+  for (const id of [...new Set(outbox.taskIds)]) {
+    const task = ctx.store.task(id);
+    if (!task || task.missionId !== missionId || task.role !== outbox.role || !task.runnerHint) {
+      unavailable.push(`${id} (not a ${outbox.role} task of mission ${missionId} with a runner hint)`);
+      continue;
+    }
+    const spec = parseSpec(task.runnerHint, model);
+    const adapter = adapterFor(spec.tool);
+    if (!adapter) {
+      unavailable.push(`${spec.tool} (no adapter)`);
+      continue;
+    }
+    if (adapter.name !== 'mock' && !available(adapter)) {
+      unavailable.push(`${specKey(spec)} (not installed)`);
+      continue;
+    }
+    runnable.push({ spec, adapter, taskId: task.id });
+  }
+  return { runnable, unavailable };
+}
+
 // ---- the prompt ------------------------------------------------------------------
 
 /**
@@ -282,7 +307,35 @@ export interface RunMissionOptions {
   onProgress?: (mission: Mission, note: string) => void;
   /** Redacted console chunks from the running agent, for a live console. */
   onChunk?: (attemptId: string, stream: 'stdout' | 'stderr', text: string) => void;
+  /**
+   * Review this materialised tree instead of the checkout: a campaign's wave review reads the
+   * integration ref's commit, which is not what is checked out (§6.2). Bound read-only like the root.
+   */
+  tree?: string;
+  /**
+   * The MCP server each review attempt gets instead of the claims server, with the tools its
+   * attempts may call. Sandboxed only; no compare step follows (a wave review files findings).
+   */
+  reviewServer?: { serve: (attempt: Attempt) => McpServer; allowedTools: string[] };
+  /** Record each attempt's share of the ceiling on `attempts.max_cost_usd`: a campaign's reservation (P2-R18, P2-R35). */
+  reserve?: boolean;
+  /**
+   * An outbox role's run (spec ingestion §13.0): the caller's pre-created tasks, each with its own
+   * prompt and one append-only tool served over the attempt's socket. Exclusive with `role`,
+   * `prompt` and `reviewServer`; always sandboxed; no compare step; the caller ingests the outbox.
+   */
+  outbox?: OutboxRun;
 }
+
+/**
+ * One outbox role's attempts on a corpus mission or its audit child. Each task is bound to its input
+ * by `inputs[0]` (an extract window, say) and to its source by `runnerHint`; the caller creates them.
+ */
+export interface OutboxRun { role: 'extract' | 'ir-review' | 'architect' | 'packetize'; taskIds: string[];
+  promptFor(task: Task): string; serve(attempt: Attempt): McpServer; allowedTools: readonly string[] }
+/** Runs an outbox role's tasks to completion; the real one is `runMission({ outbox })`, tests pass a scripted one. */
+export type OutboxRunner = (ctx: DaylightContext, run: { missionId: string; repo: string; tools: string[]; outbox: OutboxRun; timeoutMs?: number }) => Promise<void>;
+const OUTBOX_ROLES: readonly TaskRole[] = ['extract', 'ir-review', 'architect', 'packetize'];
 
 export interface ReviewPlan {
   spec: AgentSpec;
@@ -303,6 +356,9 @@ export interface RunMissionReport {
   costKnown: boolean;
 }
 
+/** Where a mission's run claim lives; `campaign list` and `report` read it, nothing else writes it. */
+export const runClaimFile = (out: string, missionId: string): string => path.join(out, `mission-run.${missionId}.pid`);
+
 /**
  * The claim one process holds on running a mission: `<out>/mission-run.<id>.pid`.
  *
@@ -313,7 +369,7 @@ export interface RunMissionReport {
  * file, which names a dead pid and so is taken over.
  */
 export function takeRunClaim(out: string, missionId: string): () => void {
-  const file = path.join(out, `mission-run.${missionId}.pid`);
+  const file = runClaimFile(out, missionId);
   for (let tries = 0; tries < 2; tries++) {
     try {
       fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
@@ -380,8 +436,21 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     );
   }
   const notes: string[] = [];
-  const role = opts.role ?? 'review';
-  if (role !== 'review' && role !== 'decompose') throw new Error(`runMission runs review or decompose attempts, not ${String(role)}`);
+  const outbox = opts.outbox;
+  if (outbox && (opts.role !== undefined || opts.prompt !== undefined || opts.reviewServer)) {
+    throw new Error('an outbox run brings its own role, prompts and server; role, prompt and reviewServer do not apply');
+  }
+  const role: TaskRole = outbox ? outbox.role : opts.role ?? 'review';
+  if (outbox) {
+    if (!OUTBOX_ROLES.includes(outbox.role)) throw new Error(`runMission runs no ${String(outbox.role)} outbox`);
+    const parent = mission.parentId ? ctx.store.mission(mission.parentId) : null;
+    if (mission.kind !== 'corpus' && !(mission.kind === 'audit' && parent?.kind === 'corpus')) {
+      throw new Error(`mission ${mission.id} is ${mission.kind}; ${outbox.role} runs on a corpus mission or its audit child`);
+    }
+    if (opts.noReviewSandbox || opts.unsandboxedReview) {
+      throw new Error(`--no-review-sandbox and --unsandboxed-review do not apply to ${outbox.role}: its tool is reached only over the socket`);
+    }
+  } else if (role !== 'review' && role !== 'decompose') throw new Error(`runMission runs review or decompose attempts, not ${String(role)}`);
   if (role === 'decompose' && mission.kind !== 'spec') throw new Error(`mission ${mission.id} is ${mission.kind}; only a spec mission decomposes`);
   if (role === 'review' && mission.kind === 'spec') throw new Error(`mission ${mission.id} is a spec mission; it is decomposed, not reviewed`);
   // Decomposers reach their one tool only over the attempt socket, so they are always sandboxed.
@@ -408,7 +477,10 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         'or --no-review-sandbox for an all-mock roster',
     );
   }
-  const sandboxed = role === 'decompose' || (!declined && detected.available);
+  const sandboxed = role === 'decompose' || outbox !== undefined || (!declined && detected.available);
+  if (opts.reviewServer && (!sandboxed || role !== 'review')) {
+    throw new Error('a custom review server runs only on sandboxed review attempts, over their own socket');
+  }
   const profile = sandboxed ? detected : null;
   if (profile && !profile.available) {
     throw new Error(`${role} attempts run under the bwrap review profile, which cannot be built here: ${profile.why ?? 'unavailable'}`);
@@ -425,7 +497,8 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
       );
     }
   }
-  const planned = planMissionRoster(opts.tools, opts.model);
+  // An outbox run's roster is its tasks' runner hints: one task per (input, tool), so a tool repeats.
+  const planned = outbox ? outboxRoster(ctx, mission.id, outbox, opts.model) : planMissionRoster(opts.tools, opts.model);
   const unavailable = [...planned.unavailable];
   const runnable = planned.runnable.filter(({ spec }) => {
     if (!sandboxed || spec.tool === 'mock') return true;
@@ -447,7 +520,11 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   // a new attempt on the same task rather than a new task with no history.
   const existing = tasksBySource(ctx.store.tasks(mission.id), role);
   const plans: ReviewPlan[] = [];
-  for (const { spec, adapter } of runnable) {
+  for (const { spec, adapter, taskId } of runnable as Array<RosterPlan['runnable'][number] & { taskId?: string }>) {
+    if (outbox && taskId) {
+      plans.push({ spec, taskId, prompt: outbox.promptFor(ctx.store.task(taskId)!), mcpConfigPath: MCP_CONFIG });
+      continue;
+    }
     const key = specKey(spec);
     // decompose() pins its tasks to the roster entry as typed (`mock`), not its key (`mock:default`).
     let task = existing.get(key) ?? [...existing.values()].find((t) => specKey(parseSpec(t.runnerHint!, opts.model)) === key);
@@ -472,7 +549,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
   }
   const reviewTasks = ctx.store.tasks(mission.id).filter((t) => t.role === 'review');
   let compareTask = role === 'review' ? ctx.store.tasks(mission.id).find((t) => t.role === 'compare') : undefined;
-  if (role === 'review' && !compareTask && reviewTasks.length) {
+  if (role === 'review' && !opts.reviewServer && !compareTask && reviewTasks.length) {
     compareTask = ctx.store.createTask({
       missionId: mission.id,
       role: 'compare',
@@ -582,6 +659,7 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     const token = sandboxed ? newMcpToken() : undefined;
     const attempt = ctx.store.startAttempt({
       taskId: task.id, runnerId, sessionId: session, credential,
+      ...(opts.reserve && share !== undefined ? { maxCostUsd: share } : {}),
       ...(sandboxed ? { sandbox: SANDBOXED_REVIEW, mcpToken: token } : declined ? { sandbox: { reason: declined } } : {}),
     });
     open.add(attempt.id);
@@ -592,14 +670,15 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
 
     const run: Parameters<typeof captureRun>[1] = {
       prompt: plan.prompt,
-      cwd: root,
+      cwd: opts.tree ?? root,
       mcpConfigPath: plan.mcpConfigPath,
       session,
       model: spec.model,
       timeoutMs,
       maxTurns: 40,
       maxCost: share,
-      ...(role === 'decompose' ? { allowedTools: roleAllowlist('decompose') } : {}),
+      ...(role === 'decompose' ? { allowedTools: roleAllowlist('decompose') } : outbox ? { allowedTools: [...outbox.allowedTools] }
+        : opts.reviewServer ? { allowedTools: opts.reviewServer.allowedTools } : {}),
     };
     const capture: Parameters<typeof captureRun>[2] = {
       store: ctx.store,
@@ -633,10 +712,12 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
         if (mock.status !== 'available') throw new Error(mock.why);
         const serve = (): McpServer => (ctx.store.task(row.taskId)?.role === 'decompose'
           ? createDecomposeServer({ dir: ctx.out, attemptId: row.id, agentTool: spec.tool, model: spec.model, check: decomposeCheck }).server
-          : createServer({ dir: ctx.out, session, agentTool: spec.tool, model: spec.model, blindPrefix: mission.id }).server);
+          : outbox ? outbox.serve(row)
+          : opts.reviewServer ? opts.reviewServer.serve(row)
+            : createServer({ dir: ctx.out, session, agentTool: spec.tool, model: spec.model, blindPrefix: mission.id }).server);
         result = await withAttemptSocket(ctx, row, token!, serve, (mcp) => captureRun(mock.adapter, {
           ...run,
-          launch: reviewLauncher({ attempt: row, repo: root, mounts: mock.mounts, mcp, out: ctx.out, profile: profile! }),
+          launch: reviewLauncher({ attempt: row, repo: opts.tree ?? root, mounts: mock.mounts, mcp, out: ctx.out, profile: profile! }),
         }, capture));
       } catch (err) {
         // Fail closed: a review profile that cannot be built is a failed attempt, never an unsandboxed one.
@@ -692,7 +773,9 @@ export async function runMission(ctx: DaylightContext, opts: RunMissionOptions):
     return finish(report(undefined, spent, costKnown));
   }
   // A decompose run ends when its attempts do; what they proposed is ingested by decompose().
-  if (role === 'decompose') return finish(report(undefined, spent, costKnown));
+  // So does a run with its own review server: what it filed is ingested by its caller.
+  // And so does an outbox run: its caller ingests the outbox.
+  if (role === 'decompose' || opts.reviewServer || outbox) return finish(report(undefined, spent, costKnown));
 
   if (compareTask && ctx.store.task(compareTask.id)!.state !== 'done') {
     const comparison = runCompare(ctx, ctx.store.mission(mission.id)!, compareTask.id);

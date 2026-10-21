@@ -117,6 +117,50 @@ check('and its out is the pinned project\'s, for that checkout',
   prepared.out === outFor(`git:${EXPECTED_FIXTURE_COMMIT.slice(0, 12)}`, prepared.root, ENV), prepared.out);
 check('which is what defaultOut computes from the repo itself', prepared.out === defaultOut(prepared.root, ENV));
 
+section('campaign commands take the default out from their repo argument, not the cwd (P2-R37)');
+{
+  const planRepo = path.join(tmp, 'plan-repo');
+  fs.mkdirSync(planRepo);
+  git(planRepo, ['init', '-q']);
+  fs.writeFileSync(path.join(planRepo, 'a.ts'), 'export const a = 1;\n');
+  fs.writeFileSync(path.join(planRepo, 'daylight.plan.json'), JSON.stringify({
+    kind: 'daylight-plan', version: 1, title: 'out default', campaignGates: [],
+    lanes: [{ id: 'L', title: 'lane', owns: ['a.ts'] }],
+    tickets: [{ id: 'T1', lane: 'L', title: 'one', statement: 'one ticket', scope: ['a.ts'] }],
+  }));
+  git(planRepo, ['add', '.']);
+  git(planRepo, ['commit', '-q', '-m', 'plan']);
+  const elsewhere = path.join(tmp, 'elsewhere');
+  fs.mkdirSync(elsewhere);
+  const human = { ...ENV, CLAUDECODE: '', DAYLIGHT_SESSION: '' };
+  const run = (args: string[]) => {
+    try {
+      return { code: 0, out: execFileSync(process.execPath, [CLI, ...args], { encoding: 'utf8', stdio: 'pipe', cwd: elsewhere, env: human }) };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return { code: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+  };
+  const repoOut = defaultOut(planRepo, ENV);
+  check('map without --out, from another directory', run(['map', planRepo, '--top', '0']).code === 0);
+  const imported = run(['campaign', 'import', planRepo, '--file', 'daylight.plan.json', '--format', 'json']);
+  const id = imported.code === 0 ? (JSON.parse(imported.out) as { campaign: { id: string } }).campaign.id : '';
+  check('campaign import without --out writes under the repo\'s default out', !!id && fs.existsSync(path.join(repoOut, 'daylight.db')), imported.out.slice(-300));
+  check('and nothing under the cwd\'s', !fs.existsSync(path.join(defaultOut(elsewhere, ENV), 'daylight.db')));
+  check('campaign validate names its repo second and opens no store', run(['campaign', 'validate', 'daylight.plan.json', planRepo]).code === 0);
+  const listed = run(['campaign', 'list', planRepo, '--format', 'json']);
+  check('campaign list without --out reads the repo\'s default out', listed.code === 0 && listed.out.includes(id), listed.out.slice(-300));
+  check('campaign report and refine --rows-only take the out from their repo argument',
+    run(['campaign', 'report', id, planRepo, '--format', 'json']).code === 0 && run(['campaign', 'refine', id, planRepo, '--rows-only', '--format', 'json']).code === 0);
+  const explicit = path.join(tmp, 'campaign-explicit-out');
+  const mapped = run(['map', planRepo, '--out', explicit, '--top', '0']);
+  check('map with --out', mapped.code === 0, mapped.out.slice(-400));
+  const there = run(['campaign', 'import', planRepo, '--file', 'daylight.plan.json', '--out', explicit, '--format', 'json']);
+  const thereId = there.code === 0 ? (JSON.parse(there.out) as { campaign: { id: string } }).campaign.id : '';
+  check('an explicit --out wins over the repo argument', !!thereId && thereId !== id
+    && run(['campaign', 'show', thereId, '--out', explicit]).code === 0 && run(['campaign', 'show', thereId, '--out', repoOut]).code !== 0, there.out.slice(-300));
+}
+
 section('the test harness\'s own data home');
 {
   const script = path.join(tmp, 'harness-leak.ts');

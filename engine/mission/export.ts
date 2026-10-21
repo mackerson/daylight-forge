@@ -12,7 +12,7 @@ import type {
   Application, ArtifactRef, Attempt, Candidate, DaylightEvent, Decision, Experiment, GateEvaluation,
   IngestSource, Mission, ProjectIdentity, Task, UsageTurn, WorkItem,
 } from './types.ts';
-import { EXPORT_SCHEMA_VERSION } from './types.ts';
+import { EXPORT_SCHEMA_VERSION, isCampaignActor } from './types.ts';
 
 /**
  * A mission, whole, as one file — and the same mission back again.
@@ -104,8 +104,17 @@ function collectArtifactRefs(ctx: DaylightContext, parts: Omit<MissionExport, 'a
 }
 
 export function exportMission(ctx: DaylightContext, missionId: string): MissionExport {
+  if (ctx.store.isBench()) throw new Error('refused: this is a bench store (`ingest bench`, P2-R61); its rows are a benchmark\'s and never leave it');
   const mission = ctx.store.mission(missionId);
   if (!mission) throw new Error(`unknown mission ${missionId}`);
+  // P2-R14: a derived write grant never travels without the campaign it derives from.
+  if (mission.kind === 'campaign' || (mission.parentId !== undefined && ctx.store.mission(mission.parentId)?.kind === 'campaign')) {
+    throw new Error(`mission ${missionId} is ${mission.kind === 'campaign' ? 'a campaign' : 'a campaign\'s child'}; campaign missions are not exported`);
+  }
+  // An approve-ir never arrives by file, so neither does the corpus it approves (spec ingestion §12).
+  if (mission.kind === 'corpus' || (mission.parentId !== undefined && ctx.store.mission(mission.parentId)?.kind === 'corpus')) {
+    throw new Error(`mission ${missionId} is ${mission.kind === 'corpus' ? 'a corpus' : 'a corpus\'s review'}; corpus missions are not exported`);
+  }
   const project = ctx.store.project(mission.projectId);
   if (!project) throw new Error(`mission ${missionId} names project ${mission.projectId}, which is not recorded`);
   const tasks = ctx.store.tasks(missionId);
@@ -271,6 +280,11 @@ function importConflicts(ctx: DaylightContext, file: MissionExport): string[] {
  */
 function forgedRowRefusal(ctx: DaylightContext, file: MissionExport): string | null {
   const m = file.mission;
+  // P2-R14, the other way: no campaign, campaign child or campaign actor arrives by file.
+  if (m.kind === 'campaign' || m.parentId !== undefined) return `mission ${m.id} belongs to a campaign; campaign missions are not imported`;
+  if (m.kind === 'corpus') return `mission ${m.id} is a corpus; corpus missions are not imported`;
+  const derived = file.decisions.find((d) => isCampaignActor(d.actor));
+  if (derived) return `decision ${derived.id} is a campaign actor's; derived decisions are not imported`;
   const inFile = new Map(file.decisions.map((d) => [d.id, d]));
   for (const d of file.decisions) {
     if (d.missionId !== m.id) return `decision ${d.id} belongs to ${d.missionId}, not mission ${m.id}`;
@@ -308,6 +322,7 @@ function sameClaim(a: Claim, b: Claim): boolean {
  * tree. `force` is for a map that is not there yet, or an operator who knows better.
  */
 export function importMission(ctx: DaylightContext, file: MissionExport, opts: { force?: boolean } = {}): ImportResult {
+  if (ctx.store.isBench()) throw new Error('refused: this is a bench store (`ingest bench`, P2-R61); nothing is imported into it');
   const here = mappedProject(ctx.out);
   if (here && here.id !== file.project.id && !opts.force) {
     throw new Error(
@@ -435,9 +450,9 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
        (id, mission_id, task_id, project_id, runner_id, session_id, worktree, state, started_at,
         finished_at, cost_usd, exit_code, signal, timed_out, failure, artifacts, input_tokens,
         output_tokens, cache_read_tokens, cache_write_tokens, usage_source, cost_source, model,
-        parent_attempt_id, gate_set_digest, pid, heartbeat_at, origin, sandbox_profile, sandbox_network,
+        parent_attempt_id, gate_set_digest, max_cost_usd, pid, heartbeat_at, origin, sandbox_profile, sandbox_network,
         sandbox_write, sandbox_exec, authorize_decision_id, sandbox_reason, credential, mcp_token_digest)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const a of file.attempts) {
       const r = attempt.run(
@@ -446,7 +461,7 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
         a.timedOut ? 1 : 0, a.failure ?? null, JSON.stringify(a.artifacts),
         a.tokens.input, a.tokens.output, a.tokens.cacheRead, a.tokens.cacheWrite, a.usageSource,
         a.costSource, a.model ?? null, a.parentAttemptId ?? null, a.gateSetDigest ?? null,
-        a.pid ?? null, a.heartbeatAt ?? null, a.origin, a.sandbox?.profile ?? null, a.sandbox?.network ?? null,
+        a.maxCostUsd ?? null, a.pid ?? null, a.heartbeatAt ?? null, a.origin, a.sandbox?.profile ?? null, a.sandbox?.network ?? null,
         a.sandbox ? (a.sandbox.write ? 1 : 0) : null, a.sandbox ? (a.sandbox.exec ? 1 : 0) : null,
         a.sandbox?.authorizeDecisionId ?? null, a.sandbox?.reason ?? null,
         json(a.credential), a.mcpTokenDigest ?? null,
@@ -456,16 +471,16 @@ export function importMission(ctx: DaylightContext, file: MissionExport, opts: {
     const experiment = db.prepare(
       `INSERT OR IGNORE INTO experiments
        (id, mission_id, project_id, claim_ids, subject, predicate, hypothesis, prediction, base_revision,
-        test_artifact, expected_artifact, harness_digest, command, sandbox_profile, executions, conclusion,
+        test_artifact, expected_artifact, harness_digest, command, sandbox_profile, harness, executions, conclusion,
         limitations, role, locked_by, started_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     for (const x of local.experiments) {
       const r = experiment.run(
         x.id, x.missionId, x.projectId, JSON.stringify(x.claimIds), x.subject, x.predicate, x.hypothesis,
         JSON.stringify(x.prediction), x.baseRevision, JSON.stringify(x.testArtifact),
         JSON.stringify(x.expectedArtifact), x.harnessDigest, JSON.stringify(x.command), x.sandboxProfile,
-        JSON.stringify(x.executions), x.conclusion, JSON.stringify(x.limitations), x.role,
+        x.harness === 'cargo' ? 'cargo' : 'node', JSON.stringify(x.executions), x.conclusion, JSON.stringify(x.limitations), x.role,
         x.lockedBy ?? null, x.startedAt ?? null, x.createdAt, x.updatedAt,
       );
       added.experiments += Number(r.changes);

@@ -1,0 +1,79 @@
+{
+ "v": 1,
+ "labels": [
+  {
+   "id": "clause",
+   "heading": "^Clause (\\d+) —",
+   "label": "Clause $1",
+   "roles": [
+    "primary"
+   ]
+  },
+  {
+   "id": "subclause",
+   "heading": "^(\\d+\\.\\d+) ",
+   "label": "Clause $1",
+   "roles": [
+    "primary"
+   ]
+  },
+  {
+   "id": "annex",
+   "heading": "^Annex ([A-Z]) —",
+   "label": "Annex $1",
+   "roles": [
+    "primary"
+   ]
+  },
+  {
+   "id": "amendment",
+   "heading": "^Amendment (A\\d+) —",
+   "label": "Amendment $1",
+   "roles": [
+    "errata"
+   ]
+  },
+  {
+   "id": "decision",
+   "heading": "^(DR-\\d{2}) —",
+   "label": "$1",
+   "roles": [
+    "decision"
+   ]
+  }
+ ],
+ "xrefs": [
+  {
+   "id": "clause",
+   "pattern": "\\bClause (\\d+(?:\\.\\d+)?)",
+   "kind": "section",
+   "label": "Clause $1",
+   "scope": "domain"
+  },
+  {
+   "id": "requirement-id",
+   "pattern": "\\bHL-REQ-\\d{3}\\b",
+   "kind": "enumerated",
+   "scope": "doc"
+  },
+  {
+   "id": "decision",
+   "pattern": "\\bDR-(\\d{2})\\b",
+   "kind": "decision",
+   "label": "DR-$1",
+   "scope": "domain"
+  },
+  {
+   "id": "amendment",
+   "pattern": "\\bAmendment (A\\d+)\\b",
+   "kind": "errata",
+   "label": "Amendment $1",
+   "scope": "domain"
+  }
+ ],
+ "tags": [
+  "safety",
+  "auditability"
+ ],
+ "milestone": "^W\\d+$"
+}

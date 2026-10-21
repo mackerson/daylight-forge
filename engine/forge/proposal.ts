@@ -162,7 +162,7 @@ export function anchorRefusal(anchor: string, spec?: string): string | null {
 
 const refuse = (field: ProposalField, refused: string): ProposalRefusal => ({ refused, field });
 
-function textRefusal(s: unknown, maxBytes: number, multiline: boolean): string | null {
+export function textRefusal(s: unknown, maxBytes: number, multiline: boolean): string | null {
   if (typeof s !== 'string') return 'not a string';
   if (!s.trim()) return 'empty';
   if (bytes(s) > maxBytes) return `over ${maxBytes} bytes`;

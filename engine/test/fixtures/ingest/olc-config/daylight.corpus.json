@@ -1,0 +1,23 @@
+{
+  "kind": "daylight-corpus", "version": 1, "title": "OLC v0.8 + Corpus Foundry v0.1",
+  "docs": [
+    { "key": "olc-spec", "path": "docs/spec/open_learning_commons_spec_v0_8.md", "role": "primary", "domain": "olc" },
+    { "key": "olc-errata", "path": "docs/spec/errata-v0_8.md", "role": "errata", "domain": "olc" },
+    { "key": "adr", "dir": "plan/adr", "role": "decision", "domain": "olc" },
+    { "key": "olc-agents", "path": "AGENTS.md", "role": "related", "domain": "olc" },
+    { "key": "olc-arch", "path": "docs/architecture.md", "role": "related", "domain": "olc" },
+    { "key": "cf-spec", "path": "OLC_Corpus_Foundry_Spec_v0_1.md", "role": "primary", "domain": "foundry", "project": "foundry" }
+  ],
+  "precedence": [
+    { "over": "olc-errata", "under": "olc-spec", "basis": { "doc": "olc-agents", "quote": "where the spec and `docs/spec/errata-v0_8.md` disagree, the errata\nwins" } },
+    { "over": "role:decision@olc", "under": "olc-spec", "basis": { "doc": "olc-agents", "quote": "Where the spec and an ADR\ndisagree, the ADR wins" } }
+  ],
+  "dependencies": [
+    { "from": "foundry", "on": "olc", "kinds": ["interface", "decision"], "basis": { "doc": "cf-spec", "quote": "The OLC specifications control identity" } }
+  ],
+  "excluded": [
+    { "path": "plan/execution-plan.md", "reason": "ground truth" },
+    { "path": "docs/design/plates/plates.toml", "reason": "TOML (P2-R50)" }
+  ],
+  "sectioner": { "$ref": "sectioner.olc.json" }
+}

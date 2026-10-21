@@ -1,10 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ArtifactStore } from '../mission/artifacts.ts';
 import { digestOf } from '../mission/artifacts.ts';
 import { redact } from '../mission/redact.ts';
 import type {
   ArtifactRef, CandidateFile, FileMode, PolicyRule, PolicyViolation,
 } from '../mission/types.ts';
-import { checkPolicy, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
+import { checkPolicy, forgeryShapes, MAX_DIFF_BYTES, MAX_DIFF_FILES, pathViolations, type PolicyContext } from './policy.ts';
+import { crateLayoutOf, type CrateLayout } from './project-policy.ts';
 import { siblingGit, walkTree, type Workspace } from './workspace.ts';
 
 /**
@@ -41,11 +44,13 @@ export interface FileFlag {
   secretHits: number;
   /** Low-confidence matches in this file's part: a curable `possible-secret` warning. */
   possibleSecretHits: number;
+  /** Test-output forgery shapes on this file's added lines (P2-R43, P2-R49): a curable warning a person acknowledges. */
+  forgeryShapes?: string[];
 }
 
 /** R16: a warning the approve dialog shows and the human acknowledges; never a violation. */
 export interface CandidateWarning {
-  rule: 'possible-secret';
+  rule: 'possible-secret' | 'gate-forgery-shape';
   path: string | null;
 }
 
@@ -127,6 +132,46 @@ function candidateFiles(raw: RawEntry[], numstat: ReturnType<typeof parseNumstat
  * Split a patch into its per-file parts, in order. `diff --git` only ever starts a line at a
  * file boundary: a content line inside a hunk carries a ` `, `+` or `-` prefix.
  */
+/** The post-image line numbers (1-based) a file's part of the diff adds. */
+export function addedLines(part: string): number[] {
+  const out: number[] = [];
+  let n = 0;
+  let inHunk = false;
+  for (const l of part.split('\n')) {
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (h) {
+      n = Number(h[1]);
+      inHunk = true;
+    } else if (!inHunk) continue;
+    else if (l.startsWith('+')) out.push(n++);
+    else if (l.startsWith(' ')) n++;
+    else if (!l.startsWith('-') && !l.startsWith('\\') && l !== '') inHunk = false;
+  }
+  return out;
+}
+
+const MAX_SCANNED_BYTES = 2 * 1024 * 1024;
+const SCANNED = /\.(?:rs|[cm]?[jt]s|[jt]sx)$/;
+
+/**
+ * A changed file's post-image for the forgery scan: read from the tree when it is a regular file
+ * of bounded size; otherwise only its added lines, at their line numbers, so no test context
+ * is found and every shape on them counts (fail closed).
+ */
+function postImageOf(ws: Workspace, rel: string, part: string, added: number[]): string {
+  try {
+    const abs = path.join(ws.tree, rel);
+    const st = fs.lstatSync(abs);
+    if (st.isFile() && st.size <= MAX_SCANNED_BYTES) return fs.readFileSync(abs, 'utf8');
+  } catch {
+    // fall through to the diff's own lines
+  }
+  const plus = part.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++ '));
+  const lines: string[] = [];
+  added.forEach((n, i) => { lines[n - 1] = Buffer.from(plus[i] ?? '', 'latin1').toString('utf8').slice(1); });
+  return Array.from(lines, (l) => l ?? '').join('\n');
+}
+
 function fileParts(patch: string): string[] {
   const starts: number[] = [];
   const re = /^diff --git /gm;
@@ -141,6 +186,22 @@ export interface CaptureOptions {
   /** Values to mask beyond what `redact` finds in the environment and by shape. */
   secrets?: string[];
   env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * The crates of the base tree plus any manifest the candidate adds (P2-R41), each manifest read
+ * from the staged index when the candidate touched it and from the base commit otherwise. Null
+ * when git cannot answer, so every `build.rs` stays protected.
+ */
+function candidateCrateLayout(ws: Workspace, files: readonly CandidateFile[]): CrateLayout | null {
+  try {
+    const base = siblingGit(ws, ['ls-tree', '-r', '-z', '--name-only', '--full-tree', ws.commit]).toString('utf8').split('\0').filter(Boolean);
+    const touched = new Set(files.filter((f) => f.change !== 'deleted').map((f) => f.path));
+    const listed = [...new Set([...base, ...touched])];
+    return crateLayoutOf(listed, (p) => siblingGit(ws, ['cat-file', 'blob', touched.has(p) ? `:${p}` : `${ws.commit}:${p}`]).toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -198,8 +259,21 @@ export function captureCandidate(
 
   const policyCtx: PolicyContext = {
     maxBytes: MAX_DIFF_BYTES, maxFiles: MAX_DIFF_FILES, ...ctx, diffBytes: patch.length,
+    crates: ctx.crates !== undefined ? ctx.crates : candidateCrateLayout(ws, files),
   };
   const violations = checkPolicy(files, policyCtx);
+  // P2-R43, P2-R49: library code shaped like a test runner's output, a heuristic (POLICY.md);
+  // a warning a person acknowledges, never a violation.
+  const forged = new Map<string, string[]>();
+  if (aligned) {
+    files.forEach((f, i) => {
+      if (f.change === 'deleted' || !SCANNED.test(f.path)) return;
+      const added = addedLines(parts[i]);
+      if (!added.length) return;
+      const shapes = forgeryShapes(f.path, postImageOf(ws, f.path, parts[i], added), added);
+      if (shapes.length) forged.set(f.path, shapes);
+    });
+  }
   if (secretHits) {
     if (aligned) for (const p of hitsByPath.keys()) violations.push({ rule: 'secret-in-diff', path: p });
     else violations.push({ rule: 'secret-in-diff', path: null });
@@ -209,6 +283,7 @@ export function captureCandidate(
     if (aligned) for (const p of possibleByPath.keys()) warnings.push({ rule: 'possible-secret', path: p });
     else warnings.push({ rule: 'possible-secret', path: null });
   }
+  for (const p of forged.keys()) warnings.push({ rule: 'gate-forgery-shape', path: p });
   const flags: FileFlag[] = files.map((f) => {
     const rules = [...new Set(pathViolations(f, policyCtx))];
     const hits = hitsByPath.get(f.path) ?? 0;
@@ -216,6 +291,7 @@ export function captureCandidate(
     return {
       path: f.path, protected: rules.some((r) => PROTECTED_RULES.has(r)), rules,
       secretHits: hits, possibleSecretHits: possibleByPath.get(f.path) ?? 0,
+      ...(forged.has(f.path) ? { forgeryShapes: forged.get(f.path) } : {}),
     };
   });
 

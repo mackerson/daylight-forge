@@ -407,6 +407,246 @@ rulings.
   no `run` tool.
 - **Status.** Decided (a), 2026-10-16.
 
+### ADR-36 — Plan as data (P2, WS-R5)
+
+- **Context.** P2's building pass runs many tickets from one plan. A spec decomposed by agents
+  (WS7) needs a person to approve each work item; a campaign of hundreds of tickets cannot.
+- **Decision.**
+  - A campaign's plan is JSON (`daylight.plan.json`, `kind: daylight-plan`, version 1), read from
+    git objects at a named commit, never the working tree. JSON, not TOML: no parser dependency,
+    and it is canonicalised for digests already.
+  - It is validated like a proposal: caps, id grammars, refusals that name a JSON path and never
+    echo the refused text; scopes inside their lane, not protected, existing at the commit; an
+    acyclic DAG; gate and acceptance paths that are regular files there. The project policy is
+    read from its blob at the plan commit (P2-R20).
+  - A campaign is a mission of kind `campaign` (decisions need a mission). Its tickets are
+    `campaign_tickets` rows bound to work items; its ticket missions name it as `parentId`, which
+    the store now validates.
+  - `campaign import` is not a decision. `approve-plan` is: one guarded human act whose digest
+    lists every plan ticket's work item at its content digest, approving them all at once.
+  - Holdouts never sit in the plan, which authors can read.
+- **Consequences.** Plan revisions keep unchanged tickets' work items and supersede changed ones at
+  the next `approve-plan`; any revision invalidates the campaign authorization. docs/daylight/CAMPAIGN.md.
+- **Status.** Decided (P2-R15, P2-R16, P2-R20).
+
+### ADR-37 — Campaign authorization and derived decisions (P2, WS-R5)
+
+- **Context.** ADR-9 and ADR-34 need a `human:` decision for every write. A campaign runs
+  unattended, so the per-ticket grant must come from one human decision without weakening R7.
+- **Decision.**
+  - `authorize-campaign` is a guarded human decision recording an envelope: plan and gate-set
+    digests, the tickets, rosters, spend caps, author bounds within `authorLimits` at the plan
+    commit, attempts, concurrency, execute, auto-apply, the fix lane (High findings, at most 5 a
+    wave), the committer identity and `notAfter`.
+  - Inside it, the director process records **derived decisions** as `campaign:<m_id>`:
+    `authorize-mission` on a ticket mission, `integrate-candidate`, `admit-work-item`,
+    `halt-campaign`. Each names the human grant as `derivedFrom`. The derived `authorize-mission`
+    is an ordinary grant on the ticket mission, so R7 holds literally.
+  - `recordDecision` refuses every campaign actor (P2-R19). `recordDerivedDecision` is the one
+    writer and re-checks the envelope against rows (current authorization, window, not halted,
+    plan and lock current, ticket covered, execute and budget within it, one mission a ticket).
+    Only the store, `forge/campaign.ts` and `forge/integrate.ts` may call it: the
+    `derived-writer-callers` invariant, a `forbidden-callee` over a negative-lookahead file regex
+    (the `forbidden-call` form named in the design sees no edge for a method reached through
+    `ctx.store`, so it would be green with any caller).
+  - Grants, `attemptRefusal`, `startAttempt` and `unauthorizedWriteAttempts` resolve a derived
+    grant's parent; a forged one is refused and reported. `startAttempt` re-checks the envelope,
+    so nothing starts after `notAfter` or a halt.
+  - Every campaign command that writes a row or moves a ref is refused under `CLAUDECODE` and
+    `DAYLIGHT_SESSION`, at the CLI (P2-R9, P2-R24). The store never reads the environment. This is
+    ADR-20's heuristic: a session importing the engine from `node -e` is outside the threat
+    model, like raw SQL.
+  - Campaign missions are never exported or imported (P2-R14). A preflight-refused ticket is
+    released only by a guarded `campaign retry` (P2-R25, P2-R27).
+- **Consequences.** What stays a human act is listed in docs/daylight/CAMPAIGN.md. The final
+  merge of the integration ref into `main` is plain git, by a person (ADR-17).
+- **Status.** Decided (P2-R9, R10, R12, R14, R19, R22–R27).
+
+### ADR-38 — Integration ref, rebase by plumbing, repair loops (P2, WS-R6)
+
+- **Context.** A campaign lands hundreds of tickets with no per-ticket human act. P1's apply
+  writes one branch per mission from a human approval and refuses a base that is not HEAD's.
+- **Decision.**
+  - Accepted campaign candidates land on `refs/heads/daylight/campaign/<id>`, moved only by
+    compare-and-swap; each landing also writes the per-mission ref, create-only. Nothing outside
+    `refs/heads/daylight/**` moves; HEAD, the index and the working tree are never touched; no
+    hook runs. A person merges the integration ref.
+  - A candidate on the tip is applied with its own digest; one on an older tip is merged with
+    `git merge-tree --write-tree --merge-base` in a scratch bare repository, and a conflict is the
+    verdict `rebase-conflict`. The commit is rebuilt in the real store object by object, as ADR-17.
+  - Checks run on the integrated tree (`gate_evaluations.target = 'integrated'`, naming the
+    integration). `campaignVerdict` is pure over rows; `stale-base` never fires in a campaign.
+  - The landing's rows (derived `integrate-candidate`, application, integration) are one
+    transaction R6 owns, calling R5's envelope check inside it (P2-R22).
+  - Failures are repaired with the failure fenced into the next brief, holdouts counted only,
+    up to the ticket's attempts. Every attempt, wave reviewers included, reserves its ceiling on
+    the attempt row before launch; unknown cost halts as the attempt ends, before its candidate can
+    land; a ticket that used its own budget is blocked, never the campaign (P2-R35).
+  - Only a candidate `accepted-by-gates` on the integration's own tree lands, whoever calls; an
+    accepted candidate met during a halt stays accepted and is integrated again after a person
+    resumes or adopts the tip (P2-R35).
+  - Every state is derived from rows; a crash resumes by the table in docs/daylight/CAMPAIGN.md.
+- **Consequences.** Static: `campaign-verdict-is-pure`, `director-spawns-nothing`, and three call
+  counts named for what they check (`integrate-calls-cas-ref`, `director-asks-spend-refusal`,
+  `director-redacts-brief-text`); the guarantees themselves are behavioural tests, with
+  `integrationRefusals` and `applicationRefusals` as the row halves. A ref moved by hand halts the
+  campaign until a person adopts the tip.
+- **Status.** Decided (P2-R11, P2-R17, P2-R18, P2-R22, P2-R23, P2-R35).
+
+### ADR-39 — Wave review and the fix lane (P2, WS-R6)
+
+- **Context.** Gates say a ticket does what its tests say; nobody reads the code that landed. A
+  review per ticket would cost as much as the authoring.
+- **Decision.**
+  - Every `waveSize` landings, blind reviewers under the `review` profile read a materialised tree
+    of the wave's last commit and file findings through one MCP tool, `report_finding`, that reads
+    nothing back. Findings are re-validated and redacted on the host.
+  - Each finding becomes a proposed fix ticket; only a High one is admitted by the envelope, at
+    most five a wave (P2-R10). Lower severities wait for a person. A review reserves its budget
+    and is checked against the cap and any halt before it starts (P2-R35); fix tickets are filed
+    by WS-R5 (P2-R36).
+  - A finding never touches a verdict or a landed commit (ADR-19).
+- **Consequences.** A reviewer's text becomes an author's brief, fenced, redacted and capped, and
+  the result must pass the same gates: the same posture as spec → author. `reviewRoster: []`
+  turns it off without touching anything else.
+- **Status.** Decided (P2-R10).
+
+### ADR-40 — The REFINE stage: reports, refine maps and the GUI's campaign acts (P2, WS-R8/R9)
+
+- **Context.** A campaign lands on an integration ref nobody has read. A person needs what a wave
+  did, what waits on them, and where to look first, without the checkout moving and without a
+  holdout leaking into anything a session or the renderer can read.
+- **Decision.**
+  - The wave report, the campaign list and STATUS are derived on read and never stored. A report
+    is written only on `--write`, under `<out>/campaigns/<c>/reports/`, never into the target
+    repository, a commit or a trailer, and that write is refused in an agent session.
+  - Refine maps are made by a library function over trees materialised with `createWorkspace`,
+    holdouts hidden, never the checkout; a committed holdout refuses the refine with a path-free
+    message. Maps live under `<out>/campaigns/<c>/maps/<sha>/`, cached by sha, parser set and
+    `MAP_FORMAT`, with no claims database. `campaign refine` writes nothing else, so it runs in an
+    agent session.
+  - Focus order is data (`FOCUS_RULES`): assumption, High finding, forgery-shape, blocked ticket,
+    untested diff, introduced.
+  - The GUI never starts `campaign run`: a run shows through its run claim, and the GUI offers the
+    command to copy. Halt is the GUI's one write without a digest, as the CLI's. Every other
+    campaign act goes through `daylight confirm`, which knows every operation `confirmDigest`
+    computes.
+  - The Refine view embeds the tip's map read-only: no symbol expansion, no node moves, no read or
+    write of the checkout's map directory.
+- **Consequences.** What a person reads before merging is reproducible from rows and refs, and
+  the same rows print the same bytes. A refine of a large repository can take minutes, so the GUI
+  runs it as a job and re-reads the cached report.
+- **Status.** Decided (P2-R40, P2-R45, P2-R47).
+
+### ADR-41 — Specification corpus, deterministic sectioning, configuration as data (P2, WS-R14)
+
+- **Context.** One spec per mission and a 64 KiB prompt wall: a real specification is a primary
+  document, errata, decision records and related documents, sometimes across products, and is
+  larger than one prompt. Who reads which part, which document governs, and which sentences are
+  requirements cannot be left to an agent.
+- **Decision.**
+  - A corpus is a manifest read from git at a commit (documents bound across repositories with
+    `--project`), registered as one `corpus` mission with content-addressed documents. CR bytes are
+    refused so artifact offsets are text offsets. Precedence orders one domain with a quoted basis;
+    unordered authority pairs are recorded and their conflicts stay open (P2-R51); a cross-domain
+    link is a dependency, never a precedence (O-a).
+  - A deterministic sectioner (no LLM) gives sections stable ids and byte spans, scores units by a
+    documented heuristic, resolves references by label and packs windows of 16 KiB (a body over
+    40 KiB is split). Every word list and pattern is `SectionerConfig` data merged over generic
+    defaults; nothing in Daylight names a project (P2-R52); milestone schemes are per domain (P2-R54).
+  - A normative unit must be mapped by a record at the revision or reported unmapped. Coverage and
+    its detectors (hedge, open-decision, modal-polarity, numeric, precedence, dangling) are
+    deterministic heuristics, measured against seeded defects in an in-memory copy.
+- **Consequences.** A corpus of any size is read in bounded windows with linear cost. Tuning
+  belongs in a project's sidecar, versioned with its `configDigest`; a config change is a new
+  index. The heuristic has known misses (normative text in fences; bold labels with no cue) and
+  `universal` false positives, measured in live-extract (O-c).
+- **Status.** Decided (P2-R46, P2-R50–R54).
+
+### ADR-42 — Independent IR review; agreement is not approval (P2, WS-R15)
+
+- **Context.** Extracted IR records are an agent's reading of a specification. Several agents
+  reading the same window will often agree, and agreement is tempting to treat as truth. ADR-14
+  already says proposals are data and a person approves; spec ingestion must not reopen that by
+  counting.
+- **Decision.**
+  - Review is blind: an `audit` mission under the corpus, one reviewer per (window, tool), at
+    least two tools, one append-only tool (`report_ir_finding`) that reads nothing back, and a
+    prompt that never says how many extractors observed a record. Findings are re-validated on
+    the host and recorded `open`; `corroboratedBy` is shown and decides nothing.
+  - `approve-ir` is the only way a record or a finding moves: one guarded human decision keyed
+    `<id>:<contentDigest>`, naming the approved set's digest after it, refused whole (ids only,
+    never text) on any rule in docs/daylight/INGEST.md. There is no agreement-count selector, in
+    the API or on the CLI.
+  - Approving an ambiguity or contradiction, or accepting a finding that changes what a standing
+    requirement says, opens an `ir-interpretation` assumption (`OIR.*`, open, blocking, no
+    default): Daylight never picks a reading (P2-R12). One decision on it unblocks the record and
+    every plan ticket that blocks on it (`assumptionByOwnerDecision`).
+- **Consequences.** Live extractors rarely agree byte for byte, so most records are
+  single-extractor and a person's sweep (`--section`) is informed by counts, not by a vote.
+- **Status.** Decided (P2-R12, P2-R50, P2-R53). Numbered after WS-R14's ADR-41 regardless of merge
+  order; the interface plan's ADR-42 (the IR boundary) is folded into WS-R14's ADR-41.
+
+### ADR-43 — Blueprint, packets, one plan type, and the authority chain (P2, WS-R15)
+
+- **Context.** A plan derived from a specification must say where each ticket came from, survive
+  a person editing it, and stop being trusted when the specification changes — without Daylight
+  writing into the target repository or rewriting history.
+- **Decision.**
+  - A blueprint (boundaries, components, interfaces, order) is data checked all at once against
+    the approved IR and approved by a person over the current IR set; derivation rows record which
+    element rests on which record.
+  - A packet's digest is the digest of the plan ticket it becomes, with no plan defaults; its id
+    follows from it. Packets are emitted as a version-2 plan under `<out>`, never the repository;
+    a person commits it and `campaign import` checks descent, flagging `hand_edited` tickets and
+    refusing a re-pointed packet or a packet set that does not hash (P2-R50 F1).
+  - One `PlanFile` with `version: 1 | 2`; the trace fields enter `ticketDigestOf` only when
+    present, so every version-1 digest is unchanged (P2-R53 D-b).
+  - Acceptance obligations bind to locked gates inside the gate-set digest; `authorize` refuses an
+    obligation no locked gate discharges unless a person names it (P2-R50 F3).
+  - Staleness is derived from `ir_spans` at the current revision; a revision adds span rows and
+    rewrites none (P2-R53). The chain corpus → sections → IR → blueprint → packets → plan →
+    envelope is re-derived on every director pass and a broken link fails closed.
+  - Authors see exact quotes (`SPEC-CONTEXT`), digest-checked, holdout basenames withheld and
+    counted, never the whole specification; in-repo corpus documents are protected paths.
+- **Consequences.** Recovery from a revised specification is a person's: supersede in
+  `approve-ir`, approve a new blueprint, emit, commit, import, approve the plan.
+  The director derives `TicketStatus 'stale'` from `staleTickets` on every pass: a ticket not yet
+  dispatched that cites a stale record waits until a person re-emits and re-imports the plan.
+- **Status.** Decided (P2-R13, P2-R50, P2-R53). Covers the interface plan's ADR-43 and ADR-44.
+
+### ADR-44 — Traceability is a read; the ingestion benchmark says what it cannot fail (P2, WS-R16)
+
+- **Context.** Spec ingestion (wave 4) links a passage to records, components, packets, tickets
+  and landings across a dozen tables. A benchmark built from a fixture written from the answer
+  can pass checks that measure nothing.
+- **Decision.**
+  - Traces are derived on read from existing rows by named joins (`TRACE_JOINS`), forward from a
+    passage and backward from a landing; nothing new is stored. Passages are identified by
+    revision, document and bytes, and every quote digest is re-hashed on every trace. What cannot
+    be joined is a reported gap (a squash merge, an untraced v1 ticket, a stale record), never
+    a guess. Holdout basenames and record statements never reach a trace (P2-R40, P2-R53).
+  - The benchmark's checks are data, each with its bar and falsifiability per mode; the report
+    names every check mock mode cannot fail. Fixtures are directories (`bench.json` + `expected/`);
+    nothing in code names a project (P2-R52). A second, generated corpus keeps the scorer honest.
+  - Live modes are refused with one line until a live-spend grant exists (P2-R7).
+- **Consequences.** A trace is only as good as the rows: a merge that bypasses the integration
+  ref is invisible to `trace landing`, and the report says so. Mock-mode recall and precision are
+  1.0 by construction; only live-full measures planning.
+- **Status.** Decided (P2-R50, P2-R52, P2-R53).
+
+### P2 status
+
+P2 is complete on mocks. `forge-p2` @ 31f277b is `main` c950b66 plus waves 1–4, the fix branches
+WS-R7 and WS-R10 to WS-R13, and the close-out WS-R17 and WS-R18: 325 commits, 262 files,
++46,781/−509. Its gate is `test:all` 5,927 passed and 0 failed, with 30 invariants green. The
+final independent review found it MERGEABLE AFTER FIXES. Its High (H1, `campaign lock
+--accept-vacuous`) and both Mediums are fixed. The forged-pass residual is accepted by the owner
+(P2-R43) and stays open, with L1–L3 (P2-R67). The owner ruled the merge into `main` once the P2
+documents land (P2-R68). No live provider has run (P2-R7). The durable record of what P2
+delivered, how it was reviewed, what it measured and what it leaves open is
+[FORGE_P2_REPORT.md](FORGE_P2_REPORT.md).
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required

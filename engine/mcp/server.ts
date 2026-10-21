@@ -18,6 +18,10 @@ import {
   type OutboxLine, type ProposalContext,
 } from '../forge/proposal.ts';
 import { MCP_HANDSHAKE } from '../forge/sandbox.ts';
+import {
+  findingOutboxFile, isFindingRefusal, MAX_FINDING_BYTES, MAX_FINDING_STATEMENT_BYTES, MAX_FINDING_TITLE_CHARS, MAX_FINDINGS_PER_ATTEMPT,
+  redactFinding, validateFinding, type FindingOutboxLine,
+} from '../forge/finding.ts';
 
 /**
  * The MCP data plane. One server, stdio, spawned per agent session.
@@ -690,6 +694,93 @@ export function createDecomposeServer(opts: DecomposeServerOptions) {
       const proposalDigest = digestOf(canonicalJson(checked));
       emit({ ok: true, anchor: checked.anchor, proposalDigest });
       return { content: [{ type: 'text' as const, text: JSON.stringify({ accepted: true, proposalDigest }) }] };
+    },
+  );
+  return { server };
+}
+
+// ---- wave review -----------------------------------------------------------------
+
+export interface WaveReviewServerOptions {
+  /** `<out>`: the findings outbox goes under it. */
+  dir: string;
+  /** The calling attempt, as the host resolved it from the attempt's own MCP token. */
+  attemptId: string;
+  /** The files the wave changed: a finding names one of them. */
+  paths: readonly string[];
+  agentTool?: string;
+  model?: string;
+}
+
+/**
+ * The MCP server a wave reviewer gets (§6.2): one tool, `report_finding`, and nothing that
+ * reads back, so a reviewer cannot see another's findings (blind by construction, like the
+ * decompose server). Each accepted finding is one line in this attempt's outbox; the host
+ * re-validates every line before any row exists. A refusal names a field and a fixed reason.
+ */
+export function createWaveReviewServer(opts: WaveReviewServerOptions) {
+  if (!isEntityId('attempt', opts.attemptId)) throw new Error('a wave-review server is bound to one attempt id');
+  const server = new McpServer({ name: 'daylight', version: '0.1.0' });
+  const file = findingOutboxFile(opts.dir, opts.attemptId);
+  const paths = new Set(opts.paths);
+  const eventLog = path.join(opts.dir, 'events.jsonl');
+  const emit = (detail: Record<string, unknown>) => {
+    try {
+      fs.appendFileSync(eventLog, JSON.stringify({
+        at: Date.now(), session: opts.attemptId, agent: opts.agentTool ?? 'unknown', model: opts.model ?? null, tool: 'report_finding', ...detail,
+      }) + '\n');
+    } catch {
+      // A failed event write must never break the reviewer's actual work.
+    }
+  };
+  const refuse = (field: string, reason: string) => {
+    emit({ ok: false, field, reason });
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ accepted: false, field, reason }) }], isError: true };
+  };
+  const filed = (): number => {
+    try {
+      return fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).length;
+    } catch {
+      return 0;
+    }
+  };
+  server.registerTool(
+    'report_finding',
+    {
+      description:
+        'Report ONE problem you found in the files this wave changed. `path` is one of the changed files listed in your ' +
+        'prompt; `severity` is high (wrong behaviour, a security hole, data loss), medium or low; `title` is one line; ' +
+        `\`statement\` says what is wrong and where. At most ${MAX_FINDINGS_PER_ATTEMPT} per session. A finding becomes new work ` +
+        'for an author, checked by the same gates; it never changes what already landed.',
+      annotations: APPEND_ONLY,
+      inputSchema: {
+        path: z.string().max(400),
+        severity: z.enum(['high', 'medium', 'low']),
+        title: z.string().max(MAX_FINDING_TITLE_CHARS * 4),
+        statement: z.string().max(MAX_FINDING_STATEMENT_BYTES),
+      },
+    },
+    async (a) => {
+      const valid = validateFinding(a, { paths });
+      if (isFindingRefusal(valid)) return refuse(valid.field, valid.refused);
+      const checked = redactFinding(valid);
+      if (filed() >= MAX_FINDINGS_PER_ATTEMPT) return refuse('count', `at most ${MAX_FINDINGS_PER_ATTEMPT} findings per session`);
+      const line: FindingOutboxLine = { v: 1, at: Date.now(), finding: checked };
+      const json = JSON.stringify(line);
+      if (Buffer.byteLength(json, 'utf8') > MAX_FINDING_BYTES) return refuse('payload', 'over the size cap');
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+        try {
+          fs.writeSync(fd, `${json}\n`);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        return refuse('payload', 'the finding could not be recorded');
+      }
+      emit({ ok: true, path: checked.path, severity: checked.severity });
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ accepted: true }) }] };
     },
   );
   return { server };

@@ -1,0 +1,68 @@
+{
+ "kind": "daylight-seeds",
+ "v": 1,
+ "note": "Harbor Ledger seeds: one of each kind, inserted at the end of the named section at run time.",
+ "seeds": [
+  {
+   "id": "hl-s1",
+   "kind": "modal-contradiction",
+   "docKey": "hl-standard",
+   "afterSectionId": "@title:3.1 Append-only store",
+   "text": "A ledger entry must be deleted or rewritten when it is superseded.",
+   "expect": [
+    "modal-polarity"
+   ]
+  },
+  {
+   "id": "hl-s2",
+   "kind": "numeric-contradiction",
+   "docKey": "hl-standard",
+   "afterSectionId": "@title:8.1 Retention periods",
+   "text": "Audit records must be retained for 1825 days.",
+   "expect": [
+    "numeric"
+   ]
+  },
+  {
+   "id": "hl-s3",
+   "kind": "cross-doc-contradiction",
+   "docKey": "dr-01",
+   "afterSectionId": "@title:Decision",
+   "text": "Ledger entries must not be encoded as canonical JSON before hashing.",
+   "expect": [
+    "modal-polarity"
+   ]
+  },
+  {
+   "id": "hl-s4",
+   "kind": "hedge-ambiguity",
+   "docKey": "hl-standard",
+   "afterSectionId": "@title:5.2 Conflicts",
+   "text": "Where possible, a conflicting allocation must be resolved by the harbour master.",
+   "expect": [
+    "hedge"
+   ]
+  },
+  {
+   "id": "hl-s5",
+   "kind": "dangling-ref",
+   "docKey": "hl-standard",
+   "afterSectionId": "@title:6.3 Invoicing",
+   "text": "Invoice layout follows Clause 12.4.",
+   "expect": [
+    "dangling"
+   ]
+  },
+  {
+   "id": "hl-s6",
+   "kind": "unordered-precedence",
+   "docKey": "hl-amendments",
+   "afterSectionId": "@title:Amendment A5 — Tariff currency",
+   "text": "Charges must never be rounded before the invoice is issued.",
+   "expect": [
+    "modal-polarity",
+    "precedence"
+   ]
+  }
+ ]
+}

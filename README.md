@@ -10,7 +10,7 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-Node%20%E2%89%A522.18-3178c6?style=flat-square&logo=typescript">
   <img alt="Linux" src="https://img.shields.io/badge/Linux-bubblewrap%20sandboxes-2f7bf5?style=flat-square&logo=linux">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: P1, mocks only" src="https://img.shields.io/badge/status-P1%2C%20mocks%20only-d69e2e?style=flat-square">
+  <img alt="Status: P2, mocks only" src="https://img.shields.io/badge/status-P2%2C%20mocks%20only-d69e2e?style=flat-square">
 </p>
 
 <p align="center">
@@ -58,7 +58,9 @@ only counts what a test run under a sandbox actually showed.
 It started as a map of a codebase (parse everything, find duplication and dead ends
 deterministically, let agents attach evidenced claims) and P1 turned it into a forge: protected
 specification, then a scoped author workspace, then an independent test, then an approved merge.
-Everything lives on your machine, in SQLite files outside the repository.
+P2 runs that loop over a whole plan of tickets, on Rust as well as TypeScript, and turns a
+specification into the plan. Everything lives on your machine, in SQLite files outside the
+repository.
 
 ![Daylight mapping its own repository, as a tree](docs/map-tree.png)
 
@@ -83,6 +85,51 @@ Everything lives on your machine, in SQLite files outside the repository.
   vetted paths, never transcript text. Ingested work is labelled as outside Daylight's controls.
 - **Mission Control.** The Electron app: the 3D map, plus screens for work items, implement
   detail, gate sets, candidate review, the ledger and ingest, with a derived "needs you" strip.
+- **Rust support.**
+  - The map reads Rust (see below).
+  - `deps snapshot` fetches a project's crates once on the host, into a snapshot that the
+    sandbox mounts read-only with cargo offline.
+  - `cargo` gates run `cargo test` on one placed test file, in a per-run throwaway build cache.
+  - Authors can run cargo through the exec tool against the same snapshot.
+  - The built-in policy protects `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml`
+    and crate-root `build.rs`. See [CARGO.md](docs/daylight/CARGO.md).
+- **Campaigns.**
+  - A plan of many tickets is data: `daylight.plan.json`, read from a commit. A person approves
+    it, locks its gates, and authorizes one envelope (tickets, spend cap, turns, expiry).
+  - `campaign run` then works through the plan unattended. Each step is a derived decision
+    recorded against that one grant. Accepted candidates land on an integration ref by
+    compare-and-swap, failures go to repair attempts, and blind wave reviewers can file fix
+    tickets.
+  - Spend is reserved before every launch. An unknown cost halts the run.
+  - `campaign report` and `campaign refine` (and the campaign screens) are for reading what
+    happened before anything reaches a real branch.
+  - See [CAMPAIGN.md](docs/daylight/CAMPAIGN.md), [CAMPAIGN-RUN.md](docs/daylight/CAMPAIGN-RUN.md)
+    and [REFINE.md](docs/daylight/REFINE.md).
+- **Spec ingestion.**
+  - The pipeline runs from a specification corpus to a deterministic section index, then blind
+    IR extraction by two or more extractors, a coverage report, an independent IR review, a
+    person's `approve-ir`, a blueprint, work packets, and a version-2 plan that `campaign
+    import` checks against the packets.
+  - `trace` follows a passage to its landing and back.
+  - A revised specification breaks the authority chain until a person accepts the drift or
+    re-plans.
+  - `ingest bench` scores the pipeline on two corpora and lists the checks mock mode cannot
+    fail. See [INGEST.md](docs/daylight/INGEST.md).
+
+### Languages the map reads
+
+TypeScript and JavaScript go through the TypeScript compiler API. Rust (`.rs`) goes through
+tree-sitter compiled to WebAssembly: the runtime and grammar `.wasm` files are vendored in
+`engine/extract/grammars/` with pinned versions and sha256 hashes checked on every load, so
+there is no native addon and no Rust toolchain to install. Module paths resolve syntactically
+from the file layout and each `Cargo.toml`'s package name (`mod`, `crate::`, `super::`,
+`self::`, other workspace crates); cargo is never run, and a path that cannot be found stays
+unresolved. `mod x;` is recorded as a contains edge in the module tree, not an import, and a
+module's `use super::…` back to the file that declares it is its parent link. Neither counts
+toward cycle detection; every other `use` does. Macro arguments are unparsed tokens, so calls
+written inside `println!(…)` or `vec![…]` are not seen. The graph has no module kind, so `mod`
+declarations appear as nodes of kind `variable`. Further languages plug in through
+`DAYLIGHT_PARSERS` (see `engine/extract/registry.ts`).
 
 ![The same repository as a dependency graph](docs/map-graph.png)
 
@@ -91,7 +138,9 @@ Everything lives on your machine, in SQLite files outside the repository.
 Linux only for anything that runs agent or test code. You need Node ≥ 22.18 (the `engines`
 field; DEMO.md asks for Node 24, which acceptance ran on), pnpm, git, and `bwrap` (bubblewrap) and `prlimit`
 (util-linux). Without bubblewrap, `forge run`, `spec decompose` and every experiment fail closed;
-nothing runs in the open.
+nothing runs in the open. For Rust targets, and for `pnpm test:all`, you also need the system
+cargo at `/usr/bin/cargo` (no rustup). `test:all` fetches one crate from crates.io once per run;
+set `DAYLIGHT_OFFLINE=1` to skip those cases.
 
 ```bash
 git clone git@github.com:mackerson/daylight-forge.git daylight
@@ -170,6 +219,13 @@ failure states you can show on purpose, and the five-minute version by screen ar
 - **Fail closed.** No bubblewrap, no sandboxed run. A review profile that cannot be built refuses
   the review rather than running it open. Every policy violation, such as an author editing
   `package.json` or the gate directory, is uncurable.
+- **Per-project policy.** An optional `daylight.policy.json` at the repository root names the
+  project's languages, adds protected globs and sets the author's turn and time caps; it can only
+  add protection. The built-in protected sets apply to every repository with or without it. Every
+  `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml` and `build.rs` is protected, so an
+  author that needs a crate asks for it with the `request_dependency` MCP tool and a person adds
+  it and records that with `daylight deps resolve`. See
+  [docs/daylight/POLICY.md](docs/daylight/POLICY.md).
 - **No secrets stored.** A credential is recorded as present, its env var name and a label, never
   its value. Transcripts are stored as digests and counts.
 - **Redaction tiers.** Logs, artifacts and diffs pass through redaction. High-confidence token
@@ -178,16 +234,23 @@ failure states you can show on purpose, and the five-minute version by screen ar
   deliberate obfuscation.
 
 > [!IMPORTANT]
-> **Status: P1 complete, with mocks.** Every author, reviewer and decomposer in P1 is a mock; **no
-> live provider run has happened yet**. Real providers are `unavailable` for implement until the
+> **Status: P2 complete, with mocks.** Every author, reviewer, decomposer, extractor and planner
+> in P1 and P2 is a mock or a scripted stand-in; **no live provider run has happened yet**, and
+> the benchmark's live modes are refused. A candidate can still forge a passing gate from inside
+> the code under test. A heuristic parks the obvious spellings, but an indirect one lands on the
+> campaign's integration ref unread. The owner accepted that as a residual: treat the integration
+> ref as untrusted until a person has read it. What P2 adds and what it leaves open is in
+> [docs/daylight/FORGE_P2_REPORT.md](docs/daylight/FORGE_P2_REPORT.md).
+>
+> From P1, still true: real providers are `unavailable` for implement until the
 > owner authorises one live author run with a dedicated, spend-capped credential, and neither the
 > run nor the credential exists. Author exec is in effect since 28b6835 but has not had an
 > acceptance run of its own, and nothing real has executed under it. A real-provider review runs
 > only with `--unsandboxed-review`, which is P0's unsandboxed path and warns that the reviewer can
 > read `<out>` (Sec H5, open). The UI half of acceptance and a visual check of the newest screens
-> are still pending. Deferred to P2: egress proxy, Docker/VM profile, repair loops, CI/PR gates,
-> model routing, non-Claude authors, signed decisions and gate dependency installs. The full
-> record is [docs/daylight/FORGE_REPORT.md](docs/daylight/FORGE_REPORT.md).
+> are still pending. Still deferred: egress proxy, Docker/VM profile, CI/PR gates,
+> model routing, non-Claude authors and signed decisions. The P1 record is
+> [docs/daylight/FORGE_REPORT.md](docs/daylight/FORGE_REPORT.md).
 
 ## Who built it
 
@@ -197,9 +260,13 @@ adversarially by a separate Fable 5.1 agent working from the code and the ruling
 (6,404,876 tokens) and 17 Fable agents (4,387,142 tokens), **10,792,018 tokens** in all, not
 counting the coordinating session or the report writer. No dollar figure is given, by ruling. The
 itemised ledger is [FORGE_REPORT §11](docs/daylight/FORGE_REPORT.md#11-build-ledger-who-built-what).
+P2 was built the same way by 30 Opus agents (10,744,762 tokens) and 14 Fable agents (4,966,290
+tokens), **15,711,052 tokens** in all, on the same terms. Three of the Opus agents stood in as
+reviewers while Fable was on hold. See
+[FORGE_P2_REPORT §11](docs/daylight/FORGE_P2_REPORT.md#11-build-ledger-who-built-what).
 
 The design record is [docs/daylight/FORGE_PLAN.md](docs/daylight/FORGE_PLAN.md) (ADR-8 to
-ADR-35). The map's own design history is in [DESIGN.md](DESIGN.md).
+ADR-44). The map's own design history is in [DESIGN.md](DESIGN.md).
 
 ## License
 

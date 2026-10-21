@@ -1,3 +1,6 @@
+import type { Tier } from '../detect/structure-types.ts';
+import type { Violation } from '../invariants/engine.ts';
+
 /**
  * Daylight mission vocabulary, kept free of any runtime import.
  *
@@ -40,6 +43,14 @@ export const ID_PREFIX = {
   candidate: 'c',
   gateEvaluation: 'g',
   application: 'p',
+  assumption: 'u',
+  integration: 'i',
+  finding: 'f',
+  corpusRevision: 'cr',
+  irRecord: 'ir',
+  irFinding: 'rf',
+  blueprint: 'bp',
+  packet: 'pk',
 } as const;
 export type EntityKind = keyof typeof ID_PREFIX;
 
@@ -55,6 +66,14 @@ export function isEntityId(kind: EntityKind, value: unknown): value is string {
 
 /** `human:<name>`, the only actor a Forge decision accepts. Bare `human` names nobody. */
 export const isHumanActor = (actor: string): boolean => /^human:\S+$/.test(actor);
+/**
+ * `bench:<step>`: the ingestion benchmark's scripted stand-in for a person (P2-R61). A store
+ * records one only when `ingest bench` created it with the bench mark, and a bench store records
+ * no other decision actor, so a row read back with a bench actor is on a throwaway store.
+ */
+export const isBenchActor = (actor: string): boolean => /^bench:[a-z][a-z0-9-]{0,31}$/.test(actor);
+/** The actor of a person's decision as the store reads it back: a person, or the bench's stand-in on a bench store. */
+export const isPersonActor = (actor: string): boolean => isHumanActor(actor) || isBenchActor(actor);
 
 // ---- identity ----------------------------------------------------------------
 
@@ -90,7 +109,7 @@ export interface Revision {
  * writes or executes.
  */
 export type MissionKind =
-  | 'explore' | 'verify' | 'implement' | 'remediate' | 'audit' | 'work' | 'spec';
+  | 'explore' | 'verify' | 'implement' | 'remediate' | 'audit' | 'work' | 'spec' | 'campaign' | 'corpus';
 export type MissionState = 'draft' | 'ready' | 'running' | 'blocked' | 'closed';
 /**
  * Recorded separately from state, and only ever set by `close`. A process exiting 0 is not an
@@ -208,7 +227,8 @@ export interface Mission {
 
 export type TaskRole =
   | 'map' | 'review' | 'compare' | 'experiment' | 'decide' | 'custom'
-  | 'author' | 'gate' | 'decompose' | 'session';
+  | 'author' | 'gate' | 'decompose' | 'session'
+  | 'extract' | 'ir-review' | 'architect' | 'packetize';
 
 export interface Task {
   id: string;
@@ -241,8 +261,11 @@ export type UsageSource = 'provider' | 'transcript' | 'none';
 /**
  * Where a dollar figure came from. `stdout-scan` is a figure read out of a process's output
  * by pattern, which is a guess and is labelled as one; only `provider` is the provider's own.
+ * `reservation` is an attempt that ended without finishing (cancelled, crashed, failed) and
+ * reported nothing: it is charged at the ceiling it was given (`max_cost_usd`, P2-R44), the
+ * most it could have spent, never at zero.
  */
-export type CostSource = 'provider' | 'stdout-scan' | 'none';
+export type CostSource = 'provider' | 'stdout-scan' | 'reservation' | 'none';
 
 /** Token counts. Each is `null` when unreported, and a null is never summed as zero. */
 export interface TokenUsage {
@@ -383,6 +406,8 @@ export interface Attempt {
   parentAttemptId?: string;
   /** The locked gate set an author attempt ran against. */
   gateSetDigest?: string;
+  /** The spend ceiling handed to the runner (`maxCost`), USD: a campaign's reservation (P2-R18). */
+  maxCostUsd?: number;
   /** The runner process, for liveness. Recorded beside WS0's per-mission claim file (R5). */
   pid?: number;
   heartbeatAt?: number;
@@ -418,9 +443,17 @@ export type ExperimentConclusion =
 
 /**
  * `probe` is a P0 experiment about a claim. `gate` is an acceptance test the author is shown;
- * `holdout` is one it is not.
+ * `holdout` is one it is not. `regression` is a campaign's project-wide gate, which must pass at
+ * the campaign base and on every integrated tree; `acceptance` is a test a campaign author wrote
+ * for its own ticket, run and recorded, never locked (docs/daylight/CAMPAIGN-RUN.md).
  */
-export type ExperimentRole = 'probe' | 'gate' | 'holdout';
+export type ExperimentRole = 'probe' | 'gate' | 'holdout' | 'regression' | 'acceptance';
+
+/**
+ * The test runner a gate runs under: `node --test`, or `cargo test` against a per-project crate
+ * snapshot (docs/daylight/CARGO.md). A probe is always `node`; a row without one reads as `node`.
+ */
+export type GateHarness = 'node' | 'cargo';
 
 export interface Experiment {
   id: string;
@@ -442,6 +475,8 @@ export interface Experiment {
   harnessDigest: string;
   command: string[];
   sandboxProfile: string;
+  /** Recorded on the row and in the expectation, so it is covered by the harness digest. */
+  harness?: GateHarness;
   executions: ArtifactRef[];
   conclusion: ExperimentConclusion;
   limitations: string[];
@@ -503,7 +538,9 @@ export interface WorkItem {
 
 export type CandidateVerdict =
   | 'pending' | 'accepted-by-gates' | 'rejected-by-gates' | 'gates-inconclusive'
-  | 'gates-invalid' | 'policy-violation' | 'no-diff' | 'stale-base';
+  | 'gates-invalid' | 'policy-violation' | 'no-diff' | 'stale-base'
+  /** A campaign candidate whose diff does not merge onto the integration tip (§3.4). */
+  | 'rebase-conflict';
 
 /** A file's mode as git records it. Anything but `file` and `executable` is refused. */
 export type FileMode = 'file' | 'executable' | 'symlink' | 'gitlink';
@@ -529,6 +566,8 @@ export type PolicyRule =
 export interface PolicyViolation {
   rule: PolicyRule;
   path: string | null;
+  /** Under a project policy, which protected set matched (`protected by the rust set`). */
+  why?: string;
 }
 
 /**
@@ -565,7 +604,8 @@ export interface Candidate {
   createdAt: number;
 }
 
-export type GateTarget = 'base' | 'candidate';
+/** `integrated`: a campaign candidate's diff applied onto the integration tip (§3.2). */
+export type GateTarget = 'base' | 'candidate' | 'integrated';
 
 /** One gate run against the base or against one candidate's diff. */
 export interface GateEvaluation {
@@ -577,8 +617,13 @@ export interface GateEvaluation {
   experimentId: string;
   candidateId?: string;
   target: GateTarget;
-  /** `sha256:<hex>` of the applied diff; null on the base. */
+  /**
+   * `sha256:<hex>` of the applied diff; null on the base. On an `integrated` evaluation, the
+   * digest of the tip → integrated-commit diff, and `revision` is the integrated commit.
+   */
   diffDigest: string | null;
+  /** The integration an `integrated` evaluation ran on. */
+  integrationId?: string;
   harnessDigest: string;
   executions: ArtifactRef[];
   conclusion: ExperimentConclusion;
@@ -623,14 +668,406 @@ export interface IngestSource {
 
 export type NeedKind =
   | 'blocked' | 'dispute' | 'spec-ambiguity' | 'gate-lock' | 'gate-vacuous'
-  | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize';
+  | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize'
+  | 'request-dependency'
+  | 'plan-approval' | 'campaign-authorize' | 'campaign-halted' | 'assumption-pending' | 'owner-decision'
+  | 'forgery-shape-review'
+  | 'ir-undecided' | 'ir-interpretation' | 'ir-finding-open' | 'blueprint-undecided' | 'spec-review' | 'spec-stale' | 'evidence-stale'
+  | 'gate-stale';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {
   kind: NeedKind;
   ref: string;
   why: string;
+  /** `campaign-halted`: the commit adopt-tip would leave the integration ref at; `ref` stays the halt or campaign id. */
+  commit?: string;
 }
+
+// ---- campaign integration, waves and the director (WS-R6) --------------------
+//
+// The director lands a campaign's tickets on its own integration ref by plumbing, judges each on
+// the integrated tree, repairs what fails, and reviews each wave of landings blind. Rows only;
+// docs/daylight/CAMPAIGN-RUN.md, ADR-38, ADR-39.
+
+/** A candidate's diff on its way onto the integration tip. `conflict` and `rejected` are final. */
+export type IntegrationState = 'pending' | 'evaluating' | 'integrated' | 'conflict' | 'rejected' | 'abandoned';
+/** `apply`: the tip was the candidate's own base. `three-way`: `git merge-tree` onto a tip that moved. */
+export type IntegrationMethod = 'apply' | 'three-way';
+
+export interface Integration {
+  id: string; campaignId: string; projectId: string; missionId: string; candidateId: string;
+  /** `refs/heads/daylight/campaign/<campaignId>`. */
+  ref: string;
+  /** The integration tip the diff was put onto. */
+  onto: string;
+  candidateBase: string;
+  method: IntegrationMethod | null;
+  integratedCommit: string | null; integratedTree: string | null;
+  /** `sha256:` of the `onto` → integrated-commit diff, with capture's flags: exactly what the checks ran on. */
+  integratedDiffDigest: string | null;
+  state: IntegrationState;
+  conflictPaths: string[];
+  /** Whether the ticket's own acceptance tests also pass on `onto` without the change: weak evidence, never a verdict input. */
+  acceptanceVacuous: boolean | null;
+  decisionId: string | null; applicationId: string | null;
+  createdAt: number; updatedAt: number;
+}
+
+/** A run of landings closed for review: `fromCommit..toCommit` on the integration ref. */
+export interface CampaignWave {
+  campaignId: string; seq: number; fromCommit: string; toCommit: string; ticketIds: string[];
+  reviewMissionId: string | null; closedAt: number;
+}
+
+/** One wave reviewer's report, re-validated and redacted on the host. A claim, never a verdict input (ADR-19). */
+export interface Finding {
+  id: string; projectId: string; campaignId: string; waveSeq: number; reviewMissionId: string; attemptId: string;
+  /** A file the wave changed. */
+  path: string; severity: FindingSeverity;
+  /** One line, at most 120 characters. */
+  title: string;
+  /** At most 4 KiB, redacted. */
+  statement: string;
+  /** The line as it crossed the MCP boundary. */
+  findingArtifact: ArtifactRef;
+  /** Other reviewers' findings with the same path and title. */
+  corroboratedBy: string[];
+  fixTicketId?: string;
+  createdAt: number;
+}
+
+/** What a campaign has spent, from rows, over every child mission (§4.6). Unknown is counted, never summed as zero. */
+export interface CampaignSpend {
+  /** Provider plus stdout-scan figures plus reservation charges (P2-R44): what counts against the cap. */
+  spentUsd: number;
+  /** Provider figures only. */
+  knownUsd: number;
+  /** Finished attempts with no figure: counted, never summed as zero. */
+  unknownCount: number;
+  /**
+   * Of those, attempts that completed with no figure and that no person has seen through a
+   * resumed `spend-unknown` halt. Any one halts the campaign, once (P2-R11, P2-R44).
+   */
+  unknownUnansweredCount: number;
+  /** Attempts that ended unfinished with no figure, charged at their reservation (P2-R44); in `spentUsd`. */
+  reservationCount: number;
+  reservationUsd: number;
+  scannedCount: number;
+  runningCount: number;
+  /** Σ `attempts.max_cost_usd` over running attempts (P2-R18). */
+  reservedUsd: number;
+  capUsd: number;
+}
+
+/** What a repair attempt is told about the attempt before it, fenced as data in its prompt (§4.7). */
+export interface RepairBrief {
+  attempt: number; priorCandidateId: string;
+  outcome: 'rejected-by-gates' | 'gates-inconclusive' | 'rebase-conflict' | 'capture-refused' | 'policy-violation';
+  /** Public checks only; each tail redacted and at most 8 KiB, all of them at most 24 KiB. */
+  failures: Array<{ check: string; role: 'regression' | 'gate' | 'acceptance'; tail: string }>;
+  /** Holdouts that failed: a count, never an id, path or output. */
+  hiddenFailures: number;
+  conflictPaths: string[];
+  /** Violated policy rules, by path. */
+  policy: string[];
+  /** The author's own prior diff, redacted, at most 64 KiB. */
+  priorDiff: string;
+}
+
+/**
+ * The rows `campaignVerdict` reads, and nothing else: no attempt state, narrative, reviewer
+ * claim or finding (ADR-19). Holdouts are counted, never named, in what it returns.
+ */
+export interface CampaignVerdictRows {
+  candidate: Pick<Candidate, 'id' | 'files' | 'policyViolations' | 'secretHits' | 'gateSetDigest'> & { diffDigest: string };
+  ticketId: string;
+  /** The ticket's acceptance is `writer-authored`: at least one supported acceptance test is required. */
+  writerAuthored: boolean;
+  /** The integration row being judged, or null when none was recorded. */
+  integration: Pick<Integration, 'id' | 'state' | 'onto' | 'integratedCommit' | 'integratedDiffDigest' | 'conflictPaths'> | null;
+  /** The campaign's current `lock-campaign-gates` decision, or null. */
+  lock: { decisionId: string; scope: CampaignLockScope } | null;
+  /** The locked experiments as their rows read now; a missing one is absent. */
+  locked: Array<Pick<Experiment, 'id' | 'role' | 'harnessDigest' | 'lockedBy'>>;
+  /** Base evaluations of the campaign's experiments. */
+  baseline: Array<Pick<GateEvaluation, 'experimentId' | 'target' | 'harnessDigest' | 'conclusion'>>;
+  /** `integrated` evaluations of this integration. */
+  evaluations: Array<Pick<GateEvaluation, 'experimentId' | 'target' | 'integrationId' | 'diffDigest' | 'harnessDigest' | 'conclusion'>>;
+  /** `integrated` evaluations of the landing whose commit is `onto`: what the ratchet reads. */
+  ontoEvaluations: Array<Pick<GateEvaluation, 'experimentId' | 'harnessDigest' | 'conclusion'>>;
+  /** This candidate's acceptance experiments and their latest integrated conclusion. */
+  acceptance: Array<{ experimentId: string; conclusion: ExperimentConclusion | null }>;
+}
+
+/** `campaign run`'s options as data; the director adds its sandbox and host (forge/director.ts). */
+export interface CampaignRunOptions {
+  campaignId: string; repo: string; concurrency?: number; maxWaves?: number; dryRun?: boolean;
+}
+
+export interface CampaignRunResult {
+  campaignId: string;
+  integrationRef: string;
+  tip: string | null;
+  /** True when nothing was written: no row, no event, no ref. */
+  dryRun: boolean;
+  statuses: Record<string, TicketStatus>;
+  landed: string[];
+  halted: CampaignHaltReason | null;
+  /** Why the run did not start, or stopped. */
+  refused: string | null;
+  waves: number;
+  spend: CampaignSpend;
+  /** The dry run's plan: tickets that would be dispatched now, in order, with their reservation. */
+  schedule: Array<{ ticketId: string; lane: string; reserveUsd: number }>;
+}
+
+export interface CampaignStatusReport {
+  kind: 'daylight-campaign-status'; campaignId: string; projectId: string; planRevision: string;
+  integration: { ref: string; base: string; tip: string; landed: number; mergeHint: string };
+  /** `haltDecisionId`: the unanswered halt that resume and adopt-tip name. */
+  authorization: { decisionId: string | null; notAfter: number | null; halted: CampaignHaltReason | null; haltDecisionId: string | null };
+  lanes: Array<{ lane: string; total: number; byStatus: Record<TicketStatus, number> }>;
+  tickets: Array<{ id: string; lane: string; status: TicketStatus; missionId?: string; attempts: number; commit?: string; reason?: string }>;
+  assumptions: { open: number; pending: number; confirmed: number; overturned: number; items: Assumption[] };
+  needs: Need[]; spend: CampaignSpend;
+  waves: Array<{ seq: number; tickets: number; findings: Record<FindingSeverity, number>; fixTickets: number }>;
+  /** kitkraft's STATUS table over the same ticket states (WS-R8). */
+  table: StatusTable;
+  run: RunClaim | null;
+}
+
+// ---- reports, the campaign list and refine (WS-R8) ---------------------------
+//
+// What `campaign report|list|refine` print as JSON, declared here so the renderer types them
+// without importing an engine module (WS-R9). Derived on read, never stored; holdouts are
+// counts only. docs/daylight/REFINE.md, ADR-40.
+
+export type StatusBucket = 'done' | 'in-progress' | 'blocked' | 'requests' | 'queued' | 'superseded';
+export const STATUS_BUCKETS: readonly StatusBucket[] = ['done', 'in-progress', 'blocked', 'requests', 'queued', 'superseded'];
+/**
+ * kitkraft's STATUS columns are the first four; `queued` and `superseded` are counted, never
+ * hidden. `regressed` (P2-R44, P2-R47) is keyed here whether or not `TicketStatus` has it yet.
+ */
+export const STATUS_BUCKET_OF: Readonly<Record<TicketStatus | 'regressed', StatusBucket>> = {
+  landed: 'done', running: 'in-progress', integrating: 'in-progress',
+  blocked: 'blocked', regressed: 'blocked',
+  'waiting-owner': 'requests', 'waiting-dependency': 'requests', stale: 'requests',   // a person acts (P2-R21); a person re-approves (P2-R53)
+  ready: 'queued', waiting: 'queued',
+  superseded: 'superseded',
+};
+export interface StatusTableRow { lane: string; total: number; byBucket: Record<StatusBucket, number>; tickets: Record<StatusBucket, string[]> }
+/** Rows sorted by lane id. */
+export interface StatusTable { rows: StatusTableRow[]; totals: Record<StatusBucket, number> }
+
+/** `git diff --numstat -z --no-renames`; a binary file counts in `files` and `binary`, never in the line counts. */
+export interface DiffStat { files: number; insertions: number; deletions: number; binary: number }
+/** Attempt spend summed over a set of missions. A line is never a figure for unknown spend. */
+export interface SpendLine {
+  /** ticket id | lane id | `wave:<n>` | `review:<n>` | 'scope' */
+  key: string;
+  attempts: number;
+  /** Known + scanned + reservation-charged (P2-R44): what counts against the cap. */
+  spentUsd: number;
+  /** Provider figures only. */
+  knownUsd: number;
+  /** Stdout-scan figures: shown beside, never inside, a known figure. */
+  scannedUsd: number;
+  scannedCount: number; unknownCount: number; runningCount: number;
+  /** Attempts charged at their reservation (cost_source 'reservation', P2-R44), and those dollars (in spentUsd). */
+  reservationCount: number;
+  reservationUsd: number;
+}
+/** The run claim `<out>/mission-run.<id>.pid`: a live pid is a run in progress; a dead one, a claim left behind. */
+export interface RunClaim { pid: number; alive: boolean }
+
+export interface ReportLanding {
+  ticketId: string; lane: string; origin: TicketOrigin; title: string;          // title: the work item's
+  missionId: string; integrationId: string; candidateId: string; decisionId: string | null;
+  onto: string; commit: string; method: IntegrationMethod | null; attempts: number;
+  acceptance: TicketAcceptance['kind']; acceptanceVacuous: boolean | null;
+  diff: DiffStat;                                                               // onto..commit
+}
+export interface ReportAssumption {
+  id: string; status: 'open' | 'pending'; ownerDecisionId?: string; ticketId?: string;
+  question: string; default: string; blocking: boolean; source: AssumptionSource;
+  heldTickets: string[];
+  /** Landed tickets whose blocksOn names its owner decision: what an overturn would not revert. */
+  landedOnIt: string[];
+}
+export interface ReportFinding {
+  id: string; waveSeq: number; severity: FindingSeverity; path: string;
+  /** Reviewer-claimed, redacted; `statement` ≤ 4 KiB and never in the markdown report. */
+  title: string; statement: string;
+  corroboratedBy: string[];
+  fixTicketId: string | null; fixStatus: TicketStatus | 'none';
+  /** Who admitted the fix ticket: the director (`campaign:<m>`), a person, or nobody yet. */
+  fixAdmission: 'derived' | 'person' | 'none';
+}
+export interface ReportReview {
+  seq: number; reviewMissionId: string | null;
+  /** off: reviewRoster [] */
+  state: 'off' | 'not-run' | 'running' | 'done';
+  reviewers: number; findings: Record<FindingSeverity, number>;
+}
+export interface ReportBlocked {
+  ticketId: string; lane: string; status: Extract<TicketStatus, 'blocked' | 'waiting-dependency' | 'waiting-owner'>;
+  /** TicketState.reason, verbatim. */
+  reason: string;
+  missionId?: string; need: NeedKind | null;
+  act: 'retry' | 'resolve-dependency' | 'owner-decision' | 'approve-work-item' | 'authorize' | 'read';
+}
+
+/** The `why` classes of a `gate-forgery-shape` warning (P2-R43, P2-R49). */
+export type ForgeryClass = 'stdout-fd-write' | 'test-summary-literal' | 'process-exit';
+export const FORGERY_CLASSES: readonly ForgeryClass[] = ['stdout-fd-write', 'test-summary-literal', 'process-exit'];
+/** Candidates that tripped `gate-forgery-shape`: a heuristic count, never a finding of fact, never the matched text. */
+export interface ReportForgeryShapes {
+  /** In scope: candidates of the scope's tickets with ≥ 1 such warning. */
+  candidates: number;
+  /** A `why` outside FORGERY_CLASSES counts as unclassified. */
+  byClass: Record<ForgeryClass | 'unclassified', number>;
+  items: Array<{ ticketId: string; missionId: string; candidateId: string; attemptId: string;
+    /** Repo-relative, as the warning names them. */
+    paths: string[];
+    classes: Array<ForgeryClass | 'unclassified'>;
+    /** The same ticket landed (by this candidate or a later one). */
+    ticketLanded: boolean }>;
+  heuristic: true;
+}
+
+/** `forge candidate` and the approve/override confirm preview: forgery-shape warnings by class and path, never matched text. */
+export interface CandidateForgeryShapes {
+  /** Paths per class. */
+  byClass: Record<ForgeryClass | 'unclassified', number>;
+  items: Array<{ path: string; classes: Array<ForgeryClass | 'unclassified'> }>;
+}
+
+export interface WaveReport {
+  kind: 'daylight-wave-report'; version: 1;
+  campaignId: string; projectId: string; title: string; planRevision: string;
+  scope: { kind: 'wave'; seq: number } | { kind: 'open' } | { kind: 'all' };
+  range: { from: string; to: string };
+  integration: CampaignStatusReport['integration'];
+  authorization: CampaignStatusReport['authorization'];
+  run: RunClaim | null;
+  landed: ReportLanding[];
+  /** from..to */
+  diff: DiffStat;
+  assumptions: { open: ReportAssumption[]; pending: ReportAssumption[]; confirmed: number; overturned: number };
+  /** The wave in scope (every wave for --all). */
+  review: ReportReview[];
+  /** Findings of the waves in scope, most severe first. */
+  findings: ReportFinding[];
+  fixLane: { filed: number; admittedDerived: number; approvedByPerson: number; landed: number; waiting: number; rejected: number };
+  spend: {
+    /** campaignSpend(), unchanged. */
+    campaign: CampaignSpend;
+    /** Missions that landed in scope plus the scope's reviews. */
+    scope: SpendLine;
+    /** Whole campaign; lane 'FIX' included. Σ lanes + Σ reviews = campaign. */
+    tickets: SpendLine[]; lanes: SpendLine[];
+    /** wave n = tickets in wave n's ticketIds; review n = its audit mission. */
+    waves: SpendLine[]; reviews: SpendLine[];
+  };
+  /** campaignNeeds(), verbatim. */
+  needs: Need[];
+  blocked: ReportBlocked[];
+  /** Counts only: no experiment id, path or basename of a holdout (P2-R37). */
+  holdouts: { locked: number; atTip: Record<ExperimentConclusion | 'not-run', number> };
+  forgeryShapes: ReportForgeryShapes;
+  status: StatusTable;
+}
+
+/** One row of `campaign list --format json`. */
+export interface ForgeCampaignRow {
+  id: string; projectId: string; title: string | null; state: MissionState; createdAt: number;
+  planRevision: string | null; planApproved: boolean;
+  /** campaignAuthorizationRefusal, verbatim. */
+  authorization: { decisionId: string | null; refusal: string | null; notAfter: number | null; haltDecisionId: string | null };
+  halted: CampaignHaltReason | null;
+  run: RunClaim | null;
+  /** `daylight campaign run <id> <root> --out <out>`, built by the engine. */
+  runHint: string;
+  integrationRef: string; tip: string | null;
+  tickets: number; byBucket: Record<StatusBucket, number>;
+  needs: number; assumptions: { open: number; pending: number };
+  spend: CampaignSpend;
+  /** Project root missing: statuses not derived, counts zero, said so. */
+  unavailable: string | null;
+}
+export interface ForgeCampaignList { kind: 'daylight-campaign-list'; campaigns: ForgeCampaignRow[] }
+
+/** `campaign show --format json`. */
+export interface ForgeCampaignShow {
+  campaign: Mission; title: string; planDigest: string; commit: string; approved: boolean;
+  /** campaignAuthorizationRefusal: null when an authorization is in force. */
+  authorization: string | null;
+  order: string[];
+  lanes: Array<{ id: string; title: string; tickets: string[]; owns: string[]; maxParallel: number }>;
+  /** A preview of dependency layers, not the run's waves. */
+  waves: string[][];
+  tickets: Array<CampaignTicket & { status: WorkItemStatus | 'unknown'; title: string }>;
+  ownerDecisions: Assumption[];
+  needs: Need[];
+  /** The current authorize-campaign scope, or null. */
+  envelope: CampaignEnvelope | null;
+  lock: { decisionId: string; gateSetDigest: string; ratchet: boolean; gates: number; holdouts: number } | null;
+}
+/** `assumption list --format json` rows; `options` from the plan's ownerDecisions[].options. */
+export type ForgeAssumptionRow = Assumption & { heldTickets: string[]; options: string[] };
+
+export interface RefineMapRef {
+  rev: string;
+  /** Relative to <out>. */
+  dir: string;
+  files: number; parsers: string[]; invariantsSource: string | null;
+}
+export interface RefineDiff<T> { introduced: T[]; resolved: T[]; persisting: number }
+export interface RefineFamily {
+  /** Sorted members joined by \n. */
+  key: string;
+  members: string[]; detectors: Array<'D1' | 'D2' | 'D3' | 'D4'>; touched: boolean;
+}
+export interface RefineDeadEnd {
+  /** `${kind}:${id}` | `orphan:${sorted}` */
+  key: string;
+  kind: 'file' | 'symbol' | 'orphan-cluster'; ids: string[]; tier: Tier | null; why: string; touched: boolean;
+}
+export interface RefineCycle { key: string; members: string[]; touched: boolean }
+export interface RefineInvariant {
+  id: string; prose: string; base: 'green' | 'red' | 'absent'; rev: 'green' | 'red' | 'absent';
+  measured: string; violations: number;
+  /** ≤ 5 */
+  first: Violation[];
+}
+export type RefineOverlay = 'assumption' | 'finding' | 'forgery' | 'blocked' | 'untested' | 'introduced';
+export interface RefineReport {
+  kind: 'daylight-refine'; version: 1;
+  campaignId: string; projectId: string; integrationRef: string;
+  base: string; rev: string; stale: boolean;
+  /** null with --rows-only */
+  maps: { base: RefineMapRef; rev: RefineMapRef } | null;
+  changed: Array<{ path: string; change: 'added' | 'modified' | 'deleted'; insertions: number | null; deletions: number | null; tickets: string[] }>;
+  /** null with --rows-only */
+  findings: {
+    duplication: RefineDiff<RefineFamily>; deadEnds: RefineDiff<RefineDeadEnd>; cycles: RefineDiff<RefineCycle>;
+    invariants: { source: string | null; regressed: number; fixed: number; results: RefineInvariant[] };
+  } | null;
+  /** Echoed so a reader sees why the order. */
+  focusRules: readonly FocusRule[];
+  /** Ranked by `focusRules`; an item's tier is its kind's rule's. */
+  focus: FocusItem[];
+  /** Repo-relative files per overlay. */
+  overlays: Record<RefineOverlay, string[]>;
+}
+
+export type FocusKind = 'assumption' | 'finding' | 'forgery-shape' | 'blocked-ticket' | 'untested-diff' | 'introduced';
+export type FactValue = string | number | boolean;
+export interface FocusItem { kind: FocusKind; ref: string; title: string; facts: Record<string, FactValue>; paths: string[]; why: string }
+export type FocusCond = { fact: string; in: FactValue[] } | { fact: string; gt: number } | { anyOf: FocusCond[] };
+/** `where` is AND; `order` sorts lexicographically, booleans false < true. */
+export interface FocusRule { kind: FocusKind; tier: number; where: FocusCond[]; order: Array<{ fact: string; dir: 'asc' | 'desc' }> }
 
 // ---- decisions ---------------------------------------------------------------
 
@@ -644,11 +1081,21 @@ export type DecisionKind =
  */
 export type DecisionOperation =
   | 'authorize-mission' | 'lock-gates' | 'approve-work-item' | 'reject-work-item'
-  | 'approve-candidate' | 'reject-candidate' | 'override-candidate' | 'adhoc-mission';
+  | 'approve-candidate' | 'reject-candidate' | 'override-candidate' | 'adhoc-mission'
+  | 'resolve-dependency-request'
+  | 'approve-plan' | 'lock-campaign-gates' | 'authorize-campaign' | 'halt-campaign' | 'resume-campaign'
+  | 'adopt-integration-tip' | 'integrate-candidate' | 'admit-work-item' | 'confirm-assumption' | 'decide-assumption'
+  | 'overturn-assumption' | 'retry-ticket' | 'acknowledge-forgery-shape'
+  | 'approve-ir' | 'approve-blueprint';
 
 export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'authorize-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
   'approve-candidate', 'reject-candidate', 'override-candidate', 'adhoc-mission',
+  'resolve-dependency-request',
+  'approve-plan', 'lock-campaign-gates', 'authorize-campaign', 'halt-campaign', 'resume-campaign',
+  'adopt-integration-tip', 'integrate-candidate', 'admit-work-item', 'confirm-assumption', 'decide-assumption',
+  'overturn-assumption', 'retry-ticket', 'acknowledge-forgery-shape',
+  'approve-ir', 'approve-blueprint',
 ];
 
 /** `mission authorize`: the only act that turns `write` on (ADR-9, ADR-34). */
@@ -692,7 +1139,10 @@ export interface AdhocMissionScope {
 
 export type ForgeDecisionScope =
   | AuthorizeScope | LockGatesScope | CandidateDecisionScope | WorkItemDecisionScope
-  | AdhocMissionScope;
+  | AdhocMissionScope
+  | ApprovePlanScope | CampaignLockScope | AuthorizeCampaignScope | IntegrateCandidateScope | AdmitWorkItemScope
+  | HaltCampaignScope | ResumeCampaignScope | AdoptTipScope | AssumptionDecisionScope | RetryTicketScope
+  | ApproveIrScope | ApproveBlueprintScope;
 
 export interface Decision {
   id: string;
@@ -763,6 +1213,9 @@ export interface LedgerRow {
   usdUnknownCount: number;
   /** Spend read from output by pattern: counted, never known. */
   usdScanned: number;
+  /** Unfinished attempts charged at their reservation (P2-R44): a ceiling, shown apart from known dollars. */
+  usdReservation: number;
+  reservationCount: number;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; unknownCount: number };
   candidates: { accepted: number; rejected: number; applied: number; overridden: number };
   decisions: number;
@@ -817,3 +1270,416 @@ export interface MissionAuthorizedPayload {
 export type DaylightEventInput = Omit<DaylightEvent, 'schemaVersion' | 'id' | 'sequence' | 'at'> & {
   at?: number;
 };
+
+// ---- campaigns (WS-R5) -------------------------------------------------------
+//
+// A campaign is a mission of kind `campaign` whose children are ticket missions
+// (`Mission.parentId`). Its plan is data a person approves once; the director process then acts
+// under one human `authorize-campaign` decision, recording derived decisions as `campaign:<m_id>`.
+// docs/daylight/CAMPAIGN.md; ADR-36, ADR-37.
+
+export const PLAN_KIND = 'daylight-plan' as const;
+/** Kept for version-1 imports; a plan file carries `version ∈ PLAN_VERSIONS` (v2: spec ingestion, WS-R15). */
+export const PLAN_VERSION = 1 as const;
+export const PLAN_VERSIONS = [1, 2] as const;
+
+/** One plan type for both versions (P2-R53 D-b); the v2 fields are optional and refused on a version-1 file. */
+export interface PlanFile {
+  kind: typeof PLAN_KIND; version: 1 | 2; title: string;
+  derivedStatus?: boolean; statusPath?: string;     // STATUS is derived; statusPath is protected for authors
+  defaults?: { budget?: TicketBudget; acceptance?: TicketAcceptance };
+  campaignGates: PlanCampaignGateV1[];              // project-wide regression gates
+  lanes: PlanLaneV1[]; ownerDecisions?: PlanOwnerDecisionV1[]; tickets: PlanTicket[];
+  derivation?: PlanDerivation;                      // version 2 only
+}
+export type PlanFileV1 = PlanFile;
+export interface PlanCampaignGateV1 {   // an ordinary R2 gate (P2-R16)
+  id: string;                    // /^[a-z][a-z0-9-]{0,31}$/
+  role: 'regression';            // must pass at base and on every integrated tree
+  harness?: GateHarness; path: string; crate?: string;  // test file at the plan commit; harness defaults to defaultGateHarness(policy)
+  expect: ExpectedObservation; timeoutSeconds?: number;
+}
+export interface PlanGateTestV1 { path: string; harness?: GateHarness; crate?: string; expect: ExpectedObservation }
+export interface PlanLaneV1 {
+  id: string;                    // /^[A-Z][A-Z0-9]{0,7}$/; 'FIX' reserved
+  title: string; owns: string[]; // owns: repo-relative prefixes
+  maxParallel?: number;          // default 1: one writer per lane, as kitkraft
+  shared?: string[];             // prefixes this lane may share with another lane
+}
+export interface PlanOwnerDecisionV1 {
+  id: string;                    // /^O[A-Z0-9.]{1,31}$/
+  question: string; options?: string[]; blocking: boolean; rationale?: string;
+  default?: string;              // required when blocking is false
+}
+export interface PlanTicket {
+  id: string;                    // /^[A-Z][A-Z0-9]*(\.[A-Z0-9]+)*$/, <= 32 chars, e.g. "M2.A1"
+  lane: string; title: string;   // title <= MAX_TITLE_CHARS (proposal.ts), one line
+  statement: string | string[];  // <= MAX_STATEMENT_BYTES joined (proposal.ts)
+  examples?: string[]; negativeExamples?: string[];   // <= MAX_EXAMPLES each (proposal.ts)
+  dependsOn?: string[]; blocksOn?: string[];          // ticket ids; owner-decision ids
+  scope: string[];               // repo-relative prefixes; becomes MissionScope.paths
+  acceptance?: TicketAcceptance; // default plan.defaults.acceptance, else { kind: 'ci-only' }
+  budget?: TicketBudget;
+  // version 2 only (spec ingestion, WS-R15):
+  requirementIds?: string[]; interfaceContracts?: Array<{ interfaceId: string; role: 'provides' | 'consumes'; irIds: string[] }>;
+  artifacts?: Array<{ path: string; kind: 'source' | 'test' | 'fixture' | 'doc' | 'config'; irIds: string[] }>;
+  acceptanceObligations?: Array<{ id: string; irIds: string[]; statement: string }>; context?: boolean; packetId?: string;
+}
+export type PlanTicketV1 = PlanTicket;
+export type TicketAcceptance =
+  | { kind: 'gate'; tests: PlanGateTestV1[] }                                   // public tests at the plan commit, bound to the ticket
+  | { kind: 'ci-only' }
+  | { kind: 'writer-authored'; harness?: GateHarness; crate?: string; testPaths: string[]; expect: ExpectedObservation }; // author writes them
+/** Each field lowers, never raises, the envelope's matching cap. */
+export interface TicketBudget { maxUsd?: number; maxTurns?: number; timeoutSeconds?: number; maxAttempts?: number }
+export interface PlanRefusal { path: string; rule: PlanRule; detail: string }
+export type PlanRule = 'shape' | 'version' | 'duplicate-id' | 'unknown-lane' | 'unknown-dependency' | 'self-dependency' | 'cycle'
+  | 'scope-path' | 'scope-protected' | 'scope-outside-lane' | 'lane-overlap' | 'unknown-owner-decision' | 'owner-default-missing'
+  | 'acceptance-path' | 'acceptance-harness' | 'gate-expectation' | 'policy' | 'text' | 'too-many' | 'too-large'
+  | 'trace-shape' | 'derivation';
+
+/** Where a campaign ticket came from: the approved plan, a wave-review finding, or an overturned assumption. */
+export type TicketOrigin = 'plan' | 'fix' | 'follow-up';
+
+export interface CampaignTicket { campaignId: string; ticketId: string; projectId: string; workItemId: string; origin: TicketOrigin;
+  lane: string; dependsOn: string[]; scope: string[]; acceptance: TicketAcceptance; budget: TicketBudget; blocksOn: string[];
+  ticketDigest: string; sourceRef?: string; createdAt: number }
+
+/**
+ * A ticket's state, derived from rows on every pass and never stored (§4.2). `waiting-dependency`:
+ * its mission has an open `request-dependency` need; the loop parks it and continues (P2-R21).
+ */
+export type TicketStatus =
+  | 'superseded' | 'waiting-owner'   // work item superseded/rejected | blocksOn names an open owner decision
+  | 'waiting' | 'ready'              // a dependency not landed | deps landed, no open mission, not exhausted
+  | 'running' | 'integrating'        // live attempt | integration row pending/evaluating
+  | 'waiting-dependency'             // its mission has an open request-dependency need: parked, the loop continues (P2-R21)
+  | 'landed' | 'blocked'             // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
+  | 'regressed'                      // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
+  | 'stale';                         // cites a record with no span at the corpus's current revision; a person re-approves (P2-R53)
+
+export interface ApprovePlanScope { operation: 'approve-plan'; planDigest: string; planRevision: string;
+  workItems: Record<string, string>;   // workItemId → contentDigest for every plan ticket: what setWorkItemStatus/assertImplementable check
+  supersedes: string[] }
+
+export const FINDING_SEVERITIES = ['low', 'medium', 'high'] as const;   // rank = index
+export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
+
+export interface CampaignEnvelope {
+  planDigest: string; gateSetDigest: string;     // the plan and campaign lock this grant runs against
+  policyDigest: string | null;                   // `ProjectPolicy.digest` at the plan commit, or null
+  ticketIds: string[];                           // explicit; "all" is expanded at confirm time
+  roster: string[]; reviewRoster: string[];      // author tools / wave reviewers ([] disables review)
+  maxUsdTotal: number; maxUsdPerMission: number; // campaign cap; per ticket mission incl. its repairs
+  maxTurns: number; timeoutSeconds: number;      // ≤ authorLimits(policyAtPlanCommit, defaults).maxTurns / timeoutMs (P2-R20)
+  maxAttemptsPerTicket: number; concurrency: number; waveSize: number;  // 1 + repairs (default 3); --concurrency ceiling; default 2×concurrency
+  execute: boolean;                              // nested `run` tool (ADR-35) for every ticket mission
+  autoApply: 'integration-ref' | 'none';
+  fixLane: { enabled: boolean; maxTicketsPerWave: number; maxUsdPerTicket: number };  // High only, maxTicketsPerWave ≤ 5 (P2-R10)
+  identity: { name: string; email: string };     // committer of integrated commits, labelled asserted
+  notAfter: number;                              // epoch ms; default now + 72h
+  /** P2-R55: at each wave, re-run earlier-landed tickets' gates: every one, only those whose scope a later landing touched, or none. Absent (recorded before): scoped. */
+  regressionCheck?: 'full' | 'scoped' | 'off';
+}
+export interface AuthorizeCampaignScope extends CampaignEnvelope { operation: 'authorize-campaign' }
+
+/** Declared here for both writers; `campaign lock` (WS-R6) records it. */
+export interface CampaignLockScope {
+  operation: 'lock-campaign-gates'; experimentIds: string[]; harnessDigests: Record<string, string>; vacuousOverrides: string[];
+  bindings: Record<string, string | null>;                       // experimentId → ticket id; null = regression / unbound holdout
+  roles: Record<string, 'regression' | 'gate' | 'holdout'>; ratchet: boolean;
+  obligations?: Record<string, string[]>;                         // experimentId → `<ticketId>:<obId>` (spec ingestion, §8.4)
+  gateSetDigest: string;      // sha256 over sorted "<x_id>:<harnessDigest>:<role>:<ticket|*>" lines plus "ratchet:<bool>"
+}
+
+/** `campaign:<m_id>`: the director process acting under a human authorize-campaign decision. Never a person. */
+export const isCampaignActor = (actor: string): boolean => /^campaign:m_[0-9a-f]{32}$/.test(actor);
+export const campaignActorOf = (campaignId: string): string => `campaign:${campaignId}`;
+export const DERIVED_OPERATIONS: readonly DecisionOperation[] = ['authorize-mission', 'integrate-candidate', 'admit-work-item', 'halt-campaign'];
+export interface DerivedScope { derivedFrom: string /* d_ of a human authorize-campaign */ }
+export type DerivedAuthorizeScope = AuthorizeScope & DerivedScope;
+export interface IntegrateCandidateScope extends DerivedScope { operation: 'integrate-candidate'; candidateId: string; diffDigest: string;
+  gateSetDigest: string; baseCommit: string; integrationId: string; onto: string; integratedCommit: string; integratedDiffDigest: string }
+export interface AdmitWorkItemScope extends DerivedScope { operation: 'admit-work-item'; workItemId: string; contentDigest: string;
+  ticketId: string; findingId?: string }
+export interface HaltCampaignScope { operation: 'halt-campaign'; reason: CampaignHaltReason; derivedFrom?: string }
+export interface ResumeCampaignScope { operation: 'resume-campaign'; haltDecisionId: string; reason: CampaignHaltReason }
+export interface AdoptTipScope { operation: 'adopt-integration-tip'; ref: string; from: string; to: string; haltDecisionId: string }
+export type CampaignHaltReason = 'operator' | 'spend-unknown' | 'spend-cap' | 'spend-breach' | 'integration-moved' | 'invariant'
+  | 'authorization-expired';
+
+/** `campaign retry`: a human releases a preflight-closed ticket's work item (P2-R25, P2-R27). */
+export interface RetryTicketScope { operation: 'retry-ticket'; ticketId: string; workItemId: string; contentDigest: string;
+  closedMissionId: string; reason: string }
+
+export type AssumptionStatus = 'open' | 'pending' | 'confirmed' | 'overturned';
+export type AssumptionSource = 'plan-default' | 'operator' | 'ir-interpretation';
+export interface Assumption {
+  id: string; projectId: string; campaignId: string;                 // id: u_…
+  missionId?: string; ticketId?: string; ownerDecisionId?: string;   // what it was taken for; plan ownerDecisions[].id
+  question: string; default: string; rationale: string;              // default: what the director proceeds on ('' while open)
+  status: AssumptionStatus; blocking: boolean; source: AssumptionSource;
+  recordedBy: string;                                                // 'daylight' (import) | human:<n>
+  decisionId?: string; followUpWorkItemId?: string;                  // the human decision; overturn's follow-up
+  irId?: string;                                                     // ir-interpretation: the record it interprets; campaignId is then the corpus mission
+  createdAt: number; updatedAt: number;
+}
+export interface AssumptionDecisionScope { operation: 'confirm-assumption' | 'decide-assumption' | 'overturn-assumption';
+  assumptionId: string; value: string; followUpWorkItemId?: string }
+
+/** `campaign.authorized`: ids, digests and caps, never prose. */
+export interface CampaignAuthorizedPayload {
+  decisionId: string; planDigest: string; gateSetDigest: string;
+  maxUsdTotal: number; maxUsdPerMission: number; concurrency: number; execute: boolean;
+  autoApply: CampaignEnvelope['autoApply'];
+}
+
+/** What a derived decision asks of its campaign's envelope (`envelopeRefusal`). */
+export interface EnvelopeRequest {
+  missionId: string; operation: DecisionOperation; ticketId: string; permissions?: MissionPermissions; maxUsd?: number | null;
+  at: number;
+  /** `admit-work-item` of a fix ticket: the wave it is admitted in, for the per-wave cap (P2-R10). */
+  waveSeq?: number;
+}
+
+// ---- spec ingestion (WS-R14/R15/R16) ---------------------------------------------
+//
+// A corpus of specification documents, sectioned deterministically, read by blind extractors into
+// Spec IR records a person approves, then a blueprint, work packets and a version-2 plan. Every agent
+// arrow is a proposal in an outbox, re-validated on the host; every `approved` is a human decision
+// naming content digests; staleness is derived from `ir_spans`, never written (P2-R53).
+// docs/daylight/INGEST.md; ADR-41..44.
+
+/** `daylight.corpus.json`, read from git at a commit; never written by Daylight. */
+export const CORPUS_KIND = 'daylight-corpus' as const;
+export type CorpusDocRole = 'primary' | 'errata' | 'decision' | 'related';
+export interface CorpusDocSpec {
+  key: string;                   // /^[a-z][a-z0-9-]{0,31}$/; with `dir` a prefix: each file becomes `<key>-<leading digits | slug>`
+  path?: string; dir?: string;   // exactly one; `dir` = every *.md directly under it at the commit, sorted
+  role: CorpusDocRole; domain: string;   // /^[a-z][a-z0-9-]{0,31}$/: one product's documents; precedence never crosses domains
+  project?: string;              // alias of another mapped repo, bound on the CLI (`--project alias=<repo>[@rev]`); absent = the manifest's repo
+  title?: string;
+}
+export interface CorpusPrecedence { over: string; under: string;      // doc key or `role:<role>@<domain>`; same domain only
+  basis?: { doc: string; quote: string } }                           // the sentence that says so; must occur exactly once
+export interface CorpusDependency { from: string; on: string;         // domains: `from` cites `on`, never overrides it (O-a)
+  kinds: IrKind[]; basis: { doc: string; quote: string } }
+export interface CorpusManifest { kind: typeof CORPUS_KIND; version: 1; title: string; docs: CorpusDocSpec[];
+  precedence: CorpusPrecedence[]; dependencies?: CorpusDependency[];
+  excluded?: Array<{ path: string; reason: string }>;   // recorded, not read (ground truth, TOML sidecars)
+  sectioner?: Partial<SectionerConfig> | { $ref: string };   // inline, or a repo-relative JSON sidecar at the same commit
+}
+export interface CorpusDoc { key: string; role: CorpusDocRole; domain: string; path: string; projectId: string; commit: string;
+  artifact: ArtifactRef; digest: string; bytes: number }
+export interface ResolvedPrecedence { over: string; under: string; basis: IrSpanRef | null }
+export interface ResolvedDependency { from: string; on: string; kinds: IrKind[]; basis: IrSpanRef }
+export interface CorpusRevision {
+  id: string; corpusId: string; projectId: string; seq: number;     // cr_…; corpusId: m_ of kind 'corpus'
+  manifestPath: string; manifestDigest: string; commits: Record<string, string>;   // projectId → commit
+  corpusDigest: string;
+  docs: CorpusDoc[]; precedence: ResolvedPrecedence[]; dependencies: ResolvedDependency[]; unordered: Array<[string, string]>;
+  sectionIndex: ArtifactRef; sectionSetDigest: string; sectionerVersion: string; configDigest: string; createdAt: number;
+}
+
+/** The hierarchical sectioner's output (pure, no LLM). Offsets are UTF-8 bytes, half-open. */
+export interface Section {
+  id: string;                // `${docKey}:${anchorPath}`; > 200 chars → first 160 + '~' + sha256(full)[0..12]
+  docKey: string; label: string | null;
+  title: string; level: number; parentId: string | null;   // level 0 = synthetic root
+  start: number; end: number;            // heading line → next heading of level ≤ this
+  bodyStart: number; bodyEnd: number;    // heading line excluded, first child heading excluded
+  bodyDigest: string;
+  informative: boolean; withdrawn: boolean; openDecision: boolean;   // own heading/first line, or inherited from any ancestor
+}
+export interface NormativeSentence { id: string /* `${sectionId}#s${k}` over all units */; sectionId: string; docKey: string; start: number; end: number;
+  score: number; cues: string[] /* cue ids from config */; hedges: string[] }
+export type BuiltinXrefKind = 'section' | 'decision' | 'errata' | 'correction' | 'ticket' | 'milestone' | 'enumerated' | 'figure' | 'doc-version';
+export type XrefKind = BuiltinXrefKind | string;   // a non-built-in kind must be listed in SectionerConfig.xrefKinds
+export type XrefLink = 'cites' | 'implements' | 'supersedes' | 'amends' | 'resolves';
+export interface CrossRef { fromSection: string; start: number; end: number; raw: string /* ≤ 64 chars */; kind: XrefKind; link: XrefLink;
+  target: string | null; resolved: boolean; reason?: 'no-such-label' | 'ambiguous' | 'other-version' | 'out-of-corpus' | 'other-domain' }
+export interface SectionIndex { v: 2; sectionerVersion: string; configDigest: string; corpusDigest: string;
+  docs: Array<{ key: string; digest: string; sections: Section[] }>; sentences: NormativeSentence[] /* score ≥ config.threshold */; refs: CrossRef[] }
+
+/** Sectioner configuration as versioned data (P2-R52, P2-R53 D-e, P2-R54): no project vocabulary in code. */
+export interface SectionerConfig {
+  v: 1; threshold: number;
+  labels: Array<{ id: string; heading: string /* regex on heading text */; label: string /* '§$1' */; roles?: CorpusDocRole[]; docTitle?: string }>;
+  xrefs: Array<{ id: string; pattern: string; kind: XrefKind; label?: string /* template resolving to a label */; scope: 'doc' | 'domain' | 'any' }>;
+  cues: Array<{ id: string; pattern: string /* regex, case-insensitive, word-bounded */; weight: number; type: 'normative' | 'hedge' }>;
+  imperatives: string[];
+  ruleSections: string[];
+  informative: string[];
+  openDecision: string[];
+  tags: string[];                // default IR tag vocabulary ([] = free text, ≤ 32 chars each)
+  milestone: string | null;      // default regex for attrs.milestone; null = free text ≤ 16 chars
+  domains?: Record<string, { milestone?: string | null; tags?: string[] }>;   // P2-R54: per-domain overrides, in configDigest
+  xrefKinds?: string[];          // project xref kinds beyond the built-ins
+}
+
+/** Windows: + linked ≤ 12 KiB + framing ≤ 12 KiB stays ≤ the 64 KiB prompt wall. */
+export const WINDOW_TARGET_BYTES = 16 * 1024;
+export const MAX_WINDOW_BYTES = 40 * 1024;
+export interface ExtractWindow { id: string /* `win${seq}:${digest12}` */; docKey: string; sectionIds: string[]; parts?: Array<{ sectionId: string; start: number; end: number }>;
+  bytes: number; linked: string[] /* resolved xref targets, other docs first, ≤ 12 KiB */; ancestors: Array<{ id: string; title: string }> }
+
+/** Spec IR. */
+export const IR_KINDS = ['requirement', 'invariant', 'constraint', 'interface', 'acceptance-condition', 'decision', 'dependency', 'non-goal', 'deferral',
+  'open-question', 'ambiguity', 'contradiction'] as const;
+export type IrKind = (typeof IR_KINDS)[number];
+export type IrSource = 'extracted' | 'inferred';        // intent (the text says it) vs interpretation (the reader concluded it)
+export type IrStatus = 'proposed' | 'approved' | 'rejected' | 'superseded';   // staleness is derived, never a status
+export const IR_TRANSITIONS: Record<IrStatus, readonly IrStatus[]> = { proposed: ['approved', 'rejected', 'superseded'], approved: ['superseded'], rejected: [], superseded: [] };
+export interface IrSpanRef { revisionId: string; docKey: string; sectionId: string; start: number; end: number; quote: string; quoteDigest: string }
+export interface IrAttrs { tags?: string[] /* ≤ 8, in config.tags */; milestone?: string /* config.milestone */; subject?: string /* ≤ 80 */;
+  polarity?: 'positive' | 'negative'; numbers?: Array<{ value: number; unit?: string }> /* ≤ 16 */; interfaceName?: string /* ≤ 120 */;
+  dependency?: { from: string; to: string }; deferral?: { to: string }; decision?: { ref: string; status: 'proposed' | 'accepted' | 'superseded' };
+  ticketRefs?: string[] /* ≤ 16; ids the text names: data, never a binding */ }
+export interface IrRecord {
+  id: string; projectId: string; corpusId: string;
+  kind: IrKind; source: IrSource; statement: string; attrs: IrAttrs;
+  span: IrSpanRef | null;        // at the revision asked for (current by default); null = no span there (inferred, or stale)
+  other: IrSpanRef | null;       // contradiction / ambiguity / dependency: the second passage
+  basisSections: string[];
+  confidence: number; contentDigest: string;
+  status: IrStatus; irVersion: string; observedBy: string[]; proposedBy: string;
+  decisionId?: string; assumptionId?: string; overriddenBy: string[]; createdAt: number; updatedAt: number;
+}
+export interface IrObservation { irId: string; attemptId: string; runnerId: string; windowId: string; confidence: number; at: number }
+export interface IrProposal {          // crosses MCP; unknown keys refused; first refusal only
+  kind: IrKind; source: IrSource; statement: string /* ≤ 4 KiB, multi-line allowed */; confidence: number /* 0..1 */; attrs?: IrAttrs;
+  section: string;                     // a section id of this window (primary or linked)
+  quote: string;                       // verbatim from that body, ≤ 2 KiB; '' only when source = 'inferred'
+  occurrence?: number;                 // integer ≥ 1; required when the quote occurs more than once in the section
+  other?: { section: string; quote: string /* ≤ 2 KiB */; occurrence?: number };
+  basisSections?: string[];            // ≤ 8 section ids of this window
+}
+export type IrProposalField = 'payload' | 'kind' | 'source' | 'section' | 'quote' | 'occurrence' | 'statement' | 'confidence' | 'attrs' | 'other' | 'basisSections' | 'count';
+export interface IrProposalContext { window: ExtractWindow; config: SectionerConfig; bodyOf: (sectionId: string) => { start: number; text: string } }
+export type DisagreementKind = 'single-extractor' | 'kind-differs' | 'statement-differs' | 'attrs-differ' | 'source-differs';
+export interface IrDisagreement { windowId: string; sectionId: string; start: number; end: number; kind: DisagreementKind; irIds: string[]; extractors: string[] }
+
+/** Coverage and omission report. */
+export interface SpanRef { docKey: string; sectionId: string; start: number; end: number }
+export interface CoverageReport {
+  kind: 'daylight-coverage'; v: 1; corpusId: string; revisionId: string; corpusDigest: string; irVersions: string[]; irSetDigest: string | null;
+  totals: { documents: number; sections: number; windows: number; normative: number; mapped: number; mappedApproved: number; unprocessed: number;
+    records: Record<IrKind, number>; byStatus: Record<IrStatus, number>; stale: number; inferred: number; unsupported: number; withheldExcerpts: number };
+  documents: Array<{ key: string; role: CorpusDocRole; domain: string; sections: number; normative: number; mapped: number }>;
+  unprocessedSections: Array<{ sectionId: string; label: string | null; reason: 'no-window' | 'no-attempt' | 'attempt-failed' | 'no-records' }>;
+  unmapped: Array<{ sentenceId: string; sectionId: string; label: string | null; start: number; end: number; score: number }>;
+  ambiguities: Array<{ at: SpanRef; detector: 'extractor' | 'hedge' | 'open-decision' | 'disagreement' | 'review'; irIds: string[]; confidence: number }>;
+  contradictions: Array<{ a: SpanRef; b: SpanRef; crossDocument: boolean; crossDomain: boolean; declaredDependency: boolean; irIds: string[]; confidence: number;
+    detector: 'extractor' | 'modal-polarity' | 'numeric' | 'review';
+    resolution: { by: 'precedence'; over: string; basis: SpanRef | null } | { by: 'unordered' } | { by: 'none' } }>;
+  unsupported: Array<{ irId: string; kind: IrKind }>; stale: Array<{ irId: string; status: IrStatus }>;
+  danglingRefs: Array<Pick<CrossRef, 'fromSection' | 'start' | 'end' | 'raw' | 'kind' | 'reason'>>;
+  disagreements: IrDisagreement[]; seeded?: SeededDefectResult[];
+}
+export type SeedKind = 'modal-contradiction' | 'numeric-contradiction' | 'cross-doc-contradiction' | 'hedge-ambiguity' | 'dangling-ref' | 'unordered-precedence';
+export interface SeededDefect { id: string; kind: SeedKind; docKey: string; afterSectionId: string; text: string; expect: Array<'hedge' | 'modal-polarity' | 'numeric' | 'dangling' | 'precedence'> }
+export interface SeededDefectResult { id: string; kind: SeedKind; insertedAt: SpanRef; detected: boolean; by: string[] }
+
+/** Independent IR review (WS-R15). */
+export const IR_FINDING_KINDS = ['omission', 'contradiction', 'invented-requirement', 'wrong-dependency', 'infeasible-boundary', 'wrong-kind', 'wrong-span', 'ambiguity'] as const;
+export type IrFindingKind = (typeof IR_FINDING_KINDS)[number];
+export interface ReportedIrFinding { kind: IrFindingKind; severity: FindingSeverity; title: string /* ≤ 120, one line */; statement: string /* ≤ 4 KiB */;
+  irId?: string /* required except omission */; elementId?: string /* required for infeasible-boundary */; section: string; quote?: string /* ≤ 2 KiB */ }
+export interface IrFinding { id: string /* rf_ */; projectId: string; corpusId: string; reviewMissionId: string; attemptId: string; kind: IrFindingKind;
+  severity: FindingSeverity; irId: string | null; elementId: string | null; span: IrSpanRef | null; title: string; statement: string;
+  findingArtifact: ArtifactRef; corroboratedBy: string[]; disposition: 'open' | 'accepted' | 'dismissed'; decisionId?: string; createdAt: number }
+export interface ApproveIrSetV1 { kind: 'daylight-approve-ir'; version: 1; corpusId: string; revisionId: string;
+  approve: string[]; reject: string[]; supersede?: Record<string, string> /* old ir id → new ir id */;
+  accept: string[]; dismiss: string[]; corrections?: IrProposal[] /* human-written; quotes must resolve */ }
+export interface ApproveIrScope { operation: 'approve-ir'; corpusId: string; revisionId: string; corpusDigest: string;
+  approve: Record<string, string>; reject: Record<string, string>; supersede: Record<string, string>;
+  findings: Record<string, 'accepted' | 'dismissed'>; corrections: string[];
+  irSetDigest: string }
+export interface ApproveIrInput { corpusId: string; actor: string; rationale: string | undefined; confirm: string | undefined;
+  env: Readonly<Record<string, string | undefined>>; set: ApproveIrSetV1 }
+
+/** Blueprint (WS-R15). */
+export const BLUEPRINT_KIND = 'daylight-blueprint' as const;
+export interface BlueprintV1 {
+  kind: typeof BLUEPRINT_KIND; version: 1; title: string; corpusDigest: string; irSetDigest: string;
+  scope: { milestones: string[] };
+  ticketIdTemplate: string;
+  boundaries: BlueprintBoundaryV1[]; components: BlueprintComponentV1[]; interfaces: BlueprintInterfaceV1[];
+  order: string[][];
+  constraints: Array<{ irIds: string[]; appliesTo: string[] }>;
+  deferred: Array<{ irId: string; to: string }>; outOfScope: Array<{ irId: string; reason: string /* ≤ 1 KiB */ }>;
+}
+export interface BlueprintBoundaryV1 { id: string /* /^[a-z][a-z0-9-]{0,31}$/ */; title: string; domain: string;
+  lifecycle: 'in-repo' | 'separate-repo' | 'external'; owns: string[]; bounds: string[]; invariants: string[] }
+export interface BlueprintComponentV1 { id: string /* /^[A-Z][A-Z0-9]{0,7}$/: a plan lane 1:1, 'FIX' reserved */; boundary: string; title: string;
+  owns: string[]; shared?: string[]; sections: string[] /* assigned whole */; requirements: string[]; dependsOn: string[]; provides: string[]; consumes: string[] }
+export interface BlueprintInterfaceV1 { id: string /* /^[a-z][a-z0-9.-]{0,63}$/ */; owner: string; irIds: string[]; summary: string; crossesBoundary: boolean }
+export interface Blueprint { id: string /* bp_ */; projectId: string; corpusId: string; revisionId: string; body: BlueprintV1; bodyArtifact: ArtifactRef;
+  blueprintDigest: string; status: 'proposed' | 'approved' | 'rejected' | 'superseded'; proposedBy: string; attemptId?: string;
+  decisionId?: string; createdAt: number; updatedAt: number }
+export type BlueprintRule = 'shape' | 'version' | 'digest' | 'unknown-ir' | 'ir-not-approved' | 'ir-stale' | 'ir-overridden' | 'unassigned' | 'duplicate-assignment'
+  | 'owns-outside-boundary' | 'owns-overlap' | 'external-owns' | 'unknown-component' | 'cycle' | 'order' | 'interface-owner' | 'interface-unreachable'
+  | 'boundary-crossing' | 'invariant-unplaced' | 'bounds-empty' | 'ticket-template' | 'text';
+export interface BlueprintRefusal { path: string; rule: BlueprintRule; detail: string }
+export interface BlueprintDerivation { blueprintId: string; elementId: string; irId: string;
+  role: 'bounds' | 'invariant' | 'requirement' | 'interface' | 'constraint' | 'deferred' | 'out-of-scope' }
+export interface ApproveBlueprintScope { operation: 'approve-blueprint'; corpusId: string; blueprintId: string; blueprintDigest: string; irSetDigest: string; supersedes: string | null }
+
+/** Work packets (WS-R15). */
+export interface WorkPacket {
+  id: string;                  // pk_ + 32 hex of sha256(canonicalJson([blueprintId, ticketId, packetDigest]))
+  blueprintId: string; componentId: string; ticketId: string; milestone: string;
+  title: string; objective: string; prerequisites: string[]; scope: string[];
+  requirementIds: string[]; interfaceContracts: Array<{ interfaceId: string; role: 'provides' | 'consumes'; irIds: string[] }>;
+  artifacts: Array<{ path: string; kind: 'source' | 'test' | 'fixture' | 'doc' | 'config'; irIds: string[] }>;
+  acceptanceObligations: Array<{ id: string /* /^ob[0-9]{1,3}$/ */; irIds: string[]; statement: string /* ≤ 1 KiB */ }>;
+  integrationDeps: string[]; blocksOn: string[] /* OIR.* */; examples: string[]; negativeExamples: string[];
+  packetDigest: string; status: 'proposed' | 'emitted' | 'superseded';   // stale is derived
+}
+export interface AuthorContext { spans: Array<{ irId: string; label: string | null; docKey: string; quote: string }>; bytes: number; truncated: number; withheld: number }
+export interface PlanDerivation { corpusId: string; corpusDigest: string; irSetDigest: string; blueprintId: string; blueprintDigest: string; packetSetDigest: string }
+
+/** Authority and invalidation (WS-R15; P2-R53). */
+export interface AuthorityChain { corpusDigest: string; sectionSetDigest: string; configDigest: string; irVersions: string[]; irSetDigest: string | null;
+  blueprintId: string | null; blueprintDigest: string | null; packetSetDigest: string | null; planDigest: string | null;
+  approvePlanDecisionId: string | null; authorizeDecisionId: string | null; lockDecisionId: string | null;
+  breaks: Array<{ link: 'corpus' | 'sections' | 'ir' | 'blueprint' | 'packets' | 'plan' | 'envelope'; why: string }> }
+export type CarryStatus = 'carried' | 'moved' | 'review' | 'stale';
+export interface CorpusDiff { kind: 'daylight-corpus-diff'; corpusId: string; from: string; to: string;
+  docs: Array<{ key: string; from: string | null; to: string | null }>;
+  sections: { added: string[]; removed: string[]; changed: string[]; renamed: Array<{ from: string; to: string }> };
+  records: Array<{ irId: string; status: CarryStatus; to: IrSpanRef | null; reason: 'quote-missing' | 'quote-ambiguous' | 'section-removed' | 'section-changed'
+    | 'overriding-doc-changed' | 'config-changed' | null }>;
+  invalidated: { blueprints: string[]; packets: string[]; assumptions: string[];
+    tickets: Array<{ campaignId: string; ticketId: string; workItemId: string; state: 'unconsumed' | 'in-flight' | 'landed'; irIds: string[] }>;
+    gates: Array<{ campaignId: string; experimentId: string; obligations: string[] }> } }
+
+/** Traceability (WS-R16). */
+export type TraceNodeType = 'document' | 'section' | 'unit' | 'ir' | 'boundary' | 'component' | 'interface' | 'packet' | 'ticket' | 'work-item' | 'mission'
+  | 'candidate' | 'gate-evaluation' | 'integration' | 'application' | 'assumption' | 'finding';
+export const TRACE_JOINS = ['span-overlap', 'ir-span', 'derivation', 'packet-component', 'packet-ticket', 'ticket-trace', 'ticket-work-item', 'consumed-by',
+  'candidate-mission', 'evaluation', 'obligation-gate', 'landing', 'application', 'assumption', 'finding'] as const;
+export type TraceJoin = (typeof TRACE_JOINS)[number];
+export interface TraceNode { type: TraceNodeType; id: string; label: string; status?: string; stale?: boolean; digest?: string }
+export interface TraceEdge { from: string; to: string; via: TraceJoin }
+export interface TraceReport { kind: 'daylight-trace'; v: 1; direction: 'forward' | 'backward'; root: TraceNode; nodes: TraceNode[]; edges: TraceEdge[];
+  gaps: Array<{ at: string; missing: TraceNodeType; why: string }>; verified: { quotesRehashed: number; mismatches: string[] } }
+export interface TraceMatrix { kind: 'daylight-trace-matrix'; v: 1; campaignId: string; chain: AuthorityChain; untracedTickets: string[];
+  rows: Array<{ irId: string; kind: IrKind; label: string | null; tags: string[]; components: string[]; tickets: string[];
+    evidence: 'none' | 'gate-bound' | 'landed' | 'landed-gates-pass' | 'stale'; gaps: string[] }> }
+
+/**
+ * Store rows. `NewIrRecord` also carries the columns the record's text lives in (`docKey`, `quote`,
+ * `otherQuote`) and where it was first seen (`firstRevision`), which the DDL requires and `IrRecord`
+ * reaches only through its spans.
+ */
+export type NewIrRecord = Omit<IrRecord, 'span' | 'other' | 'status' | 'decisionId' | 'assumptionId' | 'overriddenBy' | 'observedBy' | 'createdAt' | 'updatedAt'>
+  & { docKey: string | null; quote: string; otherQuote: string | null; firstRevision: string; proposalArtifact?: string };
+export interface IrSpanRow { irId: string; revisionId: string; role: 'primary' | 'other'; docKey: string; sectionId: string; start: number; end: number;
+  quoteDigest: string; carry: 'proposed' | 'carried' | 'moved' | 'review' }
+export interface IrLinkRow { fromIr: string; toIr: string; kind: 'contradicts' | 'overrides' | 'duplicates' | 'refines' | 'depends-on' | 'same-contract' | 'ambiguous-with';
+  basis: 'extractor' | 'detector' | 'precedence' | 'dependency' | 'review' | 'human'; createdAt: number }
+export interface PacketRow extends Pick<WorkPacket, 'id' | 'blueprintId' | 'componentId' | 'ticketId' | 'packetDigest' | 'status'> { projectId: string;
+  bodyArtifact: ArtifactRef; proposedBy: string; attemptId?: string; createdAt: number; updatedAt: number }
+export interface TicketTraceRow { campaignId: string; ticketId: string; irId: string; role: 'requirement' | 'obligation' | 'interface' | 'artifact' | 'context';
+  detail: string | null; packetId: string | null; handEdited: boolean }
