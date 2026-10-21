@@ -492,12 +492,24 @@ const flag = (argv, name) => {
   {
     const D = `d_${'7'.repeat(32)}`;
     const TO = 'c'.repeat(40);
-    const { h, calls } = world();
+    // A confirm stand-in that digests only what the engine's adopt-integration-tip scope holds
+    // (campaign, halt, and the `to` commit R8's campaignRunConfirm reads), not every flag it is handed.
+    const crypto = require('node:crypto');
+    const adoptPreview = (argv) => {
+      const scope = JSON.stringify({ op: argv[1], subject: argv[2], halt: flag(argv, '--halt'), to: flag(argv, '--to') ?? null });
+      const digest = `sha256:${crypto.createHash('sha256').update(scope).digest('hex')}`;
+      return { digest, digest8: digest.slice(7, 15), lines: [`adopt ${argv[2]}`], refusal: null };
+    };
+    const { h, calls } = world({ preview: adoptPreview });
     await h['forge-campaign-adopt-tip']({ id: M, haltId: D, to: TO, rationale: 'r' });
-    const preview = calls.cli.find((a) => a[0] === 'confirm');
-    const act = mutations(calls)[0];
-    check('--to reaches both the preview and the act, so the digest covers it', flag(preview, '--to') === TO && flag(act, '--to') === TO && flag(preview, '--repo') === REPO);
-    check('the dialog says it restores the ref', /Restore integration ref to cccccccccccc/.test(calls.boxes[0].message));
+    const { h: h0, calls: c0 } = world({ preview: adoptPreview });
+    await h0['forge-campaign-adopt-tip']({ id: M, haltId: D, rationale: 'r' });
+    const [p1, p0] = [calls.cli.find((a) => a[0] === 'confirm'), c0.cli.find((a) => a[0] === 'confirm')];
+    const [a1, a0] = [mutations(calls)[0], mutations(c0)[0]];
+    check('--to reaches the preview and the act; the repo only the preview', flag(p1, '--to') === TO && flag(a1, '--to') === TO && flag(p1, '--repo') === REPO && !a1.includes('--repo'));
+    check('with --to the confirmed code differs from the one without it', flag(a1, '--confirm') !== flag(a0, '--confirm') && flag(a1, '--confirm') === adoptPreview(p1).digest8);
+    check('no --to anywhere when none is given', !p0.includes('--to') && !a0.includes('--to'));
+    check('the dialog names the commit in its title and in main\'s own line', /Restore integration ref to cccccccccccc/.test(calls.boxes[0].message) && calls.boxes[0].detail.includes(`restores the integration ref to ${TO}`));
     const { h: hb, calls: cb } = world();
     const bad = [await hb['forge-campaign-adopt-tip']({ id: M, haltId: D, to: 'HEAD', rationale: 'r' }), await hb['forge-campaign-adopt-tip']({ id: M, haltId: D, to: '--confirm', rationale: 'r' })];
     check('a --to that is not a full commit id is refused before the engine', bad.every((r) => r.error) && cb.cli.length === 0);

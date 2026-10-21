@@ -595,6 +595,8 @@ function handlersFor(deps) {
       return guarded({
         operation: 'adopt-integration-tip', subject: id, verb: to.length ? `Restore integration ref to ${p.to.slice(0, 12)}` : 'Adopt integration tip',
         confirmArgs: ['--halt', halt, ...to],
+        // Main's own line, so the dialog names the commit even where the engine's preview lines do not.
+        notes: to.length ? ['', `restores the integration ref to ${p.to} (--to)`] : [],
         previewArgs: ['--repo', repo], act: [...ARGV.adoptTip(dir(), id, repo), kv('rationale', rationale)],
       });
     },

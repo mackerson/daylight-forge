@@ -120,9 +120,9 @@ function Overview({ api, sample, data, row, events, onReload, onOpen, onNeed, on
   /** The halt decision a resume or adopt-tip names, as `campaign status` reports it. */
   const knownHalt = status.authorization.haltDecisionId ?? '';
   const proposed = proposedTickets(show);
-  /** The commit a deleted or rewound ref is restored to, as the halt need names it (WS-R12). */
-  const adoptNeed = (status.needs as AnyNeed[]).find((n) => n.kind === 'campaign-halted' && /adopt-tip/.test(n.why));
-  const adoptTo = adoptNeed ? /--to ([0-9a-f]{40}(?:[0-9a-f]{24})?)\b/.exec(adoptNeed.why)?.[1] ?? '' : '';
+  /** The commit adopt-tip leaves the ref at, as the halt need names it (`Need.commit`, WS-R8). */
+  const adoptNeed = status.needs.find((n) => n.kind === 'campaign-halted' && !!n.commit);
+  const adoptTo = adoptNeed?.commit ?? '';
   const copy = (text: string) => { void navigator.clipboard?.writeText(text); };
   const needs = status.needs as AnyNeed[];
 
