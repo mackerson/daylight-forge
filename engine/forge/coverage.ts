@@ -243,6 +243,28 @@ export function holdoutBasenamesOf(ctx: DaylightContext, projectId: string): Set
   return out;
 }
 
+/**
+ * Units split two ways, computed from opposite sides so the check between them means something:
+ * `mapped` from the spans (every unit some span overlaps), `unmapped` from the units (no span
+ * overlaps them).
+ */
+export function partitionUnits<U extends Pick<NormativeSentence, 'id' | 'docKey' | 'start' | 'end'>>(units: U[], spans: SpanRef[]): { mapped: U[]; unmapped: U[] } {
+  const hit = new Set<string>();
+  for (const s of spans) for (const u of units) if (u.docKey === s.docKey && u.start < s.end && s.start < u.end) hit.add(u.id);
+  return {
+    mapped: units.filter((u) => hit.has(u.id)),
+    unmapped: units.filter((u) => !spans.some((s) => u.docKey === s.docKey && u.start < s.end && s.start < u.end)),
+  };
+}
+
+/** Every normative unit is in exactly one of mapped and unmapped; anything else is a bug, thrown. */
+export function assertPartition(units: Array<Pick<NormativeSentence, 'id'>>, p: { mapped: Array<Pick<NormativeSentence, 'id'>>; unmapped: Array<Pick<NormativeSentence, 'id'>> }): void {
+  const seen = new Map<string, number>();
+  for (const u of [...p.mapped, ...p.unmapped]) seen.set(u.id, (seen.get(u.id) ?? 0) + 1);
+  const bad = units.filter((u) => seen.get(u.id) !== 1);
+  if (bad.length || seen.size !== units.length) throw new Error(`coverage arithmetic does not hold: ${bad.length} unit(s) not in exactly one of mapped and unmapped`);
+}
+
 export function coverageOf(ctx: DaylightContext, corpusId: string, o: { revisionId?: string; seeds?: SeededDefect[] } = {}): CoverageReport {
   const c = corpusOf(ctx, corpusId, o.revisionId);
   const domainOf = (k: string) => c.docs.find((d) => d.key === k)?.domain ?? '';
@@ -253,9 +275,10 @@ export function coverageOf(ctx: DaylightContext, corpusId: string, o: { revision
   const covered = (u: DetectorUnit, rs: IrRecord[]) => rs.some((r) => spansOf(r).some((s) => overlaps(s, spanOf(u))));
   const approved = live.filter((r) => r.status === 'approved');
   const labelOf = new Map(c.index.docs.flatMap((d) => d.sections).map((s) => [s.id, s.label]));
-  const unmapped = units.filter((u) => !covered(u, live)).map((u) => ({ sentenceId: u.id, sectionId: u.sectionId, label: labelOf.get(u.sectionId) ?? null, start: u.start, end: u.end, score: u.score }));
-  const mapped = units.length - unmapped.length;
-  if (mapped + unmapped.length !== units.length || mapped < 0) throw new Error('coverage arithmetic does not hold');
+  const parts = partitionUnits(units, live.flatMap(spansOf));
+  assertPartition(units, parts);
+  const unmapped = parts.unmapped.map((u) => ({ sentenceId: u.id, sectionId: u.sectionId, label: labelOf.get(u.sectionId) ?? null, start: u.start, end: u.end, score: u.score }));
+  const mapped = parts.mapped.length;
 
   // Why a section with normative units has no record: no window, no attempt, every attempt failed, or none recorded.
   const windows = windowsOf(c.index, c.bytesOf);

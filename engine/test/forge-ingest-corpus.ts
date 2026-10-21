@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { openDaylight } from '../mission/context.ts';
 import { exportMission, importMission } from '../mission/export.ts';
 import { identifyProject } from '../mission/project.ts';
@@ -171,6 +172,55 @@ check('a tampered document artifact is refused on read', /corrupt|does not hash/
 })()));
 fs.writeFileSync(file, saved);
 check('and reads again once restored', corpusOf(ctx, rev.corpusId).bytesOf('olc-errata').equals(saved));
+
+section('corpusOf\'s digest checks bite: a valid but different artifact behind a revision row (review L-7)');
+{
+  const db = new DatabaseSync(path.join(A.out, 'daylight.db'));
+  const row = db.prepare('SELECT docs, section_index FROM corpus_revisions WHERE id=?').get(rev.id) as { docs: string; section_index: string };
+  const docsJson = JSON.parse(row.docs) as Array<{ key: string; artifact: unknown }>;
+  const swapped = docsJson.map((d) => (d.key === 'olc-errata' ? { ...d, artifact: docsJson.find((x) => x.key === 'olc-arch')!.artifact } : d));
+  db.prepare('UPDATE corpus_revisions SET docs=? WHERE id=?').run(JSON.stringify(swapped), rev.id);
+  const docMsg = (() => {
+    try {
+      corpusOf(ctx, rev.corpusId, rev.id).bytesOf('olc-errata');
+      return '';
+    } catch (err) {
+      return (err as Error).message;
+    }
+  })();
+  check('a document whose artifact is another document\'s is refused by its registered digest', /does not hash to its registered digest/.test(docMsg), docMsg);
+  // A valid index of the same corpus and config, one unit lighter: only the section-set digest tells it apart.
+  const realIndex = JSON.parse(ctx.artifacts.get(rev.sectionIndex).toString()) as { sentences: unknown[] };
+  const lighter = ctx.artifacts.put(JSON.stringify({ ...realIndex, sentences: realIndex.sentences.slice(1) }), { kind: 'report', projectId: rev.projectId, label: 'section-index' });
+  ctx.store.recordArtifact(lighter);
+  db.prepare('UPDATE corpus_revisions SET docs=?, section_index=? WHERE id=?').run(row.docs, lighter.id, rev.id);
+  const idxMsg = (() => {
+    try {
+      corpusOf(ctx, rev.corpusId, rev.id);
+      return '';
+    } catch (err) {
+      return (err as Error).message;
+    }
+  })();
+  check('a revision whose section index points at another valid index (one unit dropped) is refused', /section index does not match/.test(idxMsg), idxMsg);
+  db.prepare('UPDATE corpus_revisions SET section_index=? WHERE id=?').run(row.section_index, rev.id);
+  db.close();
+  const blobFile = path.join(A.out, 'artifacts', 'sha256', rev.docs.find((d) => d.key === 'olc-arch')!.digest.slice('sha256:'.length));
+  const orig = fs.readFileSync(blobFile);
+  const flipped = Buffer.from(orig);
+  flipped[10] ^= 0x01;
+  fs.writeFileSync(blobFile, flipped);
+  check('one flipped byte in a document blob is refused on read', (() => {
+    try {
+      corpusOf(ctx, rev.corpusId, rev.id).bytesOf('olc-arch');
+      return false;
+    } catch {
+      return true;
+    }
+  })());
+  fs.writeFileSync(blobFile, orig);
+  check('and the revision reads cleanly once restored', corpusOf(ctx, rev.corpusId, rev.id).bytesOf('olc-errata').length > 0);
+}
 
 section('the CLI: register refused in agent sessions; show and sections run anywhere');
 const C = olcRepos(path.join(tmp, 'cli'));

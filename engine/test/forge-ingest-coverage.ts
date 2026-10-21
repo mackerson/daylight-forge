@@ -17,7 +17,7 @@ import type { SeededDefect, SpanRef } from '../mission/types.ts';
 import { corpusOf, registerCorpus } from '../forge/corpus.ts';
 import { runCorpusCommand } from '../forge/commands-corpus.ts';
 import {
-  applySeeds, coverageOf, detectHedges, detectModalConflicts, polarityOf, renderCoverageMarkdown, resolveContradiction, safeExcerpt, tokensOf,
+  applySeeds, assertPartition, coverageOf, partitionUnits, detectHedges, detectModalConflicts, polarityOf, renderCoverageMarkdown, resolveContradiction, safeExcerpt, tokensOf,
 } from '../forge/coverage.ts';
 import { extract } from '../forge/extract.ts';
 import { buildSectionIndex, scoredUnitsOf, windowsOf } from '../forge/sectioner.ts';
@@ -90,6 +90,24 @@ const noHedge = { ...c.config, cues: c.config.cues.filter((q) => q.type !== 'hed
 const idxNoHedge = buildSectionIndex({ docs: c.docs.map((d) => ({ ...d })), corpusDigest: 'sha256:h' }, (k) => seeded.get(k)!, noHedge);
 check('without the hedge cues in config the hedge seed is not found (detectors read config)', !detectHedges(idxNoHedge, noHedge).some((h) => h.detector === 'hedge'
   && h.at.docKey === 'olc-spec' && h.at.start <= at.get('olc-s6')!.start && at.get('olc-s6')!.start < h.at.end));
+
+section('the mapped/unmapped partition is checked from both sides (review L-6)');
+{
+  const us = [{ id: 'a', docKey: 'd', start: 0, end: 5 }, { id: 'b', docKey: 'd', start: 10, end: 15 }, { id: 'c', docKey: 'e', start: 0, end: 5 }];
+  const p = partitionUnits(us, [{ docKey: 'd', sectionId: 'd:', start: 3, end: 11 }]);
+  check('a span maps every unit it overlaps and only those', p.mapped.map((x) => x.id).join() === 'a,b' && p.unmapped.map((x) => x.id).join() === 'c');
+  const throwsMsg = (fn: () => void) => {
+    try {
+      fn();
+      return '';
+    } catch (err) {
+      return (err as Error).message;
+    }
+  };
+  check('a partition that drops a unit from mapped is refused', /does not hold/.test(throwsMsg(() => assertPartition(us, { mapped: [us[0]], unmapped: [us[2]] }))));
+  check('a partition that counts a unit twice is refused', /does not hold/.test(throwsMsg(() => assertPartition(us, { mapped: [us[0], us[1]], unmapped: [us[1], us[2]] }))));
+  check('the true partition passes', throwsMsg(() => assertPartition(us, p)) === '');
+}
 
 section('records map units; inferred without basis is unsupported; no span is stale');
 const s6 = sections.find((s) => s.docKey === 'olc-spec' && s.label === '§6')!;
