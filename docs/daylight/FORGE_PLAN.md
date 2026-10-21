@@ -635,6 +635,18 @@ rulings.
   1.0 by construction; only live-full measures planning.
 - **Status.** Decided (P2-R50, P2-R52, P2-R53).
 
+### P2 status
+
+P2 is complete on mocks. `forge-p2` @ 31f277b is `main` c950b66 plus waves 1–4, the fix branches
+WS-R7 and WS-R10 to WS-R13, and the close-out WS-R17 and WS-R18: 325 commits, 262 files,
++46,781/−509. Its gate is `test:all` 5,927 passed and 0 failed, with 30 invariants green. The
+final independent review found it MERGEABLE AFTER FIXES. Its High (H1, `campaign lock
+--accept-vacuous`) and both Mediums are fixed. The forged-pass residual is accepted by the owner
+(P2-R43) and stays open, with L1–L3 (P2-R67). The owner ruled the merge into `main` once the P2
+documents land (P2-R68). No live provider has run (P2-R7). The durable record of what P2
+delivered, how it was reviewed, what it measured and what it leaves open is
+[FORGE_P2_REPORT.md](FORGE_P2_REPORT.md).
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required
