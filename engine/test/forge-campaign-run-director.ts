@@ -413,6 +413,22 @@ section('spend: a director killed mid-attempt; the orphan is charged at its rese
   w.ctx.close();
 }
 
+section('spend: a resume re-checks a breach before the candidate that caused it can land (wave2 M3, p10a)');
+{
+  const w = nodeWorld('breach', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 0.1, maxUsdPerMission: 0.1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" }, cost: 0.11 } });
+  const r1 = await run(w, author, { concurrency: 1 });
+  check('A spends $0.11 of a $0.10 cap: halted spend-breach, nothing landed', r1.halted === 'spend-breach' && r1.landed.length === 0, JSON.stringify({ halted: r1.halted, landed: r1.landed }));
+  const halt1 = w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').at(-1)!;
+  w.ctx.store.recordResume(w.campaign.id, { actor: ACTOR, rationale: 'go on', haltDecisionId: halt1.id });
+  const r2 = await run(w, author, { concurrency: 1 });
+  check('after a resume the spend is re-checked first: halted spend-breach again', r2.halted === 'spend-breach', JSON.stringify({ halted: r2.halted, landed: r2.landed }));
+  check('and the candidate that breached the cap did not land', r2.landed.length === 0 && w.ctx.store.integrations(w.campaign.id, { state: 'integrated' }).length === 0
+    && integrationTip(w.repo, w.campaign.id) === w.base);
+  w.ctx.close();
+}
+
 section('spend: after a spend halt no wave review launches (P2-R35, review H1)');
 {
   const w = nodeWorld('reviewhalt', [

@@ -72,7 +72,9 @@ unknowns it saw; only a later one halts again. An attempt that ends unfinished (
 crashed, killed with the director) and reported nothing is charged at its reservation
 (`cost_source = 'reservation'`, P2-R44): counted against the cap and listed apart, not against
 the ticket's own budget, so a crash neither hides spend nor wedges the campaign.
-Spend past the cap halts `spend-breach`. A ticket that has used its own budget
+Spend past the cap halts `spend-breach`. Every pass re-checks both before anything is
+integrated, so a resume never lands the candidate whose spend halted the campaign while that
+spend still breaks the rule; raising the cap takes a new authorization. A ticket that has used its own budget
 (`min(ticket.maxUsd, maxUsdPerMission)`) is blocked with a need; that never halts the campaign.
 
 While a campaign is halted or stopped nothing is dispatched, integrated or reviewed. A candidate

@@ -587,6 +587,15 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     }
     const rec = reconcileIntegrations(ictx, campaign.id, { ticketOf, deps: host.integrate });
     if (rec.moved) halt('integration-moved');
+    // Spend is re-checked before anything is integrated, so a resume never lands the candidate
+    // whose spend halted the campaign while that spend still breaks the rule (wave2 M3). Within a
+    // run, each attempt's end is checked where it ends.
+    const startSpend = campaignSpend(ctx, campaign.id);
+    if (startSpend.unknownUnansweredCount > 0) halt('spend-unknown');
+    else if (startSpend.spentUsd > envelope.maxUsdTotal) {
+      emit(campaign, 'cost', 'campaign.spend.breached', { spent: startSpend.spentUsd, reserved: startSpend.reservedUsd, cap: startSpend.capUsd, unknownCount: startSpend.unknownCount });
+      halt('spend-breach');
+    }
     emit(campaign, 'lifecycle', resumed ? 'campaign.resumed' : 'campaign.started', {
       integrationRef: ref, tip, statuses: counts(ticketStates(ctx, campaign.id, root, host)), reconciled: { requeued: rec.requeue.length, landed: rec.landed.length, refsDeleted: rec.deletedRefs.length },
     });
