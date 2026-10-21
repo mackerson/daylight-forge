@@ -142,7 +142,7 @@ export function detectHedges(index: SectionIndex, _config: SectionerConfig): Cov
 }
 
 /** Fill in how a contradiction between two documents is settled, from the revision's precedence and dependencies. */
-function resolve(c: Contradiction, rev: Pick<CorpusRevision, 'docs' | 'precedence' | 'dependencies' | 'unordered'>): Contradiction {
+export function resolveContradiction(c: Contradiction, rev: Pick<CorpusRevision, 'docs' | 'precedence' | 'dependencies' | 'unordered'>): Contradiction {
   const da = rev.docs.find((d) => d.key === c.a.docKey);
   const db = rev.docs.find((d) => d.key === c.b.docKey);
   if (!da || !db) return c;
@@ -291,7 +291,7 @@ export function coverageOf(ctx: DaylightContext, corpusId: string, o: { revision
       a: spanOf(r.span!), b: spanOf(r.other!), ...blankResolution(spanOf(r.span!), spanOf(r.other!)), irIds: [r.id], confidence: r.confidence, detector: 'extractor',
     })),
     ...detectModalConflicts(units, live), ...detectNumericConflicts(units, live),
-  ].map((x) => resolve(x, c));
+  ].map((x) => resolveContradiction(x, c));
   const isStale = (r: IrRecord) => r.source === 'extracted' && !r.span && r.status !== 'rejected' && r.status !== 'superseded';
   const unsupported = live.filter((r) => r.source === 'inferred' && !r.basisSections.length && !r.assumptionId).map((r) => ({ irId: r.id, kind: r.kind }));
   const stale = records.filter(isStale).map((r) => ({ irId: r.id, status: r.status }));
@@ -335,7 +335,7 @@ function seededResults(c: ReturnType<typeof corpusOf>, seeds: SeededDefect[]): S
   const domainOf = (k: string) => c.docs.find((d) => d.key === k)?.domain ?? '';
   const units = detectorUnits(index, (k) => docs.get(k)!, c.config, domainOf);
   const hedges = detectHedges(index, c.config);
-  const contradictions = [...detectModalConflicts(units, []), ...detectNumericConflicts(units, [])].map((x) => resolve(x, c));
+  const contradictions = [...detectModalConflicts(units, []), ...detectNumericConflicts(units, [])].map((x) => resolveContradiction(x, c));
   const dangling: CrossRef[] = index.refs.filter((r) => !r.resolved);
   return seeds.map((seed) => {
     const span = at.get(seed.id)!;
