@@ -32,7 +32,11 @@ export function tokens(n: number | null | undefined): string {
   return n >= 10_000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-type MoneyRow = Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'>;
+/**
+ * `usdReservation`/`reservationCount` (WS-R12, P2-R44): unfinished attempts charged at their
+ * reservation. Optional until this branch's base carries them in `LedgerRow`.
+ */
+type MoneyRow = Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'> & { usdReservation?: number; reservationCount?: number };
 
 /**
  * A ledger total, as a floor. `usdKnown` is null when no attempt carries a provider figure.
@@ -42,9 +46,10 @@ type MoneyRow = Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' 
 export function ledgerUsd(r: MoneyRow): string {
   const extra: string[] = [];
   if (r.usdUnknownCount > 0) extra.push(`${r.usdUnknownCount} unknown`);
+  if (r.reservationCount) extra.push(`${usd(r.usdReservation ?? 0)} charged at reservation for ${r.reservationCount} unfinished`);
   if (r.usdScanned > 0) extra.push(`${usd(r.usdScanned)} scanned`);
   // Nothing known and nothing scanned: the bare word, not "unknown (3 unknown)".
-  if (r.usdKnown === null) return r.usdScanned > 0 ? `${UNKNOWN} (${extra.join(', ')})` : UNKNOWN;
+  if (r.usdKnown === null) return r.usdScanned > 0 || r.reservationCount ? `${UNKNOWN} (${extra.join(', ')})` : UNKNOWN;
   if (!extra.length) return usd(r.usdKnown);
   return `≥ ${usd(r.usdKnown)} (${extra.join(', ')})`;
 }
@@ -355,17 +360,45 @@ export function workItemQueue(items: readonly WorkItem[], needs: readonly Need[]
 
 // ---- needs --------------------------------------------------------------------------------
 
-export type ForgeScreen = 'missions' | 'work-items' | 'ledger' | 'ingest';
+export type ForgeScreen = 'missions' | 'work-items' | 'ledger' | 'ingest' | 'campaigns';
 export type ImplementTab = 'attempts' | 'gates' | 'candidate';
+export type CampaignTab = 'overview' | 'report' | 'assumptions' | 'refine';
 
-export interface NeedTarget { screen: ForgeScreen; missionId?: string; tab?: ImplementTab; candidateId?: string }
+/** `forgery-shape-review` (P2-R49) is named here until `NeedKind` carries it on this branch's base. */
+export type NeedKindWord = Need['kind'] | 'forgery-shape-review';
+export type AnyNeed = Omit<Need, 'kind'> & { kind: NeedKindWord };
+
+export interface NeedTarget {
+  screen: ForgeScreen; missionId?: string; tab?: ImplementTab; candidateId?: string;
+  campaignId?: string; campaignTab?: CampaignTab;
+}
+
+const CAMPAIGN_NEED_TAB: Partial<Record<NeedKindWord, CampaignTab>> = {
+  'plan-approval': 'overview', 'campaign-authorize': 'overview', 'campaign-halted': 'overview',
+  'assumption-pending': 'assumptions', 'owner-decision': 'assumptions',
+};
 
 /**
  * Where a need is answered. The ref names what it is about by its id prefix; a need whose ref
- * the screen does not recognise opens the mission list rather than guessing.
+ * the screen does not recognise opens the mission list rather than guessing. A need listed
+ * under a campaign (`campaignOfNeed`) opens that campaign; a forgery-shape review opens the
+ * candidate, where the diff is read and the shapes acknowledged or rejected.
  */
-export function needTarget(n: Need, missionOfCandidate: (id: string) => string | undefined = () => undefined): NeedTarget {
+export function needTarget(
+  n: AnyNeed,
+  missionOfCandidate: (id: string) => string | undefined = () => undefined,
+  campaignOfNeed: (n: AnyNeed) => string | undefined = () => undefined,
+): NeedTarget {
   const mission = /^m_[0-9a-f]{32}$/.test(n.ref) ? n.ref : undefined;
+  const campaign = campaignOfNeed(n);
+  const campaignTab = CAMPAIGN_NEED_TAB[n.kind];
+  if (campaignTab) {
+    const id = campaign ?? (campaignTab === 'overview' ? mission : undefined);
+    return id ? { screen: 'campaigns', campaignId: id, campaignTab } : { screen: 'campaigns' };
+  }
+  if (campaign && (n.kind === 'blocked' || n.kind === 'work-item-undecided')) {
+    return { screen: 'campaigns', campaignId: campaign, campaignTab: 'overview' };
+  }
   switch (n.kind) {
     case 'spec-ambiguity':
     case 'work-item-undecided':
@@ -376,10 +409,12 @@ export function needTarget(n: Need, missionOfCandidate: (id: string) => string |
     case 'gate-vacuous':
       return mission ? { screen: 'missions', missionId: mission, tab: 'gates' } : { screen: 'missions' };
     case 'candidate-decision':
-    case 'apply': {
+    case 'apply':
+    case 'forgery-shape-review': {
       if (/^c_[0-9a-f]{32}$/.test(n.ref)) {
         const m = missionOfCandidate(n.ref);
-        return m ? { screen: 'missions', missionId: m, tab: 'candidate', candidateId: n.ref } : { screen: 'missions' };
+        if (m) return { screen: 'missions', missionId: m, tab: 'candidate', candidateId: n.ref };
+        return campaign ? { screen: 'campaigns', campaignId: campaign, campaignTab: 'overview' } : { screen: 'missions' };
       }
       return mission ? { screen: 'missions', missionId: mission, tab: 'candidate' } : { screen: 'missions' };
     }
@@ -389,9 +424,9 @@ export function needTarget(n: Need, missionOfCandidate: (id: string) => string |
 }
 
 /** One list from the work-item listing and the per-mission needs, each need once. */
-export function mergeNeeds(...lists: ReadonlyArray<readonly Need[] | undefined>): Need[] {
+export function mergeNeeds<N extends AnyNeed = Need>(...lists: ReadonlyArray<readonly N[] | undefined>): N[] {
   const seen = new Set<string>();
-  const out: Need[] = [];
+  const out: N[] = [];
   for (const list of lists) {
     for (const n of list ?? []) {
       const k = `${n.kind}\u0000${n.ref}`;
@@ -405,7 +440,7 @@ export function mergeNeeds(...lists: ReadonlyArray<readonly Need[] | undefined>)
 
 export const needsStrip = (running: number, needs: number): string => `${running} running · ${needs} need you`;
 
-export const NEED_WORDS: Record<Need['kind'], string> = {
+export const NEED_WORDS: Record<NeedKindWord, string> = {
   blocked: 'blocked',
   dispute: 'dispute',
   'spec-ambiguity': 'spec ambiguity',
@@ -421,7 +456,32 @@ export const NEED_WORDS: Record<Need['kind'], string> = {
   'campaign-halted': 'campaign halted',
   'assumption-pending': 'confirm assumption',
   'owner-decision': 'owner decision',
+  'forgery-shape-review': 'review forgery shape',
 };
+
+// ---- test-output forgery shapes (P2-R43, P2-R49) ---------------------------------------------
+
+/** One file's forgery shapes, as capture recorded them: the shape names, never the matched text. */
+export interface ForgeryHit { path: string; shapes: string[] }
+
+/**
+ * The shapes in a candidate summary's per-file flags, the engine's `forgeryShapesOf` rule: an
+ * unreadable summary is one hit on the whole diff, because what cannot be read cannot be cleared.
+ */
+export function forgeryHitsOf(summaryText: string | null | undefined): ForgeryHit[] {
+  let summary: { flags?: Array<{ path?: unknown; forgeryShapes?: unknown }> };
+  try {
+    summary = JSON.parse(summaryText ?? '');
+  } catch {
+    return [{ path: '(the whole diff)', shapes: ['an unreadable candidate summary'] }];
+  }
+  const out: ForgeryHit[] = [];
+  for (const f of Array.isArray(summary?.flags) ? summary.flags : []) {
+    const shapes = Array.isArray(f.forgeryShapes) ? f.forgeryShapes.filter((x): x is string => typeof x === 'string') : [];
+    if (shapes.length) out.push({ path: typeof f.path === 'string' ? f.path : '(unknown path)', shapes });
+  }
+  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
 
 // ---- guarded acts -------------------------------------------------------------------------
 
@@ -443,5 +503,7 @@ export const RATIONALE_PRESETS: Record<string, readonly string[]> = {
   'approve-work-item': ['clear, testable, matches the spec', 'the better of the sibling proposals'],
   'reject-work-item': ['ambiguous; the sibling proposal is clearer', 'out of scope for the spec', 'duplicate'],
   lock: ['these gates define done for this item', 'reviewed the gate tests; they fail at base for the right reason'],
+  'acknowledge-forgery': ['read the diff: the shape is a harmless constant, not a forged result', 'the exit is in a binary entry point'],
+  'reject-forgery': ['library code writes test output; repair it', 'the shape could forge a pass'],
   authorize: ['implement this work item in its detached workspace', 'write only; gates execute', 'write and exec: the author may run its tests with no network'],
 };
