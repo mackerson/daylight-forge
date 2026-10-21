@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDaylight } from '../mission/context.ts';
 import { exportMission, importMission } from '../mission/export.ts';
+import { identifyProject } from '../mission/project.ts';
 import { corpusOf, CorpusRefused, parseCorpusManifest, readCorpusDoc, registerCorpus } from '../forge/corpus.ts';
 import { runCorpusCommand } from '../forge/commands-corpus.ts';
 import { harness } from './harness.ts';
@@ -102,8 +103,10 @@ const R = (name: string, over: Record<string, string | Buffer>, opts: { projects
   const cc = openDaylight(r.out);
   try {
     const before = cc.store.missions().length;
+    const blobs = () => (fs.existsSync(path.join(r.out, 'artifacts')) ? fs.readdirSync(path.join(r.out, 'artifacts'), { recursive: true }).length : 0);
+    const blobsBefore = blobs();
     const why = refusal(() => registerCorpus(cc, r.olc, 'daylight.corpus.json', { projects: opts.noFoundry ? {} : opts.projects ?? { foundry: r.foundry } }));
-    return { why, wrote: cc.store.missions().length !== before };
+    return { why, wrote: cc.store.missions().length !== before || blobs() !== blobsBefore || !!cc.store.project(identifyProject(r.olc).id) };
   } finally {
     cc.close();
   }
@@ -120,7 +123,8 @@ m2.precedence[0].basis = { doc: 'olc-agents', quote: 'no such sentence anywhere'
 check('a basis quote that occurs nowhere is refused', /nowhere/.test(R('nowhere', { 'daylight.corpus.json': JSON.stringify(m2) }).why));
 const m3 = manifest();
 m3.precedence.push({ over: 'olc-spec', under: 'olc-errata' });
-check('a precedence cycle is refused', /cycle/.test(R('cycle', { 'daylight.corpus.json': JSON.stringify(m3) }).why));
+const cyc = R('cycle', { 'daylight.corpus.json': JSON.stringify(m3) });
+check('a precedence cycle is refused, leaving no artifact blob and no row (review L-2)', /cycle/.test(cyc.why) && !cyc.wrote);
 const m4 = manifest();
 m4.precedence.push({ over: 'cf-spec', under: 'olc-spec' });
 check('a precedence across domains is refused', /cross-domain/.test(R('xdomain', { 'daylight.corpus.json': JSON.stringify(m4) }).why));

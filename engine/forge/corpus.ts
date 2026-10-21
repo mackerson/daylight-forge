@@ -5,7 +5,7 @@ import { requireMappedRepo, type DaylightContext } from '../mission/context.ts';
 import { identifyProject } from '../mission/project.ts';
 import { newId } from '../mission/store.ts';
 import type {
-  CorpusDoc, CorpusDocRole, CorpusManifest, CorpusRevision, IrSpanRef, ResolvedDependency, ResolvedPrecedence, Section, SectionerConfig,
+  ArtifactRef, CorpusDoc, CorpusDocRole, CorpusManifest, CorpusRevision, IrSpanRef, ResolvedDependency, ResolvedPrecedence, Section, SectionerConfig,
   SectionIndex,
 } from '../mission/types.ts';
 import { CORPUS_KIND, IR_KINDS } from '../mission/types.ts';
@@ -295,7 +295,6 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
     if (!NAME.test(e.key) || keyIs.has(e.key)) throw new CorpusRefused(`document key ${JSON.stringify(e.key).slice(0, 40)} is not a unique lower-case name after expansion`);
     keyIs.add(e.key);
   }
-  ctx.store.ensureProject(project);
   const bytesByKey = new Map<string, Buffer>();
   let total = 0;
   const docs: CorpusDoc[] = expanded.map((e) => {
@@ -309,9 +308,12 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
     total += bytes.length;
     if (total > MAX_CORPUS_BYTES) throw new CorpusRefused(`the corpus is over ${MAX_CORPUS_BYTES} bytes`);
     bytesByKey.set(e.key, bytes);
-    const artifact = ctx.artifacts.put(bytes, {
-      kind: 'spec', projectId: project.id, revision: e.b.commit, path: e.path, label: `corpus:${e.key}`, mediaType: 'text/markdown',
-    });
+    // The ref only: nothing reaches the artifact store until every check has passed (review L-2).
+    const digest = digestOf(bytes);
+    const artifact: ArtifactRef = {
+      id: digest, kind: 'spec', digest, projectId: project.id, revision: e.b.commit, path: e.path, label: `corpus:${e.key}`, bytes: bytes.length,
+      mediaType: 'text/markdown',
+    };
     return { key: e.key, role: e.role, domain: e.domain, path: e.path, projectId: e.b.projectId, commit: e.b.commit, artifact, digest: artifact.digest, bytes: bytes.length };
   });
   const docOf = new Map(docs.map((d) => [d.key, d]));
@@ -370,7 +372,13 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
   if (sectionCount > MAX_SECTIONS) throw new CorpusRefused(`the corpus has ${sectionCount} sections; at most ${MAX_SECTIONS}`);
   if (index.sentences.length > MAX_SENTENCES) throw new CorpusRefused(`the corpus has ${index.sentences.length} normative units; at most ${MAX_SENTENCES}`);
 
-  for (const d of docs) ctx.store.recordArtifact(d.artifact);
+  ctx.store.ensureProject(project);
+  for (const d of docs) {
+    const { id } = ctx.artifacts.put(bytesByKey.get(d.key)!, { kind: 'spec', projectId: project.id, revision: d.commit, path: d.path, label: d.artifact.label,
+      mediaType: 'text/markdown' });
+    if (id !== d.artifact.id) throw new Error(`document ${d.key} did not store as its digest`);
+    ctx.store.recordArtifact(d.artifact);
+  }
   const meta = { projectId: project.id, revision: commit, mediaType: 'application/json' };
   const configArtifact = ctx.artifacts.put(canonicalJson(config), { ...meta, kind: 'report', label: 'sectioner-config' });
   if (configArtifact.digest !== configDigest) throw new Error('the sectioner config does not digest to itself');
