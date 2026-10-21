@@ -203,6 +203,15 @@ section('the CLI has no agreement selector (review M4)');
   check('approve-ir refuses an agreement flag as a usage error (exit 2), deciding nothing', code === 2 && code2 === 2 && ctx.store.irRecord(owner.id)!.decisionId === d.id);
 }
 
+section('review L3: an interpretation opened by a finding on a proposed record closes when that record is rejected');
+{
+  const u = ctx.store.assumptionByOwnerDecision(corpus.projectId, oirIdOf(audit.id))!;
+  const rej = act(set({ reject: [audit.id] }));
+  const after = ctx.store.assumption(u.id)!;
+  check('the record\'s rejection overturns its open interpretation under the same decision', after.status === 'overturned' && after.decisionId === rej.id);
+  check('and nothing asks for it any more', !ingestNeeds(ctx, corpus).some((n) => n.ref === u.id));
+}
+
 section('supersede replaces an approved record only with one approved in the same act');
 {
   const spare = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'A transfer must never', statement: 'Spare.' });

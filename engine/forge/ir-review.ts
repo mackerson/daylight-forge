@@ -657,6 +657,8 @@ export function approveIr(ctx: DaylightContext, input: ApproveIrInput): Decision
     }
     for (const id of Object.keys(s.reject)) ctx.store.setIrStatus(id, 'rejected', d.id);
     for (const id of Object.keys(s.supersede)) ctx.store.setIrStatus(id, 'superseded', d.id);
+    // An interpretation of a record this act takes out (opened by an accepted finding) has nothing left to decide.
+    for (const id of [...Object.keys(s.reject), ...Object.keys(s.supersede)]) ctx.store.closeInterpretations(id, d.id);
     for (const [fid, to] of Object.entries(s.findings)) ctx.store.setIrFindingDisposition(fid, to, d.id);
     // What the person confirmed is what the rows now say, or nothing is written.
     if ((currentIrSetDigest(ctx, corpus.id) ?? digestOf('')) !== s.irSetDigest) throw new Error('the approved IR set after the act is not the one confirmed');

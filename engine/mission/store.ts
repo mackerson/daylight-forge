@@ -3129,6 +3129,20 @@ export class MissionStore {
       Array<Record<string, unknown>>).map(rowToTicketTrace);
   }
 
+  /**
+   * Overturn the open interpretations of a record a person's approve-ir rejected or superseded:
+   * a record that says nothing any more has no reading to decide. Returns the rows it moved.
+   */
+  closeInterpretations(irId: string, decisionId: string): string[] {
+    const r = this.irRecord(irId);
+    const d = this.decision(decisionId);
+    if (!r || (r.status !== 'rejected' && r.status !== 'superseded')) throw new Error(`record ${irId} is not rejected or superseded`);
+    if (!d || d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) throw new Error(`decision ${decisionId} is not a person's approve-ir on corpus ${r.corpusId}`);
+    const ids = (this.db.prepare(`SELECT id FROM assumptions WHERE ir_id=? AND source='ir-interpretation' AND status='open'`).all(irId) as Array<{ id: string }>).map((x) => x.id);
+    for (const id of ids) this.db.prepare(`UPDATE assumptions SET status='overturned', decision_id=?, updated_at=? WHERE id=? AND status='open'`).run(decisionId, this.now(), id);
+    return ids;
+  }
+
   /** The first assumption of any mission of the project for an owner decision id (`OIR.*` dedupe across missions, §6.3). */
   assumptionByOwnerDecision(projectId: string, ownerDecisionId: string): Assumption | null {
     const r = this.db.prepare('SELECT * FROM assumptions WHERE project_id=? AND owner_decision_id=? ORDER BY created_at, rowid LIMIT 1')
