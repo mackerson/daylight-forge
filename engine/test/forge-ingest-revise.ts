@@ -5,7 +5,7 @@
  * authorize is refused naming the stale record, `--accept-ir-drift <current>` is accepted, and the
  * ticket reads `stale` (never dispatched) until a re-emitted plan is imported. Daylight never
  * moves the repository's HEAD, index or worktree (P2-R13): only the person's commits do.
- * Run: node engine/test/forge-ingest-revise-e2e.ts
+ * Run: node engine/test/forge-ingest-revise.ts
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';

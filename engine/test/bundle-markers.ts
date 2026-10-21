@@ -9,7 +9,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SAMPLE_HOLDOUT_BASENAME, SAMPLE_HOLDOUT_ID } from '../../app/renderer/lib/fixtures/forge-campaign.sample.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -19,6 +18,10 @@ const MARKERS = [
   'createHash', 'assertHumanDecision', 'recordDecision', 'confirmDigest', 'createWorkspace', 'processAlive', 'gitIn', 'holdoutPaths',
 ];
 const count = (text: string, m: string) => text.split(m).length - 1;
+// The renderer sample's holdout id and basename sentinel, read as text: the engine imports nothing above it.
+const SAMPLE = fs.readFileSync(path.join(ROOT, 'app', 'renderer', 'lib', 'fixtures', 'forge-campaign.sample.ts'), 'utf8');
+const SAMPLE_HOLDOUT_ID = `x_${'9e'.repeat(16)}`;
+const SAMPLE_HOLDOUT_BASENAME = /SAMPLE_HOLDOUT_BASENAME = '([^']+)'/.exec(SAMPLE)?.[1] ?? '';
 
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-bundle-'));
 process.on('exit', () => fs.rmSync(outDir, { recursive: true, force: true }));
@@ -32,7 +35,8 @@ section('the renderer bundle');
 check('vite built at least one script', scripts.length > 0 && bundle.length > 0, outDir);
 check('eighteen markers, as in w3-markers.sh', MARKERS.length === 18 && new Set(MARKERS).size === 18);
 for (const m of MARKERS) check(`no ${m}`, count(bundle, m) === 0, String(count(bundle, m)));
-check('no sample holdout id', SAMPLE_HOLDOUT_ID.startsWith('x_') && count(bundle, SAMPLE_HOLDOUT_ID) === 0);
+check('the sample still mints its holdout id as x_ + 9e×16, and names a basename sentinel', SAMPLE.includes("SAMPLE_HOLDOUT_ID = id('x', '9e')") && SAMPLE_HOLDOUT_BASENAME.length > 0);
+check('no sample holdout id', count(bundle, SAMPLE_HOLDOUT_ID) === 0);
 check('the basename sentinel is there: the count reads the real bundle', count(bundle, SAMPLE_HOLDOUT_BASENAME) >= 1);
 check('the markers are findable where they live (engine source)', count(fs.readFileSync(path.join(ROOT, 'engine', 'forge', 'confirm.ts'), 'utf8'), 'confirmDigest') > 0);
 
