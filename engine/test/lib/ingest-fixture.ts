@@ -25,7 +25,8 @@ export const INGEST_FIXTURES = path.resolve(import.meta.dirname, '..', 'fixtures
 export const OLC_DOCS = path.join(INGEST_FIXTURES, 'olc');
 export const OLC_CONFIG = path.join(INGEST_FIXTURES, 'olc-config');
 
-const GIT_ENV = { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+const GIT_ENV = { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z' };
 export const git = (root: string, ...args: string[]): string => execFileSync('git', [
   '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', '-C', root, ...args,
 ], { env: GIT_ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();

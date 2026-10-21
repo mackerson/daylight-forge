@@ -91,6 +91,9 @@ check('a file whose mission is a corpus is not imported', /corpus missions are n
 
 section('the corpus digest is the content, not the run');
 const B = olcRepos(path.join(tmp, 'b'));
+// The fixture's commits are pinned in time, so the same files in a second repository are the same
+// commit; one unrelated commit makes B's head another commit with the documents unchanged.
+writeAndCommit(B.olc, { 'NOTES.md': 'another repository\n' }, 'another commit');
 const ctxB = openDaylight(B.out);
 const revB = registerCorpus(ctxB, B.olc, 'daylight.corpus.json', { projects: { foundry: B.foundry } });
 check('the same documents at another checkout give the same section set and config digests', revB.sectionSetDigest !== '' && revB.configDigest === rev.configDigest
