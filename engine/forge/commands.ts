@@ -20,6 +20,7 @@ import { CAMPAIGN_RUN_CONFIRM_OPS, campaignRunConfirm, type CampaignRunConfirmOp
 import { candidateForgeryShapes } from './forgery-classes.ts';
 import { runCorpusCommand } from './commands-corpus.ts';
 import { CORPUS_REVIEW_SUBCOMMANDS, ingestConfirmOf, runCorpusReviewCommand } from './commands-corpus-review.ts';
+import { runTraceCommand } from './commands-trace.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -518,6 +519,8 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
       case 'corpus':
         if (sub && (CORPUS_REVIEW_SUBCOMMANDS as readonly string[]).includes(sub)) return await runCorpusReviewCommand(args, env);
         return await runCorpusCommand(rest, env);
+      case 'trace':
+        return await runTraceCommand(rest, env);
       case 'confirm': {
         const cp = parse(rest);
         asJson = last(cp, 'format') === 'json';

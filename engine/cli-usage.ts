@@ -12,7 +12,7 @@ export const COMMANDS = [
   'extract', 'invariants', 'focus', 'map', 'export', 'import', 'adopt', 'check', 'plan', 'derive', 'query',
   'save-invariant', 'try-invariant', 'arbitrate', 'agent', 'run', 'adapters', 'quality',
   'mission', 'experiment', 'artifact', 'events', 'report', 'demo',
-  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest', 'deps', 'campaign', 'assumption', 'corpus',
+  'confirm', 'forge', 'gate', 'work-item', 'spec', 'ingest', 'deps', 'campaign', 'assumption', 'corpus', 'trace',
 ] as const;
 
 export const USAGE = `Daylight Software Forge — get all the data, then focus it down.
@@ -93,6 +93,9 @@ usage:
   node engine/cli.ts corpus     register <repo> --manifest <path> [--rev R] [--project alias=<repo>[@rev]]…
                                 show|sections <corpus> [--revision cr_…] [--doc K] | ir list <corpus> [--status s] [--kind k] [--stale]
                                 extract <corpus> <repo> --tools a,b [--windows w,…] [--force] [--timeout s] | coverage <corpus> [--format json|md] [--write]
+  node engine/cli.ts trace      passage <corpus> --doc K (--section <id> | --label <label> | --range a-b) [--revision cr_…]
+                                | requirement <ir_…> | ticket <c> <ticket> | landing <commit | i_… | c_…> [--campaign <c>]
+                                | matrix <c> [--write]   # all read-only, [--format json|md]; --write is refused in an agent session
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>

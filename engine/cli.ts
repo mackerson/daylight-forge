@@ -1586,6 +1586,7 @@ switch (args.command) {
   case 'campaign':
   case 'assumption':
   case 'corpus':
+  case 'trace':
     // The Forge's commands, same contract as the mission ones. See forge/commands.ts.
     process.exitCode = await runForgeCli(process.argv.slice(2));
     break;

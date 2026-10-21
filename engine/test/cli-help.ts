@@ -16,6 +16,7 @@ import { COMMANDS } from '../cli-usage.ts';
 import { ASSUMPTION_SUBCOMMANDS, CAMPAIGN_SUBCOMMANDS } from '../forge/commands-campaign.ts';
 import { CAMPAIGN_REPORT_SUBCOMMANDS } from '../forge/commands-campaign-report.ts';
 import { CAMPAIGN_RUN_SUBCOMMANDS } from '../forge/commands-campaign-run.ts';
+import { TRACE_SUBCOMMANDS } from '../forge/commands-trace.ts';
 import { harness } from './harness.ts';
 
 const { check, section, done } = harness();
@@ -121,6 +122,22 @@ section('--help on every campaign and assumption subcommand: usage, exit 0, noth
       `${r.code} ${r.out.slice(0, 120)} ${r.err.slice(-200)}`);
   }
   check('no campaign help form created its --out or changed the repo', !fs.existsSync(never) && snapshot() === before);
+}
+
+section('trace is dispatched, and --help on every trace subcommand creates nothing');
+{
+  check('trace is a command cli.ts dispatches', (COMMANDS as readonly string[]).includes('trace'));
+  const before = snapshot();
+  const never = path.join(tmp, 'never-trace');
+  for (const sub of TRACE_SUBCOMMANDS) {
+    const r = cli(['trace', sub, 'm_00000000000000000000000000000000', '--out', never, '--help']);
+    check(`trace ${sub} --help prints the trace usage and exits 0`, r.code === 0 && /usage/i.test(r.out) && r.out.includes('cli.ts trace') && r.out.includes(sub),
+      `${r.code} ${r.out.slice(0, 200)} ${r.err.slice(-200)}`);
+  }
+  const bad = cli(['trace', 'frobnicate', '--out', never]);
+  check('an unknown trace subcommand reaches the trace command (exit 2, its usage), not the top-level usage', bad.code === 2 && bad.err.includes('trace needs one of'),
+    `${bad.code} ${bad.err.slice(-200)}`);
+  check('no trace form above created its --out or changed the repo', !fs.existsSync(never) && snapshot() === before);
 }
 
 section('help itself, and a leading --help');
