@@ -11,6 +11,7 @@ import { HARDENED_GIT_CONFIG, hardenedGitEnv } from '../experiment/runner.ts';
 import { gitIn, parseRaw, rediff, scratchFor, type Scratch } from './apply.ts';
 import { envelopeRefusal } from './campaign.ts';
 import { applyRefFor, confirmDigest } from './confirm.ts';
+import { forgeryHold } from './forgery.ts';
 import { assertHumanDecision } from './policy.ts';
 import { commitMessage } from './trailers.ts';
 import { EMPTY_TREE } from './workspace.ts';
@@ -379,6 +380,8 @@ export function landIntegration(ctx: IntegrateContext, integrationId: string, o:
     const refused = landingRefusal(ctx.store, i);
     if (refused) throw new IntegrationRefused(refused);
     const c = ctx.store.candidate(i.candidateId)!;
+    const held = forgeryHold(ctx, c);
+    if (held) throw new IntegrationRefused(`${held.why}; it is not landed`);
     const m = ctx.store.mission(i.missionId)!;
     const auth = authorizationOf(ctx.store, i.campaignId);
     if (!auth) throw new IntegrationRefused(`campaign ${i.campaignId} has no human authorize-campaign decision`);
@@ -629,14 +632,30 @@ export interface AdoptTipInput {
   rationale: string;
   confirm: string | undefined;
   env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * A commit to put the ref at, for a ref deleted or rewound outside the director (wave2 L4).
+   * It must be, or descend from, the commit the rows explain; the ref is moved there by
+   * compare-and-swap (created if it is missing). Without it, the ref is adopted where it is.
+   */
+  to?: string;
 }
 
-/** What `campaign adopt-tip` would record now: the ref, where the rows put it, where it is. */
-export function adoptScopeOf(ctx: Pick<IntegrateContext, 'store' | 'repoRoot'>, campaignId: string, haltDecisionId: string): AdoptTipScope {
+/**
+ * What `campaign adopt-tip` would record now: the ref, where the rows put it, and where it is
+ * (or `to`, a commit a person names to restore it to).
+ */
+export function adoptScopeOf(ctx: Pick<IntegrateContext, 'store' | 'repoRoot'>, campaignId: string, haltDecisionId: string, to?: string): AdoptTipScope {
   const ref = integrationRefFor(campaignId);
-  const to = refTarget(ctx.repoRoot, ref);
-  if (!to) throw new IntegrationRefused(`${ref} does not exist; there is nothing to adopt`);
-  return { operation: 'adopt-integration-tip', ref, from: expectedTip(ctx.store, campaignId), to, haltDecisionId };
+  let at: string | null;
+  if (to !== undefined) {
+    if (!/^[0-9a-f]{7,64}$/.test(to)) throw new IntegrationRefused(`--to names a commit by its hex id, not ${JSON.stringify(to)}`);
+    at = refTarget(ctx.repoRoot, to);
+    if (!at) throw new IntegrationRefused(`${to} is not a commit of ${ctx.repoRoot}`);
+  } else {
+    at = refTarget(ctx.repoRoot, ref);
+    if (!at) throw new IntegrationRefused(`${ref} does not exist; there is nothing to adopt where it is, so name the commit to restore it to with --to`);
+  }
+  return { operation: 'adopt-integration-tip', ref, from: expectedTip(ctx.store, campaignId), to: at, haltDecisionId };
 }
 
 /**
@@ -648,7 +667,7 @@ export function adoptScopeOf(ctx: Pick<IntegrateContext, 'store' | 'repoRoot'>, 
 export function adoptIntegrationTip(ctx: IntegrateContext & { env?: Readonly<Record<string, string | undefined>> }, input: AdoptTipInput): Decision {
   const campaign = ctx.store.mission(input.campaignId);
   if (!campaign || campaign.kind !== 'campaign') throw new IntegrationRefused(`${input.campaignId} is not a campaign`);
-  const scope = adoptScopeOf(ctx, campaign.id, input.haltDecisionId);
+  const scope = adoptScopeOf(ctx, campaign.id, input.haltDecisionId, input.to);
   const digest = confirmDigest(ctx, 'adopt-integration-tip', campaign.id, { adopt: { ref: scope.ref, from: scope.from, to: scope.to, haltDecisionId: scope.haltDecisionId } });
   assertHumanDecision(input.env ?? ctx.env ?? process.env, input.actor, input.confirm, digest.digest);
   if (!input.rationale?.trim()) throw new IntegrationRefused('an adoption needs a rationale');
@@ -656,14 +675,21 @@ export function adoptIntegrationTip(ctx: IntegrateContext & { env?: Readonly<Rec
   const halt = ds.find((d) => d.id === input.haltDecisionId && d.scope.operation === 'halt-campaign');
   const answered = ds.some((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip') && d.scope.haltDecisionId === input.haltDecisionId);
   if (!halt || answered) throw new IntegrationRefused(`decision ${input.haltDecisionId} is not an unanswered halt of campaign ${campaign.id}`);
-  if (scope.to === scope.from) throw new IntegrationRefused(`${scope.ref} is where the rows put it; there is nothing to adopt`);
+  const at = refTarget(ctx.repoRoot, scope.ref);
+  if (scope.to === scope.from && at === scope.to) throw new IntegrationRefused(`${scope.ref} is where the rows put it; there is nothing to adopt`);
   if (!succeeds(() => gitIn({ repo: ctx.repoRoot }, ['merge-base', '--is-ancestor', scope.from, scope.to]))) {
     throw new IntegrationRefused(`${scope.ref} at ${scope.to} does not descend from ${scope.from}, the last commit the rows explain; a landing would be lost, so it is not adopted`);
+  }
+  // Restoring to a named commit moves the ref first, by compare-and-swap from where it is now.
+  if (at !== scope.to && !casRef(ctx.repoRoot, scope.ref, scope.to, at ?? '', `daylight campaign ${campaign.id} restored by ${input.actor}`)) {
+    throw new IntegrationRefused(`${scope.ref} moved while it was being adopted; nothing was recorded`);
   }
   const d = ctx.store.recordDecision({
     missionId: campaign.id, projectId: campaign.projectId, revision: scope.to, actor: input.actor, kind: 'approve', rationale: input.rationale.trim(),
     scope: scope as unknown as Record<string, unknown>, artifactIds: [],
   });
-  emit(ctx, campaign, 'lifecycle', 'campaign.resumed', { decisionId: d.id, integrationRef: scope.ref, tip: scope.to, adoptedFrom: scope.from, haltDecisionId: halt.id });
+  emit(ctx, campaign, 'lifecycle', 'campaign.resumed', {
+    decisionId: d.id, integrationRef: scope.ref, tip: scope.to, adoptedFrom: scope.from, haltDecisionId: halt.id, ...(at !== scope.to ? { restoredFrom: at } : {}),
+  });
   return d;
 }

@@ -28,17 +28,20 @@ import { createSnapshot } from '../forge/cargo.ts';
 import { baselineCampaign, lockCampaign, lockableIds, registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { requestOutboxFile } from '../forge/dependency-requests.ts';
-import { campaignRunNeeds, campaignSpend, campaignSpendRefusal, runCampaign, ticketStates, type DirectorOptions } from '../forge/director.ts';
+import { campaignStatus, renderCampaignStatus } from '../forge/campaign-status.ts';
+import { retryScopeOf } from '../forge/campaign.ts';
+import { campaignRunNeeds, campaignSpend, campaignSpendRefusal, runCampaign, ticketStates, type CampaignHost, type DirectorOptions } from '../forge/director.ts';
 import type { GateContext } from '../forge/gate.ts';
 import { adoptIntegrationTip, adoptScopeOf, InjectedCrash, integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
+import { dollarsOf, ledger } from '../mission/ledger.ts';
 import { needsOf } from '../mission/needs.ts';
 import type { CampaignTicket, Mission, PlanFileV1 } from '../mission/types.ts';
 import { DecisionRefused } from '../forge/policy.ts';
 import { parseProjectPolicy } from '../forge/project-policy.ts';
 import { harness } from './harness.ts';
 import {
-  ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, tempDir, testHost, ticketRow,
+  ACTOR, authorizeCampaign, commitOn, git, makeCampaign, makeCandidate, makeWorkItem, repoState, storeTicket, tempDir, testHost, ticketRow,
 } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
@@ -164,6 +167,21 @@ const run = (w: World, script: string, over: Partial<DirectorOptions> = {}) => r
   campaignId: w.campaign.id, repo: w.repo, sandbox: live, env: { ...humanEnv, DAYLIGHT_MOCK_ADAPTER: script },
   host: testHost(w.ctx, w.campaign, w.plan, w.tickets), ...over,
 });
+
+/** R5's host, except that each ticket mission's grant carries no write: refused at the ticket's own preflight (P2-R23). */
+function noWriteHost(w: World): CampaignHost {
+  return {
+    ...testHost(w.ctx, w.campaign, w.plan, w.tickets),
+    startTicketMission: (_c, ticketId, at) => {
+      const t = w.tickets.find((x) => x.ticketId === ticketId)!;
+      storeTicket(w.ctx, t);
+      const m = w.ctx.store.createMission({
+        projectId: w.campaign.projectId, kind: 'implement', objective: `ticket ${ticketId}`, baseRevision: at, parentId: w.campaign.id, workItemId: t.workItemId, scope: { paths: t.scope },
+      });
+      return w.ctx.store.authorizeMission({ missionId: m.id, actor: ACTOR, rationale: 'no write', permissions: { write: false, execute: false }, maxUsd: 1 }).mission;
+    },
+  };
+}
 
 const namesOf = (w: World): string[] => {
   const all = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.id === w.campaign.id || m.parentId === w.campaign.id).map((m) => m.id);
@@ -321,6 +339,70 @@ section('a halt keeps accepted work: re-evaluated on the adopted tip, not re-aut
   w.ctx.close();
 }
 
+section('a deleted integration ref is recovered by adopt-tip naming a commit (wave2 L4, p13b)');
+{
+  const w = nodeWorld('deleted', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  check('A landed', (await run(w, author, { concurrency: 1 })).statuses.A === 'landed');
+  const landedAt = integrationTip(w.repo, w.campaign.id)!;
+  git(w.repo, ['update-ref', '-d', integrationRefFor(w.campaign.id)]);
+  const r = await run(w, author, { concurrency: 1 });
+  check('with the ref deleted the next run recreates it at the base and halts integration-moved', r.halted === 'integration-moved' && integrationTip(w.repo, w.campaign.id) === w.base,
+    JSON.stringify({ halted: r.halted, refused: r.refused }));
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  check('the need names the commit to restore it to', campaignRunNeeds(w.ctx, w.campaign, host).some((n) => n.kind === 'campaign-halted' && n.why.includes(`--to ${landedAt}`)),
+    JSON.stringify(campaignRunNeeds(w.ctx, w.campaign, host)));
+  const halt = w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').at(-1)!;
+  const ictx = { store: w.ctx.store, events: w.ctx.events, artifacts: w.ctx.artifacts, repoRoot: w.repo };
+  const confirmOf = (to?: string) => {
+    const sc = adoptScopeOf(ictx, w.campaign.id, halt.id, to);
+    return confirmDigest(w.ctx, 'adopt-integration-tip', w.campaign.id, { adopt: { ref: sc.ref, from: sc.from, to: sc.to, haltDecisionId: halt.id } }).digest8;
+  };
+  let plain = '';
+  try {
+    adoptIntegrationTip(ictx, { campaignId: w.campaign.id, haltDecisionId: halt.id, actor: ACTOR, rationale: 'r', env: humanEnv, confirm: confirmOf() });
+  } catch (err) {
+    plain = (err as Error).message;
+  }
+  check('adopting the base where it is is refused: a landing would be lost', /a landing would be lost/.test(plain), plain);
+  const d = adoptIntegrationTip(ictx, { campaignId: w.campaign.id, haltDecisionId: halt.id, actor: ACTOR, rationale: 'restore', env: humanEnv, to: landedAt, confirm: confirmOf(landedAt) });
+  check('adopt-tip --to the last landing records it and puts the ref back', d.scope.to === landedAt && integrationTip(w.repo, w.campaign.id) === landedAt);
+  const again = await run(w, author, { concurrency: 1 });
+  check('the next run neither halts nor re-authors: A is still landed', again.halted === null && again.statuses.A === 'landed'
+    && w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id).flatMap((m) => w.ctx.store.tasks(m.id).flatMap((t) => w.ctx.store.attempts(t.id))).length === 1,
+    JSON.stringify({ halted: again.halted, statuses: again.statuses }));
+  check('the ref is explained again', integrationRefusals({ store: w.ctx.store, repoRoot: w.repo }, w.campaign.id).length === 0,
+    integrationRefusals({ store: w.ctx.store, repoRoot: w.repo }, w.campaign.id).join('; '));
+  w.ctx.close();
+}
+
+section('a later landing that breaks an earlier ticket\'s gate marks it regressed in status (wave2 L7, p7)');
+{
+  const w = nodeWorld('regressed', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js', 'src/a.js'], dependsOn: ['A'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } },
+    B: { first: { 'src/b.js': "module.exports = () => 'B';\n", 'src/a.js': "module.exports = () => 'broken by B';\n" } },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('both landed: B\'s own gate and the regression gate pass, and no ratchet looks at A\'s', r.landed.join(',') === 'A,B', JSON.stringify(r.statuses));
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const st = campaignStatus(w.ctx, w.campaign.id, w.repo, host);
+  const a = st.tickets.find((t) => t.id === 'A');
+  check('status marks A regressed, naming its failing gate on the tip', a?.status === 'regressed' && /fails on the tip/.test(a.reason ?? ''), JSON.stringify(a));
+  check('B is landed, and both still count as landed on the ref', st.tickets.find((t) => t.id === 'B')?.status === 'landed' && st.integration.landed === 2);
+  check('with a need for a person', st.needs.some((n) => n.kind === 'blocked' && /ticket A landed, but its gate fails on the tip/.test(n.why)), JSON.stringify(st.needs));
+  check('STATUS.md says so', /- A \(LA\) regressed/.test(renderCampaignStatus(st)));
+  const evals = w.ctx.store.gateEvaluations({ missionId: w.campaign.id, target: 'integrated' }).length;
+  await run(w, author, { concurrency: 1 });
+  check('the recheck is recorded once: a run with nothing new runs no gate again', w.ctx.store.gateEvaluations({ missionId: w.campaign.id, target: 'integrated' }).length === evals);
+  w.ctx.close();
+}
+
 // ---- spend --------------------------------------------------------------------------------------
 
 section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');
@@ -343,6 +425,90 @@ section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');
   check('the unknown cost is counted, never summed as zero', campaignSpend(w.ctx, w.campaign.id).unknownCount === 1);
   const again = await run(w, author, { concurrency: 1 });
   check('a halted campaign refuses to run until a person resumes it', again.refused !== null && /halted/.test(again.refused) && again.landed.length === 0);
+
+  // wave2-review p10(c): after the resume, the unknown-cost candidate must still never land.
+  w.ctx.store.recordResume(w.campaign.id, { actor: ACTOR, rationale: 'seen the unknown cost', haltDecisionId: halt!.id });
+  const resumed = await run(w, author, { concurrency: 1 });
+  check('after a resume the unknown-cost candidate never lands; A is blocked naming why', !resumed.landed.includes('A') && resumed.statuses.A === 'blocked'
+    && w.ctx.store.integrations(w.campaign.id).every((i) => w.ctx.store.mission(i.missionId)?.objective !== 'ticket A'), JSON.stringify(resumed));
+  check('the answered unknown halts once: no second spend-unknown halt, and B lands', resumed.halted === null && resumed.statuses.B === 'landed'
+    && w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').length === 1, JSON.stringify({ halted: resumed.halted, statuses: resumed.statuses }));
+  const spendAfter = campaignSpend(w.ctx, w.campaign.id);
+  check('the unknown is still counted, never summed as zero', spendAfter.unknownCount === 1 && spendAfter.unknownUnansweredCount === 0, JSON.stringify(spendAfter));
+  const am = w.ctx.store.missions(w.campaign.projectId).find((m) => m.objective === 'ticket A')!;
+  check('A carries a blocked need that says its cost is unknown', needsOf(w.ctx, am).some((n) => n.kind === 'blocked' && /cost unknown/.test(n.why)));
+  w.ctx.close();
+}
+
+section('spend: a director killed mid-attempt; the orphan is charged at its reservation and the next run completes (P2-R44, wave2 H2 p3)');
+{
+  const w = nodeWorld('orphan', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } }, B: { first: { 'src/b.js': "module.exports = () => 'B';\n" } },
+  });
+  // What SIGKILL or Ctrl-C leaves 4 s into A's attempt: its mission running, its author attempt live, holding the $1 reservation.
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const am = host.startTicketMission(w.campaign.id, 'A', w.base);
+  w.ctx.store.transitionMission(am.id, 'running');
+  const task = w.ctx.store.createTask({ missionId: am.id, role: 'author', objective: 'author', runnerHint: 'mock:default' });
+  const orphan = w.ctx.store.startAttempt({
+    taskId: task.id, runnerId: 'agent:mock:default', maxCostUsd: 1,
+    sandbox: { profile: 'author', network: 'none', write: true, exec: false, authorizeDecisionId: w.ctx.store.authorizeDecision(am.id)!.id },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('the next run neither halts nor wedges: A and B land', r.halted === null && r.refused === null && r.statuses.A === 'landed' && r.statuses.B === 'landed',
+    JSON.stringify({ halted: r.halted, refused: r.refused, statuses: r.statuses }));
+  const a = w.ctx.store.attempt(orphan.id)!;
+  check('the orphaned attempt is cancelled and charged at its reservation', a.state === 'cancelled' && a.costSource === 'reservation' && a.costUsd === 1,
+    JSON.stringify({ state: a.state, costSource: a.costSource, costUsd: a.costUsd }));
+  const spend = campaignSpend(w.ctx, w.campaign.id);
+  check('the campaign counts it against the cap, apart, and nothing is unknown', spend.reservationCount === 1 && spend.reservationUsd === 1 && spend.unknownCount === 0
+    && spend.spentUsd >= 1 + spend.knownUsd - 1e-9, JSON.stringify(spend));
+  check('no halt decision was recorded', !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
+  const status = renderCampaignStatus(campaignStatus(w.ctx, w.campaign.id, w.repo, host));
+  check('status shows a floor that lists the reservation charge separately', /Spend ≥ \$[\d.]+ \(\$1\.00 charged at reservation for 1 unfinished attempt\(s\)\)/.test(status), status.split('\n').find((l) => l.startsWith('Spend')));
+  const l = ledger(w.ctx, { projectId: w.campaign.projectId, group: 'mission' });
+  const row = l.rows.find((x) => x.key === am.id)!;
+  check('the ledger lists it apart: reservationCount, not unknown, not known', row.reservationCount === 1 && row.usdReservation === 1 && row.usdUnknownCount === 0
+    && /\$1\.00 charged at reservation for 1 unfinished/.test(dollarsOf(row)), JSON.stringify(row));
+  w.ctx.close();
+}
+
+section('spend: a resume re-checks a breach before the candidate that caused it can land (wave2 M3, p10a)');
+{
+  const w = nodeWorld('breach', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 0.1, maxUsdPerMission: 0.1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" }, cost: 0.11 } });
+  const r1 = await run(w, author, { concurrency: 1 });
+  check('A spends $0.11 of a $0.10 cap: halted spend-breach, nothing landed', r1.halted === 'spend-breach' && r1.landed.length === 0, JSON.stringify({ halted: r1.halted, landed: r1.landed }));
+  const halt1 = w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').at(-1)!;
+  w.ctx.store.recordResume(w.campaign.id, { actor: ACTOR, rationale: 'go on', haltDecisionId: halt1.id });
+  const r2 = await run(w, author, { concurrency: 1 });
+  check('after a resume the spend is re-checked first: halted spend-breach again', r2.halted === 'spend-breach', JSON.stringify({ halted: r2.halted, landed: r2.landed }));
+  check('and the candidate that breached the cap did not land', r2.landed.length === 0 && w.ctx.store.integrations(w.campaign.id, { state: 'integrated' }).length === 0
+    && integrationTip(w.repo, w.campaign.id) === w.base);
+  w.ctx.close();
+}
+
+section('spend: a campaign that spends exactly its cap with everything landed ends completed (wave2 L2, p10b)');
+{
+  const w = nodeWorld('exactcap', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 0.15, maxUsdPerMission: 0.1, waveSize: 10, reviewRoster: ['mock'] });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" }, cost: 0.1 }, B: { first: { 'src/b.js': "module.exports = () => 'B';\n" }, cost: 0.05 },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('A $0.10 + B $0.05 = the $0.15 cap: both landed, not halted', r.halted === null && r.refused === null && r.statuses.A === 'landed' && r.statuses.B === 'landed',
+    JSON.stringify({ halted: r.halted, statuses: r.statuses, spend: r.spend }));
+  check('the due wave review was refused for want of budget, and said so', w.ctx.events.forMission(w.campaign.id).some((e) => e.name === 'campaign.spend.refused' && e.payload.waveSeq === 1)
+    && !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
   w.ctx.close();
 }
 
@@ -365,12 +531,13 @@ section('spend: after a spend halt no wave review launches (P2-R35, review H1)')
 
 section('spend: the refusal rule, as arithmetic');
 {
-  const s = { spentUsd: 0.5, knownUsd: 0.5, unknownCount: 0, scannedCount: 0, runningCount: 1, reservedUsd: 1, capUsd: 2 };
+  const s = { spentUsd: 0.5, knownUsd: 0.5, unknownCount: 0, unknownUnansweredCount: 0, reservationCount: 0, reservationUsd: 0, scannedCount: 0, runningCount: 1, reservedUsd: 1, capUsd: 2 };
   check('within the cap: launches', campaignSpendRefusal(s, { maxUsdTotal: 2 }, 0.5) === null);
   check('past it with something running: waits, no halt', campaignSpendRefusal(s, { maxUsdTotal: 2 }, 0.6)?.halt === null);
   check('past it with nothing running: halts spend-cap', campaignSpendRefusal({ ...s, runningCount: 0 }, { maxUsdTotal: 2 }, 1.6)?.halt === 'spend-cap');
   check('a breach halts spend-breach', campaignSpendRefusal({ ...s, spentUsd: 2.1 }, { maxUsdTotal: 2 }, 0.1)?.halt === 'spend-breach');
-  check('unknown cost halts before anything else', campaignSpendRefusal({ ...s, unknownCount: 1, spentUsd: 0 }, { maxUsdTotal: 2 }, 0.1)?.halt === 'spend-unknown');
+  check('unknown cost halts before anything else', campaignSpendRefusal({ ...s, unknownCount: 1, unknownUnansweredCount: 1, spentUsd: 0 }, { maxUsdTotal: 2 }, 0.1)?.halt === 'spend-unknown');
+  check('unknown cost a person already answered does not halt again (P2-R44)', campaignSpendRefusal({ ...s, unknownCount: 1, spentUsd: 0 }, { maxUsdTotal: 2 }, 0.1) === null);
 }
 
 section('spend: a reservation holds a second launch until the cap allows it (P2-R18)');
@@ -423,12 +590,58 @@ section('a ready ticket refused at preflight closes inconclusive once, with a bl
 {
   const w = nodeWorld('preflight', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
   await lockAndAuthorize(w, { concurrency: 1 });
-  const r = await run(w, path.join(w.dir, 'no-such-author.cjs'));
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  const r = await run(w, author, { host: noWriteHost(w) });
   const ms = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id);
-  check('one mission, closed inconclusive, with the refusal as its reason', ms.length === 1 && ms[0].outcome === 'inconclusive' && /no author/.test(ms[0].outcomeReason ?? ''), JSON.stringify(ms.map((m) => [m.state, m.outcome, m.outcomeReason])));
+  check('one mission, closed inconclusive, with the refusal as its reason', ms.length === 1 && ms[0].outcome === 'inconclusive' && /does not hold write/.test(ms[0].outcomeReason ?? ''), JSON.stringify(ms.map((m) => [m.state, m.outcome, m.outcomeReason])));
   check('it was not dispatched again', namesOf(w).filter((n) => n === 'campaign.ticket.dispatched').length === 1 && r.statuses.A === 'blocked');
   check('one blocked event', namesOf(w).filter((n) => n === 'campaign.ticket.blocked').length === 1);
   check('campaignRunNeeds names it for a person to retry', campaignRunNeeds(w.ctx, w.campaign, testHost(w.ctx, w.campaign, w.plan, w.tickets)).some((n) => n.kind === 'blocked' && /campaign retry/.test(n.why)));
+  w.ctx.close();
+}
+
+section('no sandbox or no author refuses the run in one line and closes no ticket (wave2 M1, p5)');
+{
+  const gate = (id: string) => `test('${id}', () => assert.strictEqual(${load(`src/${id.toLowerCase()}.js`)}(), '${id}'));`;
+  const w = nodeWorld('nosandbox', ['A', 'B', 'C'].map((id) => ({ id, lane: `L${id}`, scope: [`src/${id.toLowerCase()}.js`], gate: gate(id) })));
+  await lockAndAuthorize(w, { concurrency: 3 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), Object.fromEntries(['A', 'B', 'C'].map((id) => [id, { first: { [`src/${id.toLowerCase()}.js`]: `module.exports = () => '${id}';\n` } }])));
+  const rows = rowCounts(w.ctx);
+  const refs = refsOf(w.repo);
+  const r = await run(w, author, { concurrency: 3, sandbox: { name: 'bwrap', available: false, why: 'probe: bwrap gone' } });
+  check('no sandbox: the run is refused with one line naming it', r.refused !== null && r.refused.split('\n').length === 1 && /sandbox cannot be built: probe: bwrap gone/.test(r.refused), String(r.refused));
+  check('no mission was created, no ticket closed, no need raised', !w.ctx.store.missions(w.campaign.projectId).some((m) => m.parentId === w.campaign.id)
+    && campaignRunNeeds(w.ctx, w.campaign, testHost(w.ctx, w.campaign, w.plan, w.tickets)).length === 0 && Object.values(r.statuses).every((x) => x !== 'blocked'));
+  check('and nothing was written: no row, no event, no ref', rowCounts(w.ctx) === rows && refsOf(w.repo) === refs);
+  const n = await run(w, path.join(w.dir, 'no-such-author.cjs'), { concurrency: 3 });
+  check('no author: the run is refused with one line naming the roster entry', n.refused !== null && n.refused.split('\n').length === 1 && /no author for roster mock/.test(n.refused), String(n.refused));
+  check('again nothing was created or written', rowCounts(w.ctx) === rows && refsOf(w.repo) === refs);
+  const ok = await run(w, author, { concurrency: 3 });
+  check('with both back, all three land', ok.landed.length === 3 && Object.values(ok.statuses).every((x) => x === 'landed'), JSON.stringify(ok.statuses));
+  w.ctx.close();
+}
+
+section('campaign retry releases a closed ticket and the director dispatches it again (P2-R25, P2-R27, wave2 H3 p4)');
+{
+  const w = nodeWorld('retry', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  const base = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const r1 = await run(w, author, { host: noWriteHost(w) });
+  const closed = w.ctx.store.missions(w.campaign.projectId).find((m) => m.parentId === w.campaign.id)!;
+  check('the refused ticket is closed inconclusive and blocked', closed.outcome === 'inconclusive' && r1.statuses.A === 'blocked', JSON.stringify(r1.statuses));
+  const retry = w.ctx.store.retryTicket(w.campaign.id, { actor: ACTOR, rationale: 'grant fixed', scope: retryScopeOf(w.ctx, w.campaign.id, 'A') });
+  check('after the retry the ticket is ready again', ticketStates(w.ctx, w.campaign.id, w.repo, base).get('A')?.status === 'ready');
+  check('its blocked need is gone', !campaignRunNeeds(w.ctx, w.campaign, base).some((n) => n.ref === closed.id), JSON.stringify(campaignRunNeeds(w.ctx, w.campaign, base)));
+  const dry = await runCampaign(w.ctx, { campaignId: w.campaign.id, repo: w.repo, dryRun: true, host: base });
+  check('a dry run schedules it', dry.schedule.map((x) => x.ticketId).join(',') === 'A', JSON.stringify(dry.schedule));
+  const r2 = await run(w, author);
+  check('the next run dispatches it and it lands', r2.landed.join(',') === 'A' && r2.statuses.A === 'landed', JSON.stringify({ landed: r2.landed, statuses: r2.statuses, refused: r2.refused }));
+  const fresh = w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id && m.id !== closed.id);
+  const ev = fresh.flatMap((m) => w.ctx.events.forMission(m.id));
+  check('one new mission, which names the retry decision', fresh.length === 1
+    && ev.some((e) => e.name === 'campaign.ticket.retried' && e.payload.retryDecisionId === retry.id && e.payload.releasedMissionId === closed.id)
+    && ev.some((e) => e.name === 'campaign.ticket.dispatched' && e.payload.retryDecisionId === retry.id), JSON.stringify(ev.map((e) => [e.name, e.payload.retryDecisionId])));
   w.ctx.close();
 }
 
@@ -619,6 +832,47 @@ section('campaign authors are judged by the policy at the plan commit, never the
 }
 
 // ---- cargo ------------------------------------------------------------------------------------
+
+section('a candidate with a test-output forgery shape parks for a person; acknowledged, it lands (P2-R49)');
+{
+  const w = nodeWorld('forgery', [
+    { id: 'F', lane: 'LF', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1 });
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    F: { first: { 'src/a.js': "const banner = 'TAP version 13';\nmodule.exports = () => 'A';\n" } },
+  });
+  const r1 = await run(w, author);
+  const m = w.ctx.store.missions(w.campaign.projectId).find((x) => x.parentId === w.campaign.id)!;
+  const c = w.ctx.store.candidates(m.id).at(-1)!;
+  check('before integration the ticket waits for a person, and nothing lands',
+    r1.statuses.F === 'waiting-owner' && r1.landed.length === 0 && w.ctx.store.integrations(w.campaign.id, { state: 'integrated' }).length === 0,
+    JSON.stringify(r1.statuses));
+  check('its candidate is not a policy violation: a warning, recorded in its summary flags',
+    !!c && c.policyViolations.length === 0 && /TAP version/.test(w.ctx.artifacts.text(c.summaryArtifact)), JSON.stringify(c?.policyViolations));
+  const needs = campaignRunNeeds(w.ctx, w.campaign, host).filter((n) => n.kind === 'forgery-shape-review');
+  check('a forgery-shape-review need names the candidate, the file and the shape',
+    needs.length === 1 && needs[0].ref === c.id && /src\/a\.js \(TAP version\)/.test(needs[0].why) && /heuristic/.test(needs[0].why), JSON.stringify(needs));
+  const code = confirmDigest(w.gctx, 'acknowledge-forgery-shape', c.id).digest8;
+  check('acknowledging and rejecting have different confirm codes', code !== confirmDigest(w.gctx, 'acknowledge-forgery-shape', c.id, { declined: true }).digest8);
+  const ack = (env: NodeJS.ProcessEnv) => spawnSync(process.execPath, [CLI, 'forge', 'acknowledge-forgery', c.id, '--rationale', 'read it: a banner constant',
+    '--confirm', code, '--out', w.out, '--format', 'json'], { encoding: 'utf8', env });
+  const agent = ack({ ...humanEnv, CLAUDECODE: '1' });
+  check('under CLAUDECODE the acknowledgement is refused and nothing is recorded',
+    agent.status === 1 && /CLAUDECODE/.test(agent.stderr) && !w.ctx.store.decisions(m.id).some((d) => d.scope.operation === 'acknowledge-forgery-shape'),
+    `${agent.status} ${agent.stderr.slice(-300)}`);
+  check('the next run still lands nothing', (await run(w, author)).landed.length === 0);
+  const human = ack(humanEnv);
+  check('a person acknowledges it with a rationale and the code', human.status === 0
+    && w.ctx.store.decisions(m.id).filter((d) => d.scope.operation === 'acknowledge-forgery-shape' && d.kind === 'approve').length === 1, human.stderr.slice(-300));
+  check('the need is gone', !campaignRunNeeds(w.ctx, w.campaign, host).some((n) => n.kind === 'forgery-shape-review'));
+  const r2 = await run(w, author);
+  check('the next run integrates it, recomputes the verdict and lands it', r2.statuses.F === 'landed' && r2.landed.join(',') === 'F'
+    && w.ctx.store.candidate(c.id)?.verdict === 'accepted-by-gates', JSON.stringify(r2));
+  check('with no second author attempt', w.ctx.store.tasks(m.id).flatMap((t) => w.ctx.store.attempts(t.id)).filter((a) => a.runnerId.startsWith('agent:')).length === 1);
+  w.ctx.close();
+}
 
 section('one cargo-gate landing: a crate with no dependencies, gates under cargo test');
 {

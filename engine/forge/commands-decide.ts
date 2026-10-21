@@ -4,6 +4,7 @@ import { defaultOut } from '../paths.ts';
 import { ApplyFailed, applyCandidate } from './apply.ts';
 import { confirmDigest } from './confirm.ts';
 import { CandidateRefused, decideCandidate, type CandidateOperation } from './decide.ts';
+import { FORGERY_OPERATION, ForgeryReviewRefused, reviewForgeryShape } from './forgery.ts';
 import { DecisionRefused } from './policy.ts';
 
 /**
@@ -14,10 +15,11 @@ import { DecisionRefused } from './policy.ts';
  * recorded, 2 for bad arguments or a missing `--confirm` (the digest is printed so a person
  * can read it and type the code), 1 for a refusal or failure.
  *
- *   forge approve  <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>'] [--acknowledge-possible-secret]
- *   forge override <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>'] [--acknowledge-possible-secret]
+ *   forge approve  <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>'] [--acknowledge-possible-secret] [--acknowledge-forgery-shape]
+ *   forge override <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--subject '<title>'] [--acknowledge-possible-secret] [--acknowledge-forgery-shape]
  *   forge reject   <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8>
  *   forge apply    <candidate> [repo] --actor human:<name> --confirm <digest8>
+ *   forge acknowledge-forgery <candidate> --actor human:<name> --rationale '<why>' --confirm <digest8> [--declined]
  */
 
 class Usage extends Error {}
@@ -76,7 +78,7 @@ function preview(digest: string, lines: string[], asJson: boolean): number {
 
 function forge(sub: string | undefined, p: Parsed, d: DaylightContext, asJson: boolean): number {
   const [candidateId, repo] = p.positionals;
-  if (!sub || !(sub in OPS || sub === 'apply')) throw new Usage('forge needs one of: approve, reject, override, apply');
+  if (!sub || !(sub in OPS || sub === 'apply' || sub === 'acknowledge-forgery')) throw new Usage('forge needs one of: approve, reject, override, apply, acknowledge-forgery');
   if (!candidateId) throw new Usage(`forge ${sub} needs a <candidate-id>`);
   const actor = need(p, 'actor');
   const confirm = p.flags.get('confirm');
@@ -94,6 +96,17 @@ function forge(sub: string | undefined, p: Parsed, d: DaylightContext, asJson: b
     else say(`applied ${candidateId} as ${r.commit} on ${r.ref} (${r.application.id}); merge it yourself`);
     return 0;
   }
+  if (sub === 'acknowledge-forgery') {
+    const declined = p.flags.get('declined') === 'true';
+    if (confirm === undefined) {
+      const v = confirmDigest(ctx, FORGERY_OPERATION, candidateId, { declined });
+      return preview(v.digest, v.lines, asJson);
+    }
+    const decision = reviewForgeryShape(d, { candidateId, actor, rationale: need(p, 'rationale'), confirm, declined });
+    if (asJson) json(decision);
+    else say(`${declined ? 'rejected' : 'acknowledged'} the forgery shapes of ${candidateId} by ${decision.actor} (${decision.id})`);
+    return 0;
+  }
   const operation = OPS[sub];
   if (confirm === undefined) {
     const v = confirmDigest(ctx, operation, candidateId);
@@ -102,6 +115,7 @@ function forge(sub: string | undefined, p: Parsed, d: DaylightContext, asJson: b
   const decision = decideCandidate(ctx, {
     candidateId, operation, actor, rationale: need(p, 'rationale'), confirm, subject: p.flags.get('subject'),
     acknowledgePossibleSecret: p.flags.get('acknowledge-possible-secret') === 'true',
+    acknowledgeForgeryShape: p.flags.get('acknowledge-forgery-shape') === 'true',
   });
   if (asJson) json(decision);
   else say(`${decision.kind} ${candidateId} by ${decision.actor} (${decision.id})${decision.kind === 'override' ? ' — OVERRIDE of the gates' : ''}`);
@@ -128,7 +142,7 @@ export async function runDecideCommand(argv: string[]): Promise<number> {
       return 2;
     }
     const message = err instanceof Error ? err.message : String(err);
-    const refused = err instanceof CandidateRefused || err instanceof DecisionRefused;
+    const refused = err instanceof CandidateRefused || err instanceof DecisionRefused || err instanceof ForgeryReviewRefused;
     if (asJson) json({ error: message, refused, failed: err instanceof ApplyFailed });
     console.error(`error: ${message}`);
     return 1;

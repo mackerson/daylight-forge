@@ -202,9 +202,10 @@ export function createWorkspace(
     const hidden = (o.hidden ?? []).map(normalise).filter(Boolean);
     const exposed = index.filter((e) => hidden.some((h) => e.path === h || e.path.startsWith(`${h}/`)));
     if (exposed.length) {
+      // Counts only (P2-R45 D7): this text reaches events, CLI JSON and the GUI's job output.
       throw new WorkspaceRefused(
-        `a locked holdout is committed at the base (${exposed.slice(0, 3).map((e) => e.path).join(', ')}); ` +
-        'the author would read it, so no workspace is made',
+        `${exposed.length} holdout file${exposed.length === 1 ? '' : 's'} present at base; ` +
+        'the author would read them, so no workspace is made',
       );
     }
 

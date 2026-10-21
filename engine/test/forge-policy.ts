@@ -6,8 +6,8 @@
  * refusals are listed one by one.
  */
 import {
-  assertHumanDecision, checkPolicy, confirmCodeOf, DecisionRefused, guardCheck, MAX_DIFF_BYTES, MAX_DIFF_FILES,
-  pathViolations,
+  assertHumanDecision, checkPolicy, confirmCodeOf, DecisionRefused, forgeryShapes, guardCheck, isTestPath, MAX_DIFF_BYTES, MAX_DIFF_FILES,
+  pathViolations, rustTestLines,
 } from '../forge/policy.ts';
 import { digestOf } from '../mission/artifacts.ts';
 import type { CandidateFile, PolicyRule } from '../mission/types.ts';
@@ -119,6 +119,62 @@ section('the human decision guard');
       return err instanceof DecisionRefused;
     }
   })());
+}
+
+section('gate-forgery-shape (P2-R43): a heuristic over the added lines of non-test code');
+{
+  /** `body` as a whole new file at `p`: every line added. */
+  const shapes = (p: string, body: string) => forgeryShapes(p, body, body.split('\n').map((_, i) => i + 1));
+  const RUST: Array<[string, string]> = [
+    ['File::from_raw_fd(1)', 'pub fn f() { let _ = unsafe { std::fs::File::from_raw_fd(1) }; }'],
+    ['from_raw_fd(1)', 'pub fn f() { let _ = unsafe { Stdout::from_raw_fd( 1 ) }; }'],
+    ['libc::write(1', 'pub fn f() { unsafe { libc::write(1, b"x".as_ptr() as _, 1) }; }'],
+    ['std::process::exit(', 'pub fn f() { std::process::exit(0) }'],
+    ['test result: ok.', 'pub fn f() { println!("test result: ok. 1 passed"); }'],
+    ['running 0 tests', 'pub fn f() { println!("running 0 tests"); }'],
+  ];
+  const JS: Array<[string, string, string]> = [
+    ['process.exit(0) at module scope', 'src/a.js', 'module.exports = 1;\nprocess.exit(0);'],
+    ['process.exit(0) in a module-scope block', 'src/a.ts', 'export const x = 1;\nif (globalThis.done) {\n  process.exit(0);\n}'],
+    ['process.stdout.write # pass', 'src/a.mjs', "export function f() { process.stdout.write('# pass 3\\n'); }"],
+    ['process.stdout.write # fail 0', 'src/a.ts', 'export function f() { process.stdout.write("# fail 0\\n"); }'],
+    ['process.stdout.write ok 1', 'src/a.cjs', 'exports.f = () => process.stdout.write(`ok 1 - adds`);'],
+    ['fs.writeSync(1,', 'lib/a.js', "exports.f = () => fs.writeSync(1, 'x');"],
+    ['TAP version', 'src/a.tsx', "export const header = 'TAP version 13';"],
+  ];
+  for (const [name, body] of RUST) {
+    check(`${name} in a library file is a violation`, shapes('crates/core/src/lib.rs', body).length === 1, JSON.stringify(shapes('crates/core/src/lib.rs', body)));
+    check(`${name} in a test file is not`, shapes('crates/core/tests/it.rs', body).length === 0);
+  }
+  for (const [name, p, body] of JS) {
+    check(`${name} in a library file is a violation`, shapes(p, body).length === 1, JSON.stringify(shapes(p, body)));
+    for (const t of ['tests/a.js', 'src/__tests__/a.ts', 'src/a.test.ts']) {
+      check(`${name} in ${t} is not`, shapes(t, body).length === 0);
+    }
+  }
+  check('process.exit(0) inside a function body is not', shapes('src/cli.js', 'function main() {\n  process.exit(0);\n}\nconst stop = () => process.exit(0);\nclass A { m() { process.exit(0); } }').length === 0);
+  check('process.exit(1) at module scope is not', shapes('src/cli.js', 'process.exit(1);').length === 0);
+  const cfgTest = [
+    'pub fn add(a: u64, b: u64) -> u64 { a + b }', '',
+    '#[cfg(test)]', 'mod tests {', '    #[test]', '    fn adds() {', '        let s = "}";',
+    '        println!("test result: ok.");', '        std::process::exit(0);', '    }', '}',
+    'pub fn after() { println!("running 0 tests"); }',
+  ].join('\n');
+  check('inside a #[cfg(test)] block of a library file it is not; after the block it is',
+    JSON.stringify(shapes('crates/core/src/lib.rs', cfgTest)) === '["running 0 tests"]', JSON.stringify(shapes('crates/core/src/lib.rs', cfgTest)));
+  check('the #[cfg(test)] lines are the attribute through the closing brace, a "}" in a string skipped',
+    [...rustTestLines(cfgTest)].join(',') === '3,4,5,6,7,8,9,10,11', [...rustTestLines(cfgTest)].join(','));
+  check('a #[cfg(test)] use; does not swallow the next item',
+    shapes('src/lib.rs', '#[cfg(test)]\nuse std::fs;\npub fn f() { std::process::exit(0) }').length === 1);
+  check('only the added lines count', forgeryShapes('src/lib.rs', 'pub fn f() { std::process::exit(0) }\npub fn g() {}', [2]).length === 0);
+  // A binary's entry point ends the program with std::process::exit; that alone is allowed there.
+  check('std::process::exit in src/main.rs of a bin crate is allowed', shapes('src/main.rs', 'fn main() { std::process::exit(2) }').length === 0);
+  check('and in src/bin/tool.rs', shapes('crates/x/src/bin/tool.rs', 'fn main() { std::process::exit(2) }').length === 0);
+  check('but not a raw fd write or a summary line there',
+    shapes('src/main.rs', 'fn main() { println!("test result: ok."); let _ = unsafe { File::from_raw_fd(1) }; }').length === 2);
+  check('a file of another language is not scanned', shapes('docs/a.md', 'TAP version 13\ntest result: ok.').length === 0);
+  check('test paths: tests/, __tests__/, *.test.*', isTestPath('tests/a.rs') && isTestPath('a/tests/b.js') && isTestPath('x/__tests__/y.ts')
+    && isTestPath('src/a.test.mjs') && !isTestPath('src/tests.rs') && !isTestPath('src/attest/a.js'));
 }
 
 done();

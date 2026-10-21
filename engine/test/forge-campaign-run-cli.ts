@@ -114,6 +114,11 @@ section('run: refused under an authorization for another gate set; the dry run w
   const d = JSON.parse(dry.out) as { dryRun: boolean; schedule: Array<{ ticketId: string }> };
   check('exit 0, A scheduled', dry.code === 0 && d.dryRun && d.schedule[0]?.ticketId === 'A', dry.out + dry.err);
   check('no row, no event and no ref changed', rows() === before && git(repo, ['for-each-ref']) === refs);
+  for (const form of ['--dry-run=1', '--dry-run=true', '--dry-run=yes']) {
+    const r = await cli(['run', campaign.id, repo, form, '--format', 'json']);
+    check(`${form} is a dry run too (wave2 L1, p17a)`, r.code === 0 && (JSON.parse(r.out) as { dryRun: boolean }).dryRun === true
+      && rows() === before && git(repo, ['for-each-ref']) === refs, r.out.slice(0, 300) + r.err);
+  }
   const wide = await cli(['run', campaign.id, repo, '--dry-run', '--concurrency', '99', '--format', 'json']);
   check('a concurrency above the envelope\'s is refused', wide.code === 1 && /--concurrency 99/.test(wide.out));
 }

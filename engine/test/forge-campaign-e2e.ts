@@ -9,22 +9,26 @@
  * which becomes a fix ticket admitted and landed in the same run. Then an overturned assumption's
  * follow-up ticket, approved by a person, lands; halt refuses a run until a confirmed resume; a
  * child mission's export is refused; under CLAUDECODE `run` is refused while `run --dry-run` and
- * `status` read only. HEAD, the index and the worktree never change and no hook runs.
+ * `status` read only. A second campaign pins the seams between WS-R5 and WS-R6 (wave2 M2): a
+ * foreign move of its ref while a landing is evaluated loses the compare-and-swap and halts, and
+ * the adopted tip is landed on; an attempt that reports no cost halts once and never lands; a
+ * halted envelope refuses a grant; a forged grant is reported. HEAD, the index and the worktree
+ * never change and no hook runs.
  *
  * Mocks only. bwrap is required: without it this file fails, it does not skip.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { detectSandbox } from '../experiment/sandbox.ts';
 import { applicationRefusals } from '../forge/apply.ts';
-import { campaignViolations } from '../forge/campaign.ts';
+import { campaignViolations, startTicketMission } from '../forge/campaign.ts';
 import { integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { CampaignStatusReport, Decision, PlanFileV1, RefineReport, WaveReport } from '../mission/types.ts';
 import { harness } from './harness.ts';
-import { git, repoState, tempDir } from './forge-campaign-run-fixture.ts';
+import { commitOn, git, rawDecision, repoState, tempDir } from './forge-campaign-run-fixture.ts';
 
 const { check, section, done } = harness();
 const CLI = path.resolve(import.meta.dirname, '..', 'cli.ts');
@@ -59,6 +63,17 @@ const plan: PlanFileV1 = {
       acceptance: { kind: 'gate', tests: [{ path: 'checks/c.test.js', expect: PASS }] } },
   ],
 };
+/** The seams campaign: S's gate is slow, so its landing can be raced; U reports no cost; W waits on U. */
+const plan2: PlanFileV1 = {
+  kind: 'daylight-plan', version: 1, title: 'e2e seams',
+  lanes: [{ id: 'LS', title: 's', owns: ['src/'], shared: ['src/'] }],
+  campaignGates: [{ id: 'loads', role: 'regression', path: 'checks/regression.test.js', expect: PASS }],
+  tickets: [
+    { id: 'S', lane: 'LS', title: 'Ticket S', statement: 's says S', scope: ['src/s.js'], acceptance: { kind: 'gate', tests: [{ path: 'checks/s.test.js', expect: PASS }] } },
+    { id: 'U', lane: 'LS', title: 'Ticket U', statement: 'u says U', scope: ['src/u.js'], dependsOn: ['S'], acceptance: { kind: 'gate', tests: [{ path: 'checks/u.test.js', expect: PASS }] } },
+    { id: 'W', lane: 'LS', title: 'Ticket W', statement: 'w says W', scope: ['src/w.js'], dependsOn: ['U'], acceptance: { kind: 'gate', tests: [{ path: 'checks/w.test.js', expect: PASS }] } },
+  ],
+};
 const files: Record<string, string> = {
   'src/a.js': "module.exports = () => 'a0';\n", 'src/b.js': "module.exports = () => 'b0';\n", 'src/c.js': "module.exports = () => 'c0';\n",
   'src/d.js': "module.exports = () => 'd0';\n", 'package.json': '{ "name": "e2e", "private": true }\n',
@@ -67,6 +82,11 @@ const files: Record<string, string> = {
   'checks/b.test.js': nodeTest(`test('b is B:A', () => assert.strictEqual(${load('src/b.js')}(), 'B:A'));`),
   'checks/c.test.js': nodeTest(`test('c is B:A+C', () => assert.strictEqual(${load('src/c.js')}(), 'B:A+C'));`),
   'daylight.plan.json': `${JSON.stringify(plan, null, 2)}\n`,
+  'src/s.js': "module.exports = () => 's0';\n", 'src/u.js': "module.exports = () => 'u0';\n", 'src/w.js': "module.exports = () => 'w0';\n",
+  'checks/s.test.js': nodeTest(`test('s is S', async () => { await new Promise((r) => setTimeout(r, 1500)); assert.strictEqual(${load('src/s.js')}(), 'S'); });`),
+  'checks/u.test.js': nodeTest(`test('u is U', () => assert.strictEqual(${load('src/u.js')}(), 'U'));`),
+  'checks/w.test.js': nodeTest(`test('w is W', () => assert.strictEqual(${load('src/w.js')}(), 'W'));`),
+  'daylight.plan2.json': `${JSON.stringify(plan2, null, 2)}\n`,
 };
 for (const [rel, text] of Object.entries(files)) {
   fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
@@ -125,7 +145,11 @@ if (prompt.includes('You are reviewing wave')) {
   if (title === 'Ticket C') w('src/c.js', "module.exports = () => require('./b.js')() + '+C';\\n");
   if (title.startsWith('Fix: ')) w('src/a.js', "// Returns 'A'.\\nmodule.exports = () => 'A';\\n");
   if (title.startsWith('Follow-up to assumption')) w('src/d.js', "module.exports = () => 'D';\\n");
-  console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.05 }));
+  if (title === 'Ticket S') w('src/s.js', "module.exports = () => 'S';\\n");
+  if (title === 'Ticket U') w('src/u.js', "module.exports = () => 'U';\\n");
+  if (title === 'Ticket W') w('src/w.js', "module.exports = () => 'W';\\n");
+  // U's author never says what it spent.
+  if (title !== 'Ticket U') console.log(JSON.stringify({ type: 'result', total_cost_usd: 0.05 }));
 }
 `);
 
@@ -201,6 +225,7 @@ const rowCounts = () => {
   return JSON.stringify([ctx.events.head(), ...tables.map((t) => [t, (db.prepare(`SELECT COUNT(*) AS n FROM "${t}"`).get() as { n: number }).n])]);
 };
 const children = () => ctx.store.missions(ctx.store.mission(campaignId)!.projectId).filter((m) => m.parentId === campaignId);
+const children2 = () => ctx.store.missions(ctx.store.mission(c2)!.projectId).filter((m) => m.parentId === c2);
 const ticketMission = (ticketId: string) => {
   const t = ctx.store.campaignTicket(campaignId, ticketId);
   return t ? children().find((m) => m.kind === 'implement' && m.workItemId === t.workItemId) : undefined;
@@ -231,6 +256,9 @@ const repairs = children().flatMap((m) => ctx.events.forMission(m.id)).filter((e
 check('B took one repair: two author attempts, one repair queued, on B', bAttempts.length === 2 && repairs.length === 1 && repairs[0].missionId === ticketMission('B')?.id,
   JSON.stringify([bAttempts.length, repairs.map((e) => e.missionId)]));
 check('A, C and the fix ticket took one attempt each', ['A', 'C', 'FIX.1.1'].every((id) => attemptsOf(ticketMission(id)?.id ?? '').length === 1));
+const launched = children().flatMap((m) => attemptsOf(m.id));
+check('every author and reviewer attempt carried its reservation on max_cost_usd (P2-R18, P2-R35)', launched.length >= 6
+  && launched.every((a) => typeof a.maxCostUsd === 'number' && a.maxCostUsd > 0), JSON.stringify(launched.map((a) => a.maxCostUsd)));
 
 const waves = ctx.store.waves(campaignId);
 const findings = ctx.store.findings(campaignId);
@@ -312,6 +340,76 @@ check('campaign status succeeds', agentStatus.code === 0 && parsed<CampaignStatu
 check('and none of the three added a row, an event or a ref', rowCounts() === rows
   && git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']) === refsNow);
 
+// ---- the seams: a second campaign (wave2 M2) -------------------------------------------------------
+
+section('a second campaign: a foreign move during a landing loses the compare-and-swap and halts');
+const imp2 = cli(['campaign', 'import', repo, '--file', 'daylight.plan2.json', '--format', 'json']);
+const c2 = imp2.code === 0 ? parsed<{ campaign: { id: string } }>(imp2).campaign.id : '';
+const appr2 = confirmed(['campaign', 'approve-plan', c2, '--rationale', 'plan read']);
+const base2 = cli(['campaign', 'baseline', c2, repo, '--format', 'json']);
+const lock2 = confirmed(['campaign', 'lock', c2, '--no-ratchet', '--rationale', 'gates read']);
+const gateSet2 = lock2.act.code === 0 ? String(parsed<Decision>(lock2.act).scope.gateSetDigest) : '';
+const authz2 = confirmed(['campaign', 'authorize', c2, '--expected-gate-set', gateSet2, '--roster', 'mock', '--max-usd-total', '5', '--max-usd-per-mission', '1',
+  '--max-turns', '40', '--timeout', '600', '--max-attempts', '2', '--concurrency', '1', '--auto-apply', 'integration-ref', '--wave-size', '10', '--rationale', 'seams']);
+const auth2 = authz2.act.code === 0 ? parsed<Decision>(authz2.act) : null;
+check('imported, approved, baselined, locked and authorized', !!c2 && appr2.act.code === 0 && base2.code === 0 && !!gateSet2 && !!auth2,
+  [imp2.err, appr2.act.err, base2.err, lock2.act.err, authz2.act.err].join(' | '));
+const ref2 = integrationRefFor(c2);
+const integrations2 = () => ctx.store.integrations(c2);
+const raced = await new Promise<{ code: number; out: string; foreign: string | null }>((resolve) => {
+  const child = spawn(process.execPath, [CLI, 'campaign', 'run', c2, repo, '--format', 'json', '--out', out], { cwd: root, env: human, stdio: ['ignore', 'pipe', 'pipe'] });
+  let o = '';
+  let foreign: string | null = null;
+  child.stdout!.on('data', (d) => { o += d; });
+  child.stderr!.on('data', (d) => { o += d; });
+  // While S's slow gate runs on its integrated tree, a person (or anything else) moves the ref.
+  const poll = setInterval(() => {
+    const i = integrations2().find((x) => x.state === 'evaluating');
+    if (!i || foreign) return;
+    foreign = commitOn(repo, i.onto, { 'NOTES.md': 'pushed by hand\n' }, 'foreign');
+    git(repo, ['update-ref', ref2, foreign, i.onto]);
+  }, 25);
+  child.on('exit', (code) => {
+    clearInterval(poll);
+    resolve({ code: code ?? 1, out: o, foreign });
+  });
+});
+const rr = (() => { try { return JSON.parse(raced.out) as RunResult; } catch { return null; } })();
+check('the ref was moved while S was being evaluated', !!raced.foreign);
+check('the run halted integration-moved and landed nothing over the foreign commit', raced.code === 1 && rr?.halted === 'integration-moved' && rr.landed.length === 0,
+  raced.out.slice(-600));
+check('S\'s integration was abandoned, its candidate kept accepted', integrations2().length === 1 && integrations2()[0].state === 'abandoned'
+  && ctx.store.candidate(integrations2()[0].candidateId)?.verdict === 'accepted-by-gates', JSON.stringify(integrations2().map((i) => i.state)));
+check('the foreign commit is still the tip: nothing overwrote it', integrationTip(repo, c2) === raced.foreign);
+const moved = ctx.store.campaignHalts(c2)[0];
+const adopt = confirmed(['campaign', 'adopt-tip', c2, repo, '--halt', moved?.id ?? '', '--rationale', 'the note is mine']);
+check('a person adopts the foreign tip', adopt.preview.code === 2 && adopt.act.code === 0, adopt.act.err);
+
+section('the adopted tip is landed on; U reports no cost and halts the campaign once');
+const runB = cli(['campaign', 'run', c2, repo, '--format', 'json']);
+const rb = (() => { try { return JSON.parse(runB.out) as RunResult; } catch { return null; } })();
+check('S lands three-way onto the adopted commit', rb?.landed.join(',') === 'S' && integrations2().some((i) => i.state === 'integrated' && i.onto === raced.foreign && i.method === 'three-way'),
+  runB.out.slice(-600));
+check('U\'s attempt reported no cost: the run halted spend-unknown (P2-R11)', runB.code === 1 && rb?.halted === 'spend-unknown', runB.out.slice(-600));
+check('and U\'s candidate did not land', rb?.statuses.U !== 'landed' && !git(repo, ['show', `${integrationTip(repo, c2)}:src/u.js`]).includes("'U'"));
+check('while halted, the envelope refuses a grant for W (store.envelopeRefusal)', (() => {
+  try {
+    startTicketMission(ctx, { campaignId: c2, ticketId: 'W', base: integrationTip(repo, c2)! });
+    return false;
+  } catch (err) {
+    return /halted/.test((err as Error).message);
+  }
+})());
+const halt2 = ctx.store.campaignHalts(c2)[0];
+const resume2 = confirmed(['campaign', 'resume', c2, '--halt', halt2?.id ?? '', '--rationale', 'seen the unknown']);
+const runC = cli(['campaign', 'run', c2, repo, '--format', 'json']);
+const rc = (() => { try { return JSON.parse(runC.out) as RunResult; } catch { return null; } })();
+check('after a resume U is blocked and never lands, and the campaign does not halt again', resume2.act.code === 0 && runC.code === 0 && rc?.halted === null
+  && rc.statuses.U === 'blocked' && rc.landed.length === 0
+  && ctx.store.decisions(c2).filter((d) => d.scope.operation === 'halt-campaign' && d.scope.reason === 'spend-unknown').length === 1, runC.err || runC.out.slice(-600));
+check('the second campaign\'s ref is explained by its landing and the adoption', integrationRefusals({ store: ctx.store, repoRoot: repo }, c2).length === 0,
+  integrationRefusals({ store: ctx.store, repoRoot: repo }, c2).join('; '));
+
 // ---- the REFINE stage reads it (WS-R8) ------------------------------------------------------------
 
 section('campaign report and refine over the run, from an agent session');
@@ -355,6 +453,16 @@ check('applicationRefusals is empty', applicationRefusals({ store: ctx.store, re
 const events = children().concat(ctx.store.mission(campaignId)!).flatMap((m) => ctx.events.forMission(m.id));
 const leaks = events.filter((e) => JSON.stringify(e.payload).includes(SENTINEL) || JSON.stringify(e.payload).includes('hidden.test.js'));
 check('no event names the holdout (P2-R37: every event, not only campaign.*)', events.some((e) => e.name === 'experiment.registered') && leaks.length === 0, JSON.stringify(leaks.map((e) => [e.name, e.payload])).slice(0, 1500));
+
+// Last, because it writes a row no Daylight act would: everything above has been checked.
+section('a forged derived grant is reported (campaignGrantRefusal)');
+const uMission = children2().find((m) => m.kind === 'implement' && m.workItemId === ctx.store.campaignTicket(c2, 'U')?.workItemId)!;
+const forged = rawDecision(ctx.store, {
+  missionId: uMission.id, projectId: uMission.projectId, revision: uMission.baseRevision, actor: `campaign:${c2}`, kind: 'approve', rationale: 'forged',
+  scope: { operation: 'authorize-mission', permissions: { write: true, execute: true, deploy: false }, maxUsd: 50, derivedFrom: auth2?.id, ticketId: 'U' }, artifactIds: [],
+});
+check('derivationRefusals names the forged grant\'s budget and execute', ctx.store.derivationRefusals(projectId).some((r) => r.includes(forged.id)),
+  ctx.store.derivationRefusals(projectId).join('; '));
 
 ctx.close();
 done();

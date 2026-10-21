@@ -11,7 +11,8 @@ import {
  * Figures come from attempt rows only — `attempts.cost_usd`, `cost_source` and the token
  * columns that capture promotes from `attempt_usage` — never from a sum over events. A null
  * is counted as unknown and never summed as zero; a scraped figure is spend, shown apart from
- * known dollars; nothing is estimated and there is no price table. An ingested attempt is
+ * known dollars; an unfinished attempt charged at its reservation (P2-R44) is a ceiling, shown
+ * apart too; nothing is estimated and there is no price table. An ingested attempt is
  * recorded work done outside Daylight's controls and is labelled so wherever it is shown.
  *
  * The ledger carries no timestamp, so an export → import → ledger round trip is byte-equal.
@@ -138,6 +139,8 @@ export function ledgerWithGaps(ctx: Ctx, o: LedgerOptions): { ledger: Ledger; ga
       usdKnown: round(as.filter((a) => a.costSource === 'provider').reduce((n, a) => n + (a.costUsd ?? 0), 0)),
       usdUnknownCount: as.filter((a) => a.costUsd === null).length,
       usdScanned: round(as.filter((a) => a.costSource === 'stdout-scan').reduce((n, a) => n + (a.costUsd ?? 0), 0)),
+      usdReservation: round(as.filter((a) => a.costSource === 'reservation').reduce((n, a) => n + (a.costUsd ?? 0), 0)),
+      reservationCount: as.filter((a) => a.costSource === 'reservation').length,
       tokens: {
         input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite'),
         unknownCount: as.filter((a) => a.usageSource === 'none').length,
@@ -203,7 +206,9 @@ export function totalGaps(gaps: TokenGaps, keys: readonly string[]): Record<Toke
  * What a mission has spent, over every attempt it has ever had — not one run's — because the
  * budget is the mission's (Ledger H3). `spentUsd` is what counts against a ceiling: known
  * dollars plus scanned ones, since a scraped figure is still money that went somewhere.
- * `knownUsd` is the provider's own figures only.
+ * `knownUsd` is the provider's own figures only. A campaign attempt cut short is charged at
+ * its reservation (`reservationUsd`): that charge protects the campaign's cap, which adds it
+ * in, not the mission's own budget, so one crash does not exhaust a ticket (P2-R44).
  */
 export interface MissionSpend {
   spentUsd: number;
@@ -212,6 +217,9 @@ export interface MissionSpend {
   unknownCount: number;
   /** Attempts whose figure was read from output by pattern. */
   scannedCount: number;
+  /** Attempts that ended unfinished and were charged at their reservation (P2-R44); not in `spentUsd`. */
+  reservationCount: number;
+  reservationUsd: number;
   /** Attempts not finished yet: their spend is not in yet either. */
   runningCount: number;
   /** True only when every attempt is finished with a provider figure. */
@@ -225,14 +233,18 @@ export function missionSpend(ctx: Ctx, missionId: string): MissionSpend {
   const finished = attempts.filter((a) => !live(a));
   const unknownCount = finished.filter((a) => a.costUsd === null).length;
   const scannedCount = attempts.filter((a) => a.costSource === 'stdout-scan').length;
+  const reserved = attempts.filter((a) => a.costSource === 'reservation');
+  const reservationCount = reserved.length;
   const runningCount = attempts.length - finished.length;
   return {
-    spentUsd: round(attempts.reduce((n, a) => n + (a.costUsd ?? 0), 0)),
+    spentUsd: round(attempts.filter((a) => a.costSource !== 'reservation').reduce((n, a) => n + (a.costUsd ?? 0), 0)),
     knownUsd: round(attempts.filter((a) => a.costSource === 'provider').reduce((n, a) => n + (a.costUsd ?? 0), 0)),
     unknownCount,
     scannedCount,
+    reservationCount,
+    reservationUsd: round(reserved.reduce((n, a) => n + (a.costUsd ?? 0), 0)),
     runningCount,
-    costKnown: unknownCount === 0 && scannedCount === 0 && runningCount === 0,
+    costKnown: unknownCount === 0 && scannedCount === 0 && reservationCount === 0 && runningCount === 0,
   };
 }
 
@@ -273,20 +285,23 @@ const count = (n: number): string => n.toLocaleString('en-US');
 
 /**
  * A row's dollars as words a reader cannot misread. `unknown` when nobody reported a figure
- * (never `$0.00`); a floor, `≥`, when some did not; scanned spend shown beside, never inside,
- * the known figure.
+ * (never `$0.00`); a floor, `≥`, when some did not; scanned spend and reservation charges
+ * shown beside, never inside, the known figure.
  */
 export function dollarsOf(r: LedgerRow, providerCost?: number): string {
   if (r.attempts === 0) return '—';
   if (r.usdUnknownCount === r.attempts) return 'unknown';
   const unknown = r.usdUnknownCount ? `${r.usdUnknownCount} unknown` : '';
+  const reserved = r.reservationCount ? `${money(r.usdReservation)} charged at reservation for ${r.reservationCount} unfinished` : '';
   // With the provider-figure count (`RowFacts`) this is exact; without it, a zero beside
-  // scanned spend is read as "none known" rather than printed as a known $0.00.
-  const noneKnown = providerCost !== undefined ? providerCost === 0 : r.usdKnown === 0 && r.usdScanned > 0;
+  // scanned or reserved spend is read as "none known" rather than printed as a known $0.00.
+  const noneKnown = providerCost !== undefined ? providerCost === 0 : r.usdKnown === 0 && (r.usdScanned > 0 || !!r.reservationCount);
   if (noneKnown) {
-    return `${money(r.usdScanned)} scanned, not known${unknown ? ` (${unknown})` : ''}`;
+    const lead = r.usdScanned > 0 ? `${money(r.usdScanned)} scanned, not known` : reserved ? `${reserved}, not known` : `${money(0)} scanned, not known`;
+    const rest = [unknown, r.usdScanned > 0 ? reserved : ''].filter(Boolean).join(', ');
+    return `${lead}${rest ? ` (${rest})` : ''}`;
   }
-  const notes = [unknown, r.usdScanned > 0 ? `${money(r.usdScanned)} scanned, not known` : ''].filter(Boolean);
+  const notes = [unknown, reserved, r.usdScanned > 0 ? `${money(r.usdScanned)} scanned, not known` : ''].filter(Boolean);
   return notes.length ? `≥ ${money(r.usdKnown)} (${notes.join(', ')})` : money(r.usdKnown);
 }
 
@@ -306,7 +321,7 @@ export function tokenCells(r: LedgerRow, gap?: Record<TokenField, number>): stri
 /** The one-line total over rows, `≥ $X (N unknown, M scanned)` when it is a floor. */
 export function totalOf(rows: readonly LedgerRow[]): LedgerRow {
   const z: LedgerRow = {
-    key: 'total', attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0,
+    key: 'total', attempts: 0, usdKnown: 0, usdUnknownCount: 0, usdScanned: 0, usdReservation: 0, reservationCount: 0,
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, unknownCount: 0 },
     candidates: { accepted: 0, rejected: 0, applied: 0, overridden: 0 }, decisions: 0, gateSetDigests: [],
   };
@@ -315,6 +330,8 @@ export function totalOf(rows: readonly LedgerRow[]): LedgerRow {
     z.usdKnown = round(z.usdKnown + r.usdKnown);
     z.usdUnknownCount += r.usdUnknownCount;
     z.usdScanned = round(z.usdScanned + r.usdScanned);
+    z.usdReservation = round(z.usdReservation + (r.usdReservation ?? 0));
+    z.reservationCount += r.reservationCount ?? 0;
     for (const f of ['input', 'output', 'cacheRead', 'cacheWrite', 'unknownCount'] as const) z.tokens[f] += r.tokens[f];
     for (const f of ['accepted', 'rejected', 'applied', 'overridden'] as const) z.candidates[f] += r.candidates[f];
     z.decisions += r.decisions;

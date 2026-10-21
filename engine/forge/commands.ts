@@ -160,6 +160,7 @@ const EXEC_WITHOUT_WRITE = 'author exec is granted only with write: authorize --
 const OPERATIONS: readonly (ConfirmOperation | 'adjudicate')[] = [
   'authorize-mission', 'adhoc-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
   'approve-candidate', 'reject-candidate', 'override-candidate', 'apply', 'adjudicate', 'resolve-dependency-request',
+  'acknowledge-forgery-shape',
   // Campaign and assumption acts (P2-R40, P2-R45 D6): the GUI confirms only through here.
   'approve-plan', 'authorize-campaign', 'retry-ticket', 'record-assumption', 'confirm-assumption', 'decide-assumption', 'overturn-assumption',
   'lock-campaign-gates', 'resume-campaign', 'adopt-integration-tip',
@@ -210,6 +211,7 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
       // Without --only, the full gate and holdout set, exactly as `gate lock` locks it.
       opts = { experimentIds: only.length ? only : listGates({ store: ctx.store, artifacts: ctx.artifacts, repoRoot: '' }, subjectId).gates.map((g) => g.experimentId) };
     }
+    if (operation === 'acknowledge-forgery-shape') opts = { declined: last(p, 'declined') === 'true' };
     if (operation === 'adhoc-mission') {
       const project = mappedProject(ctx.out);
       if (!project) throw new Error(`${ctx.out} holds no map`);
@@ -450,7 +452,7 @@ async function spec(sub: string | undefined, p: Parsed, out: () => string, asJso
 /** Subcommands that record a decision: their actor is the OS user's, supplied or checked. */
 const GUARDED: Record<string, readonly string[]> = {
   gate: ['lock'],
-  forge: ['approve', 'reject', 'override', 'apply'],
+  forge: ['approve', 'reject', 'override', 'apply', 'acknowledge-forgery'],
   'work-item': ['approve', 'reject'],
   campaign: ['approve-plan', 'lock', 'authorize', 'resume', 'adopt-tip', 'retry'],
   assumption: ['confirm', 'decide', 'overturn', 'record'],
