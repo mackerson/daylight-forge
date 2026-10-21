@@ -5,7 +5,7 @@ import { redact } from '../mission/redact.ts';
 import type { MissionStore } from '../mission/store.ts';
 import type {
   ArtifactRef, CampaignAuthorizedPayload, CampaignEnvelope, CampaignHaltReason, Decision, EnvelopeRequest, Mission, MissionPermissions,
-  PlanFileV1, PlanRefusal, RetryTicketScope,
+  PlanFileV1, PlanRefusal, RetryTicketScope, TicketTraceRow,
 } from '../mission/types.ts';
 import { campaignActorOf, isCampaignActor, isHumanActor } from '../mission/types.ts';
 import { confirmDigest } from './confirm.ts';
@@ -17,6 +17,9 @@ import { assertHumanDecision, DecisionRefused, pathViolations } from './policy.t
 import { authorLimits, ProjectPolicyError } from './project-policy.ts';
 import { specRevisionOf } from './spec.ts';
 import { seedPlanAssumptions } from './assumptions.ts';
+import { authorityChainOf, irSetDigestAt, isIrStale, packetSetDigestOf, staleBlueprints, ticketIrRefs } from './authority.ts';
+import { digestOf } from '../mission/artifacts.ts';
+import { unboundObligations } from './campaign-gates.ts';
 
 /**
  * Campaigns: a plan imported as data, approved once, and run by the director process under one
@@ -93,6 +96,67 @@ export interface ImportedPlan {
   added: string[];
   kept: string[];
   dropped: string[];
+  /** A version-2 plan with a derivation: tickets traced to packets, those a person edited after emission, and those with no packet. */
+  trace?: { traced: number; handEdited: string[]; untraced: number };
+}
+
+/**
+ * A version-2 plan's descent from its packets (P2-R50 F1, §8.3), checked against this project's
+ * rows: the corpus revision, the approved and current blueprint, the IR set it was drawn over,
+ * every cited record approved and current, each ticket's packet that blueprint's packet for that
+ * ticket, the packet set's digest recomputed, every `OIR.*` a recorded interpretation. A ticket
+ * whose digest (no defaults) is not its packet's is imported and flagged `hand_edited`, not refused:
+ * a person may edit what they commit, and the edit is shown. Rows for `ticket_trace` come back.
+ */
+export function planDescent(ctx: DaylightContext, projectId: string, plan: PlanFileV1): {
+  refusals: PlanRefusal[]; trace: Array<Omit<TicketTraceRow, 'campaignId'>>; handEdited: string[]; untraced: number;
+} {
+  const d = plan.derivation;
+  const refusals: PlanRefusal[] = [];
+  const no = (path: string, detail: string) => refusals.push({ path, rule: 'derivation', detail });
+  if (!d) return { refusals, trace: [], handEdited: [], untraced: plan.tickets.length };
+  const corpus = ctx.store.mission(d.corpusId);
+  if (!corpus || corpus.kind !== 'corpus' || corpus.projectId !== projectId) no('$.derivation.corpusId', 'not a corpus of this project');
+  else if (!ctx.store.corpusRevisionByDigest(corpus.id, d.corpusDigest)) no('$.derivation.corpusDigest', 'not a revision of that corpus');
+  const bp = ctx.store.blueprint(d.blueprintId);
+  if (!bp || bp.corpusId !== d.corpusId) no('$.derivation.blueprintId', 'not a blueprint of that corpus');
+  else {
+    if (bp.status !== 'approved') no('$.derivation.blueprintId', `the blueprint is ${bp.status}, not approved`);
+    else if (staleBlueprints(ctx, bp.corpusId).has(bp.id)) no('$.derivation.blueprintId', 'the blueprint is stale');
+    if (bp.blueprintDigest !== d.blueprintDigest) no('$.derivation.blueprintDigest', 'not the blueprint\'s digest');
+    if (bp.body.irSetDigest !== d.irSetDigest) no('$.derivation.irSetDigest', 'not the IR set the blueprint was drawn over');
+  }
+  const trace: Array<Omit<TicketTraceRow, 'campaignId'>> = [];
+  const handEdited: string[] = [];
+  const pairs: Array<{ ticketId: string; packetDigest: string }> = [];
+  let untraced = 0;
+  plan.tickets.forEach((t, i) => {
+    const refs = ticketIrRefs(t);
+    for (const ref of refs) {
+      const r = ctx.store.irRecord(ref.irId);
+      if (!r || r.corpusId !== d.corpusId) no(`$.tickets[${i}]`, `cites ${ref.irId}, which is not a record of the corpus`);
+      else if (r.status !== 'approved') no(`$.tickets[${i}]`, `cites ${ref.irId}, which is ${r.status}`);
+      else if (isIrStale(ctx, r.id)) no(`$.tickets[${i}]`, `cites ${ref.irId}, which is stale`);
+    }
+    if (!t.packetId) {
+      untraced++;
+      for (const ref of refs) trace.push({ ticketId: t.id, irId: ref.irId, role: ref.role, detail: ref.detail, packetId: null, handEdited: false });
+      return;
+    }
+    const p = ctx.store.packet(t.packetId);
+    if (!p || p.blueprintId !== d.blueprintId || p.ticketId !== t.id) return no(`$.tickets[${i}].packetId`, 'not this blueprint\'s packet for this ticket');
+    pairs.push({ ticketId: t.id, packetDigest: p.packetDigest });
+    const edited = ticketDigestOf(t, undefined) !== p.packetDigest;
+    if (edited) handEdited.push(t.id);
+    for (const ref of refs) trace.push({ ticketId: t.id, irId: ref.irId, role: ref.role, detail: ref.detail, packetId: p.id, handEdited: edited });
+  });
+  if (packetSetDigestOf(pairs) !== d.packetSetDigest) no('$.derivation.packetSetDigest', 'the packets the tickets name do not hash to it');
+  const oirs = new Set([...(plan.ownerDecisions ?? []).map((o) => o.id), ...plan.tickets.flatMap((t) => t.blocksOn ?? [])].filter((o) => o.startsWith('OIR.')));
+  for (const o of oirs) {
+    const a = ctx.store.assumptionByOwnerDecision(projectId, o);
+    if (a?.source !== 'ir-interpretation' || a.campaignId !== d.corpusId) no('$.ownerDecisions', `${o} is not an interpretation recorded on the corpus`);
+  }
+  return { refusals, trace, handEdited, untraced };
 }
 
 /**
@@ -107,6 +171,8 @@ export function importPlan(ctx: DaylightContext, repo: string, rel: string, o: {
   if (!v.plan || !v.bytes || !v.planDigest) throw new PlanInvalid(v.refusals);
   const plan = v.plan;
   ctx.store.ensureProject(project);
+  const descent = planDescent(ctx, project.id, plan);
+  if (descent.refusals.length) throw new PlanInvalid(descent.refusals);
   let campaign: Mission;
   if (o.campaignId) {
     campaign = requireCampaign(ctx, o.campaignId);
@@ -132,14 +198,21 @@ export function importPlan(ctx: DaylightContext, repo: string, rel: string, o: {
       ticketDigest: ticketDigestOf(t, plan.defaults),
     },
   }));
-  const rows = ctx.store.importPlanTickets(campaign.id, entries);
+  // The tickets and their trace in one transaction: a plan's trace is what that plan states.
+  const rows = ctx.store.tx(() => {
+    const r = ctx.store.importPlanTickets(campaign.id, entries);
+    ctx.store.replaceTicketTrace(campaign.id, descent.trace.map((t) => ({ ...t, campaignId: campaign.id })));
+    return r;
+  });
   seedPlanAssumptions(ctx, campaign.id, plan);
+  const trace = plan.derivation ? { traced: plan.tickets.length - descent.untraced, handEdited: descent.handEdited, untraced: descent.untraced } : undefined;
   emit(ctx, campaign, 'lifecycle', 'campaign.plan.imported', 'daylight', {
     planArtifact: planArtifact.id, planDigest: planArtifact.digest, planRevision, commit: v.commit, path: rel,
     tickets: plan.tickets.length, lanes: plan.lanes.length, ownerDecisions: plan.ownerDecisions?.length ?? 0,
     added: rows.added.length, kept: rows.kept.length, dropped: rows.dropped.length,
+    ...(trace ? { version: plan.version, traced: trace.traced, handEdited: trace.handEdited.length, untraced: trace.untraced } : {}),
   }, [planArtifact.id]);
-  return { campaign: ctx.store.mission(campaign.id)!, planArtifact, planDigest: planArtifact.digest, planRevision, commit: v.commit, ...rows };
+  return { campaign: ctx.store.mission(campaign.id)!, planArtifact, planDigest: planArtifact.digest, planRevision, commit: v.commit, ...rows, ...(trace ? { trace } : {}) };
 }
 
 // ---- approve-plan ----------------------------------------------------------------------
@@ -195,6 +268,10 @@ export interface EnvelopeFlags {
   /** `<n>h` or `<n>d`, at most 30 days; default 72h. */
   notAfter?: string;
   identity?: CampaignEnvelope['identity'];
+  /** `<ticket>:ob<n>` acceptance obligations a person lets run with no locked gate bound (P2-R50 F3); recorded in the envelope. */
+  unboundObligations?: string[];
+  /** The current approved IR set's digest, when a person proceeds although the specification moved under the plan (P2-R59); recorded in the envelope. */
+  acceptIrDrift?: string;
 }
 
 /** `72h` / `3d` as milliseconds, at most 30 days, or null. */
@@ -209,7 +286,7 @@ export function notAfterSpan(s: string): number | null {
  * The envelope `campaign authorize` would record now, from the flags and the rows. `notAfter`
  * is rounded up to the hour, so the preview a person reads and the act they confirm agree.
  */
-export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: EnvelopeFlags, now = ctx.store.clock()): CampaignEnvelope {
+export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: EnvelopeFlags, now = ctx.store.clock()): CampaignEnvelope & { unboundObligations?: string[]; acceptIrDrift?: string } {
   const plan = planOf(ctx, campaignId);
   const span = notAfterSpan(f.notAfter ?? '72h');
   if (span === null) throw new DecisionRefused('refused: --not-after is <n>h or <n>d, at most 30 days');
@@ -226,6 +303,9 @@ export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: Envel
     fixLane: f.fixLane ?? { enabled: false, maxTicketsPerWave: 0, maxUsdPerTicket: 0 },
     identity: f.identity ?? { name: user, email: `${user}@daylight.invalid` },
     notAfter: Math.ceil((now + span) / HOUR_MS) * HOUR_MS,
+    // Only when named, so every envelope without one confirms and records as it always did.
+    ...(f.unboundObligations?.length ? { unboundObligations: [...new Set(f.unboundObligations)].sort() } : {}),
+    ...(f.acceptIrDrift ? { acceptIrDrift: f.acceptIrDrift } : {}),
   };
 }
 
@@ -263,6 +343,24 @@ export function authorizeCampaign(ctx: DaylightContext, input: GuardedInput & { 
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: an authorization needs a rationale');
   const bounds = envelopeBoundsRefusal(ctx, envelope, planOf(ctx, c.id).commit);
   if (bounds) throw new DecisionRefused(`refused: ${bounds}`);
+  // A traced plan's chain must hold before a grant is made on it (fail closed); the envelope link is this act's.
+  const drift = (envelope as { acceptIrDrift?: string }).acceptIrDrift;
+  const plan = planOf(ctx, c.id).plan;
+  if (drift !== undefined) {
+    const current = plan.derivation ? irSetDigestAt(ctx, plan.derivation.corpusId) ?? digestOf('') : null;
+    if (drift !== current) throw new DecisionRefused(`refused: --accept-ir-drift names ${drift}; the current approved IR set is ${current ?? 'none (the plan is untraced)'}`);
+  }
+  const chain = authorityChainOf(ctx, c.id, { acceptIrDrift: drift ?? null, ticketIds: envelope.ticketIds }).breaks.filter((b) => b.link !== 'envelope');
+  if (chain.length) throw new DecisionRefused(`refused: the authority chain is broken at ${chain.map((b) => `${b.link} (${b.why})`).join('; ')}`);
+  // P2-R50 F3: every acceptance obligation of the tickets is discharged by a locked gate, or named here.
+  const unbound = unboundObligations(ctx, c.id, envelope.ticketIds);
+  const named = new Set((envelope as CampaignEnvelope & { unboundObligations?: string[] }).unboundObligations ?? []);
+  const missing = unbound.filter((ob) => !named.has(ob));
+  if (missing.length) {
+    throw new DecisionRefused(`refused: acceptance obligation(s) ${missing.join(', ')} are bound to no locked gate; bind them at \`campaign lock\` or name them in --unbound-obligations`);
+  }
+  const extra = [...named].filter((ob) => !unbound.includes(ob));
+  if (extra.length) throw new DecisionRefused(`refused: --unbound-obligations names ${extra.join(', ')}, which are bound or are not obligations of these tickets`);
   const decision = ctx.store.authorizeCampaign(c.id, {
     actor: input.actor, rationale: input.rationale.trim(), expectedGateSetDigest: input.flags.expectedGateSetDigest,
     policy: policyAtPlan(ctx, planOf(ctx, c.id).commit),
@@ -281,7 +379,11 @@ export function campaignAuthorizationRefusal(ctx: DaylightContext, campaignId: s
   const c = requireCampaign(ctx, campaignId);
   const d = ctx.store.campaignAuthorization(c.id);
   if (!d) return `campaign ${c.id} has no authorization; a person runs \`daylight campaign authorize\``;
-  return ctx.store.envelopeRefusal(d.id, { missionId: c.id, operation: 'admit-work-item', ticketId: '', at });
+  const why = ctx.store.envelopeRefusal(d.id, { missionId: c.id, operation: 'admit-work-item', ticketId: '', at });
+  if (why) return why;
+  // Every director pass re-derives a traced plan's authority chain; a broken link stops it (§9, fail closed).
+  const chain = authorityChainOf(ctx, c.id);
+  return chain.breaks.length ? `campaign ${c.id}'s authority chain is broken at ${chain.breaks.map((b) => `${b.link} (${b.why})`).join('; ')}` : null;
 }
 
 /**

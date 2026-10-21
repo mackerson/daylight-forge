@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { digestOf } from '../mission/artifacts.ts';
-import { GateSetMoved } from '../mission/store.ts';
+import { campaignBindingOf, GateSetMoved } from '../mission/store.ts';
 import type {
   CampaignLockScope, CampaignTicket, CampaignVerdictRows, Decision, ExpectedObservation, Experiment, GateEvaluation, GateHarness,
   Integration, Mission, PlanFileV1,
@@ -9,10 +9,11 @@ import { harnessHolds, runGate } from '../experiment/runner.ts';
 import { gitIn } from './apply.ts';
 import { campaignVerdict, requiredChecks } from './campaign-verdict.ts';
 import { gateCacheKey, removeGateCache } from './cargo.ts';
-import { confirmDigest } from './confirm.ts';
+import { planFileOf } from './authority.ts';
+import { confirmDigest, type ConfirmDigest } from './confirm.ts';
 import { cargoTargetOf, GateRefused, record, recordIntegrated, registerGate, runContext, type AuthorBriefGate, type GateContext } from './gate.ts';
 import { expectedTip } from './integrate.ts';
-import { assertHumanDecision } from './policy.ts';
+import { assertHumanDecision, confirmCodeOf } from './policy.ts';
 import { policyAt } from './plan.ts';
 import { defaultGateHarness } from './project-policy.ts';
 import { createWorkspace } from './workspace.ts';
@@ -158,6 +159,8 @@ export function listCampaignGates(ctx: Pick<GateContext, 'store'>, campaignId: s
 // ---- the lock --------------------------------------------------------------------------------
 
 export interface CampaignLockInput {
+  /** Acceptance obligations each locked gate discharges: experiment id → `<ticket>:ob<n>` (spec ingestion §8.4). In the gate-set digest. */
+  obligations?: Record<string, string[]>;
   campaignId: string;
   actor: string;
   rationale: string;
@@ -186,11 +189,11 @@ export function lockCampaign(ctx: GateContext, input: CampaignLockInput): Decisi
   const ids = input.experimentIds ?? lockableIds(ctx, m.id);
   if (!ids.length) throw new GateRefused(`campaign ${m.id} has no gate to lock; run \`daylight campaign baseline\` first`);
   if (typeof input.ratchet !== 'boolean') throw new GateRefused('--ratchet or --no-ratchet is required and has no default');
-  const preview = confirmDigest(ctx, 'lock-campaign-gates', m.id, { experimentIds: ids, ratchet: input.ratchet });
+  const preview = campaignLockConfirm(ctx, m.id, ids, input.ratchet, input.obligations);
   assertHumanDecision(input.env ?? ctx.env ?? process.env, input.actor, input.confirm, preview.digest);
   const gates = ids.map((id) => ctx.store.experiment(id)!);
   const vacuous = [...new Set(input.acceptVacuous ?? [])];
-  const refusals: string[] = [];
+  const refusals: string[] = [...obligationRefusals(ctx, m.id, ids, input.obligations ?? {})];
   for (const id of vacuous) if (!ids.includes(id)) refusals.push(`${id}: accepted as vacuous but not in the set being locked`);
   for (const x of gates) {
     const who = x.role === 'holdout' ? 'a holdout' : `${x.role} ${x.id}`;
@@ -213,7 +216,7 @@ export function lockCampaign(ctx: GateContext, input: CampaignLockInput): Decisi
   try {
     locked = ctx.store.lockCampaignGates(m.id, {
       experimentIds: ids, ratchet: input.ratchet, expectedGateSetDigest: preview.digest, actor: input.actor, rationale: input.rationale,
-      vacuousOverrides: vacuous,
+      vacuousOverrides: vacuous, ...(input.obligations ? { obligations: input.obligations } : {}),
     });
   } catch (err) {
     if (err instanceof GateSetMoved) throw new GateRefused(`campaign lock refused: ${err.message}`);
@@ -249,7 +252,7 @@ export function campaignLockRefusal(ctx: Pick<GateContext, 'store'>, campaignId:
   const lock = campaignLockOf(ctx, campaignId);
   if (!lock) return `campaign ${campaignId} has no gate lock; a person runs \`daylight campaign lock\``;
   try {
-    const now = ctx.store.campaignGateSet(campaignId, lock.scope.experimentIds, lock.scope.ratchet).gateSetDigest;
+    const now = ctx.store.campaignGateSet(campaignId, lock.scope.experimentIds, lock.scope.ratchet, lock.scope.obligations ?? {}).gateSetDigest;
     if (now !== lock.scope.gateSetDigest) return `campaign ${campaignId}'s gate lock is stale: a locked gate changed after it was locked`;
   } catch (err) {
     return `campaign ${campaignId}'s gate lock cannot be recomputed: ${(err as Error).message}`;
@@ -258,6 +261,58 @@ export function campaignLockRefusal(ctx: Pick<GateContext, 'store'>, campaignId:
     return `the authorization names gate set ${expected}, not the current lock ${lock.scope.gateSetDigest}`;
   }
   return null;
+}
+
+/**
+ * What `campaign lock` confirms: `confirmDigest`'s lock-campaign-gates digest and lines, and with
+ * obligations bound, the digest over them too plus one line per binding (holdouts counted, not
+ * named). Until `confirm.ts` takes `obligations` (WS-R8's table, wired at merge), the CLI and
+ * `lockCampaign` both ask this.
+ */
+export function campaignLockConfirm(ctx: Pick<GateContext, 'store'>, campaignId: string, ids: readonly string[], ratchet: boolean,
+  obligations: Record<string, string[]> = {}): ConfirmDigest {
+  const base = confirmDigest(ctx as Parameters<typeof confirmDigest>[0], 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet });
+  if (!Object.values(obligations).some((o) => o.length)) return base;
+  const set = ctx.store.campaignGateSet(campaignId, ids, ratchet, obligations);
+  const holdout = (x: string) => set.roles[x] === 'holdout';
+  const lines = Object.entries(set.obligations).filter(([x]) => !holdout(x)).map(([x, obs]) => `${x} discharges ${obs.join(', ')}`);
+  const held = Object.entries(set.obligations).filter(([x]) => holdout(x)).reduce((n, [, obs]) => n + obs.length, 0);
+  return { digest: set.gateSetDigest, digest8: confirmCodeOf(set.gateSetDigest), lines: [...base.lines, ...lines, ...(held ? [`${held} obligation(s) bound to holdouts, counted, not named`] : [])] };
+}
+
+/** Why the obligations offered at lock cannot be bound: a gate discharges only its own ticket's; each names a plan ticket's obligation. */
+function obligationRefusals(ctx: Pick<GateContext, 'store' | 'artifacts'>, campaignId: string, ids: readonly string[], obligations: Record<string, string[]>): string[] {
+  const out: string[] = [];
+  const plan = planFileOf(ctx, campaignId)?.plan;
+  const known = new Set((plan?.tickets ?? []).flatMap((t) => (t.acceptanceObligations ?? []).map((o) => `${t.id}:${o.id}`)));
+  for (const [x, obs] of Object.entries(obligations)) {
+    const e = ctx.store.experiment(x);
+    if (!ids.includes(x) || !e) {
+      out.push(`${x}: obligations are bound to a gate in the set being locked`);
+      continue;
+    }
+    const binding = campaignBindingOf(e);
+    for (const ob of obs) {
+      if (!known.has(ob)) out.push(`${x}: ${ob} is not an acceptance obligation of the plan`);
+      else if (e.role === 'gate' && binding !== ob.split(':')[0]) out.push(`${x}: a gate bound to ticket ${binding ?? 'none'} discharges only that ticket's obligations, not ${ob}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The tickets' acceptance obligations (`<ticket>:ob<n>`) that no gate in the current lock
+ * discharges: what `campaign authorize` refuses unless a person names each (P2-R50 F3). A
+ * writer-authored test never discharges one; only a locked gate, regression or holdout does.
+ */
+export function unboundObligations(ctx: Pick<GateContext, 'store' | 'artifacts'>, campaignId: string, ticketIds: readonly string[]): string[] {
+  const plan = planFileOf(ctx, campaignId)?.plan;
+  if (!plan) return [];
+  const want = new Set(ticketIds);
+  const required = plan.tickets.filter((t) => want.has(t.id)).flatMap((t) => (t.acceptanceObligations ?? []).map((o) => `${t.id}:${o.id}`));
+  const lock = campaignLockOf(ctx, campaignId);
+  const bound = new Set(Object.values(lock?.scope.obligations ?? {}).flat());
+  return required.filter((ob) => !bound.has(ob)).sort();
 }
 
 /** The repo paths a workspace must not hold: the locked holdouts', so an author never reads one. */

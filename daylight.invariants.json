@@ -368,5 +368,17 @@
       "callee": "^redact$",
       "min": 3
     }
+  },
+  {
+    "id": "ingest-approvals-callers",
+    "prose": "Only engine/forge/commands-corpus-review.ts calls approveIr and approveBlueprint, the two human acts of spec ingestion.",
+    "rationale": "Spec ingestion §9, P2-R56: approve-ir and approve-blueprint confer authority on agent-proposed IR and blueprints; each is a guarded person's act reached from the one CLI file that refuses agent sessions first. A second caller is a new path to an approval nobody reviewed. forbidden-callee (direct calls, .bind/.call/.apply, a literal bracket key); the store's setIrStatus/setBlueprintStatus are guarded by their own operation, human-actor and corpus checks instead (P2-R59). Only engine/test/forge-ingest-*.ts and engine/test/lib/ingest-world.ts are exempt; tests-are-never-imported keeps them out of product code.",
+    "predicate": {
+      "type": "forbidden-callee",
+      "within": {
+        "file": "^(?!engine/forge/commands-corpus-review\\.ts$)(?!engine/test/forge-ingest-[a-z-]+\\.ts$)(?!engine/test/lib/ingest-world\\.ts$).*\\.ts$"
+      },
+      "callee": "(^|[.'\"\\[])(approveIr|approveBlueprint)(['\"]\\])?(\\.(bind|call|apply)(\\(.*\\))?)?$"
+    }
   }
 ]

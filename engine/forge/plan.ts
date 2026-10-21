@@ -5,7 +5,7 @@ import { workItemContentDigest, type CreateWorkItemInput } from '../mission/stor
 import type {
   ArtifactRef, GateHarness, PlanFileV1, PlanRefusal, PlanRule, PlanTicketV1, TicketAcceptance, TicketBudget,
 } from '../mission/types.ts';
-import { PLAN_KIND, PLAN_VERSION } from '../mission/types.ts';
+import { isEntityId, PLAN_KIND, PLAN_VERSIONS } from '../mission/types.ts';
 import { pathViolations } from './policy.ts';
 import { crateLayoutOf, parseProjectPolicy, POLICY_FILE, ProjectPolicyError, type CrateLayout, type ProjectPolicy } from './project-policy.ts';
 import {
@@ -222,6 +222,74 @@ function checkBudget(r: Refusals, v: unknown, at: string): void {
   }
 }
 
+// ---- version 2: the trace fields (spec ingestion §8.2) ---------------------------------
+
+const V2_TICKET_KEYS = ['requirementIds', 'interfaceContracts', 'artifacts', 'acceptanceObligations', 'context', 'packetId'];
+const IR_ID = /^ir_[0-9a-f]{32}$/;
+const PACKET_ID = /^pk_[0-9a-f]{32}$/;
+const BLUEPRINT_ID = /^bp_[0-9a-f]{32}$/;
+const OBLIGATION_ID = /^ob[0-9]{1,3}$/;
+const INTERFACE_ID = /^[a-z][a-z0-9.-]{0,63}$/;
+const SHA256 = /^sha256:[0-9a-f]{64}$/;
+const MAX_TRACE_IDS = 64;
+const MAX_OBLIGATIONS = 16;
+export const MAX_OBLIGATION_BYTES = 1024;
+const ARTIFACT_KINDS = ['source', 'test', 'fixture', 'doc', 'config'];
+
+function irIds(r: Refusals, v: unknown, at: string): void {
+  if (!Array.isArray(v)) return r.add(at, 'trace-shape', 'not a list');
+  if (v.length > MAX_TRACE_IDS) return r.add(at, 'too-many', `more than ${MAX_TRACE_IDS} entries`);
+  v.forEach((s, i) => {
+    if (typeof s !== 'string' || !IR_ID.test(s)) r.add(`${at}[${i}]`, 'trace-shape', 'not an IR record id');
+  });
+}
+
+/** Lists of objects, each checked by `each`; `max` entries at most. */
+function objects(r: Refusals, v: unknown, at: string, max: number, each: (o: Obj, at: string) => void): void {
+  if (v === undefined) return;
+  if (!Array.isArray(v)) return r.add(at, 'trace-shape', 'not a list');
+  if (v.length > max) return r.add(at, 'too-many', `more than ${max} entries`);
+  v.forEach((o, i) => (isObj(o) ? each(o, `${at}[${i}]`) : r.add(`${at}[${i}]`, 'trace-shape', 'not an object')));
+}
+
+/** The ticket's trace fields: ids in their grammars, lists within their caps, text within its cap. */
+function checkTrace(r: Refusals, t: Obj, at: string): void {
+  if (t.requirementIds !== undefined) irIds(r, t.requirementIds, `${at}.requirementIds`);
+  objects(r, t.interfaceContracts, `${at}.interfaceContracts`, MAX_TRACE_IDS, (o, a) => {
+    r.keys(o, a, ['interfaceId', 'role', 'irIds']);
+    if (typeof o.interfaceId !== 'string' || !INTERFACE_ID.test(o.interfaceId)) r.add(`${a}.interfaceId`, 'trace-shape', 'not an interface id');
+    if (o.role !== 'provides' && o.role !== 'consumes') r.add(`${a}.role`, 'trace-shape', 'provides or consumes');
+    irIds(r, o.irIds, `${a}.irIds`);
+  });
+  objects(r, t.artifacts, `${at}.artifacts`, MAX_TRACE_IDS, (o, a) => {
+    r.keys(o, a, ['path', 'kind', 'irIds']);
+    if (typeof o.path !== 'string' || repoPathRefusal(o.path)) r.add(`${a}.path`, 'trace-shape', 'not a repo-relative path');
+    if (!ARTIFACT_KINDS.includes(o.kind as string)) r.add(`${a}.kind`, 'trace-shape', `one of ${ARTIFACT_KINDS.join(', ')}`);
+    irIds(r, o.irIds, `${a}.irIds`);
+  });
+  objects(r, t.acceptanceObligations, `${at}.acceptanceObligations`, MAX_OBLIGATIONS, (o, a) => {
+    r.keys(o, a, ['id', 'irIds', 'statement']);
+    if (typeof o.id !== 'string' || !OBLIGATION_ID.test(o.id)) r.add(`${a}.id`, 'trace-shape', 'not an obligation id (ob<n>)');
+    irIds(r, o.irIds, `${a}.irIds`);
+    r.text(o.statement, `${a}.statement`, MAX_OBLIGATION_BYTES, true);
+  });
+  const obs = Array.isArray(t.acceptanceObligations) ? (t.acceptanceObligations as Obj[]).map((o) => o?.id) : [];
+  if (new Set(obs).size !== obs.length) r.add(`${at}.acceptanceObligations`, 'duplicate-id', 'obligation id used twice');
+  if (t.context !== undefined && typeof t.context !== 'boolean') r.add(`${at}.context`, 'trace-shape', 'yes or no');
+  if (t.packetId !== undefined && (typeof t.packetId !== 'string' || !PACKET_ID.test(t.packetId))) r.add(`${at}.packetId`, 'trace-shape', 'not a packet id');
+}
+
+function checkDerivation(r: Refusals, v: unknown): void {
+  const at = '$.derivation';
+  if (!isObj(v)) return r.add(at, 'trace-shape', 'not an object');
+  r.keys(v, at, ['corpusId', 'corpusDigest', 'irSetDigest', 'blueprintId', 'blueprintDigest', 'packetSetDigest']);
+  if (!isEntityId('mission', v.corpusId)) r.add(`${at}.corpusId`, 'trace-shape', 'not a mission id');
+  if (typeof v.blueprintId !== 'string' || !BLUEPRINT_ID.test(v.blueprintId)) r.add(`${at}.blueprintId`, 'trace-shape', 'not a blueprint id');
+  for (const k of ['corpusDigest', 'irSetDigest', 'blueprintDigest', 'packetSetDigest'] as const) {
+    if (typeof v[k] !== 'string' || !SHA256.test(v[k] as string)) r.add(`${at}.${k}`, 'trace-shape', 'not a sha256 digest');
+  }
+}
+
 /**
  * The plan, typed, or every shape rule it breaks: JSON, the kind and version exact, no unknown
  * key, ids in their grammars, text within `proposal.ts`'s caps, lists within theirs.
@@ -237,10 +305,17 @@ export function parsePlan(raw: Buffer | string): PlanFileV1 | PlanRefusal[] {
     return [{ path: '$', rule: 'shape', detail: 'not JSON' }];
   }
   if (!isObj(doc)) return [{ path: '$', rule: 'shape', detail: 'not an object' }];
-  if (doc.kind !== PLAN_KIND || doc.version !== PLAN_VERSION) {
-    return [{ path: '$', rule: 'version', detail: `this build reads ${PLAN_KIND} version ${PLAN_VERSION} only` }];
+  if (doc.kind !== PLAN_KIND || !(PLAN_VERSIONS as readonly unknown[]).includes(doc.version)) {
+    return [{ path: '$', rule: 'version', detail: `this build reads ${PLAN_KIND} versions ${PLAN_VERSIONS.join(' and ')}` }];
   }
-  r.keys(doc, '$', ['kind', 'version', 'title', 'derivedStatus', 'statusPath', 'defaults', 'campaignGates', 'lanes', 'ownerDecisions', 'tickets']);
+  const v2 = doc.version === 2;
+  // A version-1 file is read exactly as before: a v2 key on it is refused, never half-read.
+  if (!v2 && (doc.derivation !== undefined || (Array.isArray(doc.tickets) && doc.tickets.some((t) => isObj(t) && V2_TICKET_KEYS.some((k) => k in t))))) {
+    return [{ path: '$', rule: 'version', detail: 'a version-1 plan carries no version-2 field' }];
+  }
+  r.keys(doc, '$', ['kind', 'version', 'title', 'derivedStatus', 'statusPath', 'defaults', 'campaignGates', 'lanes', 'ownerDecisions', 'tickets',
+    ...(v2 ? ['derivation'] : [])]);
+  if (v2 && doc.derivation !== undefined) checkDerivation(r, doc.derivation);
   r.text(doc.title, '$.title', MAX_TITLE_CHARS * 4, false, MAX_TITLE_CHARS);
   if (doc.derivedStatus !== undefined && typeof doc.derivedStatus !== 'boolean') r.add('$.derivedStatus', 'shape', 'yes or no');
   if (doc.statusPath !== undefined && (typeof doc.statusPath !== 'string' || repoPathRefusal(doc.statusPath))) {
@@ -305,7 +380,8 @@ export function parsePlan(raw: Buffer | string): PlanFileV1 | PlanRefusal[] {
   (doc.tickets as unknown[]).forEach((t, i) => {
     const at = `$.tickets[${i}]`;
     if (!isObj(t)) return r.add(at, 'shape', 'not an object');
-    r.keys(t, at, ['id', 'lane', 'title', 'statement', 'examples', 'negativeExamples', 'dependsOn', 'blocksOn', 'scope', 'acceptance', 'budget']);
+    r.keys(t, at, ['id', 'lane', 'title', 'statement', 'examples', 'negativeExamples', 'dependsOn', 'blocksOn', 'scope', 'acceptance', 'budget',
+      ...(v2 ? V2_TICKET_KEYS : [])]);
     if (r.id(t.id, `${at}.id`, TICKET_ID) && RESERVED_TICKET.test(t.id as string)) r.add(`${at}.id`, 'shape', 'FIX. and FU. are reserved for generated tickets');
     r.id(t.lane, `${at}.lane`, LANE_ID, 8);
     r.text(t.title, `${at}.title`, MAX_TITLE_CHARS * 4, false, MAX_TITLE_CHARS);
@@ -322,6 +398,7 @@ export function parsePlan(raw: Buffer | string): PlanFileV1 | PlanRefusal[] {
     else r.strings(t.scope, `${at}.scope`, MAX_LIST, (s, a) => checkPrefix(r, s, a));
     checkAcceptance(r, t.acceptance, `${at}.acceptance`);
     checkBudget(r, t.budget, `${at}.budget`);
+    if (v2) checkTrace(r, t, at);
   });
   return r.list.length ? r.list : (doc as unknown as PlanFileV1);
 }
@@ -554,12 +631,27 @@ export const acceptanceOf = (t: PlanTicketV1, defaults: PlanFileV1['defaults']):
   t.acceptance ?? defaults?.acceptance ?? { kind: 'ci-only' };
 export const budgetOf = (t: PlanTicketV1, defaults: PlanFileV1['defaults']): TicketBudget => ({ ...defaults?.budget, ...t.budget });
 
-/** The digest of a ticket as it will be built: its fields with the plan's defaults applied. */
+/**
+ * The digest of a ticket as it will be built: its fields with the plan's defaults applied. The
+ * version-2 trace fields enter only when present and non-empty, each list sorted, so every
+ * version-1 ticket digests byte-identically. `packetId` never enters: it is derived from this
+ * digest (spec ingestion §8.1), and a ticket points at its packet through the plan's derivation.
+ */
 export function ticketDigestOf(t: PlanTicketV1, defaults: PlanFileV1['defaults']): string {
+  const ids = (v: string[] | undefined) => [...(v ?? [])].sort();
+  const byKey = <T>(v: T[] | undefined, key: (x: T) => string) => [...(v ?? [])].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+  const trace = {
+    ...(t.requirementIds?.length ? { requirementIds: ids(t.requirementIds) } : {}),
+    ...(t.interfaceContracts?.length
+      ? { interfaceContracts: byKey(t.interfaceContracts.map((c) => ({ ...c, irIds: ids(c.irIds) })), (c) => `${c.interfaceId}:${c.role}`) } : {}),
+    ...(t.artifacts?.length ? { artifacts: byKey(t.artifacts.map((a) => ({ ...a, irIds: ids(a.irIds) })), (a) => `${a.path}:${a.kind}`) } : {}),
+    ...(t.acceptanceObligations?.length ? { acceptanceObligations: byKey(t.acceptanceObligations.map((o) => ({ ...o, irIds: ids(o.irIds) })), (o) => o.id) } : {}),
+    ...(t.context ? { context: true } : {}),
+  };
   return digestOf(canonicalJson({
     id: t.id, lane: t.lane, title: t.title, statement: statementOf(t), examples: t.examples ?? [], negativeExamples: t.negativeExamples ?? [],
     dependsOn: [...(t.dependsOn ?? [])].sort(), blocksOn: [...(t.blocksOn ?? [])].sort(), scope: t.scope.map(prefixOf),
-    acceptance: acceptanceOf(t, defaults), budget: budgetOf(t, defaults),
+    acceptance: acceptanceOf(t, defaults), budget: budgetOf(t, defaults), ...trace,
   }));
 }
 
