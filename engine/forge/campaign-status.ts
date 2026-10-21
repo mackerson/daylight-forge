@@ -2,7 +2,7 @@ import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
 import { campaignNeeds } from './campaign-needs.ts';
-import { runClaimOf, statusTable } from './campaign-report.ts';
+import { campaignSpendWords, runClaimOf, statusTable, statusTableLines } from './campaign-report.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
@@ -83,17 +83,16 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
-/** STATUS.md in kitkraft's shape: landed per lane, assumptions pending, needs, spend, waves. No timestamp. */
+/** STATUS.md in kitkraft's shape: the STATUS table per lane, tickets, assumptions pending, needs, spend, waves. No timestamp. */
 export function renderCampaignStatus(r: CampaignStatusReport): string {
-  const spend = r.spend.unknownCount ? `≥ ${money(r.spend.spentUsd)} (${r.spend.unknownCount} unknown)` : money(r.spend.spentUsd);
   const lines = [
     `# Campaign ${r.campaignId}`, '',
     `Plan ${r.planRevision}. Integration ${r.integration.ref} at ${r.integration.tip.slice(0, 12)} (base ${r.integration.base.slice(0, 12)}), ${r.integration.landed} landed.`,
     `Merge it yourself: \`${r.integration.mergeHint}\``, '',
     r.authorization.decisionId ? `Authorized by ${r.authorization.decisionId}${r.authorization.halted ? `; halted (${r.authorization.halted})` : ''}.` : 'Not authorized.',
-    `Spend ${spend} of ${money(r.spend.capUsd)}.`, '',
-    '## Lanes', '',
-    ...r.lanes.map((l) => `- ${l.lane}: ${l.byStatus.landed}/${l.total} landed${l.byStatus.blocked ? `, ${l.byStatus.blocked} blocked` : ''}${l.byStatus.running ? `, ${l.byStatus.running} running` : ''}`),
+    `Spend ${campaignSpendWords(r.spend)} of ${money(r.spend.capUsd)}.`, '',
+    '## Status', '',
+    ...statusTableLines(r.table),
     '', '## Tickets', '',
     ...r.tickets.map((t) => `- ${t.id} (${t.lane}) ${t.status}${t.commit ? ` ${t.commit.slice(0, 12)}` : ''}${t.attempts ? `, ${t.attempts} attempt(s)` : ''}${t.reason ? `: ${t.reason}` : ''}`),
     '', '## Assumptions pending the owner', '',
