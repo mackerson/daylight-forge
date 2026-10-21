@@ -1,3 +1,6 @@
+import type { Tier } from '../detect/structure-types.ts';
+import type { Violation } from '../invariants/engine.ts';
+
 /**
  * Daylight mission vocabulary, kept free of any runtime import.
  *
@@ -798,7 +801,234 @@ export interface CampaignStatusReport {
   assumptions: { open: number; pending: number; confirmed: number; overturned: number; items: Assumption[] };
   needs: Need[]; spend: CampaignSpend;
   waves: Array<{ seq: number; tickets: number; findings: Record<FindingSeverity, number>; fixTickets: number }>;
+  /** kitkraft's STATUS table over the same ticket states (WS-R8). */
+  table: StatusTable;
+  run: RunClaim | null;
 }
+
+// ---- reports, the campaign list and refine (WS-R8) ---------------------------
+//
+// What `campaign report|list|refine` print as JSON, declared here so the renderer types them
+// without importing an engine module (WS-R9). Derived on read, never stored; holdouts are
+// counts only. docs/daylight/REFINE.md, ADR-40.
+
+export type StatusBucket = 'done' | 'in-progress' | 'blocked' | 'requests' | 'queued' | 'superseded';
+export const STATUS_BUCKETS: readonly StatusBucket[] = ['done', 'in-progress', 'blocked', 'requests', 'queued', 'superseded'];
+/**
+ * kitkraft's STATUS columns are the first four; `queued` and `superseded` are counted, never
+ * hidden. `regressed` (P2-R44, P2-R47) is keyed here whether or not `TicketStatus` has it yet.
+ */
+export const STATUS_BUCKET_OF: Readonly<Record<TicketStatus | 'regressed', StatusBucket>> = {
+  landed: 'done', running: 'in-progress', integrating: 'in-progress',
+  blocked: 'blocked', regressed: 'blocked',
+  'waiting-owner': 'requests', 'waiting-dependency': 'requests',   // a person acts (P2-R21)
+  ready: 'queued', waiting: 'queued',
+  superseded: 'superseded',
+};
+export interface StatusTableRow { lane: string; total: number; byBucket: Record<StatusBucket, number>; tickets: Record<StatusBucket, string[]> }
+/** Rows sorted by lane id. */
+export interface StatusTable { rows: StatusTableRow[]; totals: Record<StatusBucket, number> }
+
+/** `git diff --numstat -z --no-renames`; a binary file counts in `files` and `binary`, never in the line counts. */
+export interface DiffStat { files: number; insertions: number; deletions: number; binary: number }
+/** Attempt spend summed over a set of missions. A line is never a figure for unknown spend. */
+export interface SpendLine {
+  /** ticket id | lane id | `wave:<n>` | `review:<n>` | 'scope' */
+  key: string;
+  attempts: number;
+  /** Known + scanned + reservation-charged (P2-R44): what counts against the cap. */
+  spentUsd: number;
+  /** Provider figures only. */
+  knownUsd: number;
+  /** Stdout-scan figures: shown beside, never inside, a known figure. */
+  scannedUsd: number;
+  scannedCount: number; unknownCount: number; runningCount: number;
+  /** Attempts charged at their reservation (cost_source 'reservation', P2-R44). */
+  reservationCount: number;
+}
+/** The run claim `<out>/mission-run.<id>.pid`: a live pid is a run in progress; a dead one, a claim left behind. */
+export interface RunClaim { pid: number; alive: boolean }
+
+export interface ReportLanding {
+  ticketId: string; lane: string; origin: TicketOrigin; title: string;          // title: the work item's
+  missionId: string; integrationId: string; candidateId: string; decisionId: string | null;
+  onto: string; commit: string; method: IntegrationMethod | null; attempts: number;
+  acceptance: TicketAcceptance['kind']; acceptanceVacuous: boolean | null;
+  diff: DiffStat;                                                               // onto..commit
+}
+export interface ReportAssumption {
+  id: string; status: 'open' | 'pending'; ownerDecisionId?: string; ticketId?: string;
+  question: string; default: string; blocking: boolean; source: AssumptionSource;
+  heldTickets: string[];
+  /** Landed tickets whose blocksOn names its owner decision: what an overturn would not revert. */
+  landedOnIt: string[];
+}
+export interface ReportFinding {
+  id: string; waveSeq: number; severity: FindingSeverity; path: string;
+  /** Reviewer-claimed, redacted; `statement` ≤ 4 KiB and never in the markdown report. */
+  title: string; statement: string;
+  corroboratedBy: string[];
+  fixTicketId: string | null; fixStatus: TicketStatus | 'none';
+  /** Who admitted the fix ticket: the director (`campaign:<m>`), a person, or nobody yet. */
+  fixAdmission: 'derived' | 'person' | 'none';
+}
+export interface ReportReview {
+  seq: number; reviewMissionId: string | null;
+  /** off: reviewRoster [] */
+  state: 'off' | 'not-run' | 'running' | 'done';
+  reviewers: number; findings: Record<FindingSeverity, number>;
+}
+export interface ReportBlocked {
+  ticketId: string; lane: string; status: Extract<TicketStatus, 'blocked' | 'waiting-dependency' | 'waiting-owner'>;
+  /** TicketState.reason, verbatim. */
+  reason: string;
+  missionId?: string; need: NeedKind | null;
+  act: 'retry' | 'resolve-dependency' | 'owner-decision' | 'approve-work-item' | 'authorize' | 'read';
+}
+
+/** The `why` classes of a `gate-forgery-shape` warning (P2-R43, P2-R49). */
+export type ForgeryClass = 'stdout-fd-write' | 'test-summary-literal' | 'process-exit';
+export const FORGERY_CLASSES: readonly ForgeryClass[] = ['stdout-fd-write', 'test-summary-literal', 'process-exit'];
+/** Candidates that tripped `gate-forgery-shape`: a heuristic count, never a finding of fact, never the matched text. */
+export interface ReportForgeryShapes {
+  /** In scope: candidates of the scope's tickets with ≥ 1 such warning. */
+  candidates: number;
+  /** A `why` outside FORGERY_CLASSES counts as unclassified. */
+  byClass: Record<ForgeryClass | 'unclassified', number>;
+  items: Array<{ ticketId: string; missionId: string; candidateId: string; attemptId: string;
+    /** Repo-relative, as the warning names them. */
+    paths: string[];
+    classes: Array<ForgeryClass | 'unclassified'>;
+    /** The same ticket landed (by this candidate or a later one). */
+    ticketLanded: boolean }>;
+  heuristic: true;
+}
+
+export interface WaveReport {
+  kind: 'daylight-wave-report'; version: 1;
+  campaignId: string; projectId: string; title: string; planRevision: string;
+  scope: { kind: 'wave'; seq: number } | { kind: 'open' } | { kind: 'all' };
+  range: { from: string; to: string };
+  integration: CampaignStatusReport['integration'];
+  authorization: CampaignStatusReport['authorization'];
+  run: RunClaim | null;
+  landed: ReportLanding[];
+  /** from..to */
+  diff: DiffStat;
+  assumptions: { open: ReportAssumption[]; pending: ReportAssumption[]; confirmed: number; overturned: number };
+  /** The wave in scope (every wave for --all). */
+  review: ReportReview[];
+  /** Findings of the waves in scope, most severe first. */
+  findings: ReportFinding[];
+  fixLane: { filed: number; admittedDerived: number; approvedByPerson: number; landed: number; waiting: number; rejected: number };
+  spend: {
+    /** campaignSpend(), unchanged. */
+    campaign: CampaignSpend;
+    /** Missions that landed in scope plus the scope's reviews. */
+    scope: SpendLine;
+    /** Whole campaign; lane 'FIX' included. Σ lanes + Σ reviews = campaign. */
+    tickets: SpendLine[]; lanes: SpendLine[];
+    /** wave n = tickets in wave n's ticketIds; review n = its audit mission. */
+    waves: SpendLine[]; reviews: SpendLine[];
+  };
+  /** campaignNeeds(), verbatim. */
+  needs: Need[];
+  blocked: ReportBlocked[];
+  /** Counts only: no experiment id, path or basename of a holdout (P2-R37). */
+  holdouts: { locked: number; atTip: Record<ExperimentConclusion | 'not-run', number> };
+  forgeryShapes: ReportForgeryShapes;
+  status: StatusTable;
+}
+
+/** One row of `campaign list --format json`. */
+export interface ForgeCampaignRow {
+  id: string; projectId: string; title: string | null; state: MissionState; createdAt: number;
+  planRevision: string | null; planApproved: boolean;
+  /** campaignAuthorizationRefusal, verbatim. */
+  authorization: { decisionId: string | null; refusal: string | null; notAfter: number | null };
+  halted: CampaignHaltReason | null;
+  run: RunClaim | null;
+  /** `daylight campaign run <id> <root> --out <out>`, built by the engine. */
+  runHint: string;
+  integrationRef: string; tip: string | null;
+  tickets: number; byBucket: Record<StatusBucket, number>;
+  needs: number; assumptions: { open: number; pending: number };
+  spend: CampaignSpend;
+  /** Project root missing: statuses not derived, counts zero, said so. */
+  unavailable: string | null;
+}
+export interface ForgeCampaignList { kind: 'daylight-campaign-list'; campaigns: ForgeCampaignRow[] }
+
+/** `campaign show --format json`. */
+export interface ForgeCampaignShow {
+  campaign: Mission; title: string; planDigest: string; commit: string; approved: boolean;
+  /** campaignAuthorizationRefusal: null when an authorization is in force. */
+  authorization: string | null;
+  order: string[];
+  lanes: Array<{ id: string; title: string; tickets: string[]; owns: string[]; maxParallel: number }>;
+  /** A preview of dependency layers, not the run's waves. */
+  waves: string[][];
+  tickets: Array<CampaignTicket & { status: WorkItemStatus | 'unknown'; title: string }>;
+  ownerDecisions: Assumption[];
+  needs: Need[];
+  /** The current authorize-campaign scope, or null. */
+  envelope: CampaignEnvelope | null;
+  lock: { decisionId: string; gateSetDigest: string; ratchet: boolean; gates: number; holdouts: number } | null;
+}
+/** `assumption list --format json` rows; `options` from the plan's ownerDecisions[].options. */
+export type ForgeAssumptionRow = Assumption & { heldTickets: string[]; options: string[] };
+
+export interface RefineMapRef {
+  rev: string;
+  /** Relative to <out>. */
+  dir: string;
+  files: number; parsers: string[]; invariantsSource: string | null;
+}
+export interface RefineDiff<T> { introduced: T[]; resolved: T[]; persisting: number }
+export interface RefineFamily {
+  /** Sorted members joined by \n. */
+  key: string;
+  members: string[]; detectors: Array<'D1' | 'D2' | 'D3' | 'D4'>; touched: boolean;
+}
+export interface RefineDeadEnd {
+  /** `${kind}:${id}` | `orphan:${sorted}` */
+  key: string;
+  kind: 'file' | 'symbol' | 'orphan-cluster'; ids: string[]; tier: Tier | null; why: string; touched: boolean;
+}
+export interface RefineCycle { key: string; members: string[]; touched: boolean }
+export interface RefineInvariant {
+  id: string; prose: string; base: 'green' | 'red' | 'absent'; rev: 'green' | 'red' | 'absent';
+  measured: string; violations: number;
+  /** ≤ 5 */
+  first: Violation[];
+}
+export type RefineOverlay = 'assumption' | 'finding' | 'forgery' | 'blocked' | 'untested' | 'introduced';
+export interface RefineReport {
+  kind: 'daylight-refine'; version: 1;
+  campaignId: string; projectId: string; integrationRef: string;
+  base: string; rev: string; stale: boolean;
+  /** null with --rows-only */
+  maps: { base: RefineMapRef; rev: RefineMapRef } | null;
+  changed: Array<{ path: string; change: 'added' | 'modified' | 'deleted'; insertions: number | null; deletions: number | null; tickets: string[] }>;
+  /** null with --rows-only */
+  findings: {
+    duplication: RefineDiff<RefineFamily>; deadEnds: RefineDiff<RefineDeadEnd>; cycles: RefineDiff<RefineCycle>;
+    invariants: { source: string | null; regressed: number; fixed: number; results: RefineInvariant[] };
+  } | null;
+  /** Echoed so a reader sees why the order. */
+  focusRules: readonly FocusRule[];
+  /** Ranked by `focusRules`; an item's tier is its kind's rule's. */
+  focus: FocusItem[];
+  /** Repo-relative files per overlay. */
+  overlays: Record<RefineOverlay, string[]>;
+}
+
+export type FocusKind = 'assumption' | 'finding' | 'forgery-shape' | 'blocked-ticket' | 'untested-diff' | 'introduced';
+export type FactValue = string | number | boolean;
+export interface FocusItem { kind: FocusKind; ref: string; title: string; facts: Record<string, FactValue>; paths: string[]; why: string }
+export type FocusCond = { fact: string; in: FactValue[] } | { fact: string; gt: number } | { anyOf: FocusCond[] };
+/** `where` is AND; `order` sorts lexicographically, booleans false < true. */
+export interface FocusRule { kind: FocusKind; tier: number; where: FocusCond[]; order: Array<{ fact: string; dir: 'asc' | 'desc' }> }
 
 // ---- decisions ---------------------------------------------------------------
 

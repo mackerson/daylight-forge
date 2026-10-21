@@ -2,6 +2,7 @@ import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
 import { campaignNeeds } from './campaign-needs.ts';
+import { runClaimOf, statusTable } from './campaign-report.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
@@ -75,6 +76,8 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
         fixTickets: fs.filter((f) => f.fixTicketId).length,
       };
     }),
+    table: statusTable(states.values()),
+    run: runClaimOf(ctx.out, campaignId),
   };
 }
 

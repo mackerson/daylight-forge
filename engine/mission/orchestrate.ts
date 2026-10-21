@@ -315,6 +315,9 @@ export interface RunMissionReport {
   costKnown: boolean;
 }
 
+/** Where a mission's run claim lives; `campaign list` and `report` read it, nothing else writes it. */
+export const runClaimFile = (out: string, missionId: string): string => path.join(out, `mission-run.${missionId}.pid`);
+
 /**
  * The claim one process holds on running a mission: `<out>/mission-run.<id>.pid`.
  *
@@ -325,7 +328,7 @@ export interface RunMissionReport {
  * file, which names a dead pid and so is taken over.
  */
 export function takeRunClaim(out: string, missionId: string): () => void {
-  const file = path.join(out, `mission-run.${missionId}.pid`);
+  const file = runClaimFile(out, missionId);
   for (let tries = 0; tries < 2; tries++) {
     try {
       fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
