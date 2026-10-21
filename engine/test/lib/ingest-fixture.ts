@@ -103,3 +103,50 @@ export function inProcessExtractor(script: (w: ExtractWindow, tool: string, task
   };
   return Object.assign(runner, { calls });
 }
+
+/**
+ * A mock extractor agent script, for `DAYLIGHT_MOCK_ADAPTER`: it reads its prompt as an extractor
+ * would, and for each `[section <id>]` of the window's own text (not the linked fence) proposes
+ * one requirement quoting the first line that says "must" (else the first line), verbatim, over
+ * MCP through the shim its config names.
+ */
+export const MOCK_EXTRACTOR_SCRIPT = `'use strict';
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const cfg = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).mcpServers.daylight;
+const prompt = String(process.argv[3] || '');
+const own = prompt.split(/^<<<CORPUS-[0-9a-f-]+-LINKED$/m)[0];
+const calls = [];
+const parts = own.split(/^\\[section ([^\\]\\n]+)\\]$/m);
+for (let i = 1; i < parts.length; i += 2) {
+  const lines = parts[i + 1].split('\\n').map((l) => l.trim()).filter((l) => l && !/^CORPUS-/.test(l) && !l.startsWith('|') && !l.startsWith('!['));
+  const pick = lines.find((l) => /\\bmust\\b/i.test(l)) || lines[0];
+  if (!pick) continue;
+  calls.push({ name: 'propose_ir_record', arguments: { kind: 'requirement', source: 'extracted', statement: 'mock reading: ' + pick.slice(0, 60), confidence: 0.5, section: parts[i], quote: pick } });
+}
+const child = spawn(cfg.command, cfg.args, { env: { ...process.env, ...cfg.env }, stdio: ['pipe', 'pipe', 'inherit'] });
+const msgs = [
+  { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'mock', version: '0' } } },
+  { jsonrpc: '2.0', method: 'notifications/initialized' },
+  { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+  ...calls.map((c, i) => ({ jsonrpc: '2.0', id: 3 + i, method: 'tools/call', params: c })),
+];
+const want = msgs.filter((m) => m.id !== undefined).length;
+const replies = {};
+let buf = '';
+let next = 0;
+const pump = () => { while (next < msgs.length) { const m = msgs[next++]; child.stdin.write(JSON.stringify(m) + '\\n'); if (m.id !== undefined) break; } };
+child.stdout.on('data', (d) => {
+  buf += d;
+  let nl;
+  while ((nl = buf.indexOf('\\n')) >= 0) {
+    const l = buf.slice(0, nl); buf = buf.slice(nl + 1);
+    const m = JSON.parse(l);
+    if (m.id !== undefined) { replies[m.id] = m; pump(); }
+    if (Object.keys(replies).length === want) { console.log(JSON.stringify(replies)); process.exit(0); }
+  }
+});
+child.on('exit', (code) => { console.log(JSON.stringify({ shimExit: code, replies })); process.exit(0); });
+pump();
+setTimeout(() => { console.log(JSON.stringify({ timeout: true, replies })); process.exit(0); }, 20000).unref();
+`;
