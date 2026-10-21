@@ -194,13 +194,37 @@ function bindProjects(projects: Record<string, string>): Bound[] {
 }
 
 /**
+ * Why `next` cannot be a revision of the corpus `prev` describes, or null: every document key in
+ * both keeps its role and domain, and every domain of `prev` still has a primary.
+ */
+export function revisionShapeRefusal(prev: Pick<CorpusRevision, 'docs'>, next: Array<Pick<CorpusDoc, 'key' | 'role' | 'domain'>>): string | null {
+  for (const d of next) {
+    const was = prev.docs.find((x) => x.key === d.key);
+    if (was && (was.role !== d.role || was.domain !== d.domain)) return `document ${d.key} changed its role or domain`;
+  }
+  for (const dom of new Set(prev.docs.map((d) => d.domain))) {
+    if (!next.some((d) => d.domain === dom && d.role === 'primary')) return `domain ${dom} lost its primary document`;
+  }
+  return null;
+}
+
+/**
  * Register a corpus: its manifest at `rev` (default HEAD) of `repo`, every document it names at
  * that commit (or at its `--project` repository's), the section index. One new `corpus` mission,
- * revision seq 1, `ready`. Refused, before any row is written, for anything the manifest rules,
- * the caps or the byte rules refuse.
+ * revision seq 1, `ready`. With `corpusId`, the next revision (seq + 1) of that corpus mission
+ * instead, never a new mission; its current revision when nothing changed. Refused, before any row
+ * is written, for anything the manifest rules, the caps or the byte rules refuse, and for a
+ * revision whose documents changed shape (`revisionShapeRefusal`).
  */
-export function registerCorpus(ctx: DaylightContext, repo: string, manifest: string, o: { rev?: string; projects?: Record<string, string> } = {}): CorpusRevision {
+export function registerCorpus(ctx: DaylightContext, repo: string, manifest: string,
+  o: { rev?: string; projects?: Record<string, string>; corpusId?: string } = {}): CorpusRevision {
   const { root, project } = requireMappedRepo(ctx.out, repo);
+  const existing = o.corpusId === undefined ? null : ctx.store.mission(o.corpusId);
+  if (o.corpusId !== undefined) {
+    if (!existing || existing.kind !== 'corpus' || existing.projectId !== project.id) throw new CorpusRefused(`${o.corpusId} is not a corpus of project ${project.id}`);
+    if (existing.state === 'closed') throw new CorpusRefused(`corpus ${o.corpusId} is closed`);
+    if (!ctx.store.currentCorpusRevision(o.corpusId)) throw new CorpusRefused(`corpus ${o.corpusId} has no revision to follow`);
+  }
   const commit = resolveCommit(root, o.rev ?? 'HEAD');
   const readJson = (r: string, c: string, rel: string): Buffer => {
     try {
@@ -321,6 +345,14 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
   const dependencies: ResolvedDependency[] = (m.dependencies ?? []).map((d, i) => ({ from: d.from, on: d.on, kinds: d.kinds, basis: basisSpan(d.basis, `dependencies[${i}]`) }));
   const corpusDigest = corpusDigestOf(docs, precedence, dependencies);
   const index: SectionIndex = { ...provisional, corpusDigest };
+  const prev = existing ? ctx.store.currentCorpusRevision(existing.id)! : null;
+  if (prev) {
+    const why = revisionShapeRefusal(prev, docs);
+    if (why) throw new CorpusRefused(`not a revision of corpus ${existing!.id}: ${why}`);
+    const same = ctx.store.corpusRevisionByDigest(existing!.id, corpusDigest);
+    if (same && same.sectionSetDigest === sectionSetDigestOf(index)) return same;
+    if (same) throw new CorpusRefused(`corpus ${existing!.id} already has a revision of these documents (${same.id}); a sectioner-config-only change is not a new revision`);
+  }
   const sectionCount = index.docs.reduce((n, d) => n + d.sections.length, 0);
   if (sectionCount > MAX_SECTIONS) throw new CorpusRefused(`the corpus has ${sectionCount} sections; at most ${MAX_SECTIONS}`);
   if (index.sentences.length > MAX_SENTENCES) throw new CorpusRefused(`the corpus has ${index.sentences.length} normative units; at most ${MAX_SENTENCES}`);
@@ -335,24 +367,24 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
   const manifestDigest = digestOf(canonicalJson({ manifest: digestOf(manifestBytes), sidecar: sidecarBytes ? digestOf(sidecarBytes) : null }));
   const commits: Record<string, string> = { [project.id]: commit };
   for (const b of bound) commits[b.projectId] = b.commit;
-  let mission = ctx.store.createMission({
+  let mission = existing ?? ctx.store.createMission({
     projectId: project.id, kind: 'corpus', objective: `specification corpus: ${m.title}`, baseRevision: commit,
     scope: { paths: docs.filter((d) => d.projectId === project.id).map((d) => d.path) }, permissions: { execute: false },
   });
   const revision = ctx.store.insertCorpusRevision({
-    id: revisionId, corpusId: mission.id, projectId: project.id, seq: 1, manifestPath: manifest, manifestDigest, commits, corpusDigest, docs, precedence,
+    id: revisionId, corpusId: mission.id, projectId: project.id, seq: (prev?.seq ?? 0) + 1, manifestPath: manifest, manifestDigest, commits, corpusDigest, docs, precedence,
     dependencies, unordered, sectionIndex: indexArtifact, sectionSetDigest: sectionSetDigestOf(index), sectionerVersion: index.sectionerVersion, configDigest,
   });
   ctx.events.append({
     projectId: project.id, missionId: mission.id, actorId: 'daylight', category: 'claim', name: 'corpus.registered',
     artifactIds: [indexArtifact.id, configArtifact.id, ...docs.map((d) => d.artifact.id)],
     payload: {
-      revisionId, corpusDigest, sectionSetDigest: revision.sectionSetDigest, configDigest, manifestDigest, manifestPath: manifest, commit,
+      revisionId, seq: revision.seq, corpusDigest, sectionSetDigest: revision.sectionSetDigest, configDigest, manifestDigest, manifestPath: manifest, commit,
       documents: docs.length, sections: sectionCount, normative: index.sentences.length, refs: index.refs.length, unordered: unordered.length,
       excluded: (m.excluded ?? []).map((e) => ({ path: e.path, reason: e.reason })),
     },
   });
-  mission = ctx.store.transitionMission(mission.id, 'ready');
+  if (!existing) mission = ctx.store.transitionMission(mission.id, 'ready');
   return revision;
 }
 

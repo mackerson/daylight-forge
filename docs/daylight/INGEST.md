@@ -65,6 +65,14 @@ a refusal names a JSON path and a rule, never the manifest's text. It creates on
 and a `corpus.registered` event. `corpusOf` re-reads and re-verifies every document and the index
 on each use. Corpus missions are never exported or imported.
 
+**Revisions.** Given a corpus id (as WS-R15's `corpus revise` does), registration adds the next
+revision (`seq + 1`) to that corpus mission instead of creating one, or returns the current one
+when the documents are unchanged. A manifest is incompatible with the corpus, and refused, when a
+document key present in both changes its role or domain, or a domain of the current revision is
+left without a primary document. A change to the sectioner config alone is refused there (the
+corpus digest, which names a revision, is the documents').
+
+
 ## The sectioner
 
 Pure and deterministic: the same bytes and config give the same section ids, byte spans and

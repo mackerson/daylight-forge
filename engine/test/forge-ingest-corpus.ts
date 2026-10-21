@@ -200,5 +200,36 @@ check('re-registering at a new commit with the same documents is a second corpus
   }
 })());
 
+section('registerCorpus with a corpus id: the next revision of the same mission (R15\'s reviseCorpus)');
+const missionsBefore = ctx.store.missions().filter((m) => m.kind === 'corpus').length;
+const specPath = 'docs/spec/open_learning_commons_spec_v0_8.md';
+const edited = fs.readFileSync(path.join(A.olc, specPath), 'utf8').replace('Wrong answers are corrected honestly and gently.', 'Wrong answers are corrected honestly, gently and at once.');
+const c2 = writeAndCommit(A.olc, { [specPath]: edited }, 'edit §2');
+const rev2 = registerCorpus(ctx, A.olc, 'daylight.corpus.json', { projects: { foundry: A.foundry }, corpusId: rev.corpusId });
+check('the revision is seq 2 on the same corpus mission, no new mission', rev2.corpusId === rev.corpusId && rev2.seq === 2
+  && ctx.store.missions().filter((m) => m.kind === 'corpus').length === missionsBefore);
+check('its corpus digest and section set differ from seq 1', rev2.corpusDigest !== rev.corpusDigest && rev2.sectionSetDigest !== rev.sectionSetDigest);
+const s1 = corpusOf(ctx, rev.corpusId, rev.id).index.docs.find((d) => d.key === 'olc-spec')!.sections;
+const s2 = corpusOf(ctx, rev.corpusId, rev2.id).index.docs.find((d) => d.key === 'olc-spec')!.sections;
+check('the documents were re-sectioned: same ids, only §2\'s body digest moved', s1.map((x) => x.id).join() === s2.map((x) => x.id).join()
+  && s2.filter((x, i) => x.bodyDigest !== s1[i].bodyDigest).map((x) => x.label).join() === '§2');
+check('the current revision is seq 2, seq 1 still readable', ctx.store.currentCorpusRevision(rev.corpusId)?.id === rev2.id && corpusOf(ctx, rev.corpusId, rev.id).seq === 1);
+check('the mission stays ready', ctx.store.mission(rev.corpusId)!.state === 'ready');
+check('registering the same documents again returns that revision, writing nothing',
+  registerCorpus(ctx, A.olc, 'daylight.corpus.json', { rev: c2, projects: { foundry: A.foundry }, corpusId: rev.corpusId }).id === rev2.id
+  && ctx.store.corpusRevisions(rev.corpusId).length === 2);
+const m7 = manifest();
+m7.docs = m7.docs.map((d) => (d.key === 'olc-errata' ? { ...d, role: 'related' } : d));
+writeAndCommit(A.olc, { 'daylight.corpus.json': JSON.stringify(m7) }, 'reshape');
+check('a document that changed its role is not a revision of the corpus', /changed its role or domain/.test(refusal(() =>
+  registerCorpus(ctx, A.olc, 'daylight.corpus.json', { projects: { foundry: A.foundry }, corpusId: rev.corpusId }))));
+check('an unknown corpus id is refused, nothing created', /is not a corpus/.test(refusal(() =>
+  registerCorpus(ctx, A.olc, 'daylight.corpus.json', { rev: c2, projects: { foundry: A.foundry }, corpusId: 'm_' + '0'.repeat(32) })))
+  && ctx.store.missions().filter((m) => m.kind === 'corpus').length === missionsBefore);
+check('without a corpus id the same manifest is a new corpus mission, seq 1', (() => {
+  const r = registerCorpus(ctx, A.olc, 'daylight.corpus.json', { rev: c2, projects: { foundry: A.foundry } });
+  return r.corpusId !== rev.corpusId && r.seq === 1;
+})());
+
 ctx.close();
 done();
