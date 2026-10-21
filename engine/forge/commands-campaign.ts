@@ -28,7 +28,8 @@ import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
  *   campaign authorize <campaign> --expected-gate-set <digest> --roster mock --max-usd-total 40 --max-usd-per-mission 2
  *            --max-turns 60 --timeout 600 --max-attempts 3 --concurrency 6 [--wave-size 12] [--execute]
  *            --auto-apply integration-ref|none [--review-roster a,b] [--fix-lane 5:1.5|off] [--tickets A,B]
- *            [--not-after 72h] [--identity 'Name <email>'] --rationale '…' --confirm <digest8>
+ *            [--not-after 72h] [--identity 'Name <email>'] [--unbound-obligations T:ob1,…] [--accept-ir-drift <digest>]
+ *            --rationale '…' --confirm <digest8>
  *   campaign retry <campaign> <ticket> --rationale '…' --confirm <digest8>
  *   assumption list <campaign> [--status open|pending|confirmed|overturned]
  *   assumption record <campaign> --question '…' --default '…' --rationale '…' [--ticket T] --confirm <digest8>
@@ -250,6 +251,7 @@ function envelopeFlags(p: Parsed): EnvelopeFlags {
     waveSize: num(p, 'wave-size', false), execute: p.flags.get('execute') === 'true', autoApply,
     fixLane: fixLaneOf(flag(p, 'fix-lane')), tickets: list(flag(p, 'tickets')), notAfter: flag(p, 'not-after'),
     identity: identityOf(flag(p, 'identity')),
+    unboundObligations: list(flag(p, 'unbound-obligations')), acceptIrDrift: flag(p, 'accept-ir-drift'),
   };
 }
 

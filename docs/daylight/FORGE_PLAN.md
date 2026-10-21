@@ -563,6 +563,58 @@ rulings.
   `universal` false positives, measured in live-extract (O-c).
 - **Status.** Decided (P2-R46, P2-R50–R54).
 
+### ADR-42 — Independent IR review; agreement is not approval (P2, WS-R15)
+
+- **Context.** Extracted IR records are an agent's reading of a specification. Several agents
+  reading the same window will often agree, and agreement is tempting to treat as truth. ADR-14
+  already says proposals are data and a person approves; spec ingestion must not reopen that by
+  counting.
+- **Decision.**
+  - Review is blind: an `audit` mission under the corpus, one reviewer per (window, tool), at
+    least two tools, one append-only tool (`report_ir_finding`) that reads nothing back, and a
+    prompt that never says how many extractors observed a record. Findings are re-validated on
+    the host and recorded `open`; `corroboratedBy` is shown and decides nothing.
+  - `approve-ir` is the only way a record or a finding moves: one guarded human decision keyed
+    `<id>:<contentDigest>`, naming the approved set's digest after it, refused whole (ids only,
+    never text) on any rule in docs/daylight/INGEST.md. There is no agreement-count selector, in
+    the API or on the CLI.
+  - Approving an ambiguity or contradiction, or accepting a finding that changes what a standing
+    requirement says, opens an `ir-interpretation` assumption (`OIR.*`, open, blocking, no
+    default): Daylight never picks a reading (P2-R12). One decision on it unblocks the record and
+    every plan ticket that blocks on it (`assumptionByOwnerDecision`).
+- **Consequences.** Live extractors rarely agree byte for byte, so most records are
+  single-extractor and a person's sweep (`--section`) is informed by counts, not by a vote.
+- **Status.** Decided (P2-R12, P2-R50, P2-R53). Numbered after WS-R14's ADR-41 regardless of merge
+  order; the interface plan's ADR-42 (the IR boundary) is folded into WS-R14's ADR-41.
+
+### ADR-43 — Blueprint, packets, one plan type, and the authority chain (P2, WS-R15)
+
+- **Context.** A plan derived from a specification must say where each ticket came from, survive
+  a person editing it, and stop being trusted when the specification changes — without Daylight
+  writing into the target repository or rewriting history.
+- **Decision.**
+  - A blueprint (boundaries, components, interfaces, order) is data checked all at once against
+    the approved IR and approved by a person over the current IR set; derivation rows record which
+    element rests on which record.
+  - A packet's digest is the digest of the plan ticket it becomes, with no plan defaults; its id
+    follows from it. Packets are emitted as a version-2 plan under `<out>`, never the repository;
+    a person commits it and `campaign import` checks descent, flagging `hand_edited` tickets and
+    refusing a re-pointed packet or a packet set that does not hash (P2-R50 F1).
+  - One `PlanFile` with `version: 1 | 2`; the trace fields enter `ticketDigestOf` only when
+    present, so every version-1 digest is unchanged (P2-R53 D-b).
+  - Acceptance obligations bind to locked gates inside the gate-set digest; `authorize` refuses an
+    obligation no locked gate discharges unless a person names it (P2-R50 F3).
+  - Staleness is derived from `ir_spans` at the current revision; a revision adds span rows and
+    rewrites none (P2-R53). The chain corpus → sections → IR → blueprint → packets → plan →
+    envelope is re-derived on every director pass and a broken link fails closed.
+  - Authors see exact quotes (`SPEC-CONTEXT`), digest-checked, holdout basenames withheld and
+    counted, never the whole specification; in-repo corpus documents are protected paths.
+- **Consequences.** Recovery from a revised specification is a person's: supersede in
+  `approve-ir`, approve a new blueprint, emit, commit, import, approve the plan.
+  `TicketStatus 'stale'` and its bucket land with WS-R16's merge; until then `staleTickets` is read
+  by needs only.
+- **Status.** Decided (P2-R13, P2-R50, P2-R53). Covers the interface plan's ADR-43 and ADR-44.
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required
