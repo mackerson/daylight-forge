@@ -189,6 +189,9 @@ export function lockCampaign(ctx: GateContext, input: CampaignLockInput): Decisi
   const ids = input.experimentIds ?? lockableIds(ctx, m.id);
   if (!ids.length) throw new GateRefused(`campaign ${m.id} has no gate to lock; run \`daylight campaign baseline\` first`);
   if (typeof input.ratchet !== 'boolean') throw new GateRefused('--ratchet or --no-ratchet is required and has no default');
+  // The code confirms the wrapped digest (vacuous acceptances included); the store's moved check is on the raw gate set,
+  // read before the preview so a change after it is still refused in the transaction.
+  const confirmedSet = ctx.store.campaignGateSet(m.id, ids, input.ratchet, input.obligations ?? {}).gateSetDigest;
   const preview = campaignLockConfirm(ctx, m.id, ids, input.ratchet, input.obligations, input.acceptVacuous ?? []);
   assertHumanDecision(input.env ?? ctx.env ?? process.env, input.actor, input.confirm, preview.digest, ctx.store);
   const gates = ids.map((id) => ctx.store.experiment(id)!);
@@ -215,7 +218,7 @@ export function lockCampaign(ctx: GateContext, input: CampaignLockInput): Decisi
   let locked: ReturnType<GateContext['store']['lockCampaignGates']>;
   try {
     locked = ctx.store.lockCampaignGates(m.id, {
-      experimentIds: ids, ratchet: input.ratchet, expectedGateSetDigest: preview.digest, actor: input.actor, rationale: input.rationale,
+      experimentIds: ids, ratchet: input.ratchet, expectedGateSetDigest: confirmedSet, actor: input.actor, rationale: input.rationale,
       vacuousOverrides: vacuous, ...(input.obligations ? { obligations: input.obligations } : {}),
     });
   } catch (err) {

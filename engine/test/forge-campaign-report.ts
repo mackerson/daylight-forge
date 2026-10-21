@@ -13,10 +13,12 @@
  * no bwrap.
  */
 import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildWaveReport, campaignList, renderWaveReport, runClaimOf, spendWords, statusTable } from '../forge/campaign-report.ts';
-import { registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
+import { campaignLockConfirm, lockableIds, lockCampaign, registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
+import { GateRefused } from '../forge/gate.ts';
 import { haltCampaign, importPlan, planOf, startTicketMission } from '../forge/campaign.ts';
 import { campaignReadOnly } from '../forge/commands-campaign.ts';
 import { parse } from '../forge/commands.ts';
@@ -29,7 +31,7 @@ import { newId } from '../mission/store.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
 import { STATUS_BUCKET_OF, STATUS_BUCKETS, type CandidateForgeryShapes, type CampaignStatusReport, type ForgeAssumptionRow, type ForgeCampaignList, type ForgeCampaignShow, type PlanFileV1, type SpendLine, type WaveReport } from '../mission/types.ts';
 import {
-  approve, authorize, CLEAN_ENV, git, HUMAN, imported, lock, lockedGateSet, ROOT, tmp,
+  approve, authorize, CLEAN_ENV, code, git, HUMAN, imported, lock, lockedGateSet, ROOT, throws, tmp,
 } from './forge-campaign-fixture.ts';
 import { accept, commitOn, diffOf, fakeDeps, filesOf, makeCandidate, repoState } from './forge-campaign-run-fixture.ts';
 import { defaultOut as defaultOutFor } from '../paths.ts';
@@ -206,6 +208,67 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   confirmsAct('adopt-integration-tip --to', s.out, ['adopt-integration-tip', id, '--halt', haltId, '--to', moved],
     ['campaign', 'adopt-tip', id, s.root, '--halt', haltId, '--to', moved, '--rationale', 'restored']);
   check('and the act put the ref back on the named commit', git(s.root, 'rev-parse', integrationRefFor(id)) === moved);
+}
+
+section('campaign lock --accept-vacuous locks with the code its preview prints (final-review H1)');
+{
+  const s = imported('vacuous');
+  const id = s.imp.campaign.id;
+  approve(s.ctx, id);
+  const gctx = { store: s.ctx.store, artifacts: s.ctx.artifacts, events: s.ctx.events, repoRoot: s.root, out: s.out, env: CLEAN_ENV };
+  registerPlanGates(gctx, id, planOf(s.ctx, id).plan);
+  const vacuousId = s.ctx.store.experimentsFor(id).find((x) => x.role === 'gate')!.id;
+  const baselineAll = () => {
+    for (const x of s.ctx.store.experimentsFor(id)) {
+      s.ctx.store.recordGateEvaluation({ missionId: id, projectId: s.imp.campaign.projectId, revision: s.commit, experimentId: x.id, target: 'base', diffDigest: null,
+        harnessDigest: x.harnessDigest, executions: [], conclusion: x.role === 'regression' || x.id === vacuousId ? 'supported' : 'falsified' });
+    }
+  };
+  baselineAll();
+  const ids = lockableIds(gctx, id);
+  // A same-uid writer re-stamping a gate inside the lock's transaction: still refused as moved, vacuous acceptance or not.
+  const raw = new DatabaseSync(path.join(s.out, 'daylight.db'));
+  const racing = Object.create(s.ctx.store) as typeof s.ctx.store;
+  const before = s.ctx.store.experiment(vacuousId)!.harnessDigest;
+  racing.lockCampaignGates = ((orig) => (cid: string, input: Parameters<typeof orig>[1]) => {
+    raw.prepare('UPDATE experiments SET harness_digest=? WHERE id=?').run(`sha256:${'b'.repeat(64)}`, vacuousId);
+    try {
+      return orig.call(s.ctx.store, cid, input);
+    } finally {
+      raw.prepare('UPDATE experiments SET harness_digest=? WHERE id=?').run(before, vacuousId);
+    }
+  })(s.ctx.store.lockCampaignGates);
+  const raced = throws(() => lockCampaign({ ...gctx, store: racing }, { campaignId: id, actor: HUMAN, rationale: 'r', ratchet: false, env: CLEAN_ENV, acceptVacuous: [vacuousId],
+    confirm: campaignLockConfirm(gctx, id, ids, false, {}, [vacuousId]).digest8 }));
+  raw.close();
+  check('a gate set that moved inside the transaction is refused as moved, with --accept-vacuous too',
+    raced instanceof GateRefused && /not the one confirmed/.test(raced.message) && s.ctx.store.campaignLockDecision(id) === null, raced?.message);
+  s.ctx.close();
+
+  const vac = ['--no-ratchet', '--accept-vacuous', vacuousId];
+  const preview = json<{ digest: string }>(cli(['campaign', 'lock', id, ...vac, '--rationale', 'r', '--out', s.out, '--format', 'json']));
+  const confirmed = json<Confirmed>(cli(['confirm', 'lock-campaign-gates', id, ...vac, '--out', s.out, '--format', 'json']));
+  check('the act\'s preview and `daylight confirm` agree on the vacuous lock\'s digest', !!preview?.digest && preview.digest === confirmed?.digest, JSON.stringify({ preview, confirmed }));
+  const plain = json<{ digest: string }>(cli(['campaign', 'lock', id, '--no-ratchet', '--rationale', 'r', '--out', s.out, '--format', 'json']));
+  const crossed = cli(['campaign', 'lock', id, ...vac, '--rationale', 'r', '--out', s.out, '--confirm', code(plain?.digest ?? 'sha256:00000000')]);
+  check('a code previewed without --accept-vacuous is refused for a lock with it', crossed.code === 1 && /--confirm/.test(crossed.err), crossed.err);
+  const act = cli(['campaign', 'lock', id, ...vac, '--rationale', 'vacuous gate accepted', '--out', s.out, '--confirm', confirmed?.digest8 ?? '00000000']);
+  check('the act with the previewed code locks', act.code === 0, `${act.code} ${act.err}`);
+  let first = '';
+  reopen(s.out, (ctx) => {
+    const d = ctx.store.campaignLockDecision(id);
+    first = d?.id ?? '';
+    check('the lock row records the vacuous override and the raw gate-set digest',
+      JSON.stringify(d?.scope.vacuousOverrides) === JSON.stringify([vacuousId]) && d?.scope.gateSetDigest === plain?.digest, JSON.stringify(d?.scope));
+    const g = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: s.root, out: s.out, env: CLEAN_ENV };
+    registerCampaignGate(g, { campaignId: id, role: 'regression', ticketId: null, testSource: "require('node:test')('r2', () => {});\n", basename: 'added.test.js',
+      prediction: { exitCode: 0, stdoutIncludes: ['# fail 0'] } });
+  });
+  const added = cli(['campaign', 'lock', id, ...vac, '--rationale', 'r', '--out', s.out, '--confirm', confirmed?.digest8 ?? '00000000']);
+  check('after a gate is added the same code is refused and the lock stands', added.code === 1 && /refused/.test(added.err), `${added.code} ${added.err}`);
+  reopen(s.out, (ctx) => {
+    check('and no new lock row was written', ctx.store.campaignLockDecision(id)?.id === first);
+  });
 }
 
 
