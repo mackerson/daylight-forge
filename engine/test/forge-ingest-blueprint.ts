@@ -161,5 +161,16 @@ const d2 = act(redo.blueprint.id);
 check('a blueprint over the current set is approved and supersedes the last', ctx.store.blueprint(approved.id)!.status === 'superseded'
   && d2.scope.supersedes === approved.id && ctx.store.blueprint(redo.blueprint.id)!.status === 'approved');
 
+section('the store moves a blueprint only under a person\'s approve-blueprint decision on its corpus (review M1)');
+{
+  const ir = ctx.store.decisions(corpus.id).find((x) => x.scope.operation === 'approve-ir')!;
+  check('an approve-ir decision is not an approve-blueprint one', /approve-blueprint/.test(throws(() => ctx.store.setBlueprintStatus(next.blueprint.id, 'superseded', ir.id))?.message ?? ''));
+  const other = ctx.store.transitionMission(ctx.store.createMission({ projectId: corpus.projectId, kind: 'corpus', objective: 'other', baseRevision: corpus.baseRevision }).id, 'ready');
+  const elsewhere = ctx.store.recordDecision({ missionId: other.id, projectId: corpus.projectId, revision: corpus.baseRevision, actor: HUMAN, kind: 'approve',
+    rationale: 'x', scope: { operation: 'approve-blueprint' }, artifactIds: [] });
+  check('an approve-blueprint decision of another corpus is refused', /corpus/.test(throws(() => ctx.store.setBlueprintStatus(next.blueprint.id, 'superseded', elsewhere.id))?.message ?? ''));
+  check('the blueprint did not move', ctx.store.blueprint(next.blueprint.id)!.status === 'proposed');
+}
+
 ctx.close();
 done();

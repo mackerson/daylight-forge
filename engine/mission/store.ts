@@ -2897,6 +2897,10 @@ export class MissionStore {
     if (!canTransition(IR_TRANSITIONS, r.status, to)) throw new IllegalTransition('IR record', id, r.status, to);
     const d = this.decision(decisionId);
     if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
+    // Only a person's approve-ir on this record's corpus moves it (P2-R56, P2-R59): no borrowed decision.
+    if (d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) {
+      throw new Error(`decision ${decisionId} is not a person's approve-ir decision on corpus ${r.corpusId}`);
+    }
     // An inferred record without basis is approved on its confirmed interpretation, which it then names.
     const u = o.assumptionId !== undefined ? this.assumption(o.assumptionId) : null;
     if (o.assumptionId !== undefined && (u?.irId !== id || u.status !== 'confirmed')) throw new Error(`assumption ${o.assumptionId} is not a confirmed interpretation of ${id}`);
@@ -3023,7 +3027,10 @@ export class MissionStore {
     const b = this.blueprint(id);
     if (!b) throw new Error(`unknown blueprint ${id}`);
     if (!canTransition(IR_TRANSITIONS, b.status, to)) throw new IllegalTransition('blueprint', id, b.status, to);
-    if (!this.decision(decisionId)) throw new Error(`unknown decision ${decisionId}`);
+    const d = this.decision(decisionId);
+    if (!d || d.projectId !== b.projectId || d.scope.operation !== 'approve-blueprint' || !isHumanActor(d.actor) || d.missionId !== b.corpusId) {
+      throw new Error(`decision ${decisionId} is not a person's approve-blueprint decision on corpus ${b.corpusId}`);
+    }
     this.db.prepare('UPDATE blueprints SET status=?, decision_id=?, updated_at=? WHERE id=?').run(to, decisionId, this.now(), id);
     return this.blueprint(id)!;
   }

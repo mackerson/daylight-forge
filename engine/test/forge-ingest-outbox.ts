@@ -123,7 +123,7 @@ check('links are read from either end', ctx.store.irLinks(irId).length === 1);
 section('IR status moves only under a decision, along IR_TRANSITIONS');
 check('approve without a decision row is refused',
   /decision/.test(throws(() => ctx.store.setIrStatus(irId, 'approved', 'd_' + '0'.repeat(32)))?.message ?? ''));
-const d = ctx.store.recordDecision({ missionId: corpus.id, projectId: project.id, revision: commit, actor: HUMAN, kind: 'approve', rationale: 'ok', scope: {}, artifactIds: [] });
+const d = ctx.store.recordDecision({ missionId: corpus.id, projectId: project.id, revision: commit, actor: HUMAN, kind: 'approve', rationale: 'ok', scope: { operation: 'approve-ir' }, artifactIds: [] });
 check('a human decision approves it', ctx.store.setIrStatus(irId, 'approved', d.id).status === 'approved');
 check('approved → rejected is refused', throws(() => ctx.store.setIrStatus(irId, 'rejected', d.id)) !== null);
 check('approved → superseded is legal', ctx.store.setIrStatus(irId, 'superseded', d.id).status === 'superseded');

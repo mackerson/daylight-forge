@@ -3,6 +3,7 @@
  * synthetic corpus and scripted records and reviewers. Every guard is checked by attempting
  * what it forbids. Run: node engine/test/forge-ingest-review.ts
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
@@ -181,12 +182,63 @@ check('approving a record whose finding was accepted earlier is refused', /accep
 check('an approved record is carried, never re-approved', /carried, not re-approved/.test(throws(() => act(set({ approve: [owner.id] })))?.message ?? ''));
 check('the corpus now needs the interpretations decided', ingestNeeds(ctx, corpus).filter((n) => n.kind === 'ir-interpretation').length === 2);
 
+section('the store moves a record only under a person\'s approve-ir decision on its corpus (review M1)');
+{
+  const plan = ctx.store.recordDecision({ missionId: corpus.id, projectId: corpus.projectId, revision: corpus.baseRevision, actor: HUMAN, kind: 'approve',
+    rationale: 'borrowed', scope: { operation: 'approve-plan', planDigest: 'sha256:' + '0'.repeat(64) }, artifactIds: [] });
+  const loose = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'exactly one owner', statement: 'Loose.' });
+  check('a decision of another operation (approve-plan) is refused', /approve-ir/.test(throws(() => ctx.store.setIrStatus(loose.id, 'approved', plan.id))?.message ?? ''));
+  const other = ctx.store.transitionMission(ctx.store.createMission({ projectId: corpus.projectId, kind: 'corpus', objective: 'other', baseRevision: corpus.baseRevision }).id, 'ready');
+  const elsewhere = ctx.store.recordDecision({ missionId: other.id, projectId: corpus.projectId, revision: corpus.baseRevision, actor: HUMAN, kind: 'approve',
+    rationale: 'other corpus', scope: { operation: 'approve-ir' }, artifactIds: [] });
+  check('an approve-ir decision of another corpus is refused', /corpus/.test(throws(() => ctx.store.setIrStatus(loose.id, 'approved', elsewhere.id))?.message ?? ''));
+  check('the record did not move', ctx.store.irRecord(loose.id)!.status === 'proposed');
+}
+
 section('supersede replaces an approved record only with one approved in the same act');
 const reworded = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'Transfers are recorded in the audit log.', statement: 'Each transfer is recorded in the audit log.' });
 const sup = act(set({ approve: [reworded.id], supersede: { [close.id]: reworded.id } }));
 check('the old record is superseded and the new one approved under one decision', ctx.store.irRecord(close.id)!.status === 'superseded'
   && ctx.store.irRecord(reworded.id)!.status === 'approved' && ctx.store.irRecord(close.id)!.decisionId === sup.id);
 check('no set file is read from anywhere but the host path given', !fs.existsSync(path.join(w.root, 'approve-ir.json')));
+
+section('ingest-approvals-callers: only the corpus review CLI calls approveIr and approveBlueprint (P2-R56)');
+{
+  const ROOT = path.resolve(import.meta.dirname, '..', '..');
+  const CLI = path.join(ROOT, 'engine', 'cli.ts');
+  const all = JSON.parse(fs.readFileSync(path.join(ROOT, 'daylight.invariants.json'), 'utf8')) as Array<{ id: string }>;
+  const inv = all.find((x) => x.id === 'ingest-approvals-callers');
+  check('the invariant is declared', !!inv);
+  const checkRepo = (name: string, files: Record<string, string>) => {
+    const root = path.join(w.tmp, `inv-${name}`);
+    for (const [rel, text] of Object.entries({ 'package.json': '{"name":"fx","type":"module"}\n', ...files })) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), text);
+    }
+    fs.writeFileSync(path.join(root, 'daylight.invariants.json'), JSON.stringify([inv]));
+    const out = path.join(root, 'out');
+    const run = (args: string[]) => {
+      try {
+        return { code: 0, out: execFileSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
+      } catch (err) {
+        const e = err as { status?: number; stdout?: string; stderr?: string };
+        return { code: e.status ?? -1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+      }
+    };
+    run(['map', root, '--out', out, '--top', '0']);
+    return run(['check', root, '--out', out]);
+  };
+  const DEFS = {
+    'engine/forge/ir-review.ts': 'export function approveIr(x: string): string { return x; }\n',
+    'engine/forge/blueprint.ts': 'export function approveBlueprint(x: string): string { return x; }\n',
+    'engine/forge/commands-corpus-review.ts': "import { approveIr } from './ir-review.ts';\nimport { approveBlueprint } from './blueprint.ts';\nexport const run = () => approveIr('a') + approveBlueprint('b');\n",
+    'engine/test/forge-ingest-x.ts': "import { approveIr } from '../forge/ir-review.ts';\nexport const t = () => approveIr('t');\n",
+  };
+  const green = checkRepo('ok', DEFS);
+  check('the CLI file and the ingest tests may call them', green.code === 0, green.out);
+  const red = checkRepo('fourth', { ...DEFS, 'engine/forge/director-x.ts': "import { approveBlueprint } from './blueprint.ts';\nexport const sneak = () => approveBlueprint.call(null, 'b');\n" });
+  check('a fourth caller turns it red', red.code === 1 && /RED\s+ingest-approvals-callers/.test(red.out) && red.out.includes('engine/forge/director-x.ts'), red.out);
+}
 
 ctx.close();
 done();
