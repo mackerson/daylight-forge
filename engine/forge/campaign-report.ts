@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { processAlive } from '../experiment/runner.ts';
 import type { DaylightContext } from '../mission/context.ts';
 import { runClaimFile } from '../mission/orchestrate.ts';
@@ -11,6 +12,7 @@ import type {
 import { gitIn } from './apply.ts';
 import { heldTickets } from './assumptions.ts';
 import { campaignAuthorizationRefusal, planOf } from './campaign.ts';
+import { holdoutPaths } from './campaign-gates.ts';
 import { campaignNeeds } from './campaign-needs.ts';
 import { campaignStatus, r5StatusHost } from './campaign-status.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, ticketStates, type TicketState } from './director.ts';
@@ -74,6 +76,34 @@ export function runClaimOf(out: string, campaignId: string): RunClaim | null {
   // kill(0) and kill(-1) signal groups, so anything but a positive pid is a dead claim.
   if (!Number.isSafeInteger(pid) || pid <= 0) return { pid: 0, alive: false };
   return { pid, alive: processAlive(pid) };
+}
+
+// ---- holdouts in echoed text ----------------------------------------------------------
+
+export const HOLDOUT_MARK = '[holdout]';
+
+/**
+ * Replaces every holdout path, basename and experiment id of the campaign (locked or merely
+ * registered) in a string. Free text in reports is echoed from plans, work items, reviewers and
+ * close reasons; any of them may name a holdout, and none of it may carry one out (P2-R37, M2).
+ */
+export function holdoutRedactor(ctx: Pick<DaylightContext, 'store'>, campaignId: string): (s: string) => string {
+  const registered = ctx.store.experimentsFor(campaignId, 'holdout');
+  const paths = [...holdoutPaths(ctx, campaignId), ...registered.map((x) => x.testArtifact.path).filter((p): p is string => !!p)];
+  const needles = [...new Set([...paths, ...paths.map((p) => path.posix.basename(p)), ...registered.map((x) => x.id)])]
+    .filter((n) => n.length >= 3).sort((a, b) => b.length - a.length);
+  return (s) => (needles.length ? needles.reduce((t, n) => t.split(n).join(HOLDOUT_MARK), s) : s);
+}
+
+/** `value` with the redactor applied to every string in it, keys included. */
+export function redactDeep<T>(value: T, redact: (s: string) => string): T {
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return redact(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [redact(k), walk(x)]));
+    return v;
+  };
+  return walk(value) as T;
 }
 
 // ---- spend --------------------------------------------------------------------------------
@@ -359,7 +389,7 @@ export function buildWaveReport(ctx: DaylightContext, campaignId: string, repo: 
   const inScope = (t: CampaignTicket) => (wave ? wave.ticketIds.includes(t.ticketId) : scopeTickets.includes(t.ticketId));
   const forgeryScope = scope.kind === 'all' ? tickets : tickets.filter((t) => inScope(t) || !landedTickets.has(t.ticketId));
 
-  return {
+  return redactDeep<WaveReport>({
     kind: 'daylight-wave-report', version: REPORT_VERSION,
     campaignId, projectId: campaign.projectId, title: plan.plan.title, planRevision: status.planRevision,
     scope, range,
@@ -375,7 +405,7 @@ export function buildWaveReport(ctx: DaylightContext, campaignId: string, repo: 
     holdouts: holdoutCounts(ctx, campaignId, tip),
     forgeryShapes: reportForgeryShapes(ctx, campaign, forgeryScope, landedTickets),
     status: status.table,
-  };
+  }, holdoutRedactor(ctx, campaignId));
 }
 
 const NEED_OF_ACT: Record<ReportBlocked['act'], readonly string[]> = {
@@ -509,7 +539,7 @@ function campaignRow(ctx: DaylightContext, c: Mission): ForgeCampaignRow {
       return null;
     }, (why) => `statuses could not be derived: ${why}`);
   }
-  return {
+  return redactDeep<ForgeCampaignRow>({
     id: c.id, projectId: c.projectId, title, state: c.state, createdAt: c.createdAt,
     planRevision: plan?.planRevision ?? null,
     planApproved: !!plan && ctx.store.latestDecision(c.id, 'approve-plan')?.scope.planDigest === plan.planDigest,
@@ -521,5 +551,5 @@ function campaignRow(ctx: DaylightContext, c: Mission): ForgeCampaignRow {
     tickets: ctx.store.campaignTickets(c.id).length, byBucket: table.totals,
     needs, assumptions: { open: assumptions.filter((a) => a.status === 'open').length, pending: assumptions.filter((a) => a.status === 'pending').length },
     spend: campaignSpend(ctx, c.id), unavailable,
-  };
+  }, holdoutRedactor(ctx, c.id));
 }

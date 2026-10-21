@@ -75,7 +75,7 @@ function refineWorld(name: string) {
     kind: 'daylight-plan', version: 1, title: 'Refine fixture', campaignGates: [],
     lanes: [{ id: 'UI', title: 'ui', owns: ['src/ui/'] }, { id: 'DB', title: 'db', owns: ['src/db/'] }],
     tickets: [
-      { id: 'U1', lane: 'UI', title: 'UI totals', statement: 'u', scope: ['src/ui/'] },
+      { id: 'U1', lane: 'UI', title: `UI totals, unlike ${HOLDOUT_BASENAME}`, statement: 'u', scope: ['src/ui/'] },
       { id: 'D1', lane: 'DB', title: 'DB later', statement: 'd', scope: ['src/db/'], dependsOn: ['U1'] },
     ],
   };
@@ -189,6 +189,8 @@ section('the map at a revision, and what the campaign introduced');
   check('the checkout is untouched (HEAD, index, worktree, refs)', repoState(w.root) === before);
 
   const rows = refineReport(w.ctx, w.id, w.root, { rowsOnly: true });
+  check('a holdout named in a ticket title is redacted in the focus (M2)', !JSON.stringify(rows).includes(HOLDOUT_BASENAME) && !JSON.stringify(r).includes(HOLDOUT_BASENAME)
+    && rows.focus.some((i) => i.kind === 'untested-diff' && i.title === 'UI totals, unlike [holdout]'), JSON.stringify(rows.focus.map((i) => i.title)));
   check('--rows-only makes no map and keeps the row tiers', rows.maps === null && rows.findings === null && !rows.focus.some((i) => i.kind === 'introduced')
     && rows.focus.some((i) => i.kind === 'untested-diff'));
 

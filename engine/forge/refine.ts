@@ -18,7 +18,7 @@ import { gitIn } from './apply.ts';
 import { heldTickets } from './assumptions.ts';
 import { holdoutPaths } from './campaign-gates.ts';
 import { r5StatusHost } from './campaign-status.ts';
-import { changedFiles, reportForgeryShapes } from './campaign-report.ts';
+import { changedFiles, holdoutRedactor, redactDeep, reportForgeryShapes } from './campaign-report.ts';
 import { ticketStates } from './director.ts';
 import { integrationRefFor, integrationTip } from './integrate.ts';
 import { FOCUS_RULES, rankFocus } from './refine-focus.ts';
@@ -397,10 +397,11 @@ export function refineReport(ctx: DaylightContext, campaignId: string, repo: str
     untested: paths(focus.filter((i) => i.kind === 'untested-diff').flatMap((i) => i.paths)),
     introduced: paths(items.filter((i) => i.kind === 'introduced').flatMap((i) => i.paths)),
   };
-  const report: RefineReport = {
+  // Focus titles and reasons echo plans, reviewers and close reasons: no holdout leaves in them (M2).
+  const report = redactDeep<RefineReport>({
     kind: 'daylight-refine', version: 1, campaignId, projectId: campaign.projectId, integrationRef: integrationRefFor(campaignId),
     base, rev, stale: false, maps, changed, findings, focusRules: FOCUS_RULES, focus, overlays,
-  };
+  }, holdoutRedactor(ctx, campaignId));
   if (!o.rowsOnly) {
     fs.mkdirSync(path.dirname(refineFile(ctx.out, campaignId)), { recursive: true });
     fs.writeFileSync(refineFile(ctx.out, campaignId), `${JSON.stringify(report, null, 2)}\n`);

@@ -175,15 +175,15 @@ function reportWorld(name: string) {
     'src/ui/u.ts': 'export const u = 3;\n', 'src/ui/v.ts': 'export const v = 4;\n',
   };
   const plan: PlanFileV1 = {
-    kind: 'daylight-plan', version: 1, title: 'Report fixture', campaignGates: [],
+    kind: 'daylight-plan', version: 1, title: `Report fixture (${HOLDOUT_BASENAME})`, campaignGates: [],
     lanes: [{ id: 'API', title: 'api', owns: ['src/api/'] }, { id: 'UI', title: 'ui', owns: ['src/ui/'] }],
     ownerDecisions: [
-      { id: 'O1', question: 'Blocking question?', options: ['error', 'panic'], blocking: true },
-      { id: 'O2', question: 'Width?', blocking: false, default: 'u64' },
+      { id: 'O1', question: `Blocking question about ${HOLDOUT_BASENAME}?`, options: ['error', 'panic'], blocking: true },
+      { id: 'O2', question: 'Width?', blocking: false, default: `u64 unless ${HOLDOUT_BASENAME}` },
     ],
     tickets: [
       { id: 'A1', lane: 'API', title: 'First api change', statement: 'a', scope: ['src/api/a.ts', 'src/api/logo.bin'] },
-      { id: 'A2', lane: 'API', title: 'Second api change', statement: 'b', dependsOn: ['A1'], scope: ['src/api/b.ts'], blocksOn: ['O2'] },
+      { id: 'A2', lane: 'API', title: `Second api change near ${HOLDOUT_BASENAME}`, statement: 'b', dependsOn: ['A1'], scope: ['src/api/b.ts'], blocksOn: ['O2'] },
       { id: 'U1', lane: 'UI', title: 'Waits on the owner', statement: 'u', scope: ['src/ui/u.ts'], blocksOn: ['O1'] },
       { id: 'U2', lane: 'UI', title: 'Spends unknown', statement: 'v', scope: ['src/ui/v.ts'] },
     ],
@@ -252,7 +252,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const rt = ctx.store.createTask({ missionId: review.id, role: 'review', objective: 'review' });
   const ra = ctx.store.startAttempt({ taskId: rt.id, runnerId: 'agent:mock:review' });
   ctx.store.finishAttempt(ra.id, { state: 'completed', costUsd: 0.02, costSource: 'provider' });
-  const finding = (severity: 'high' | 'medium', p: string, title: string) => ctx.store.recordFinding({
+  const finding = (severity: 'high' | 'medium' | 'low', p: string, title: string) => ctx.store.recordFinding({
     id: newId('finding'), projectId: c.projectId, campaignId: id, waveSeq: 1, reviewMissionId: review.id, attemptId: ra.id, path: p, severity, title,
     statement: `${STATEMENT_MARKER} ${title}`, findingArtifact: ctx.artifacts.put(`${title}\n`, { kind: 'summary', projectId: c.projectId, label: 'finding' }),
   });
@@ -260,6 +260,8 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const other = finding('high', 'src/api/a.ts', 'a2 is `unchecked` | wrong (second reviewer)');
   ctx.store.updateFinding(high.id, { corroboratedBy: [other.id] });
   finding('medium', 'src/api/b.ts', 'b could be clearer');
+  // A reviewer (agent-authored text) names the holdout in a path, a title and a statement.
+  finding('low', `src/api/${HOLDOUT_BASENAME}`, `compare with ${HOLDOUT_BASENAME}`);
   fixTicketsFrom(ctx, id, 1, r5Host(ctx));
 
   // U2: an attempt that reported no cost, then one read by stdout scan whose candidate tripped the forgery heuristic.
@@ -285,6 +287,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
     summaryArtifact: ctx.artifacts.put(JSON.stringify({ flags: [
       { path: 'src/ui/v.ts', forgeryShapes: ['process.stdout.write( with a test summary', 'process.exit(0) outside a function'] },
       { path: 'src/ui/elsewhere.ts', possibleSecretHits: 1 },
+      { path: `src/ui/${HOLDOUT_BASENAME}`, forgeryShapes: ['TAP version'] },
     ] }), { kind: 'summary', projectId: c.projectId, revision: tip, label: 'summary' }),
     files: filesOf({ 'src/ui/v.ts': 'x' }),
     policyViolations: [],
@@ -333,6 +336,11 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
 
   const holdoutPath = w.holdout.testArtifact.path ?? '';
   check('holdouts are counted: one locked, not run at the tip', r.holdouts.locked === 1 && r.holdouts.atTip['not-run'] === 1);
+  check('a holdout named in free text is redacted in every echoed field (M2)', r.title === 'Report fixture ([holdout])'
+    && r.landed.some((l) => l.title === 'Second api change near [holdout]') && r.assumptions.open.some((a) => a.question === 'Blocking question about [holdout]?')
+    && r.findings.some((f) => f.path === 'src/api/[holdout]' && f.title === 'compare with [holdout]' && f.statement.includes('[holdout]'))
+    && r.needs.some((n) => n.why.includes('[holdout]')) && r.forgeryShapes.items.some((i) => i.paths.includes('src/ui/[holdout]')),
+  JSON.stringify({ title: r.title, needs: r.needs.map((n) => n.why) }).slice(0, 1500));
   for (const [what, s] of [['JSON', text], ['markdown', md]] as const) {
     check(`the ${what} names no holdout id, path or basename`, !s.includes(w.holdout.id) && !s.includes(HOLDOUT_BASENAME) && !s.includes(holdoutPath) && !s.includes('secret_holdout'));
   }
@@ -347,7 +355,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const o1 = r.assumptions.open.find((a) => a.ownerDecisionId === 'O1');
   const o2 = r.assumptions.pending.find((a) => a.ownerDecisionId === 'O2');
   check('an open assumption carries its held tickets', !!o1 && o1.blocking && o1.heldTickets.join() === 'U1' && o1.landedOnIt.length === 0, JSON.stringify(o1));
-  check('a pending one carries its default and what landed on it', !!o2 && o2.default === 'u64' && o2.landedOnIt.join() === 'A2', JSON.stringify(o2));
+  check('a pending one carries its default and what landed on it', !!o2 && o2.default === 'u64 unless [holdout]' && o2.landedOnIt.join() === 'A2', JSON.stringify(o2));
   const hf = r.findings.find((f) => f.id === high.id);
   check('findings are most severe first and carry the fix ticket, its status and who admitted it',
     r.findings[0].severity === 'high' && !!hf?.fixTicketId && hf.fixAdmission === 'derived' && hf.fixStatus !== 'none' && hf.corroboratedBy.join() === other.id, JSON.stringify(hf));
@@ -369,7 +377,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
 
   const fsh = r.forgeryShapes;
   check('the forgery-shaped candidate is counted, by ticket, path and class, as a heuristic',
-    fsh.heuristic && fsh.candidates === 1 && fsh.items[0].ticketId === 'U2' && fsh.items[0].candidateId === forged.id && fsh.items[0].paths.join() === 'src/ui/v.ts'
+    fsh.heuristic && fsh.candidates === 1 && fsh.items[0].ticketId === 'U2' && fsh.items[0].candidateId === forged.id && fsh.items[0].paths.join() === 'src/ui/[holdout],src/ui/v.ts'
       && fsh.items[0].classes.join() === 'process-exit,stdout-fd-write,test-summary-literal' && fsh.byClass['stdout-fd-write'] === 1 && !fsh.items[0].ticketLanded, JSON.stringify(fsh));
   check('a flag without shapes is not a forgery shape', !JSON.stringify(fsh).includes('elsewhere'));
   check('the report never carries the violating diff\'s text', !text.includes(FORGED_TEXT) && !md.includes(FORGED_TEXT));
@@ -394,7 +402,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const list = campaignList(ctx);
   const row = list.campaigns.find((x) => x.id === id)!;
   check('the list has the campaign with its plan, buckets, spend and run hint',
-    list.kind === 'daylight-campaign-list' && row.title === 'Report fixture' && row.planApproved && row.tickets === ctx.store.campaignTickets(id).length
+    list.kind === 'daylight-campaign-list' && row.title === 'Report fixture ([holdout])' && row.planApproved && row.tickets === ctx.store.campaignTickets(id).length
       && JSON.stringify(row.byBucket) === JSON.stringify(r.status.totals) && JSON.stringify(row.spend) === JSON.stringify(camp)
       && row.runHint === `daylight campaign run ${id} ${root} --out ${w.out}` && row.unavailable === null && row.run === null, JSON.stringify(row));
   ctx.close();
@@ -404,8 +412,9 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   check('campaign status --format json carries the same STATUS table and a run claim', JSON.stringify(status?.table) === JSON.stringify(r.status) && status?.run === null);
   const cand = json<{ forgeryShapes?: CandidateForgeryShapes }>(cli(['forge', 'candidate', forged.id, '--out', w.out, '--format', 'json']));
   check('forge candidate --format json carries the forgery shapes by class and path',
-    JSON.stringify(cand?.forgeryShapes?.items) === JSON.stringify([{ path: 'src/ui/v.ts', classes: ['process-exit', 'stdout-fd-write', 'test-summary-literal'] }])
-      && cand?.forgeryShapes?.byClass['test-summary-literal'] === 1, JSON.stringify(cand?.forgeryShapes));
+    JSON.stringify(cand?.forgeryShapes?.items) === JSON.stringify([
+      { path: `src/ui/${HOLDOUT_BASENAME}`, classes: ['test-summary-literal'] }, { path: 'src/ui/v.ts', classes: ['process-exit', 'stdout-fd-write', 'test-summary-literal'] }])
+      && cand?.forgeryShapes?.byClass['test-summary-literal'] === 2, JSON.stringify(cand?.forgeryShapes));
   for (const op of ['approve-candidate', 'override-candidate']) {
     const pv = json<{ forgeryShapes?: CandidateForgeryShapes }>(cli(['confirm', op, forged.id, '--out', w.out, '--format', 'json']));
     check(`confirm ${op} carries them too`, JSON.stringify(pv?.forgeryShapes) === JSON.stringify(cand?.forgeryShapes), JSON.stringify(pv));
@@ -456,7 +465,8 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
     !!show && show.envelope?.ticketIds.join() === 'A1,A2,U1,U2' && show.lock?.holdouts === 1 && show.lock.gates === 0 && show.lock.gateSetDigest.startsWith('sha256:')
       && show.lanes.find((l) => l.id === 'API')?.owns.join() === 'src/api/' && show.lanes.every((l) => l.maxParallel === 1)
       && show.tickets.find((t) => t.ticketId === 'A1')?.title === 'First api change', JSON.stringify(show?.lock));
-  check('and names no holdout', !JSON.stringify(show).includes(w.holdout.id) && !JSON.stringify(show).includes(HOLDOUT_BASENAME));
+  // show echoes the person's own plan text; it never carries a holdout id or registered path.
+  check('and names no holdout id or path', !JSON.stringify(show).includes(w.holdout.id) && !JSON.stringify(show).includes(w.holdout.testArtifact.path!));
   const rows = json<ForgeAssumptionRow[]>(cli(['assumption', 'list', id, '--out', w.out, '--format', 'json']));
   const r1 = rows?.find((a) => a.ownerDecisionId === 'O1');
   check('assumption list rows carry held tickets and the plan\'s options', r1?.heldTickets.join() === 'U1' && r1.options.join() === 'error,panic'

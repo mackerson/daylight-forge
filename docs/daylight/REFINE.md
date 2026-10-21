@@ -4,7 +4,9 @@ The REFINE stage is where a person reads what a campaign did before anything rea
 The integration ref is untrusted until then (P2-R43): the director lands on
 `refs/heads/daylight/campaign/<id>`, and a person merges it. Everything on this page is derived
 from rows and refs on read and never stored as a source of truth. Holdouts are counts: no
-experiment id, path or basename of a holdout appears in any output here (P2-R37).
+experiment id, path or basename of a holdout appears in any output here (P2-R37). Free text echoed
+from plans, work items, reviewers and close reasons is redacted too: any holdout path, basename or
+id in it reads `[holdout]` (the report, the list and refine).
 
 ## The wave report
 
