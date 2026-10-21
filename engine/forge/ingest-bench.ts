@@ -108,7 +108,8 @@ interface CheckDef {
   falsifiable: Record<BenchMode, Falsifiable>; bar: Record<BenchMode, string>;
   /** When the fixture itself decides it (a check one corpus answers by construction and another does not), why. */
   byConstructionFor?(f: BenchFixture, mode: BenchMode): string | null;
-  run(x: Inputs, mode: BenchMode): { ok: boolean; value: unknown; detail?: string };
+  /** `notMeasured`: the fixture gives the check nothing to measure (a vacuous pass is not a pass). */
+  run(x: Inputs, mode: BenchMode): { ok: boolean; value: unknown; detail?: string; notMeasured?: boolean };
 }
 const F = (mock: Falsifiable, extract: Falsifiable = mock, full: Falsifiable = extract): Record<BenchMode, Falsifiable> => ({ mock, 'live-extract': extract, 'live-full': full });
 const B = (mock: string, extract = mock, full = extract): Record<BenchMode, string> => ({ mock, 'live-extract': extract, 'live-full': full });
@@ -219,7 +220,7 @@ export const CHECKS: readonly CheckDef[] = [
     falsifiable: F('by-construction', 'not-measured', 'falsifiable'), bar: B('all in-scope refs resolve', 'not measured', 'reported'),
     run: (x) => {
       const r = ticketRefResolution(x.fixture.overlay.records, new Set(x.fixture.packets.map((p) => p.ticketId)), x.fixture.blueprint.body.scope.milestones, x.milestones);
-      return { ok: r.unresolved.length === 0, value: r, detail: r.inScope.length ? '' : 'vacuous: the corpus names no in-scope ticket id' };
+      return r.inScope.length ? { ok: r.unresolved.length === 0, value: r } : { ok: true, value: r, notMeasured: true, detail: 'the corpus names no in-scope ticket id' };
     } },
   { id: 'trace', n: 14, title: 'backward trace from a landing reaches quoted passages (digests verified); forward from that passage reaches the landing', needs: ['trace'],
     falsifiable: F('falsifiable'), bar: B('round trip, 0 mismatches'),
@@ -628,7 +629,7 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; extractor?
     if (missing) return { ...base, status: 'blocked', value: null, detail: `stage ${missing}: ${stages.find((s) => s.id === missing)?.detail ?? 'not run'}` };
     try {
       const r = c.run(x, o.mode);
-      return { ...base, status: r.ok ? 'pass' : 'fail', value: r.value, detail: r.detail ?? '' };
+      return { ...base, status: r.notMeasured ? 'not-measured' : r.ok ? 'pass' : 'fail', value: r.value, detail: r.detail ?? '' };
     } catch (err) {
       return { ...base, status: 'fail', value: null, detail: err instanceof Error ? err.message : String(err) };
     }

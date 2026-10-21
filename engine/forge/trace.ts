@@ -374,7 +374,8 @@ export function traceBackward(ctx: DaylightContext, from: { commit: string; camp
     if (from.campaignId && !campaigns.length) throw new Error(`${from.campaignId} is not a campaign`);
     const hits = campaigns.flatMap((c) => ctx.store.integrations(c!.id, { state: 'integrated' }))
       .filter((i) => i.integratedCommit !== null && i.integratedCommit.startsWith(from.commit));
-    g = new Graph(campaigns.length ? projectHoldouts(ctx, campaigns[0]!.projectId) : []);
+    // A commit may be any campaign's: every project those campaigns belong to withholds its holdouts.
+    g = new Graph([...new Set(campaigns.flatMap((c) => projectHoldouts(ctx, c!.projectId)))]);
     root = g.node({ type: 'integration', id: `commit:${from.commit}`, label: `commit ${from.commit.slice(0, 12)}` });
     if (hits.length !== 1) {
       g.gap(root.id, 'integration', hits.length ? `${hits.length} landings share this commit prefix; name the integration`

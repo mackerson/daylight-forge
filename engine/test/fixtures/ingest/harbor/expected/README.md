@@ -28,5 +28,5 @@ Every file in this directory is the output of `buildHarborCorpus()` in `engine/t
 | W2.Q2 | Q | Clause 7.2 | W1.Q1 |
 | W2.Q3 | Q | Clause 8.1, Clause 8.2 | Q2 |
 
-Invariant tags: `safety`, `auditability`. Seeds: one of each of the six kinds (`expected/seeds.json`). The IR overlay is complete (`check: "generated"`),
+Invariant tags: `safety`, `auditability`. Seeds: one of each of the six kinds (`expected/seeds.json`). The IR overlay is complete: 39 records (`check: "generated"`),
 written by the generator beside the text it quotes; the mechanical rule in its header finds nothing left over.

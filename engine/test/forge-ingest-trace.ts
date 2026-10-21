@@ -12,7 +12,8 @@ import { TRACE_JOINS, type TraceReport } from '../mission/types.ts';
 import { renderTraceMarkdown, spanNodeId, spanOfNodeId, traceBackward, traceForward, traceMatrix } from '../forge/trace.ts';
 import { runTraceCommand } from '../forge/commands-trace.ts';
 import { harness } from './harness.ts';
-import { makeCampaign, makeWorkItem, rawDecision, storeTicket, ticketRow } from './forge-campaign-run-fixture.ts';
+import { makeCampaign, makeRepo, makeWorkItem, rawDecision, storeTicket, ticketRow } from './forge-campaign-run-fixture.ts';
+import { identifyProject } from '../mission/project.ts';
 import { seedIngestStore } from './lib/ingest-store.ts';
 
 const { check, section, done } = harness();
@@ -116,6 +117,29 @@ const md = renderTraceMarkdown(back, (s) => {
 });
 check('markdown counts a withheld excerpt and never prints it', /passage excerpt\(s\) withheld/.test(md) && !md.includes('tests the two decisions separately'));
 check('markdown prints no record statement (P2-R40)', !md.includes(probe.statement));
+
+{
+  // A campaign of a second project holds a basename the landing's trace would print (`adr-0004 Decision`).
+  const second = makeRepo(fs.mkdtempSync(path.join(tmp, 'second-')), { 'README.md': 'second project\n' });
+  const project2 = identifyProject(second.repo);
+  ctx.store.ensureProject(project2);
+  const c2 = ctx.store.createMission({ projectId: project2.id, kind: 'campaign', objective: 'second', baseRevision: second.base, scope: { paths: ['daylight.plan.json'] } });
+  const art2 = (text: string, kind: 'test' | 'expected', p?: string) => {
+    const a = ctx.artifacts.put(text, { kind, projectId: project2.id, revision: second.base, path: p, label: kind });
+    ctx.store.recordArtifact(a);
+    return a;
+  };
+  const h2 = ctx.store.createExperiment({ missionId: c2.id, projectId: project2.id, claimIds: [], subject: 'campaign', predicate: 'passes', hypothesis: 'h',
+    prediction: { exitCode: 0 }, baseRevision: second.base, testArtifact: art2('holdout', 'test', 'tests/Decision'), expectedArtifact: art2('{}', 'expected'),
+    harnessDigest: `sha256:${'9'.repeat(64)}`, command: ['node', '--test'], sandboxProfile: 'bwrap', limitations: [], role: 'holdout' });
+  rawDecision(ctx.store, { missionId: c2.id, projectId: project2.id, revision: second.base, actor: 'human:bench', kind: 'approve', rationale: 'lock',
+    scope: { operation: 'lock-campaign-gates', experimentIds: [h2.id], harnessDigests: { [h2.id]: h2.harnessDigest }, vacuousOverrides: [], bindings: {},
+      roles: { [h2.id]: 'holdout' }, ratchet: false, gateSetDigest: `sha256:${'a'.repeat(64)}` }, artifactIds: [] });
+  const viaCommit = traceBackward(ctx, { commit: olc.landing.integratedCommit! });
+  check('a landed commit traced without --campaign withholds every project\'s holdout basenames', !JSON.stringify(viaCommit.nodes).includes('Decision')
+    && viaCommit.gaps.some((gp) => /holdout path/.test(gp.why)), viaCommit.nodes.filter((n) => n.label.includes('Decision')).map((n) => `${n.type}:${n.label}`).join(' | ')
+    + ' gaps: ' + viaCommit.gaps.map((gp) => gp.why).join(' / ').slice(0, 300));
+}
 
 section('staleness is derived on read: a record with no span at the current revision is stale');
 const rev2 = ctx.store.insertCorpusRevision({ ...olc.rev, id: `cr_${'e'.repeat(32)}`, seq: 2, corpusDigest: `sha256:${'e'.repeat(64)}` });

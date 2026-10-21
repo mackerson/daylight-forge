@@ -18,7 +18,7 @@ An entry must be acknowledged only after it is flushed to stable storage.
 
 Resolution: Clause 7.2
 
-Audit export moves from wave W1 to wave W2.
+Audit export moves from wave W1 to wave W2; ticket W2.Q2 carries it.
 
 ## Amendment A4 — Clearance
 

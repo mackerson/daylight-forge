@@ -371,6 +371,22 @@ section('mediums: labels pinned to §11.3, overlay kinds checked, every falsifia
     new Set(), ['M0'], milestoneSchemes(sectionerConfigOf(olc))).outOfScope.join() === 'Q7.S1');
 }
 
+section('lows: ticket refs measured on Harbor, a vacuous one not passed, the ground truth\'s dropped lanes stated');
+{
+  const refs = reports.harbor.checks.find((c) => c.id === 'ticket-refs')!;
+  const v = refs.value as { inScope: string[]; resolved: string[] };
+  check('Harbor\'s corpus names in-scope ticket ids and the check measures them', refs.status === 'pass' && v.inScope.join() === 'W1.V2,W2.Q2' && v.resolved.length === 2,
+    JSON.stringify(refs.value));
+  const none = CHECKS.find((c) => c.id === 'ticket-refs')!.run({ fixture: { ...hlFix, overlay: { ...hlFix.overlay, records: hlFix.overlay.records.map((r) => ({ ...r,
+    attrs: { ...r.attrs, ticketRefs: undefined } })) } }, milestones: [/^W\d+$/] } as never, 'mock');
+  check('a corpus naming no in-scope ticket id is not measured, never a vacuous pass', none.notMeasured === true);
+  const gtRaw = JSON.parse(fs.readFileSync(path.join(BENCH_FIXTURES.olc, 'ground-truth.json'), 'utf8')) as { corrections: Array<{ lanes?: string[] }>; lanes: Array<{ id: string }> };
+  check('the ground truth states the lanes it drops (R, X, O, D) as a correction', gtRaw.corrections.some((c) => c.lanes?.join() === 'R,X,O,D')
+    && !gtRaw.lanes.some((l) => ['R', 'X', 'O', 'D'].includes(l.id)));
+  check('Harbor\'s README states the real record count', fs.readFileSync(path.join(BENCH_FIXTURES.harbor, 'expected', 'README.md'), 'utf8')
+    .includes(`complete: ${hlFix.overlay.records.length} records`));
+}
+
 section('mock-mode scores (for the hand-off)');
 for (const [name, r] of Object.entries(reports)) {
   console.log(`  ${name}: ${r.summary.pass} pass, ${r.summary.fail} fail, ${r.summary.blocked} blocked; fixture scores ${JSON.stringify({ ...r.scores.fixture, missing: undefined, extra: undefined })}`

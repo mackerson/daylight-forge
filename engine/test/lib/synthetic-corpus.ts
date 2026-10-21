@@ -60,18 +60,18 @@ const CLAUSES: Clause[] = [
     { n: '9.2', title: 'Verification schedule', wave: 'W2', reqs: [{ id: 'HL-REQ-081', text: 'A full verification must run at least once every 24 hours.' }] }] },
 ];
 
-const AMENDMENTS: Array<{ n: string; title: string; clause: string; text: string; deferral?: Wave }> = [
+const AMENDMENTS: Array<{ n: string; title: string; clause: string; text: string; deferral?: Wave; tickets?: string[] }> = [
   { n: 'A1', title: 'Berth identifiers', clause: '4.1', text: 'Berth ids must use uppercase letters and digits only.' },
   { n: 'A2', title: 'Crash durability', clause: '3.2', text: 'An entry must be acknowledged only after it is flushed to stable storage.' },
-  { n: 'A3', title: 'Audit export timing', clause: '7.2', text: 'Audit export moves from wave W1 to wave W2.', deferral: 'W2' },
+  { n: 'A3', title: 'Audit export timing', clause: '7.2', text: 'Audit export moves from wave W1 to wave W2; ticket W2.Q2 carries it.', deferral: 'W2', tickets: ['W2.Q2'] },
   { n: 'A4', title: 'Clearance', clause: '5.3', text: 'The clearance between vessels must be measured bow to stern.' },
   { n: 'A5', title: 'Tariff currency', clause: '6.2', text: "Every charge must be stated in the port's declared currency." },
   { n: 'A6', title: 'Retention start', clause: '8.1', text: 'The retention period must start at the close of the financial year.' },
 ];
 
-const DECISIONS: Array<{ n: string; title: string; decision: string; consequence: string; clause: string }> = [
+const DECISIONS: Array<{ n: string; title: string; decision: string; consequence: string; clause: string; tickets?: string[] }> = [
   { n: '01', title: 'Ledger encoding', decision: 'Ledger entries are hashed with SHA-256 over their canonical JSON bytes.', consequence: 'A digest must be rendered as `sha256:` followed by lowercase hex.', clause: '2.3' },
-  { n: '02', title: 'Allocation tie-break', decision: 'When two vessels request one berth for the same window, the earlier request must win.', consequence: 'A tie-break must be recorded in the ledger with both request ids.', clause: '5.2' },
+  { n: '02', title: 'Allocation tie-break', decision: 'When two vessels request one berth for the same window, the earlier request must win.', consequence: 'A tie-break must be recorded in the ledger with both request ids; ticket W1.V2 implements it.', clause: '5.2', tickets: ['W1.V2'] },
   { n: '03', title: 'Tariff rounding', decision: 'Charges must be rounded to two decimals before the invoice is issued.', consequence: 'Rounding must happen once per charge, never per unit.', clause: '6.2' },
 ];
 
@@ -187,14 +187,15 @@ function overlay(texts: Record<string, string>): string {
     const target = CLAUSES.flatMap((c) => c.subs).find((s) => s.n === a.clause)!;
     if (a.deferral) {
       add(`am-${a.n.toLowerCase()}`, 'hl-amendments', a.text, 'deferral', `Amendment ${a.n} moves Clause ${a.clause} to ${a.deferral}.`,
-        { milestone: a.deferral, deferral: { to: a.deferral } }, { docKey: 'hl-standard', quote: target.reqs[0].text });
+        { milestone: a.deferral, deferral: { to: a.deferral }, ...(a.tickets ? { ticketRefs: a.tickets } : {}) }, { docKey: 'hl-standard', quote: target.reqs[0].text });
     } else {
       add(`am-${a.n.toLowerCase()}`, 'hl-amendments', a.text, 'requirement', `Amendment ${a.n}: ${a.text}`, { ...(target.wave ? { milestone: target.wave } : {}), subject: `Clause ${a.clause}` });
     }
   }
   for (const d of DECISIONS) {
     add(`dr${d.n}`, `dr-${d.n}`, d.decision, 'decision', `DR-${d.n}: ${d.decision}`, { decision: { ref: `DR-${d.n}`, status: 'accepted' }, subject: `Clause ${d.clause}` });
-    add(`dr${d.n}-c`, `dr-${d.n}`, d.consequence, 'requirement', `DR-${d.n} consequence: ${d.consequence}`, { subject: `Clause ${d.clause}` });
+    add(`dr${d.n}-c`, `dr-${d.n}`, d.consequence, 'requirement', `DR-${d.n} consequence: ${d.consequence}`, { subject: `Clause ${d.clause}`,
+      ...(d.tickets ? { ticketRefs: d.tickets } : {}) });
   }
   const docs = new Map(Object.keys(DOCS).map((k) => [k, Buffer.from(texts[k], 'utf8')]));
   return formatOverlay(buildOverlay('harbor', docs, recs, MECHANICAL));
@@ -315,7 +316,7 @@ function bench(): string {
   }, null, 1)}\n`;
 }
 
-function readme(): string {
+function readme(recordCount: number): string {
   const map = TICKETS.map((t) => `| ${t.id} | ${t.lane} | Clause ${t.clauses.join(', Clause ')}${t.decisions.length ? `; DR-${t.decisions.join(', DR-')}` : ''} | ${t.deps.join(', ') || '—'} |`);
   return [
     '# Harbor Ledger: the fixture contract', '',
@@ -331,7 +332,7 @@ function readme(): string {
     '6. **Requirement ids.** `HL-REQ-nnn` is an `enumerated` cross-reference resolving to the list item that defines it in its clause.',
     '7. **Ticket ↔ clause map** (what the IR overlay and the packets encode; `expected/plan.md` is the ground truth, never in the corpus):', '',
     '| Ticket | Lane | Clauses | Depends on |', '| --- | --- | --- | --- |', ...map, '',
-    'Invariant tags: `safety`, `auditability`. Seeds: one of each of the six kinds (`expected/seeds.json`). The IR overlay is complete (`check: "generated"`),',
+    `Invariant tags: \`safety\`, \`auditability\`. Seeds: one of each of the six kinds (\`expected/seeds.json\`). The IR overlay is complete: ${recordCount} records (\`check: "generated"\`),`,
     'written by the generator beside the text it quotes; the mechanical rule in its header finds nothing left over.', '',
   ].join('\n');
 }
@@ -355,9 +356,9 @@ export function buildHarborCorpus(): Map<string, string> {
   files.set('daylight.corpus.json', `${JSON.stringify(MANIFEST, null, 1)}\n`);
   files.set('bench.json', bench());
   files.set('NOTICE', 'The Harbor Ledger files are synthetic test data for Daylight\'s ingestion benchmark, generated by\nengine/test/lib/synthetic-corpus.ts. No real standard, port or authority is described.\n');
-  files.set('expected/README.md', readme());
   files.set('expected/plan.md', groundTruth());
   files.set('expected/ir.overlay.json', overlay(texts));
+  files.set('expected/README.md', readme((JSON.parse(files.get('expected/ir.overlay.json')!) as { records: unknown[] }).records.length));
   files.set('expected/packets.json', packets());
   files.set('expected/blueprint.json', blueprint());
   files.set('expected/seeds.json', seeds());

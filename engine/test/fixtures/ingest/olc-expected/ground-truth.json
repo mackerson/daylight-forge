@@ -6,7 +6,7 @@
   "sha256": "512cb5d16d01bcfb940a1b6e37f1bf6a27e452c049be10ad7ce56d673594c914",
   "parser": "daylight-gt-tables/1"
  },
- "note": "The 28 M0 build tickets of plan/execution-plan.md, parsed from its tables (never its ASCII diagram, P2-R50 Q15) by engine/test/lib/plan-score.ts parseGroundTruth, then hand-checked row by row against the tables. Owner tickets (M0.O1-O4, no Paths column) and the M1 outline are not build tickets. Two hand corrections are listed; nothing else differs from the parser output.",
+ "note": "The 28 M0 build tickets of plan/execution-plan.md, parsed from its tables (never its ASCII diagram, P2-R50 Q15) by engine/test/lib/plan-score.ts parseGroundTruth, then hand-checked row by row against the tables. Owner tickets (M0.O1-O4, no Paths column) and the M1 outline are not build tickets. Three hand corrections are listed (one path, one lane's exceptions, and the four lanes with no M0 build ticket dropped); nothing else differs from the parser output.",
  "corrections": [
   {
    "ticket": "M0.L3",
@@ -23,6 +23,17 @@
     "governance/"
    ],
    "why": "the cell says examples/olc-pack-example/ except graph/ and governance/; the exceptions are not owned"
+  },
+  {
+   "lanes": [
+    "R",
+    "X",
+    "O",
+    "D"
+   ],
+   "field": "lanes",
+   "removed": true,
+   "why": "the lane table lists twelve lanes; R (render) and X (index) own M1 work, O (owner) and D (director) own no build ticket, so no M0 build ticket lies in them; the parser also reads O's 'approve' and D's 'plan/STATUS.md' as owned paths, which they are not"
   }
  ],
  "lanes": [
