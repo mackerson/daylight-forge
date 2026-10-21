@@ -1378,6 +1378,8 @@ export interface CampaignEnvelope {
   fixLane: { enabled: boolean; maxTicketsPerWave: number; maxUsdPerTicket: number };  // High only, maxTicketsPerWave ≤ 5 (P2-R10)
   identity: { name: string; email: string };     // committer of integrated commits, labelled asserted
   notAfter: number;                              // epoch ms; default now + 72h
+  /** P2-R55: at each wave, re-run earlier-landed tickets' gates: every one, only those whose scope a later landing touched, or none. Absent (recorded before): scoped. */
+  regressionCheck?: 'full' | 'scoped' | 'off';
 }
 export interface AuthorizeCampaignScope extends CampaignEnvelope { operation: 'authorize-campaign' }
 

@@ -453,19 +453,30 @@ function tipLanding(ctx: Pick<DaylightContext, 'store'>, campaignId: string, rep
 }
 
 /**
- * Each earlier-landed ticket's own public gates (role `gate`, bound to it by the lock) that have
- * no evaluation on the tip's landing yet: what `recheckLanded` runs (wave2 L7).
+ * Each earlier-landed ticket's own public gates (role `gate`, bound to it by the lock), with the
+ * commit it landed at and its scope: what `recheckLanded` chooses from (wave2 L7, P2-R55).
  */
-function landedGates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Array<{ ticketId: string; experimentId: string; at: Integration }> {
+function landedGates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Array<{
+  ticketId: string; experimentId: string; at: Integration; since: string; scope: string[];
+}> {
   const lock = campaignLockOf(ctx, campaignId);
   const at = tipLanding(ctx, campaignId, repo);
   if (!lock || !at) return [];
   const tipTicket = host.tickets(campaignId).find((t) => t.workItemId === ctx.store.mission(at.missionId)?.workItemId)?.ticketId;
-  const landed = [...ticketStates(ctx, campaignId, repo, host).values()].filter((s) => s.status === 'landed').map((s) => s.ticket.ticketId);
+  const landed = new Map([...ticketStates(ctx, campaignId, repo, host).values()].filter((s) => s.status === 'landed').map((s) => [s.ticket.ticketId, s]));
   return lock.scope.experimentIds.flatMap((id) => {
     const ticketId = lock.scope.bindings[id];
-    return lock.scope.roles[id] === 'gate' && ticketId && landed.includes(ticketId) && ticketId !== tipTicket ? [{ ticketId, experimentId: id, at }] : [];
+    const s = ticketId ? landed.get(ticketId) : undefined;
+    return lock.scope.roles[id] === 'gate' && ticketId && s?.commit && ticketId !== tipTicket
+      ? [{ ticketId, experimentId: id, at, since: s.commit, scope: s.ticket.scope }] : [];
   });
+}
+
+/** Whether a file changed between `since` and `tip` lies under one of `scope`'s paths (P2-R55). */
+function touchedSince(repo: string, since: string, tip: string, scope: readonly string[]): boolean {
+  const changed = gitIn({ repo }, ['diff', '--name-only', '--no-renames', '-z', since, tip]).toString('utf8').split('\0').filter(Boolean);
+  const prefixes = scope.map((s) => s.replace(/\/+$/, ''));
+  return changed.some((f) => prefixes.some((p) => f === p || f.startsWith(`${p}/`)));
 }
 
 /**
@@ -858,14 +869,19 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
     };
 
     /**
-     * At the end of a run, each earlier-landed ticket's own public gates are run on the tip once
-     * and recorded there (wave2 L7): without a ratchet no landing looks, and `campaign status`
-     * reads these to mark a ticket a later landing broke. Nothing lands or moves on the result.
+     * When a wave closes, earlier-landed tickets' own public gates are run on the tip once and
+     * recorded there (wave2 L7, P2-R55): without a ratchet no landing looks, and `campaign status`
+     * reads these to mark a ticket a later landing broke. The envelope says which: `scoped` (the
+     * default) only tickets whose scope a file landed since their own landing lies under, `full`
+     * every one, `off` none. Nothing lands or moves on the result.
      */
     const recheckLanded = async () => {
+      const mode = envelope.regressionCheck ?? 'scoped';
+      if (mode === 'off') return;
       const lock = campaignLockOf(gctx, campaign.id);
       const todo = landedGates(ctx, campaign.id, root, host).filter((g) => !ctx.store.gateEvaluations({ integrationId: g.at.id, target: 'integrated' })
-        .some((e) => e.experimentId === g.experimentId && e.harnessDigest === lock?.scope.harnessDigests[g.experimentId]));
+        .some((e) => e.experimentId === g.experimentId && e.harnessDigest === lock?.scope.harnessDigests[g.experimentId]))
+        .filter((g) => mode === 'full' || touchedSince(root, g.since, g.at.integratedCommit!, g.scope));
       if (!lock || !todo.length) return;
       const at = todo[0].at;
       const hidden = holdoutPaths(ctx, campaign.id);
@@ -885,15 +901,18 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       }
     };
 
-    const closeIfDue = (quiescent: boolean) => {
-      if (halted || stopped || (o.maxWaves !== undefined && wavesClosed >= o.maxWaves)) return;
+    /** Close a wave when one is due and re-check at it; true when one closed (the recheck awaited, so the loop looks again). */
+    const closeIfDue = async (quiescent: boolean): Promise<boolean> => {
+      if (halted || stopped || (o.maxWaves !== undefined && wavesClosed >= o.maxWaves)) return false;
       const due = waveDue(ctx, campaign.id, envelope.waveSize);
-      if (!(due.due || (quiescent && due.landed > 0))) return;
+      if (!(due.due || (quiescent && due.landed > 0))) return false;
       const w = closeWave(ctx, campaign.id, { ticketOf });
-      if (!w) return;
+      if (!w) return false;
       wavesClosed++;
       emit(campaign, 'lifecycle', 'campaign.wave.closed', { seq: w.seq, fromCommit: w.fromCommit, toCommit: w.toCommit, tickets: w.ticketIds.length });
       review(w.seq);
+      await recheckLanded();
+      return true;
     };
 
     // A wave whose review a crash interrupted, or never started, is reviewed now (L4).
@@ -958,13 +977,13 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         if (queue.length) continue;
       }
       if (mayDispatch()) launch(states);
-      closeIfDue(false);
+      if (await closeIfDue(false)) continue;
       if (inflight.size) {
         await Promise.race(inflight.values());
         continue;
       }
       // Nothing running and nothing to integrate: close a partial wave, wait for reviews.
-      closeIfDue(true);
+      if (await closeIfDue(true)) continue;
       if (reviews.size) {
         await Promise.race(reviews);
         continue;
@@ -972,7 +991,6 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       if (mayDispatch() && schedule(ticketStates(ctx, campaign.id, root, host), running, concurrency).length) continue;
       break;
     }
-    await recheckLanded();
     const final = ticketStates(ctx, campaign.id, root, host);
     emit(campaign, 'lifecycle', 'campaign.finished', { integrationRef: ref, tip: integrationTip(root, campaign.id), statuses: counts(final), halted, landed: landings });
     return result({

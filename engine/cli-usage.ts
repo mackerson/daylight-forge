@@ -77,7 +77,8 @@ usage:
                                 authorize <c> --expected-gate-set <digest> --roster mock --max-usd-total N --max-usd-per-mission N
                                   --max-turns N --timeout s --max-attempts N --concurrency N --auto-apply integration-ref|none
                                   [--execute] [--wave-size N] [--review-roster a,b] [--fix-lane 5:1.5|off] [--tickets A,B]
-                                  [--not-after 72h] [--identity 'Name <email>'] --rationale '<why>' --confirm <c8>
+                                  [--not-after 72h] [--identity 'Name <email>'] [--regression-check full|scoped|off]
+                                  --rationale '<why>' --confirm <c8>
                                 gate register <c> --role holdout|gate|regression --file <host path> [--ticket T] --expect-exit n --expect-stdout s | gate list <c>
                                 baseline <c> <repo> | lock <c> --ratchet|--no-ratchet --rationale '<why>' [--accept-vacuous x,…]
                                   [--obligations T:ob1,x_…=T:ob2] --confirm <c8>   # binds acceptance obligations to locked gates

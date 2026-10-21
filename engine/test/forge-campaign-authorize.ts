@@ -18,7 +18,7 @@ import {
   approvePlan, authorizeCampaign, importPlan, planOf,
 } from '../forge/campaign.ts';
 import { registerPlanGates } from '../forge/campaign-gates.ts';
-import { campaignReadOnly, sessionRefusal } from '../forge/commands-campaign.ts';
+import { campaignReadOnly, envelopeFlagsFrom, sessionRefusal } from '../forge/commands-campaign.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { assertImplementable, specIntakeViolations } from '../forge/work-items.ts';
 import { openDaylight } from '../mission/context.ts';
@@ -219,11 +219,20 @@ section('authorize-campaign');
     ['timeoutSeconds', { timeoutSeconds: 599 }], ['maxAttemptsPerTicket', { maxAttemptsPerTicket: 2 }], ['concurrency', { concurrency: 3 }],
     ['waveSize', { waveSize: 5 }], ['execute', { execute: true }], ['autoApply', { autoApply: 'none' }],
     ['fixLane', { fixLane: { ...env.fixLane, maxTicketsPerWave: 1 } }], ['identity', { identity: { name: 'x', email: 'x@y.z' } }],
-    ['notAfter', { notAfter: env.notAfter + 3_600_000 }],
+    ['notAfter', { notAfter: env.notAfter + 3_600_000 }], ['regressionCheck', { regressionCheck: 'full' }],
   ];
   for (const [field, patch] of changed) {
     check(`the confirm digest changes with ${field}`, confirmDigest(s.ctx, 'authorize-campaign', id, { envelope: { ...env, ...patch } }).digest !== digest);
   }
+  const CLI_FLAGS = { 'expected-gate-set': GATE_SET, roster: 'mock', 'max-usd-total': '40', 'max-usd-per-mission': '2', 'max-turns': '60', timeout: '600',
+    'max-attempts': '3', concurrency: '2', 'auto-apply': 'integration-ref', tickets: 'C1,A1' };
+  check('P2-R55: the regression check defaults to scoped and is a confirm line', env.regressionCheck === 'scoped'
+    && confirmDigest(s.ctx, 'authorize-campaign', id, { envelope: env }).lines.some((l) => /regression check scoped/.test(l)));
+  check('P2-R55: --regression-check full|scoped|off reaches the envelope', (['full', 'scoped', 'off'] as const).every((m) =>
+    buildEnvelope(s.ctx, id, envelopeFlagsFrom((k) => ({ ...CLI_FLAGS, 'regression-check': m } as Record<string, string>)[k])).regressionCheck === m));
+  check('P2-R55: any other --regression-check is a usage error', /regression-check/.test(throws(() => envelopeFlagsFrom((k) => ({ ...CLI_FLAGS, 'regression-check': 'sometimes' } as Record<string, string>)[k]))?.message ?? ''));
+  check('P2-R55: the store refuses an envelope with another regression check', /regression check/.test(String(envelopeShapeRefusal({ ...env, regressionCheck: 'sometimes' as 'off' }, s.ctx.store.clock()))));
+  check('P2-R55: an envelope recorded before the field (absent) passes the shape check', envelopeShapeRefusal({ ...env, regressionCheck: undefined }, s.ctx.store.clock()) === null);
   check('the preview and the act agree on notAfter (rounded to the hour)', buildEnvelope(s.ctx, id, FLAGS).notAfter === env.notAfter && env.notAfter % 3_600_000 === 0);
   const refusals: Array<[string, Partial<typeof FLAGS>, RegExp]> = [
     ['a per-mission cap above the campaign cap', { maxUsdPerMission: 41 }, /per-mission cap/],
