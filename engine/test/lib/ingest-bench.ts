@@ -75,7 +75,7 @@ class StageBlocked extends Error {}
 interface Inputs {
   fixture: BenchFixture;
   ctx?: DaylightContext; root?: string; projects?: Record<string, string>; rev?: CorpusRevision; corpusId?: string;
-  irOf?: (key: string) => string | null; records?: IrRecord[]; approved?: Set<string>; coverage?: CoverageReport; seeds?: SeededDefect[];
+  irOf?: (key: string) => string | null; records?: IrRecord[]; units?: Array<{ docKey: string; start: number; end: number }>; approved?: Set<string>; coverage?: CoverageReport; seeds?: SeededDefect[];
   blueprintId?: string; plan?: PlanFile; campaignId?: string; landing?: Integration; backward?: TraceReport; forward?: TraceReport; roundTrip?: boolean;
   revise?: { staleKeys: string[]; staleTickets: string[]; changedRows: string[] }; holdout?: { leakedToContext: boolean; withheld: number; excerptWithheld: boolean };
 }
@@ -103,12 +103,18 @@ export const CHECKS: readonly CheckDef[] = [
       const f = x.fixture;
       const problems = fixtureProblems(f);
       const written = f.overlay.records.filter((r) => r.check !== 'mechanical');
-      const regen = formatOverlay(buildOverlay(f.overlay.corpus, f.docs, written, f.overlay.mechanical));
-      const committed = fs.readFileSync(path.join(f.dir, f.bench.expected.overlay), 'utf8');
-      if (regen !== committed) problems.push('ir.overlay.json differs from its regeneration (hand/generated records + the mechanical rule)');
-      return { ok: problems.length === 0, value: { records: f.overlay.records.length, byCheck: countBy(f.overlay.records.map((r) => r.check)) }, detail: problems.join('; ') };
+      let regenerated = 'yes';
+      if (f.overlay.mechanical.source === 'units' && !x.units) regenerated = 'not yet: a units rule needs the sectioner\'s index (after register)';
+      else {
+        const units = f.overlay.mechanical.source === 'units' ? x.units : undefined;
+        const regen = formatOverlay(buildOverlay(f.overlay.corpus, f.docs, written, f.overlay.mechanical, units));
+        const committed = fs.readFileSync(path.join(f.dir, f.bench.expected.overlay), 'utf8');
+        if (regen !== committed) problems.push('ir.overlay.json differs from its regeneration (written records + the mechanical rule)');
+      }
+      return { ok: problems.length === 0, value: { records: f.overlay.records.length, byCheck: countBy(f.overlay.records.map((r) => r.check)), regenerated },
+        detail: problems.join('; ') };
     } },
-  { id: 'coverage', n: 1, title: 'coverage arithmetic holds; unmapped normative units after approve-ir', needs: ['coverage'],
+  { id: 'coverage', n: 1, title: 'coverage arithmetic holds; unmapped normative units (after approve-ir when that stage ran)', needs: ['coverage'],
     falsifiable: F('falsifiable'), bar: B('unmapped = 0', 'unmapped ≤ 5% of normative'),
     run: (x, mode) => {
       const t = x.coverage!.totals;
@@ -306,6 +312,7 @@ const STAGES: Stage[] = [
   { id: 'register', needs: ['repo'], run: (x) => {
     x.rev = registerCorpus(x.ctx!, x.root!, x.fixture.bench.manifest.repo, { projects: x.projects });
     x.corpusId = x.rev.corpusId;
+    x.units = corpusOf(x.ctx!, x.corpusId).index.sentences;
     return `${x.rev.id} with ${x.rev.docs.length} documents`;
   } },
   { id: 'extract', needs: ['register'], run: async (x) => {
@@ -318,6 +325,7 @@ const STAGES: Stage[] = [
     const idx = corpusOf(x.ctx!, x.corpusId!).index;
     const findings: ReportedIrFinding[] = x.fixture.review!.findings.map((f) => {
       const irId = f.irKey ? x.irOf!(f.irKey) : null;
+      if (f.irKey && !irId) throw new Error(`review.json names ${f.irKey}, which no extracted record carries`);
       const rec = irId ? x.ctx!.store.irRecord(irId) : null;
       const section = rec?.span?.sectionId ?? sectionAt(idx, f.docKey!, x.fixture.docs.get(f.docKey!)!.indexOf(Buffer.from(f.quote!, 'utf8')));
       return { kind: f.kind as ReportedIrFinding['kind'], severity: f.severity, title: f.title, statement: f.statement, section: section ?? '',
@@ -348,7 +356,7 @@ const STAGES: Stage[] = [
     x.records = x.ctx!.store.irRecords(x.corpusId!);
     return `${x.approved.size} approved, ${reject.length} rejected`;
   } },
-  { id: 'coverage', needs: ['approve-ir'], run: (x) => {
+  { id: 'coverage', needs: ['extract'], run: (x) => {
     const idx = corpusOf(x.ctx!, x.corpusId!).index;
     x.seeds = loadSeeds(x.fixture.seedsFile, { sectionOf: (doc, title) => idx.docs.find((d) => d.key === doc)?.sections.find((s) => s.title === title)?.id ?? null });
     x.coverage = coverageOf(x.ctx!, x.corpusId!, { seeds: x.seeds });
