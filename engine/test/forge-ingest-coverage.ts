@@ -19,7 +19,11 @@ import { runCorpusCommand } from '../forge/commands-corpus.ts';
 import {
   applySeeds, assertPartition, coverageOf, partitionUnits, detectHedges, detectModalConflicts, polarityOf, renderCoverageMarkdown, resolveContradiction, safeExcerpt, tokensOf,
 } from '../forge/coverage.ts';
+import { canonicalJson, digestOf } from '../mission/artifacts.ts';
+import { irSetDigestAt, isIrStale } from '../forge/authority.ts';
 import { extract } from '../forge/extract.ts';
+import { approveIr, planApproveIr } from '../forge/ir-review.ts';
+import { confirmCodeOf } from '../forge/policy.ts';
 import { buildSectionIndex, scoredUnitsOf, windowsOf } from '../forge/sectioner.ts';
 import { harness } from './harness.ts';
 import { inProcessExtractor, olcRepos, seeds } from './lib/ingest-fixture.ts';
@@ -128,6 +132,22 @@ check('nothing is stale at the revision the records were read at', r2.stale.leng
 ctx.store.insertIrRecord({ id: 'ir_' + 'c'.repeat(32), projectId: c.projectId, corpusId, kind: 'requirement', source: 'extracted', statement: 's', attrs: {}, basisSections: [],
   confidence: 0.5, contentDigest: 'sha256:' + '1'.repeat(64), irVersion: 'irv:x', proposedBy: 'agent:mock:default', docKey: 'olc-spec', quote: 'gone', otherQuote: null, firstRevision: rev.id });
 check('an extracted record with no span at the revision is stale (derived, never written)', coverageOf(ctx, corpusId).stale.some((s) => s.irId === 'ir_' + 'c'.repeat(32)));
+
+section('P2-R58: coverage reads R15\'s one staleness rule and IR-set digest; on OLC they equal R14\'s own');
+{
+  const inv = ctx.store.irRecords(corpusId, { revisionId: rev.id }).find((r) => r.kind === 'invariant')!;
+  const set = { kind: 'daylight-approve-ir' as const, version: 1 as const, corpusId, revisionId: rev.id, approve: [inv.id], reject: [], accept: [], dismiss: [] };
+  approveIr(ctx, { corpusId, actor: 'human:miz', rationale: 'read', env: {}, set, confirm: confirmCodeOf(digestOf(canonicalJson(planApproveIr(ctx, corpusId, set).scope))) });
+  const records = ctx.store.irRecords(corpusId, { revisionId: rev.id });
+  // R14's inline formulas as they stood before the merge (coverage.ts ingestRecordStale / ingestIrSetDigest).
+  const r14Stale = records.filter((r) => r.source === 'extracted' && !r.span && r.status !== 'rejected' && r.status !== 'superseded').map((r) => r.id).sort();
+  const lines = records.filter((r) => r.status === 'approved' && (r.span || r.other)).map((r) => `${r.id}:${r.contentDigest}`).sort();
+  const r14Set = lines.length ? digestOf(lines.join('\n')) : null;
+  const now = coverageOf(ctx, corpusId);
+  check('the stale list is the same records', now.stale.map((x) => x.irId).sort().join() === r14Stale.join() && r14Stale.length === 1, JSON.stringify(now.stale));
+  check('the IR-set digest is the same value, and R15\'s', r14Set !== null && now.irSetDigest === r14Set && now.irSetDigest === irSetDigestAt(ctx, corpusId));
+  check('every stale record is stale by isIrStale too', records.every((r) => r14Stale.includes(r.id) === (r.status !== 'rejected' && r.status !== 'superseded' && isIrStale(ctx, r.id))));
+}
 
 section('excerpts: corpus text only, withheld on a redact hit or a holdout basename');
 const span: SpanRef = { docKey: 'olc-spec', sectionId: s6.id, start: s6.bodyStart, end: s6.bodyEnd };

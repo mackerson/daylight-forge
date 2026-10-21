@@ -7,7 +7,8 @@ import { IR_KINDS } from '../mission/types.ts';
 import { defaultOut } from '../paths.ts';
 import { parseSpec } from '../swarm/adapters.ts';
 import { corpusOf, CorpusRefused, registerCorpus } from './corpus.ts';
-import { coverageOf, fencedBlocksOf, holdoutBasenamesOf, ingestRecordStale, renderCoverageMarkdown, safeExcerpt } from './coverage.ts';
+import { isIrStale } from './authority.ts';
+import { coverageOf, fencedBlocksOf, holdoutBasenamesOf, renderCoverageMarkdown, safeExcerpt } from './coverage.ts';
 import { extract } from './extract.ts';
 import { AGENT_SESSION_VARS } from './policy.ts';
 import { windowsOf } from './sectioner.ts';
@@ -219,9 +220,9 @@ export async function runCorpusCommand(argv: string[], env: NodeJS.ProcessEnv, d
           corpusOf(ctx, corpusId);
           const stale = p.flags.has('stale');
           const rows = ctx.store.irRecords(corpusId, { status, kind, sectionId: last(p, 'section') })
-            .filter((r) => !stale || ingestRecordStale(r))
+            .filter((r) => !stale || isIrStale(ctx, r.id))
             .map((r) => ({ id: r.id, kind: r.kind, source: r.source, status: r.status, sectionId: r.span?.sectionId ?? null, start: r.span?.start ?? null,
-              end: r.span?.end ?? null, stale: ingestRecordStale(r), observedBy: r.observedBy, contentDigest: r.contentDigest }));
+              end: r.span?.end ?? null, stale: isIrStale(ctx, r.id), observedBy: r.observedBy, contentDigest: r.contentDigest }));
           // Statements are an extractor's words: JSON carries ids and spans, never them (P2-R40).
           if (asJson) json({ corpusId, records: rows });
           else for (const r of rows) say(`${r.id} ${r.status.padEnd(10)} ${r.kind.padEnd(20)} ${r.source.padEnd(9)} ${r.sectionId ?? '(no span)'}${r.stale ? ' STALE' : ''} ×${r.observedBy.length}`);
