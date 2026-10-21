@@ -611,8 +611,8 @@ rulings.
     counted, never the whole specification; in-repo corpus documents are protected paths.
 - **Consequences.** Recovery from a revised specification is a person's: supersede in
   `approve-ir`, approve a new blueprint, emit, commit, import, approve the plan.
-  `TicketStatus 'stale'` and its bucket land with WS-R16's merge; until then `staleTickets` is read
-  by needs only.
+  The director derives `TicketStatus 'stale'` from `staleTickets` on every pass: a ticket not yet
+  dispatched that cites a stale record waits until a person re-emits and re-imports the plan.
 - **Status.** Decided (P2-R13, P2-R50, P2-R53). Covers the interface plan's ADR-43 and ADR-44.
 
 ### ADR-44 — Traceability is a read; the ingestion benchmark says what it cannot fail (P2, WS-R16)

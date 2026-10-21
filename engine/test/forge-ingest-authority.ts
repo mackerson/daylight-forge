@@ -259,6 +259,17 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   w.ctx.close();
 }
 
+section('the prose says what the code does (WS-R17)');
+{
+  const doc = (rel: string) => fs.readFileSync(path.join(import.meta.dirname, '..', '..', rel), 'utf8').replace(/\s+/g, ' ');
+  const ingest = doc('docs/daylight/INGEST.md');
+  check('INGEST.md covers all of ingestion, not one workstream\'s half', !/WS-R1[45]'?s? half/.test(ingest) && ingest.includes('## Traceability')
+    && ingest.includes('## The ingestion benchmark'));
+  const adr43 = doc('docs/daylight/FORGE_PLAN.md').split('### ADR-43')[1]?.split('### ADR-44')[0] ?? '';
+  check('ADR-43 does not say staleTickets is read by needs only: the director derives stale from it', !adr43.includes('read by needs only')
+    && /set\('stale'/.test(fs.readFileSync(path.join(import.meta.dirname, '..', 'forge', 'director.ts'), 'utf8')));
+}
+
 section('the CLI: what runs in an agent session');
 {
   const p = (positionals: string[], flags: Record<string, string> = {}) => ({ positionals, flags: new Map(Object.entries(flags)), projects: [] });
