@@ -22,7 +22,7 @@ import { isPlanRefusals, parsePlan, topoOrder } from './plan.ts';
 import { spanOfNodeId, traceBackward, traceForward } from './trace.ts';
 import { buildOverlay, formatOverlay } from './bench-overlay.ts';
 import {
-  effectiveMilestones, fixtureProblems, repoPathOf, invariantPlacement, kahnLayers, loadFixture, planOfPackets, resolveBlueprint, resolvePackets, scopeLeaks,
+  effectiveMilestones, fixtureProblems, packetsFileOf, repoPathOf, invariantPlacement, kahnLayers, loadFixture, planOfPackets, resolveBlueprint, resolvePackets, scopeLeaks,
   ticketRefResolution, type BenchFixture,
 } from './bench-fixture.ts';
 import type { OutboxRunner } from '../mission/orchestrate.ts';
@@ -67,7 +67,7 @@ export interface BenchPerson {
   approveBlueprint(ctx: DaylightContext, blueprintId: string): void;
   approvePlan(ctx: DaylightContext, campaignId: string): void;
   /** Register the plan's gates, record their baselines and lock them. */
-  lock(ctx: DaylightContext, o: { root: string; campaignId: string; plan: PlanFile }): void;
+  lock(ctx: DaylightContext, o: { root: string; campaignId: string; plan: PlanFile; holdoutPath: string }): void;
   /** Land one ticket: a mission, a candidate and an integrated row. */
   land(ctx: DaylightContext, o: { root: string; campaignId: string; ticketId: string }): Integration;
 }
@@ -413,7 +413,7 @@ const STAGES: Stage[] = [
     const file = path.join(work, 'blueprint.json');
     fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`);
     const { blueprint, refusals } = importBlueprint(x.ctx!, x.corpusId!, file);
-    if (refusals.length) throw new Error(`blueprint refused: ${refusals.map((r) => `${r.path} ${r.rule}`).join('; ')}`);
+    if (refusals.length) throw new Error(`blueprint refused: ${refusals.map((r) => `${r.path} ${r.rule} (${r.detail})`).join('; ')}`);
     personOf(x).approveBlueprint(x.ctx!, blueprint.id);
     x.blueprintId = blueprint.id;
     return blueprint.id;
@@ -421,15 +421,15 @@ const STAGES: Stage[] = [
   { id: 'packets', needs: ['blueprint'], run: (x, work) => {
     const bodies = resolvePackets(x.fixture.packets, x.irOf!, x.blueprintId!, x.byTicket);
     const file = path.join(work, 'packets.json');
-    fs.writeFileSync(file, `${JSON.stringify(bodies, null, 2)}\n`);
+    fs.writeFileSync(file, `${JSON.stringify(packetsFileOf(bodies), null, 2)}\n`);
     const { packets, refusals } = importPackets(x.ctx!, x.blueprintId!, file);
-    if (refusals.length) throw new Error(`packets refused: ${refusals.map((r) => `${r.path} ${r.rule}`).join('; ')}`);
+    if (refusals.length) throw new Error(`packets refused: ${refusals.map((r) => `${r.path} ${r.rule} (${r.detail})`).join('; ')}`);
     const comps = x.ctx!.store.blueprint(x.blueprintId!)!.body.components;
     const lanes = planOfPackets(x.fixture.packets, comps, 'lanes').lanes;
-    const gate = { id: 'holdout-probe', role: 'holdout' as const, harness: 'node' as const, path: x.fixture.bench.holdout.path, expect: { exitCode: 0 } };
-    const emitted = emitPlan(x.ctx!, x.blueprintId!, { lanes, campaignGates: [gate as unknown as PlanFile['campaignGates'][number]] });
+    // A holdout is never in the plan (authors read it); the person registers it before the lock.
+    const emitted = emitPlan(x.ctx!, x.blueprintId!, { lanes, campaignGates: [] });
     x.plan = emitted.plan;
-    return `${packets.length} packets, plan ${path.basename(emitted.file)}`;
+    return `${packets.length} packets, plan of ${emitted.plan.tickets.length} tickets emitted`;
   } },
   { id: 'campaign', needs: ['packets'], run: (x) => {
     const person = personOf(x);
@@ -438,7 +438,7 @@ const STAGES: Stage[] = [
     const imp = importPlan(x.ctx!, x.root!, 'daylight.plan.json');
     x.campaignId = imp.campaign.id;
     person.approvePlan(x.ctx!, x.campaignId);
-    person.lock(x.ctx!, { root: x.root!, campaignId: x.campaignId, plan: x.plan! });
+    person.lock(x.ctx!, { root: x.root!, campaignId: x.campaignId, plan: x.plan!, holdoutPath: x.fixture.bench.holdout.path });
     return `${x.campaignId}: ${x.ctx!.store.ticketTrace(x.campaignId).length} trace rows`;
   } },
   { id: 'landing', needs: ['campaign'], run: (x) => {
@@ -508,10 +508,11 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; agents?: (
       try {
         stages.push({ id: s.id, status: 'ok', detail: await s.run(x, work) });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const listed = (err as { refusals?: Array<{ path: string; rule: string; detail: string }> }).refusals;
+        const message = `${err instanceof Error ? err.message : String(err)}${listed?.length ? `: ${listed.map((r) => `${r.path} ${r.rule} (${r.detail})`).join('; ')}` : ''}`;
         stages.push(err instanceof StageBlocked ? { id: s.id, status: 'blocked', detail: message }
           : message === NOT_IMPLEMENTED ? { id: s.id, status: 'blocked', detail: 'a WS-R14/R15 function is still the step-0 stub (not implemented)' }
-            : { id: s.id, status: 'failed', detail: message.slice(0, 400) });
+            : { id: s.id, status: 'failed', detail: message.slice(0, 4000) });
       }
     }
   } finally {

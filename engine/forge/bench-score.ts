@@ -197,8 +197,9 @@ const dirOf = (p: string): string => (p.endsWith('/') ? p : p.includes('/') ? p.
 export function covers(scope: string, gtPath: string, tolerance: 'parent-dir'): boolean {
   const s = normPath(scope);
   const g = normPath(gtPath);
-  if (s === g) return true;
-  if (s.endsWith('/') && g.startsWith(s)) return true;
+  if (s === g || s.replace(/\/$/, '') === g.replace(/\/$/, '')) return true;
+  // A scope entry names a file or a directory prefix, with or without its trailing slash.
+  if (g.startsWith(s.endsWith('/') ? s : `${s}/`)) return true;
   return tolerance === 'parent-dir' && dirOf(s) !== '' && dirOf(g) === dirOf(s);
 }
 

@@ -297,7 +297,7 @@ export function planOfPackets(packets: ReadonlyArray<Pick<PacketTemplate, 'ticke
   components: ReadonlyArray<{ id: string; title: string; owns: string[]; shared?: string[] }>, title: string): PlanFile {
   return {
     kind: 'daylight-plan', version: 1, title, campaignGates: [],
-    lanes: components.map((c) => ({ id: c.id, title: c.title, owns: [...c.owns, ...(c.shared ?? [])] })),
+    lanes: components.map((c) => ({ id: c.id, title: c.title, owns: c.owns, ...(c.shared?.length ? { shared: c.shared } : {}) })),
     tickets: packets.map((p) => ({ id: p.ticketId, lane: p.componentId, title: p.title, statement: p.objective, scope: p.scope, dependsOn: p.prerequisites })),
   };
 }

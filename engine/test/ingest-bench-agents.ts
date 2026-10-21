@@ -9,6 +9,7 @@
  * written as R5's writer would, as the campaign tests do.
  */
 import os from 'node:os';
+import path from 'node:path';
 import type { BenchAgents } from '../forge/ingest-bench.ts';
 import type { BenchFixture } from '../forge/bench-fixture.ts';
 import { approveIr } from '../forge/ir-review.ts';
@@ -16,7 +17,7 @@ import { approveBlueprint } from '../forge/blueprint.ts';
 import { confirmIngest } from '../forge/commands-corpus-review.ts';
 import { approvePlan } from '../forge/campaign.ts';
 import { confirmDigest } from '../forge/confirm.ts';
-import { lockableIds, lockCampaign, registerPlanGates } from '../forge/campaign-gates.ts';
+import { lockableIds, lockCampaign, registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
 import type { GateContext } from '../forge/gate.ts';
 import { commitOn, diffOf, filesOf, git, makeCandidate, rawDecision } from './forge-campaign-run-fixture.ts';
 import { scriptedExtractor, scriptedReviewer } from './lib/ingest-mocks.ts';
@@ -42,9 +43,11 @@ export default function agents(fixture: BenchFixture): BenchAgents {
       approvePlan: (ctx, campaignId) => {
         approvePlan(ctx, { campaignId, actor: HUMAN, rationale: 'benchmark: plan read', env: CLEAN_ENV, confirm: code8(confirmDigest(ctx, 'approve-plan', campaignId).digest) });
       },
-      lock: (ctx, { root, campaignId, plan }) => {
+      lock: (ctx, { root, campaignId, plan, holdoutPath }) => {
         const g: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out: ctx.out, env: CLEAN_ENV };
         registerPlanGates(g, campaignId, plan);
+        registerCampaignGate(g, { campaignId, role: 'holdout', ticketId: null, testSource: 'test("holdout", () => {});\n', basename: path.basename(holdoutPath),
+          prediction: { exitCode: 0 } });
         const c = ctx.store.mission(campaignId)!;
         // Baselines as rows, as forge-campaign-run-cli.ts records them: no sandbox here.
         for (const e of ctx.store.experimentsFor(campaignId)) {

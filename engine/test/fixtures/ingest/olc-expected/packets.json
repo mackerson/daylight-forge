@@ -86,7 +86,7 @@
     {
      "id": "ob1",
      "keys": [
-      "h129"
+      "h025"
      ],
      "statement": "Each of the six primitives has a valid and an invalid fixture."
     }
@@ -233,7 +233,7 @@
     {
      "id": "ob1",
      "keys": [
-      "h143"
+      "h093"
      ],
      "statement": "A cycle and a dangling prerequisite fail naming the id."
     }
@@ -319,7 +319,7 @@
     {
      "id": "ob1",
      "keys": [
-      "h102"
+      "h040"
      ],
      "statement": "square-is-a-rectangle fails naming the predicate; the valid fixtures pass."
     }
@@ -483,8 +483,7 @@
     "M0.Z2"
    ],
    "scope": [
-    "crates/pack/src/build.rs",
-    "crates/pack/src/verify.rs",
+    "crates/pack/src/",
     "examples/olc-pack-example/tests/release.digest",
     "xtask/src/ci.rs"
    ],
@@ -774,7 +773,7 @@
     {
      "id": "ob1",
      "keys": [
-      "h156"
+      "h016"
      ],
      "statement": "An upward dependency, a UI toolkit and a network client below L5 each fail."
     }

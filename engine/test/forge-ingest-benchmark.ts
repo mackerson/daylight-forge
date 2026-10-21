@@ -16,8 +16,9 @@ import { spawnSync } from 'node:child_process';
 import { BenchRefused, CHECKS, liveRefusal, runBenchmark, type BenchReport } from '../forge/ingest-bench.ts';
 import agents from './ingest-bench-agents.ts';
 import { buildHarborCorpus, harborDigest } from './lib/synthetic-corpus.ts';
-import { fixtureProblems, invariantPlacement, loadFixture, planOfPackets, resolveBlueprint, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
+import { fixtureProblems, invariantPlacement, loadFixture, packetsFileOf, planOfPackets, resolveBlueprint, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
 import { ASSIGNABLE } from '../forge/blueprint.ts';
+import { PACKETS_KIND } from '../forge/packets.ts';
 import { closureOf, hungarian, parseGroundTruth, planOfGroundTruth, scorePlan } from './lib/plan-score.ts';
 import { loadSeeds, missedSeeds } from './lib/seed-defects.ts';
 
@@ -218,6 +219,14 @@ for (const name of ['olc', 'harbor']) {
   check(`${name}: every assignable record is placed`, assignable.every((r) => placed.includes(r.id)), String(assignable.filter((r) => !placed.includes(r.id)).length));
   check(`${name}: the blueprint stage passes R15's validator on the real pipeline`, reports[name].stages.find((s) => s.id === 'blueprint')?.status === 'ok',
     reports[name].stages.find((s) => s.id === 'blueprint')?.detail);
+}
+
+section('the packets file is the shape R15 imports: { kind, version: 1, packets } (H3)');
+check('packetsFileOf names the packets kind and version 1', JSON.stringify(Object.keys(packetsFileOf([])).sort()) === '["kind","packets","version"]'
+  && packetsFileOf([]).kind === PACKETS_KIND && packetsFileOf([]).version === 1);
+for (const name of ['olc', 'harbor']) {
+  const st = reports[name].stages.find((s) => s.id === 'packets');
+  check(`${name}: R15 imports the benchmark's packets`, st?.status === 'ok', st?.detail);
 }
 
 section('findings are matched by a stable key, so the same run gives the same report (P2-R61)');

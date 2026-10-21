@@ -218,6 +218,12 @@ function groundTruth(): string {
   return out.join('\n');
 }
 
+/** An obligation cites a requirement, invariant or acceptance condition (R15): the first such record, never a constraint. */
+function obligationKey(keys: readonly string[]): string {
+  const reqText = new Map(CLAUSES.flatMap((c) => c.subs.flatMap((s) => s.reqs)).map((r) => [r.id.toLowerCase(), r]));
+  return keys.find((k) => { const r = reqText.get(k); return r ? r.kind === 'invariant' || !/\b(never|no|not|cannot)\b/i.test(r.text) : /-c$/.test(k); }) ?? keys[0];
+}
+
 function packets(): string {
   const wave = (id: string) => id.split('.')[0];
   const list = TICKETS.map((t) => {
@@ -226,7 +232,7 @@ function packets(): string {
       ...AMENDMENTS.filter((a) => t.clauses.includes(a.clause) && !a.deferral).map((a) => `am-${a.n.toLowerCase()}`)];
     const prereq = t.deps.map((d) => (d.includes('.') ? d : `${wave(t.id)}.${d}`));
     return { ticketId: t.id, componentId: t.lane, milestone: wave(t.id), title: t.title, objective: `Implement Clause ${t.clauses.join(', Clause ')}.`,
-      prerequisites: prereq, scope: t.paths, requirements: reqs, obligations: [{ id: 'ob1', keys: [reqs[0]], statement: `A test demonstrates ${t.clauses[0]}.` }], interfaces: [] };
+      prerequisites: prereq, scope: t.paths, requirements: reqs, obligations: [{ id: 'ob1', keys: [obligationKey(reqs)], statement: `A test demonstrates ${t.clauses[0]}.` }], interfaces: [] };
   });
   return `${JSON.stringify({ kind: 'daylight-packets-template', v: 1, note: 'By construction from the ticket ↔ clause map in README.md.', packets: list }, null, 1)}\n`;
 }
