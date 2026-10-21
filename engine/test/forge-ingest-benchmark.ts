@@ -13,8 +13,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { harness } from './harness.ts';
 import { spawnSync } from 'node:child_process';
+import os from 'node:os';
+import { openDaylight } from '../mission/context.ts';
+import { identifyProject } from '../mission/project.ts';
+import { exportMission, importMission } from '../mission/export.ts';
+import { guardCheck } from '../forge/policy.ts';
+import { runCampaign } from '../forge/director.ts';
+import { applyCandidate } from '../forge/apply.ts';
 import { BenchRefused, CHECKS, liveRefusal, runBenchmark, type BenchReport } from '../forge/ingest-bench.ts';
-import agents from './ingest-bench-agents.ts';
+import { writeExtractorScript } from './lib/bench-extractor.ts';
 import { buildHarborCorpus, harborDigest } from './lib/synthetic-corpus.ts';
 import { fixtureProblems, invariantPlacement, loadFixture, packetsFileOf, planOfPackets, resolveBlueprint, scopeLeaks, ticketRefResolution } from '../forge/bench-fixture.ts';
 import { ASSIGNABLE } from '../forge/blueprint.ts';
@@ -23,14 +30,15 @@ import { closureOf, hungarian, parseGroundTruth, planOfGroundTruth, scorePlan } 
 import { loadSeeds, missedSeeds } from './lib/seed-defects.ts';
 
 const { check, section, done } = harness();
+const git = (root: string, ...args: string[]) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' }).stdout.trim();
 const FIXTURES = path.join(import.meta.dirname, 'fixtures', 'ingest');
 const BENCH_FIXTURES: Record<string, string> = { olc: path.join(FIXTURES, 'olc-expected'), harbor: path.join(FIXTURES, 'harbor') };
-const AGENTS = path.join(import.meta.dirname, 'ingest-bench-agents.ts');
+const EXTRACTOR: Record<string, string> = Object.fromEntries(Object.entries(BENCH_FIXTURES).map(([k, d]) => [k, writeExtractorScript(loadFixture(d))]));
 
 const reports: Record<string, BenchReport> = {};
 for (const name of ['olc', 'harbor']) {
   section(`${name}: mock mode`);
-  const r = await runBenchmark(BENCH_FIXTURES[name], { mode: 'mock', agents, env: {} });
+  const r = await runBenchmark(BENCH_FIXTURES[name], { mode: 'mock', extractor: EXTRACTOR[name], env: {} });
   reports[name] = r;
   const failed = r.checks.filter((c) => c.status === 'fail');
   check('no check fails', failed.length === 0, failed.map((c) => `${c.id}: ${c.detail} ${JSON.stringify(c.value)}`).join(' | '));
@@ -59,7 +67,7 @@ for (const mode of ['live-extract', 'live-full'] as const) {
   check(`${mode} is refused in an agent session`, /agent session/.test(liveRefusal(mode, { CLAUDECODE: '1' }) ?? ''));
   let threw: unknown = null;
   try {
-    await runBenchmark(BENCH_FIXTURES.olc, { mode, agents, env: {} });
+    await runBenchmark(BENCH_FIXTURES.olc, { mode, extractor: EXTRACTOR.olc, env: {} });
   } catch (err) {
     threw = err;
   }
@@ -176,10 +184,12 @@ check('nine clauses with 2–4 sub-clauses, six amendments, three decision recor
   && (a.get('hl-amendments.md')!.match(/^## Amendment A\d —/gm) ?? []).length === 6 && ['01', '02', '03'].every((n) => a.has(`decisions/DR-${n}.md`)));
 check('no file carries a CR byte', [...a.values()].every((t) => !t.includes('\r')));
 
-section('CLI: daylight ingest bench takes the fixture and the scripted agents as inputs (P2-R57)');
+section('CLI: daylight ingest bench takes the fixture and the extractor script as inputs (P2-R57, P2-R61)');
 const cli = (args: string[], env: NodeJS.ProcessEnv) => {
   const r = spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'cli.ts'), 'ingest', 'bench', ...args], {
-    encoding: 'utf8', env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, XDG_DATA_HOME: process.env.XDG_DATA_HOME, ...env }, maxBuffer: 64 * 1024 * 1024,
+    // The caller's environment (the sandbox needs its runtime dir), minus any agent-session marker the case does not set.
+    encoding: 'utf8', env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'CLAUDECODE' && k !== 'DAYLIGHT_SESSION')), ...env },
+    maxBuffer: 64 * 1024 * 1024,
   });
   return { code: r.status ?? 1, out: r.stdout ?? '', err: r.stderr ?? '' };
 };
@@ -187,20 +197,20 @@ const cli = (args: string[], env: NodeJS.ProcessEnv) => {
 const normalise = (r: unknown) => JSON.parse(JSON.stringify(r)
   .replace(/\b(cr|m|ir|bp|pk|i|c|a|t|d|rf)_[0-9a-f]{8,}\b/g, '$1_*').replace(/\b[0-9a-f]{40}\b|\b[0-9a-f]{12}\b/g, '<sha>').replace(/sha256:[0-9a-f]{64}/g, 'sha256:*'));
 for (const name of ['olc', 'harbor']) {
-  const run = cli(['--mode', 'mock', '--fixture', BENCH_FIXTURES[name], '--extractor', AGENTS, '--format', 'json'], { CLAUDECODE: '1' });
+  const run = cli(['--mode', 'mock', '--fixture', BENCH_FIXTURES[name], '--extractor', EXTRACTOR[name], '--format', 'json'], { CLAUDECODE: '1' });
   check(`${name}: ingest bench --mode mock --fixture … --extractor … exits 0 (mock runs in an agent session)`, run.code === 0, run.err);
   const viaCli = run.code === 0 ? JSON.parse(run.out) as BenchReport : null;
   check(`${name}: the CLI's report is the in-test run's report`, !!viaCli && JSON.stringify(normalise(viaCli)) === JSON.stringify(normalise(reports[name])),
     viaCli ? JSON.stringify(normalise(viaCli)).slice(0, 300) : run.err);
 }
-const live = cli(['--mode', 'live-full', '--fixture', BENCH_FIXTURES.olc, '--extractor', AGENTS], {});
+const live = cli(['--mode', 'live-full', '--fixture', BENCH_FIXTURES.olc, '--extractor', EXTRACTOR.olc], {});
 check('a live mode is refused with exit 2 and one line naming P2-R7', live.code === 2 && /^refused: .*P2-R7/.test(live.err) && live.err.trim().split('\n').length === 1, live.err);
 const agent = cli(['--mode', 'live-extract', '--fixture', BENCH_FIXTURES.olc], { DAYLIGHT_SESSION: 'x' });
 check('in an agent session the refusal says so', agent.code === 2 && /agent session/.test(agent.err), agent.err);
 check('mock mode without --extractor is a usage error', cli(['--mode', 'mock', '--fixture', BENCH_FIXTURES.olc], {}).code === 2);
 check('an unknown mode is a usage error', cli(['--mode', 'turbo', '--fixture', BENCH_FIXTURES.olc], {}).code === 2);
 const blind = await runBenchmark(BENCH_FIXTURES.harbor, { mode: 'mock', env: {} });
-check('without scripted agents, extraction is blocked, never faked', blind.stages.find((s) => s.id === 'extract')?.status === 'blocked'
+check('without an extractor script, extraction is blocked, never faked', blind.stages.find((s) => s.id === 'extract')?.status === 'blocked'
   || blind.stages.find((s) => s.id === 'register')?.status === 'blocked');
 
 section('the expected blueprints place every record once, within R15\'s list caps (H1)');
@@ -251,12 +261,63 @@ section('findings are matched by a stable key, so the same run gives the same re
   const seen = new Set<string>();
   let approveOk = 0;
   for (let k = 0; k < 10; k++) {
-    const r = await runBenchmark(BENCH_FIXTURES.olc, { mode: 'mock', agents, env: {} });
+    const r = await runBenchmark(BENCH_FIXTURES.olc, { mode: 'mock', extractor: EXTRACTOR.olc, env: {} });
     if (r.stages.find((s) => s.id === 'approve-ir')?.status === 'ok') approveOk++;
     seen.add(JSON.stringify(normalise(r)));
   }
   check('approve-ir accepts the scripted findings on every one of 10 OLC runs', approveOk === 10, `${approveOk}/10`);
   check('the 10 reports are identical after normalisation', seen.size === 1, `${seen.size} distinct`);
+}
+
+section('the bench never acts as a person: bench:<step> actors on a marked store only (P2-R61)');
+{
+  const work = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-bench-r61-')), 'run');
+  const r = await runBenchmark(BENCH_FIXTURES.harbor, { mode: 'mock', extractor: EXTRACTOR.harbor, env: { CLAUDECODE: '1' }, workDir: work });
+  check('the benchmark runs whole under an agent session (CLAUDECODE set)', r.summary.fail === 0 && r.stages.every((x) => x.status !== 'failed'),
+    r.stages.filter((x) => x.status === 'failed').map((x) => x.detail).join(' | '));
+  const ctx = openDaylight(path.join(work, 'out'));
+  const decisions = ctx.store.missions().flatMap((m) => ctx.store.decisions(m.id));
+  check('the store it made carries the bench mark', ctx.store.isBench());
+  check('every decision on it is a bench:<step> actor, none a person\'s', decisions.length >= 6 && decisions.every((d) => /^bench:[a-z-]+$/.test(d.actor)),
+    [...new Set(decisions.map((d) => d.actor))].join(','));
+  check('the scripted steps are named', ['bench:approve-ir', 'bench:approve-blueprint', 'bench:approve-plan', 'bench:lock-gates', 'bench:authorize', 'bench:integrate']
+    .every((a) => decisions.some((d) => d.actor === a)));
+  const corpus = ctx.store.missions().find((m) => m.kind === 'corpus')!;
+  const attempts = ctx.store.tasks(corpus.id).flatMap((t) => ctx.store.attempts(t.id));
+  check('the extractor ran as the mock agent: every extraction attempt is recorded mock, sandboxed', attempts.length > 0
+    && attempts.every((a) => /^agent:mock:/.test(a.runnerId) && a.sandbox?.profile === 'review'), JSON.stringify(attempts.map((a) => [a.runnerId, a.sandbox?.profile])));
+  const campaign = ctx.store.missions().find((m) => m.kind === 'campaign')!;
+  const refusedBy = (fn: () => unknown, re: RegExp) => { try { fn(); return false; } catch (err) { return re.test((err as Error).message); } };
+  const refusedAsync = async (fn: () => Promise<unknown>, re: RegExp) => { try { await fn(); return false; } catch (err) { return re.test((err as Error).message); } };
+  check('export refuses a bench store', refusedBy(() => exportMission(ctx, campaign.id), /bench store/));
+  check('import refuses a bench store', refusedBy(() => importMission(ctx, {} as never), /bench store/));
+  check('campaign run refuses a bench store', await refusedAsync(() => runCampaign(ctx, { campaignId: campaign.id, repo: path.join(work, 'main') } as never), /bench store/));
+  check('forge apply refuses a bench store', refusedBy(() => applyCandidate(ctx as never, { candidateId: 'c_x', actor: 'human:x', confirm: 'x', repo: '/' } as never), /bench store/));
+  check('a bench store refuses a person\'s decision', refusedBy(() => ctx.store.recordDecision({ missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision,
+    actor: 'human:someone', kind: 'approve', rationale: 'x', scope: { operation: 'approve-plan' }, artifactIds: [] }), /bench store records bench/));
+  check('the guard refuses a person on a bench store', /bench store/.test(guardCheck({}, 'human:someone', 'deadbeef', `sha256:${'d'.repeat(64)}`, ctx.store) ?? ''));
+  check('the guard accepts a bench actor on it, with the confirm code, even under an agent session',
+    guardCheck({ CLAUDECODE: '1' }, 'bench:approve-ir', 'dddddddd', `sha256:${'d'.repeat(64)}`, ctx.store) === null
+    && /--confirm/.test(guardCheck({}, 'bench:approve-ir', 'eeeeeeee', `sha256:${'d'.repeat(64)}`, ctx.store) ?? ''));
+  check('a used store cannot become a bench store', refusedBy(() => ctx.store.markBench(), /fresh store/) || ctx.store.isBench());
+  ctx.close();
+  const plain = openDaylight(fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-plain-')));
+  check('a store without the mark is not a bench store', !plain.store.isBench());
+  check('the guard refuses a bench actor on a store without the mark, and with no store at all',
+    /ingest bench/.test(guardCheck({}, 'bench:approve-ir', 'dddddddd', `sha256:${'d'.repeat(64)}`, plain.store) ?? '')
+    && /ingest bench/.test(guardCheck({}, 'bench:approve-ir', 'dddddddd', `sha256:${'d'.repeat(64)}`) ?? ''));
+  const project = identifyProject(path.join(work, 'main'));
+  plain.store.ensureProject(project);
+  const p = plain.store.createMission({ projectId: project.id, kind: 'campaign', objective: 'x', baseRevision: git(path.join(work, 'main'), 'rev-parse', 'HEAD') });
+  check('a store without the mark refuses a bench actor\'s row', refusedBy(() => plain.store.recordDecision({ missionId: p.id, projectId: p.projectId,
+    revision: p.baseRevision, actor: 'bench:approve-plan', kind: 'approve', rationale: 'x', scope: { operation: 'approve-plan' }, artifactIds: [] }), /only on a bench store/));
+  plain.close();
+  check('a programmatic work directory outside the temp dir is refused', await refusedAsync(() => runBenchmark(BENCH_FIXTURES.harbor,
+    { mode: 'mock', extractor: EXTRACTOR.harbor, env: {}, workDir: path.join(os.homedir(), 'daylight-bench-nope') }), /works only under/));
+  check('a non-empty work directory is refused', await refusedAsync(() => runBenchmark(BENCH_FIXTURES.harbor,
+    { mode: 'mock', extractor: EXTRACTOR.harbor, env: {}, workDir: path.dirname(work) }), /not empty/));
+  const src = ['../ingest/bench.ts', '../forge/ingest-bench.ts'].map((f) => fs.readFileSync(path.join(import.meta.dirname, f), 'utf8')).join('\n');
+  check('the extractor script is never imported by product code', !/\bimport\s*\(/.test(src));
 }
 
 section('mock-mode scores (for the hand-off)');

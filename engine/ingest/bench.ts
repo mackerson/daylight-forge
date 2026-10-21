@@ -1,17 +1,16 @@
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { BENCH_MODES, liveRefusal, renderBenchText, runBenchmark, type BenchAgents, type BenchMode } from '../forge/ingest-bench.ts';
-import type { BenchFixture } from '../forge/bench-fixture.ts';
+import fs from 'node:fs';
+import { BENCH_MODES, liveRefusal, renderBenchText, runBenchmark, type BenchMode } from '../forge/ingest-bench.ts';
 
 /**
  * `daylight ingest bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json] [--keep]`:
  * the ingestion benchmark (spec ingestion §11, WS-R16, P2-R57).
  *
  * Everything project-specific is an input: `--fixture` is a directory with `bench.json` (manifest,
- * ground truth, IR overlay, seeds and templates it names), and in mock mode `--extractor` is a
- * module whose default export, given the loaded fixture, returns the scripted agents and the
- * scripted person (`BenchAgents`) — the way `DAYLIGHT_MOCK_ADAPTER` names a mock agent. Nothing
- * here knows a project or a test file. A live mode is refused with one line: never from an agent
+ * ground truth, IR overlay, seeds and templates it names), and in mock mode `--extractor` is the
+ * script the mock extractor and reviewer run as: a child process under the review sandbox, as
+ * `DAYLIGHT_MOCK_ADAPTER` names one, never imported (P2-R61). The person's steps are the bench's
+ * `bench:<step>` actors on a store marked as a bench store. Nothing here knows a project or a test file. A live mode is refused with one line: never from an agent
  * session, and nowhere until a live-spend grant exists (P2-R7). Exit 0 nothing failed, 1 a check
  * failed, 2 bad arguments or a refusal.
  */
@@ -43,9 +42,9 @@ export async function runIngestBench(argv: string[], env: NodeJS.ProcessEnv): Pr
   if (!fixture) return usage('--fixture is required');
   if (!extractor) return usage('mock mode needs --extractor <script>');
   try {
-    const mod = (await import(pathToFileURL(path.resolve(extractor)).href)) as { default?: (f: BenchFixture) => BenchAgents };
-    if (typeof mod.default !== 'function') return usage(`${extractor} has no default export returning the scripted agents`);
-    const report = await runBenchmark(path.resolve(fixture), { mode, agents: mod.default, env, keep: flags.get('keep') === 'true' });
+    // The script is never imported: it runs as the mock agent, a child process under the review sandbox (P2-R61).
+    if (!fs.existsSync(extractor)) return usage(`no extractor script at ${extractor}`);
+    const report = await runBenchmark(path.resolve(fixture), { mode, extractor: path.resolve(extractor), env, keep: flags.get('keep') === 'true' });
     process.stdout.write(format === 'json' ? `${JSON.stringify(report, null, 2)}\n` : renderBenchText(report));
     return report.summary.fail ? 1 : 0;
   } catch (err) {

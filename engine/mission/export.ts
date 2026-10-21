@@ -104,6 +104,7 @@ function collectArtifactRefs(ctx: DaylightContext, parts: Omit<MissionExport, 'a
 }
 
 export function exportMission(ctx: DaylightContext, missionId: string): MissionExport {
+  if (ctx.store.isBench()) throw new Error('refused: this is a bench store (`ingest bench`, P2-R61); its rows are a benchmark\'s and never leave it');
   const mission = ctx.store.mission(missionId);
   if (!mission) throw new Error(`unknown mission ${missionId}`);
   // P2-R14: a derived write grant never travels without the campaign it derives from.
@@ -321,6 +322,7 @@ function sameClaim(a: Claim, b: Claim): boolean {
  * tree. `force` is for a map that is not there yet, or an operator who knows better.
  */
 export function importMission(ctx: DaylightContext, file: MissionExport, opts: { force?: boolean } = {}): ImportResult {
+  if (ctx.store.isBench()) throw new Error('refused: this is a bench store (`ingest bench`, P2-R61); nothing is imported into it');
   const here = mappedProject(ctx.out);
   if (here && here.id !== file.project.id && !opts.force) {
     throw new Error(

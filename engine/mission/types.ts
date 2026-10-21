@@ -66,6 +66,14 @@ export function isEntityId(kind: EntityKind, value: unknown): value is string {
 
 /** `human:<name>`, the only actor a Forge decision accepts. Bare `human` names nobody. */
 export const isHumanActor = (actor: string): boolean => /^human:\S+$/.test(actor);
+/**
+ * `bench:<step>`: the ingestion benchmark's scripted stand-in for a person (P2-R61). A store
+ * records one only when `ingest bench` created it with the bench mark, and a bench store records
+ * no other decision actor, so a row read back with a bench actor is on a throwaway store.
+ */
+export const isBenchActor = (actor: string): boolean => /^bench:[a-z][a-z0-9-]{0,31}$/.test(actor);
+/** The actor of a person's decision as the store reads it back: a person, or the bench's stand-in on a bench store. */
+export const isPersonActor = (actor: string): boolean => isHumanActor(actor) || isBenchActor(actor);
 
 // ---- identity ----------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { CandidateFile, MissionScope, PolicyRule, PolicyViolation } from '../mission/types.ts';
-import { isHumanActor } from '../mission/types.ts';
+import { isBenchActor, isHumanActor } from '../mission/types.ts';
 import { protectedBy, type CrateLayout, type ProjectPolicy } from './project-policy.ts';
 
 /**
@@ -293,11 +293,14 @@ export function confirmCodeOf(digest: string): string {
  * agent approving its own work by accident, not a person determined to lie.
  */
 export function assertHumanDecision(
-  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string,
+  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string, store?: BenchMarked,
 ): void {
-  const why = guardCheck(env, actor, confirm, digest);
+  const why = guardCheck(env, actor, confirm, digest, store);
   if (why !== null) throw new DecisionRefused(why);
 }
+
+/** What the guard asks of a store about the bench (P2-R61): only the store knows whether `ingest bench` created it. */
+export interface BenchMarked { isBench(): boolean }
 
 /**
  * The same rules as `assertHumanDecision`, answered rather than enforced: the reason the act
@@ -305,13 +308,20 @@ export function assertHumanDecision(
  * is disabled before anyone presses it (R12.5). Never a substitute for the assert at the act.
  */
 export function guardCheck(
-  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string,
+  env: Readonly<Record<string, string | undefined>>, actor: string, confirm: string | undefined, digest: string, store?: BenchMarked,
 ): string | null {
-  const set = AGENT_SESSION_VARS.filter((k) => env[k] !== undefined && env[k] !== '');
-  if (set.length) {
-    return `refused: ${set.join(' and ')} is set, so an agent is running this; a human decides this from their own shell`;
+  if (isBenchActor(actor)) {
+    // P2-R61: the benchmark's scripted step, never a person, and only on the store it created. It
+    // does not pass for a person, so the agent-session rule (which protects people) does not apply.
+    if (!store?.isBench()) return `refused: ${actor} decides only on a store \`ingest bench\` created, and this is not one`;
+  } else {
+    const set = AGENT_SESSION_VARS.filter((k) => env[k] !== undefined && env[k] !== '');
+    if (set.length) {
+      return `refused: ${set.join(' and ')} is set, so an agent is running this; a human decides this from their own shell`;
+    }
+    if (!isHumanActor(actor)) return `refused: the actor must be human:<name>, not ${actor}`;
+    if (store?.isBench()) return 'refused: a bench store records the bench\'s scripted steps only; a person decides on their own store';
   }
-  if (!isHumanActor(actor)) return `refused: the actor must be human:<name>, not ${actor}`;
   let code: string;
   try {
     code = confirmCodeOf(digest);

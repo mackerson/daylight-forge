@@ -440,11 +440,16 @@ What a trace says instead of guessing, as `gaps`:
 `daylight ingest bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json]`,
 and `engine/test/forge-ingest-benchmark.ts` in `test:all` (mock mode, both corpora; it also runs
 the CLI and requires the same report). The benchmark is product code (`engine/forge/ingest-bench.ts`,
-P2-R57) and knows no project: the corpus is `--fixture`, and in mock mode the scripted agents
-*and the scripted person* (every human act: approve-ir, approve-blueprint, approve-plan, the gate
-lock, the landing) are the `--extractor` module, as `DAYLIGHT_MOCK_ADAPTER` names a mock agent.
-The benchmark itself makes no human decision; without a person those stages are blocked. The tests
-pass `engine/test/ingest-bench-agents.ts`. The store is a throwaway under the work directory.
+P2-R57) and knows no project: the corpus is `--fixture`. In mock mode the extractor and reviewer
+are the `--extractor` script, run as the mock agent exactly as `DAYLIGHT_MOCK_ADAPTER` names one: a
+child process in the review sandbox that sees only its prompt and its MCP socket, its attempts
+recorded `mock`, never imported (P2-R61). The tests generate it from the fixture
+(`engine/test/lib/bench-extractor.ts`). The benchmark never acts as a person: its store is created
+with a `daylight_meta.bench = 1` mark, the person's steps (approve-ir, approve-blueprint,
+approve-plan, the gate lock, the landing) are `bench:<step>` actors that only such a store and
+the guard with it accept, a bench store records no other decision actor, and `export`, `import`,
+`campaign run` and `forge apply` refuse it. The store lives under a fresh directory in the system
+temp dir and is removed after the run.
 
 **Corpora.** Two fixtures under `engine/test/fixtures/ingest/`, each described by a `bench.json`
 (document keys, the repositories to commit, the answer files; paths relative to it). Answers are

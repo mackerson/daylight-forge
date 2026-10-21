@@ -12,12 +12,17 @@ import type {
 import { corpusOf, registerCorpus } from './corpus.ts';
 import { extract } from './extract.ts';
 import { coverageOf, safeExcerpt } from './coverage.ts';
-import { currentIrSetDigest, runIrReview } from './ir-review.ts';
-import { importBlueprint } from './blueprint.ts';
+import { approveIr, currentIrSetDigest, runIrReview } from './ir-review.ts';
+import { approveBlueprint, importBlueprint } from './blueprint.ts';
+import { confirmIngest, defaultOutboxRunner } from './commands-corpus-review.ts';
+import { confirmDigest } from './confirm.ts';
+import { lockableIds, lockCampaign, registerCampaignGate, registerPlanGates } from './campaign-gates.ts';
+import type { GateContext } from './gate.ts';
+import { DIFF_FLAGS } from './diff.ts';
 import { emitPlan, importPackets, packetContext } from './packets.ts';
 import { quoteDigestOf, reviseCorpus, staleTickets } from './authority.ts';
-import { importPlan } from './campaign.ts';
-import { AGENT_SESSION_VARS } from './policy.ts';
+import { approvePlan, importPlan } from './campaign.ts';
+import { AGENT_SESSION_VARS, confirmCodeOf } from './policy.ts';
 import { isPlanRefusals, parsePlan, topoOrder } from './plan.ts';
 import { spanOfNodeId, traceBackward, traceForward } from './trace.ts';
 import { buildOverlay, formatOverlay } from './bench-overlay.ts';
@@ -25,7 +30,6 @@ import {
   effectiveMilestones, fixtureProblems, packetsFileOf, repoPathOf, invariantPlacement, kahnLayers, loadFixture, planOfPackets, resolveBlueprint, resolvePackets, scopeLeaks,
   ticketRefResolution, type BenchFixture,
 } from './bench-fixture.ts';
-import type { OutboxRunner } from '../mission/orchestrate.ts';
 import { scorePlan, type PlanScore } from './bench-score.ts';
 import { loadSeeds, missedSeeds } from './bench-seeds.ts';
 
@@ -44,11 +48,13 @@ import { loadSeeds, missedSeeds } from './bench-seeds.ts';
  * (P2-R7) and no live-spend grant exists yet.
  *
  * Product code, project-agnostic (P2-R52, P2-R57): everything about a corpus is the fixture
- * directory, and everything that stands in for an agent or a person is `BenchAgents`, supplied by
- * the caller (`daylight ingest bench --extractor <script>`, as `DAYLIGHT_MOCK_ADAPTER` supplies a
- * mock agent). This module performs no human act: approve-ir, approve-blueprint, approve-plan, the
- * gate lock and the landing are the scripted person's, and a stage without one is blocked. The
- * store is a throwaway under the work directory, never a user's `<out>`.
+ * directory. Mock mode's extractor and reviewer are a script (`--extractor`) run as the mock agent,
+ * a child process under the review sandbox exactly as `DAYLIGHT_MOCK_ADAPTER` names one, its
+ * attempts recorded `mock` (P2-R61). The person's steps (approve-ir, approve-blueprint,
+ * approve-plan, the gate lock, the landing) are made by `bench:<step>` actors, which a store
+ * accepts only when `ingest bench` created it with the bench mark: the benchmark never acts as a
+ * person, and its store never leaves (export, import, campaign run and forge apply refuse it).
+ * The store is a throwaway under a fresh temporary work directory.
  */
 
 export const BENCH_MODES = ['mock', 'live-extract', 'live-full'] as const;
@@ -59,23 +65,6 @@ export function liveRefusal(mode: BenchMode, env: Readonly<Record<string, string
   if (mode === 'mock') return null;
   if (AGENT_SESSION_VARS.some((k) => env[k] !== undefined && env[k] !== '')) return `${mode} spends on live models and is never run from an agent session`;
   return `${mode} needs live model spend, which is not authorised (P2-R7): no live-spend grant exists yet`;
-}
-
-/** The person the benchmark scripts: every act a human makes in the pipeline, on the throwaway store. */
-export interface BenchPerson {
-  approveIr(ctx: DaylightContext, set: ApproveIrSetV1): void;
-  approveBlueprint(ctx: DaylightContext, blueprintId: string): void;
-  approvePlan(ctx: DaylightContext, campaignId: string): void;
-  /** Register the plan's gates, record their baselines and lock them. */
-  lock(ctx: DaylightContext, o: { root: string; campaignId: string; plan: PlanFile; holdoutPath: string }): void;
-  /** Land one ticket: a mission, a candidate and an integrated row. */
-  land(ctx: DaylightContext, o: { root: string; campaignId: string; ticketId: string }): Integration;
-}
-/** What stands in for agents and people in mock mode; the CLI loads it from `--extractor <script>`. */
-export interface BenchAgents {
-  extract: OutboxRunner;
-  review?: (findings: ReportedIrFinding[]) => OutboxRunner;
-  person?: BenchPerson;
 }
 
 export type Falsifiable = 'falsifiable' | 'by-construction' | 'not-measured';
@@ -101,7 +90,7 @@ class StageBlocked extends Error {}
 // ---- what the stages produce -------------------------------------------------------------------
 
 interface Inputs {
-  fixture: BenchFixture; agents: BenchAgents | null;
+  fixture: BenchFixture; extractor: string | null; env: Readonly<Record<string, string | undefined>>;
   ctx?: DaylightContext; root?: string; projects?: Record<string, string>; rev?: CorpusRevision; corpusId?: string;
   irOf?: (key: string) => string | null; records?: IrRecord[]; units?: Array<{ docKey: string; start: number; end: number }>; approved?: Set<string>; coverage?: CoverageReport; seeds?: SeededDefect[];
   blueprintId?: string; byTicket?: Map<string, string[]>; plan?: PlanFile; campaignId?: string; landing?: Integration; backward?: TraceReport; forward?: TraceReport; roundTrip?: boolean;
@@ -292,6 +281,8 @@ function buildRepos(x: Inputs, work: string): void {
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, 'view.json'), JSON.stringify({ root: x.root }));
   x.ctx = openDaylight(out);
+  // P2-R61: marked before its first row, so only bench:<step> actors ever decide on it.
+  x.ctx.store.markBench();
   x.ctx.store.ensureProject(identifyProject(x.root!));
 }
 
@@ -330,9 +321,84 @@ function rowSnapshot(ctx: DaylightContext): Map<string, string> {
 /** A finding's stable identity across runs: the record it names, its kind and the digest of the quote it cites (P2-R61). */
 export const findingKey = (irId: string | null, kind: string, quoteDigest: string | null): string => `${irId ?? '-'}|${kind}|${quoteDigest ?? '-'}`;
 
-function personOf(x: Inputs): BenchPerson {
-  if (!x.agents?.person) throw new StageBlocked('the scripted agents bring no person: every human act is theirs, never the benchmark\'s');
-  return x.agents.person;
+// ---- the bench's scripted steps (P2-R61) -----------------------------------------------------
+
+/** The actor of one scripted step: accepted only by a store `ingest bench` created. */
+const benchActor = (step: string) => `bench:${step}`;
+const code8 = (digest: string) => confirmCodeOf(digest);
+
+/**
+ * Run `fn` with the extractor script as the mock agent: `DAYLIGHT_MOCK_ADAPTER` is how the runner
+ * finds a mock, so it is set for the run and restored after, and every attempt is recorded `mock`.
+ */
+async function withMockAgent<T>(x: Inputs, fn: () => Promise<T>): Promise<T> {
+  if (!x.extractor) throw new StageBlocked('mock mode needs an extractor script (--extractor <script>)');
+  const before = process.env.DAYLIGHT_MOCK_ADAPTER;
+  process.env.DAYLIGHT_MOCK_ADAPTER = x.extractor;
+  try {
+    return await fn();
+  } finally {
+    if (before === undefined) delete process.env.DAYLIGHT_MOCK_ADAPTER;
+    else process.env.DAYLIGHT_MOCK_ADAPTER = before;
+  }
+}
+
+const gateContext = (x: Inputs): GateContext => ({ store: x.ctx!.store, artifacts: x.ctx!.artifacts, events: x.ctx!.events, repoRoot: x.root!, out: x.ctx!.out, env: x.env });
+
+/** A commit on `parent` with `changes`, by plumbing: HEAD, index and worktree untouched. */
+function commitOnto(root: string, parent: string, changes: Record<string, string>, message: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-bench-index-'));
+  const env = { ...GIT_ENV, GIT_INDEX_FILE: path.join(dir, 'index'), GIT_AUTHOR_NAME: 'bench', GIT_AUTHOR_EMAIL: 'bench@daylight.invalid',
+    GIT_COMMITTER_NAME: 'bench', GIT_COMMITTER_EMAIL: 'bench@daylight.invalid' };
+  const run = (args: string[], input?: string) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', root, ...args],
+    { env, encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  try {
+    run(['read-tree', parent]);
+    for (const [rel, text] of Object.entries(changes)) {
+      const sha = run(['hash-object', '-w', '--stdin'], text);
+      run(['update-index', '--add', '--cacheinfo', `100644,${sha},${rel}`]);
+    }
+    return run(['commit-tree', run(['write-tree']), '-p', parent, '-m', message]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The landing the trace checks walk: a ticket mission authorized by the bench, one candidate whose
+ * diff is a real commit on the campaign base, and an integration landed by the bench. Every row is
+ * the store's own; no decision is a person's.
+ */
+function land(x: Inputs, ticketId: string): Integration {
+  const store = x.ctx!.store;
+  const c = store.mission(x.campaignId!)!;
+  const t = store.campaignTicket(c.id, ticketId);
+  if (!t) throw new Error(`no ticket ${ticketId} in the campaign`);
+  const m = store.authorizeMission({ missionId: store.createMission({ projectId: c.projectId, kind: 'implement', objective: `ticket ${ticketId}`,
+    baseRevision: c.baseRevision, parentId: c.id, workItemId: t.workItemId, scope: { paths: t.scope } }).id, actor: benchActor('authorize'),
+  rationale: 'benchmark landing', permissions: { write: true, execute: false }, maxUsd: 1 }).mission;
+  const rel = t.scope.find((s) => !s.endsWith('/')) ?? `${(t.scope[0] ?? '').replace(/\/?$/, '/')}landed.txt`;
+  const tip = commitOnto(x.root!, c.baseRevision, { [rel]: `landed by the benchmark for ${ticketId}\n` }, `land ${ticketId}`);
+  const diff = execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', x.root!, 'diff', ...DIFF_FLAGS, c.baseRevision, tip, '--'], { env: GIT_ENV });
+  const task = store.createTask({ missionId: m.id, role: 'author', objective: 'author', runnerHint: 'mock' });
+  const grant = store.authorizeDecision(m.id)!;
+  const a = store.startAttempt({ taskId: task.id, runnerId: 'agent:mock:bench',
+    sandbox: { profile: 'author', network: 'none', write: true, exec: false, authorizeDecisionId: grant.id } });
+  store.finishAttempt(a.id, { state: 'completed', costUsd: null });
+  const put = (body: Buffer | string, kind: 'diff' | 'summary', label: string) => x.ctx!.artifacts.put(body, { kind, projectId: m.projectId, revision: c.baseRevision, label });
+  const cand = store.createCandidate({
+    missionId: m.id, attemptId: a.id, projectId: m.projectId, baseCommit: c.baseRevision, diffArtifact: put(diff, 'diff', 'candidate diff'),
+    summaryArtifact: put('{}', 'summary', 'summary'), files: [{ path: rel, change: 'added', insertions: 1, deletions: 0, mode: 'file' }],
+    policyViolations: [], secretHits: 0, gateSetDigest: store.campaignLockDecision(c.id)?.scope.gateSetDigest as string ?? '',
+    profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed',
+  });
+  const i = store.recordIntegration({ campaignId: c.id, missionId: m.id, candidateId: cand.id, ref: `refs/heads/daylight/campaign/${c.id}`, onto: c.baseRevision,
+    candidateBase: c.baseRevision });
+  store.updateIntegration(i.id, 'pending', { state: 'evaluating', method: 'apply', integratedCommit: tip, integratedTree: git(x.root!, 'rev-parse', `${tip}^{tree}`),
+    integratedDiffDigest: cand.diffArtifact.digest });
+  const d = store.recordDecision({ missionId: c.id, projectId: c.projectId, revision: tip, actor: benchActor('integrate'), kind: 'approve', rationale: 'benchmark landing',
+    scope: { operation: 'integrate-candidate', integrationId: i.id, candidateId: cand.id }, artifactIds: [] });
+  return store.updateIntegration(i.id, 'evaluating', { state: 'integrated', decisionId: d.id });
 }
 
 type Stage = { id: StageId; run(x: Inputs, work: string): Promise<string> | string; needs: StageId[]; when?: (x: Inputs) => boolean };
@@ -354,24 +420,16 @@ const STAGES: Stage[] = [
     return `${x.rev.id} with ${x.rev.docs.length} documents`;
   } },
   { id: 'extract', needs: ['register'], run: async (x) => {
-    if (!x.agents) throw new StageBlocked('mock mode needs scripted agents (--extractor <script>)');
-    const r = await extract(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: x.agents.extract });
+    const r = await withMockAgent(x, () => extract(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: defaultOutboxRunner }));
     bindKeys(x);
     const unbound = x.fixture.overlay.records.filter((o) => !x.irOf!(o.key)).length;
+    // A record the scripted extractor did not propose is its failure, never a quiet partial run.
+    if (unbound) throw new Error(`${unbound} of ${x.fixture.overlay.records.length} fixture records were not extracted (${r.refused.length} refused); see the attempts' transcripts`);
     return `${r.proposed.length} proposed, ${r.refused.length} refused, ${unbound} fixture record(s) not bound`;
   } },
   { id: 'review', needs: ['extract'], when: (x) => x.fixture.review !== null, run: async (x) => {
-    const idx = corpusOf(x.ctx!, x.corpusId!).index;
-    const findings: ReportedIrFinding[] = x.fixture.review!.findings.map((f) => {
-      const irId = f.irKey ? x.irOf!(f.irKey) : null;
-      if (f.irKey && !irId) throw new Error(`review.json names ${f.irKey}, which no extracted record carries`);
-      const rec = irId ? x.ctx!.store.irRecord(irId) : null;
-      const section = rec?.span?.sectionId ?? sectionAt(idx, f.docKey!, x.fixture.docs.get(f.docKey!)!.indexOf(Buffer.from(f.quote!, 'utf8')));
-      return { kind: f.kind as ReportedIrFinding['kind'], severity: f.severity, title: f.title, statement: f.statement, section: section ?? '',
-        ...(irId ? { irId } : {}), ...(f.quote ? { quote: f.quote } : {}) };
-    });
-    if (!x.agents?.review) throw new StageBlocked('the scripted agents bring no reviewer');
-    const r = await runIrReview(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: x.agents.review(findings) });
+    for (const f of x.fixture.review!.findings) if (f.irKey && !x.irOf!(f.irKey)) throw new Error(`review.json names ${f.irKey}, which no extracted record carries`);
+    const r = await withMockAgent(x, () => runIrReview(x.ctx!, x.corpusId!, x.root!, ['mock', 'mock:b'], { runner: defaultOutboxRunner }));
     return `${r.findings.length} finding(s), ${r.refused.length} refused`;
   } },
   { id: 'approve-ir', needs: ['extract'], run: (x) => {
@@ -380,12 +438,12 @@ const STAGES: Stage[] = [
     const rejectKeys = new Set(x.fixture.review?.reject ?? []);
     const reject = recs.filter((r) => !bound.has(r.id) || [...rejectKeys].some((k) => x.irOf!(k) === r.id)).map((r) => r.id);
     const findings = x.ctx!.store.irFindings(x.corpusId!, { disposition: 'open' });
-    const byKey = new Map(findings.map((f) => [findingKey(f.irId, f.kind, f.span?.quoteDigest ?? null), f.id]));
-    const want = (x.fixture.review?.findings ?? []).map((f) => {
+    // Two blind reviewers report the same finding twice; both rows take the scripted disposition.
+    const want = (x.fixture.review?.findings ?? []).flatMap((f) => {
       const k = findingKey(f.irKey ? x.irOf!(f.irKey) : null, f.kind, f.quote ? quoteDigestOf(f.quote) : null);
-      const id = byKey.get(k);
-      if (!id) throw new Error(`no stored finding matches the scripted ${f.kind} finding (${k})`);
-      return { id, disposition: f.disposition };
+      const ids = findings.filter((s) => findingKey(s.irId, s.kind, s.span?.quoteDigest ?? null) === k).map((s) => s.id);
+      if (!ids.length) throw new Error(`no stored finding matches the scripted ${f.kind} finding (${k})`);
+      return ids.map((id) => ({ id, disposition: f.disposition }));
     });
     const unscripted = findings.filter((f) => !want.some((w) => w.id === f.id));
     if (unscripted.length) throw new Error(`${unscripted.length} stored finding(s) the review script does not name`);
@@ -398,7 +456,8 @@ const STAGES: Stage[] = [
       approve: recs.map((r) => r.id).filter((id) => !reject.includes(id)), reject,
       accept: want.filter((w) => w.disposition === 'accept').map((w) => w.id).sort(), dismiss: want.filter((w) => w.disposition === 'dismiss').map((w) => w.id).sort(),
       corrections };
-    personOf(x).approveIr(x.ctx!, set);
+    approveIr(x.ctx!, { corpusId: x.corpusId!, actor: benchActor('approve-ir'), rationale: 'benchmark: the scripted approve-ir set', env: x.env, set,
+      confirm: code8(confirmIngest(x.ctx!, 'approve-ir', x.corpusId!, { set }).digest) });
     x.approved = new Set(x.ctx!.store.irRecords(x.corpusId!, { status: 'approved' }).map((r) => r.id));
     x.records = x.ctx!.store.irRecords(x.corpusId!);
     return `${x.approved.size} approved, ${reject.length} rejected`;
@@ -419,7 +478,8 @@ const STAGES: Stage[] = [
     fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`);
     const { blueprint, refusals } = importBlueprint(x.ctx!, x.corpusId!, file);
     if (refusals.length) throw new Error(`blueprint refused: ${refusals.map((r) => `${r.path} ${r.rule} (${r.detail})`).join('; ')}`);
-    personOf(x).approveBlueprint(x.ctx!, blueprint.id);
+    approveBlueprint(x.ctx!, { blueprintId: blueprint.id, actor: benchActor('approve-blueprint'), rationale: 'benchmark: the fixture blueprint', env: x.env,
+      confirm: code8(confirmIngest(x.ctx!, 'approve-blueprint', blueprint.id).digest) });
     x.blueprintId = blueprint.id;
     return blueprint.id;
   } },
@@ -437,17 +497,29 @@ const STAGES: Stage[] = [
     return `${packets.length} packets, plan of ${emitted.plan.tickets.length} tickets emitted`;
   } },
   { id: 'campaign', needs: ['packets'], run: (x) => {
-    const person = personOf(x);
     fs.writeFileSync(path.join(x.root!, 'daylight.plan.json'), `${JSON.stringify(x.plan, null, 2)}\n`);
     commitAll(x.root!, 'commit the emitted plan (a person, P2-R50 F1)');
     const imp = importPlan(x.ctx!, x.root!, 'daylight.plan.json');
     x.campaignId = imp.campaign.id;
-    person.approvePlan(x.ctx!, x.campaignId);
-    person.lock(x.ctx!, { root: x.root!, campaignId: x.campaignId, plan: x.plan!, holdoutPath: x.fixture.bench.holdout.path });
+    approvePlan(x.ctx!, { campaignId: x.campaignId, actor: benchActor('approve-plan'), rationale: 'benchmark: the emitted plan', env: x.env,
+      confirm: code8(confirmDigest(x.ctx!, 'approve-plan', x.campaignId).digest) });
+    const g = gateContext(x);
+    registerPlanGates(g, x.campaignId, x.plan!);
+    // A holdout is never in the plan (authors read it): registered from a host file, here a stand-in test.
+    registerCampaignGate(g, { campaignId: x.campaignId, role: 'holdout', ticketId: null, testSource: 'test("holdout", () => {});\n',
+      basename: path.basename(x.fixture.bench.holdout.path), prediction: { exitCode: 0, stdoutIncludes: ['# fail 0'] } });
+    // Baselines as rows: nothing runs in the benchmark, so every gate is recorded failing at the base, as a new gate does.
+    const c = x.ctx!.store.mission(x.campaignId)!;
+    for (const e of x.ctx!.store.experimentsFor(x.campaignId)) {
+      x.ctx!.store.recordGateEvaluation({ missionId: c.id, projectId: c.projectId, revision: c.baseRevision, experimentId: e.id, target: 'base', diffDigest: null,
+        harnessDigest: e.harnessDigest, executions: [], conclusion: 'falsified' });
+    }
+    lockCampaign(g, { campaignId: x.campaignId, actor: benchActor('lock-gates'), rationale: 'benchmark: the plan\'s gates and a holdout', ratchet: false, env: x.env,
+      confirm: code8(confirmDigest(g, 'lock-campaign-gates', x.campaignId, { experimentIds: lockableIds(g, x.campaignId), ratchet: false }).digest) });
     return `${x.campaignId}: ${x.ctx!.store.ticketTrace(x.campaignId).length} trace rows`;
   } },
   { id: 'landing', needs: ['campaign'], run: (x) => {
-    x.landing = personOf(x).land(x.ctx!, { root: x.root!, campaignId: x.campaignId!, ticketId: x.fixture.bench.landing.ticket });
+    x.landing = land(x, x.fixture.bench.landing.ticket);
     return `${x.fixture.bench.landing.ticket} landed at ${x.landing.integratedCommit?.slice(0, 12)}`;
   } },
   { id: 'trace', needs: ['landing'], run: (x) => {
@@ -493,14 +565,30 @@ const STAGES: Stage[] = [
   } },
 ];
 
+/**
+ * The work directory: a fresh one under the system temp dir, or the caller's, which must be under
+ * it too and empty (or absent), so the bench store can never be pointed at a real `<out>`.
+ */
+function benchWorkDir(asked: string | undefined): string {
+  const tmp = fs.realpathSync(os.tmpdir());
+  if (asked === undefined) return fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'daylight-ingest-bench-')));
+  const abs = path.resolve(asked);
+  const real = path.join(fs.realpathSync(path.dirname(abs)), path.basename(abs));
+  if (!real.startsWith(`${tmp}${path.sep}`)) throw new BenchRefused(`a benchmark works only under ${tmp}, not ${abs}`);
+  if (fs.existsSync(real) && fs.readdirSync(real).length) throw new BenchRefused(`${abs} is not empty: a benchmark works in a fresh directory`);
+  fs.mkdirSync(real, { recursive: true });
+  return real;
+}
+
 /** Run the benchmark on one fixture directory. Mock mode only; live modes throw `BenchRefused`. */
-export async function runBenchmark(dir: string, o: { mode: BenchMode; agents?: (f: BenchFixture) => BenchAgents; env?: Readonly<Record<string, string | undefined>>;
+export async function runBenchmark(dir: string, o: { mode: BenchMode; extractor?: string; env?: Readonly<Record<string, string | undefined>>;
   workDir?: string; keep?: boolean } = { mode: 'mock' }): Promise<BenchReport> {
-  const refusal = liveRefusal(o.mode, o.env ?? process.env);
+  const env = o.env ?? process.env;
+  const refusal = liveRefusal(o.mode, env);
   if (refusal) throw new BenchRefused(refusal);
-  const work = o.workDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'daylight-ingest-bench-')));
+  const work = benchWorkDir(o.workDir);
   const fixture = loadFixture(dir);
-  const x: Inputs = { fixture, agents: o.agents ? o.agents(fixture) : null };
+  const x: Inputs = { fixture, extractor: o.extractor ? path.resolve(o.extractor) : null, env };
   const stages: StageResult[] = [];
   try {
     for (const s of STAGES) {

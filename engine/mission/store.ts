@@ -11,7 +11,7 @@ import { authorLimits, type ProjectPolicy } from '../forge/project-policy.ts';
 export const CAMPAIGN_AUTHOR_DEFAULTS = { maxTurns: 60, timeoutMs: 600_000 } as const;
 import {
   ATTEMPT_TRANSITIONS, campaignActorOf, canTransition, DECISION_OPERATIONS, DERIVED_OPERATIONS, ID_PREFIX, isCampaignActor,
-  isEntityId, isHumanActor, MISSION_TRANSITIONS,
+  isBenchActor, isEntityId, isHumanActor, isPersonActor, MISSION_TRANSITIONS,
   NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, SANDBOX_REASONS, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
@@ -106,7 +106,7 @@ export function campaignGrantRefusal(d: Decision, parent: Decision | null | unde
     maxUsd?: unknown; permissions?: { write?: unknown; execute?: unknown; deploy?: unknown } };
   if (!isCampaignActor(d.actor)) return `decision ${d.id} is not a campaign actor's`;
   if (!parent || scope.derivedFrom !== parent.id) return `derived decision ${d.id} names no recorded authorize-campaign decision`;
-  if (parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+  if (parent.kind !== 'approve' || !isPersonActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
     return `decision ${parent.id} is not a human authorize-campaign decision`;
   }
   if (d.actor !== campaignActorOf(parent.missionId)) return `decision ${d.id} is recorded as ${d.actor}, not campaign ${parent.missionId}'s actor`;
@@ -138,7 +138,7 @@ export function grantsWrite(
   if (!d || d.missionId !== missionId || d.kind !== 'approve' || scope?.operation !== 'authorize-mission' || scope.permissions?.write !== true) {
     return false;
   }
-  if (isHumanActor(d.actor)) return true;
+  if (isPersonActor(d.actor)) return true;
   return !!mission && mission.id === missionId && campaignGrantRefusal(d, parent, mission) === null;
 }
 
@@ -159,7 +159,7 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
     return `decision ${d.id} is an adhoc-mission decision without the adhoc-mission operation`;
   }
   // Overriding gates is a Forge act whatever its scope says, so it names a person too.
-  if (d.kind === 'override' && !isHumanActor(d.actor)) {
+  if (d.kind === 'override' && !isPersonActor(d.actor)) {
     return `override decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
   }
   if (operation === undefined) return null;
@@ -179,7 +179,7 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
   }
   // A Forge act is a person's, and says which person. An agent, a runner or a bare `human`
   // with no name cannot authorise, lock, approve or apply.
-  if (!isHumanActor(d.actor)) return `${String(operation)} decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
+  if (!isPersonActor(d.actor)) return `${String(operation)} decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
   return null;
 }
 
@@ -421,6 +421,19 @@ export class MissionStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /** Whether `ingest bench` created this store (P2-R61): a throwaway whose decisions are the bench's. */
+  isBench(): boolean {
+    const r = this.db.prepare("SELECT value FROM daylight_meta WHERE key='bench'").get() as { value: string } | undefined;
+    return r?.value === '1';
+  }
+
+  /** Mark a fresh store as a bench store; refused once it holds any mission or decision. */
+  markBench(): void {
+    const used = this.db.prepare('SELECT (SELECT COUNT(*) FROM missions) + (SELECT COUNT(*) FROM decisions) AS n').get() as { n: number };
+    if (used.n > 0) throw new Error('only a fresh store becomes a bench store');
+    this.db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('bench', '1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
   }
 
   /** The store's clock, which every row it writes is stamped with. */
@@ -1769,7 +1782,7 @@ export class MissionStore {
   /** The campaign's most recent human `authorize-campaign` decision, or null. */
   campaignAuthorization(campaignId: string): Decision | null {
     return this.decisions(campaignId)
-      .filter((d) => d.kind === 'approve' && isHumanActor(d.actor) && d.scope.operation === 'authorize-campaign').at(-1) ?? null;
+      .filter((d) => d.kind === 'approve' && isPersonActor(d.actor) && d.scope.operation === 'authorize-campaign').at(-1) ?? null;
   }
 
   /**
@@ -1828,7 +1841,7 @@ export class MissionStore {
   campaignHalts(campaignId: string): Decision[] {
     const all = this.decisions(campaignId);
     const resumed = new Set(all.filter((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip')
-      && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+      && isPersonActor(d.actor)).map((d) => d.scope.haltDecisionId));
     return all.filter((d) => d.scope.operation === 'halt-campaign' && !resumed.has(d.id)).reverse();
   }
 
@@ -1882,7 +1895,7 @@ export class MissionStore {
     const w = this.workItem(workItemId);
     if (!t || t.campaignId !== campaignId || t.origin === 'plan' || w?.status !== 'approved' || !w.decisionId) return null;
     const d = this.decision(w.decisionId);
-    return d && d.scope.operation === 'approve-work-item' && isHumanActor(d.actor) && movesWorkItem(d, w, 'approved') ? d : null;
+    return d && d.scope.operation === 'approve-work-item' && isPersonActor(d.actor) && movesWorkItem(d, w, 'approved') ? d : null;
   }
 
   /** Implement missions released by a `retry-ticket` decision (P2-R25, P2-R27): closed inconclusive or cancelled. */
@@ -1910,7 +1923,7 @@ export class MissionStore {
    */
   envelopeRefusal(parentDecisionId: string, req: EnvelopeRequest): string | null {
     const parent = parentDecisionId ? this.decision(parentDecisionId) : null;
-    if (!parent || parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+    if (!parent || parent.kind !== 'approve' || !isPersonActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
       return `decision ${parentDecisionId || '(none)'} is not a human authorize-campaign decision`;
     }
     const campaign = this.mission(parent.missionId);
@@ -2183,7 +2196,7 @@ export class MissionStore {
         continue;
       }
       const parent = typeof d.scope.derivedFrom === 'string' ? this.decision(d.scope.derivedFrom) : null;
-      if (!parent || parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+      if (!parent || parent.kind !== 'approve' || !isPersonActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
         out.push(`derived decision ${d.id} names no human authorize-campaign decision`);
         continue;
       }
@@ -2898,7 +2911,7 @@ export class MissionStore {
     const d = this.decision(decisionId);
     if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
     // Only a person's approve-ir on this record's corpus moves it (P2-R56, P2-R59): no borrowed decision.
-    if (d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) {
+    if (d.scope.operation !== 'approve-ir' || !isPersonActor(d.actor) || d.missionId !== r.corpusId) {
       throw new Error(`decision ${decisionId} is not a person's approve-ir decision on corpus ${r.corpusId}`);
     }
     // An inferred record without basis is approved on its confirmed interpretation, which it then names.
@@ -3028,7 +3041,7 @@ export class MissionStore {
     if (!b) throw new Error(`unknown blueprint ${id}`);
     if (!canTransition(IR_TRANSITIONS, b.status, to)) throw new IllegalTransition('blueprint', id, b.status, to);
     const d = this.decision(decisionId);
-    if (!d || d.projectId !== b.projectId || d.scope.operation !== 'approve-blueprint' || !isHumanActor(d.actor) || d.missionId !== b.corpusId) {
+    if (!d || d.projectId !== b.projectId || d.scope.operation !== 'approve-blueprint' || !isPersonActor(d.actor) || d.missionId !== b.corpusId) {
       throw new Error(`decision ${decisionId} is not a person's approve-blueprint decision on corpus ${b.corpusId}`);
     }
     this.db.prepare('UPDATE blueprints SET status=?, decision_id=?, updated_at=? WHERE id=?').run(to, decisionId, this.now(), id);
@@ -3137,7 +3150,7 @@ export class MissionStore {
     const r = this.irRecord(irId);
     const d = this.decision(decisionId);
     if (!r || (r.status !== 'rejected' && r.status !== 'superseded')) throw new Error(`record ${irId} is not rejected or superseded`);
-    if (!d || d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) throw new Error(`decision ${decisionId} is not a person's approve-ir on corpus ${r.corpusId}`);
+    if (!d || d.scope.operation !== 'approve-ir' || !isPersonActor(d.actor) || d.missionId !== r.corpusId) throw new Error(`decision ${decisionId} is not a person's approve-ir on corpus ${r.corpusId}`);
     const ids = (this.db.prepare(`SELECT id FROM assumptions WHERE ir_id=? AND source='ir-interpretation' AND status='open'`).all(irId) as Array<{ id: string }>).map((x) => x.id);
     for (const id of ids) this.db.prepare(`UPDATE assumptions SET status='overturned', decision_id=?, updated_at=? WHERE id=? AND status='open'`).run(decisionId, this.now(), id);
     return ids;
@@ -3307,6 +3320,9 @@ export class MissionStore {
   }
 
   private writeDecision(d: Decision): Decision {
+    // P2-R61: the bench's stand-in decides only on a store `ingest bench` created, and there only it decides.
+    if (isBenchActor(d.actor) && !this.isBench()) throw new Error(`a ${d.actor} decision is recorded only on a bench store; this store is not one`);
+    if (this.isBench() && !isBenchActor(d.actor)) throw new Error(`a bench store records bench:<step> decisions only, not ${d.actor}`);
     this.db
       .prepare(
         `INSERT INTO decisions
@@ -3526,15 +3542,15 @@ export function movesWorkItem(d: Decision, w: Pick<WorkItem, 'id' | 'contentDige
   const scope = d.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown; workItems?: unknown; supersedes?: unknown };
   const names = scope.workItemId === w.id && scope.contentDigest === w.contentDigest;
   if (scope.operation === 'approve-plan') {
-    if (d.kind !== 'approve' || !isHumanActor(d.actor)) return false;
+    if (d.kind !== 'approve' || !isPersonActor(d.actor)) return false;
     if (to === 'approved') return (scope.workItems as Record<string, unknown> | undefined)?.[w.id] === w.contentDigest;
     return to === 'superseded' && Array.isArray(scope.supersedes) && scope.supersedes.includes(w.id);
   }
   if (to === 'approved') {
-    return names && ((scope.operation === 'approve-work-item' && isHumanActor(d.actor))
+    return names && ((scope.operation === 'approve-work-item' && isPersonActor(d.actor))
       || (scope.operation === 'admit-work-item' && isCampaignActor(d.actor)));
   }
-  return names && scope.operation === 'reject-work-item' && isHumanActor(d.actor);
+  return names && scope.operation === 'reject-work-item' && isPersonActor(d.actor);
 }
 
 const MAX_NOT_AFTER_MS = 30 * 24 * 60 * 60 * 1000;

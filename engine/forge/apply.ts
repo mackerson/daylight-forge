@@ -180,6 +180,7 @@ function approvingDecision(c: Candidate, d: Decision | null): Decision {
 }
 
 export function applyCandidate(ctx: ApplyContext, input: ApplyInput): ApplyResult {
+  if (ctx.store.isBench()) throw new CandidateRefused('refused: this is a bench store (`ingest bench`, P2-R61); nothing on it is applied to a repository');
   const c = ctx.store.candidate(input.candidateId);
   if (!c) throw new CandidateRefused(`unknown candidate ${input.candidateId}`);
   const preview = confirmDigest(ctx, 'apply', c.id);
