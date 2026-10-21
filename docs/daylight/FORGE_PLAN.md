@@ -511,6 +511,33 @@ rulings.
   turns it off without touching anything else.
 - **Status.** Decided (P2-R10).
 
+### ADR-41 — Specification corpus, deterministic sectioning, configuration as data (P2, WS-R14)
+
+*Numbered 41 on a base where ADR-40 (WS-R8) has not yet landed; ADR-40 is reserved for it.*
+
+- **Context.** One spec per mission and a 64 KiB prompt wall: a real specification is a primary
+  document, errata, decision records and related documents, sometimes across products, and is
+  larger than one prompt. Who reads which part, which document governs, and which sentences are
+  requirements cannot be left to an agent.
+- **Decision.**
+  - A corpus is a manifest read from git at a commit (documents bound across repositories with
+    `--project`), registered as one `corpus` mission with content-addressed documents. CR bytes are
+    refused so artifact offsets are text offsets. Precedence orders one domain with a quoted basis;
+    unordered authority pairs are recorded and their conflicts stay open (P2-R51); a cross-domain
+    link is a dependency, never a precedence (O-a).
+  - A deterministic sectioner (no LLM) gives sections stable ids and byte spans, scores units by a
+    documented heuristic, resolves references by label and packs windows of 16 KiB (a body over
+    40 KiB is split). Every word list and pattern is `SectionerConfig` data merged over generic
+    defaults; nothing in Daylight names a project (P2-R52); milestone schemes are per domain (P2-R54).
+  - A normative unit must be mapped by a record at the revision or reported unmapped. Coverage and
+    its detectors (hedge, open-decision, modal-polarity, numeric, precedence, dangling) are
+    deterministic heuristics, measured against seeded defects in an in-memory copy.
+- **Consequences.** A corpus of any size is read in bounded windows with linear cost. Tuning
+  belongs in a project's sidecar, versioned with its `configDigest`; a config change is a new
+  index. The heuristic has known misses (normative text in fences; bold labels with no cue) and
+  `universal` false positives, measured in live-extract (O-c).
+- **Status.** Decided (P2-R46, P2-R50–R54).
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required
