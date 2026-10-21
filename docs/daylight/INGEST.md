@@ -54,8 +54,13 @@ from git's object store at a commit, never from the working tree.
 - **Dependencies** say one domain's records cite another's (`from` cites `on`) and never override
   them (O-a). A contradiction across domains is always open, marked `declaredDependency`.
 - **Other repositories.** A document with `project: <alias>` is read from the repository bound
-  with `--project <alias>=<repo>[@rev]`, at its own commit. Every alias must be bound and every
-  bound alias used. Only documents in the corpus's own repository are protected from authors.
+  with `--project <alias>=<repo>[@rev]`, at its own commit (`@` splits only when the suffix is a
+  revision and the prefix a directory). Every alias must be bound and every bound alias used. A
+  bound repository is resolved by its git identity (`identifyProject`), not required to be mapped:
+  an output directory maps one repository, so the contract's `requireMappedRepo` cannot hold for a
+  second one (an accepted deviation; binding is a person's act, refused in agent sessions). Only
+  documents in the corpus's own repository are protected from authors.
+- A leading UTF-8 BOM is kept in the registered bytes and skipped by the sectioner.
 - **Excluded** paths are recorded, not read.
 
 `corpus register` refuses the whole manifest, before any row is written, for every rule it breaks;
