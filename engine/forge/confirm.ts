@@ -45,7 +45,7 @@ export interface ConfirmDigest {
 }
 
 type Store = Pick<MissionStore, 'mission' | 'gateSet' | 'workItem' | 'candidate' | 'decisions' | 'currentPlan' | 'planApprovalSet'
-  | 'campaignTickets' | 'assumptions' | 'assumption'>;
+  | 'campaignTickets' | 'assumptions' | 'assumption' | 'ticketTrace'>;
 
 export interface ConfirmOptions {
   /** `lock-gates`: exactly the experiments the lock will name. Required. */
@@ -80,6 +80,14 @@ export interface ConfirmOptions {
   declined?: boolean;
   /** `record-assumption`: the row that will be recorded (the subject is the campaign). */
   assumption?: { question: string; default: string; ticketId?: string };
+}
+
+/** A version-2 plan's descent as a person reads it before approving: traced to packets, edited after emission, and with no packet. */
+function traceLine(rows: ReturnType<MissionStore['ticketTrace']>, tickets: number): string[] {
+  const traced = new Set(rows.filter((r) => r.packetId).map((r) => r.ticketId));
+  if (!traced.size) return [];
+  const edited = new Set(rows.filter((r) => r.handEdited).map((r) => r.ticketId));
+  return [`traced ${traced.size} ticket(s) to packets; ${edited.size} hand-edited${edited.size ? ` (${[...edited].sort().join(', ')})` : ''}; ${tickets - traced.size} untraced`];
 }
 
 export function confirmDigest(
@@ -191,6 +199,7 @@ export function confirmDigest(
         `${tickets.length} ticket(s) in ${new Set(tickets.map((t) => t.lane)).size} lane(s); ${supersedes.length} superseded`,
         `${owners.length} owner decision(s), ${owners.filter((a) => a.blocking).length} blocking`,
         `budget hints: $${Number(usd.toFixed(2))} over the tickets that name one`,
+        ...traceLine(ctx.store.ticketTrace(m.id), tickets.length),
       ]);
     }
     case 'authorize-campaign': {

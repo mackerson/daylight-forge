@@ -20,6 +20,7 @@ import {
 } from '../forge/campaign.ts';
 import { campaignLockConfirm, lockCampaign, registerCampaignGate, registerPlanGates, unboundObligations } from '../forge/campaign-gates.ts';
 import { confirmIngest } from '../forge/commands-corpus-review.ts';
+import { campaignConfirm, envelopeFlagsFrom } from '../forge/commands-campaign.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { currentIrSetDigest, oirIdOf } from '../forge/ir-review.ts';
 import { buildAuthorPrompt, ImplementRefused } from '../forge/orchestrate.ts';
@@ -169,6 +170,8 @@ commitPlan(edited);
 const imp2 = importPlan(ctx, w.root, PLAN, { campaignId: campaign.id });
 check('a person\'s edit to a ticket is imported and flagged, not refused', imp2.trace?.handEdited.join() === 'W1.T1'
   && ctx.store.ticketTrace(campaign.id, 'W1.T1').every((r) => r.handEdited) && ctx.store.ticketTrace(campaign.id, 'W1.D1').every((r) => !r.handEdited));
+check('approve-plan\'s confirm lines say what a person approves of the descent (P2-R56)',
+  confirmDigest(ctx, 'approve-plan', campaign.id).lines.includes('traced 2 ticket(s) to packets; 1 hand-edited (W1.T1); 0 untraced'));
 const repoint: PlanFile = structuredClone(emitted.plan);
 repoint.tickets.find((t) => t.id === 'W1.T1')!.packetId = pkD.id;
 commitPlan(repoint);
@@ -186,6 +189,7 @@ check('citing a record that is not the corpus\'s is refused', (throws(() => impo
 commitPlan(emitted.plan);
 importPlan(ctx, w.root, PLAN, { campaignId: campaign.id });
 
+check('re-imported as emitted, nothing is hand-edited', confirmDigest(ctx, 'approve-plan', campaign.id).lines.includes('traced 2 ticket(s) to packets; 0 hand-edited; 0 untraced'));
 section('approve-plan, lock with obligations, and authorize (P2-R50 F3)');
 approvePlan(ctx, { campaignId: campaign.id, actor: HUMAN, rationale: 'read', env: {}, confirm: confirmDigest(ctx, 'approve-plan', campaign.id).digest8 });
 const g: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: w.root, out: ctx.out, env: {} } as GateContext;
@@ -224,6 +228,16 @@ check('an obligation bound to no locked gate fails closed at authorize', /W1\.T1
 check('naming a bound obligation as unbound is refused', /W1\.D1:ob1/.test(throws(() => auth({ ...flags, unboundObligations: ['W1.T1:ob1', 'W1.D1:ob1'] }))?.message ?? ''));
 const a = auth({ ...flags, unboundObligations: ['W1.T1:ob1'] });
 check('listed by name, it is authorized and the envelope records it', (a.scope.unboundObligations as string[]).join() === 'W1.T1:ob1');
+{
+  // `daylight confirm authorize-campaign` reads the same flags as `campaign authorize` (the GUI confirms through it).
+  const argv: Record<string, string> = { 'auto-apply': 'integration-ref', roster: 'mock', 'expected-gate-set': flags.expectedGateSetDigest, 'max-usd-total': '10',
+    'max-usd-per-mission': '2', 'max-turns': '10', timeout: '600', 'max-attempts': '2', concurrency: '1', tickets: 'W1.D1,W1.T1', 'not-after': '24h',
+    'unbound-obligations': 'W1.T1:ob1' };
+  const parsed = envelopeFlagsFrom((k) => argv[k]);
+  check('campaign authorize --unbound-obligations is parsed for confirm too (P2-R56)', parsed.unboundObligations?.join() === 'W1.T1:ob1'
+    && campaignConfirm(ctx, 'authorize-campaign', campaign.id, (k) => argv[k]).lines.join() === confirmDigest(ctx, 'authorize-campaign', campaign.id,
+      { envelope: buildEnvelope(ctx, campaign.id, parsed) }).lines.join());
+}
 check('the chain holds: every link re-derived', authorityChainOf(ctx, campaign.id).breaks.length === 0 && campaignAuthorizationRefusal(ctx, campaign.id) === null,
   JSON.stringify(authorityChainOf(ctx, campaign.id).breaks));
 
