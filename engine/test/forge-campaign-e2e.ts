@@ -22,7 +22,7 @@ import { applicationRefusals } from '../forge/apply.ts';
 import { campaignViolations } from '../forge/campaign.ts';
 import { integrationRefFor, integrationRefusals, integrationTip } from '../forge/integrate.ts';
 import { openDaylight } from '../mission/context.ts';
-import type { CampaignStatusReport, Decision, PlanFileV1 } from '../mission/types.ts';
+import type { CampaignStatusReport, Decision, PlanFileV1, RefineReport, WaveReport } from '../mission/types.ts';
 import { harness } from './harness.ts';
 import { git, repoState, tempDir } from './forge-campaign-run-fixture.ts';
 
@@ -311,6 +311,32 @@ const agentStatus = cli(['campaign', 'status', campaignId, repo, '--format', 'js
 check('campaign status succeeds', agentStatus.code === 0 && parsed<CampaignStatusReport>(agentStatus).integration.landed === 5, agentStatus.err);
 check('and none of the three added a row, an event or a ref', rowCounts() === rows
   && git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']) === refsNow);
+
+// ---- the REFINE stage reads it (WS-R8) ------------------------------------------------------------
+
+section('campaign report and refine over the run, from an agent session');
+{
+  const before = rowCounts();
+  const refs = git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']);
+  const rep = cli(['campaign', 'report', campaignId, repo, '--all', '--format', 'json'], agent);
+  const r = rep.code === 0 ? parsed<WaveReport>(rep) : null;
+  check('report --all lists the five landings', r?.landed.map((l) => l.ticketId).sort().join() === 'A,B,C,FIX.1.1,FU.1', rep.err || rep.out.slice(-400));
+  check('the High finding\'s fix ticket shows landed, admitted by the envelope', r?.findings[0]?.fixTicketId === 'FIX.1.1' && r.findings[0].fixStatus === 'landed'
+    && r.findings[0].fixAdmission === 'derived' && r.fixLane.landed === 1, JSON.stringify(r?.findings.map((f) => [f.fixTicketId, f.fixStatus, f.fixAdmission])));
+  const sum = (k: 'spentUsd' | 'knownUsd' | 'unknownCount' | 'scannedCount' | 'runningCount') =>
+    Math.round([...(r?.spend.lanes ?? []), ...(r?.spend.reviews ?? [])].reduce((n, l) => n + l[k], 0) * 1e6) / 1e6;
+  check('its spend lines sum to the campaign\'s spend', !!r && (['spentUsd', 'knownUsd', 'unknownCount', 'scannedCount', 'runningCount'] as const).every((k) => sum(k) === r.spend.campaign[k]),
+    JSON.stringify(r?.spend.campaign));
+  const holdoutIds = ctx.store.experimentsFor(campaignId, 'holdout').map((x) => x.id);
+  const md = cli(['campaign', 'report', campaignId, repo, '--all'], agent);
+  check('holdouts are counted, and neither the JSON nor the markdown names one', r?.holdouts.locked === holdoutIds.length && holdoutIds.length > 0
+    && [rep.out, md.out].every((t) => !t.includes(SENTINEL) && !t.includes('hidden.test.js') && holdoutIds.every((x) => !t.includes(x))), md.err);
+  const ref = cli(['campaign', 'refine', campaignId, repo, '--rows-only', '--format', 'json'], agent);
+  const rr = ref.code === 0 ? parsed<RefineReport>(ref) : null;
+  check('refine --rows-only ranks the run\'s rows, with no map', !!rr && rr.maps === null && rr.rev === integrationTip(repo, campaignId)
+    && rr.focus.every((i) => i.kind !== 'introduced') && !ref.out.includes(SENTINEL), ref.err || ref.out.slice(-400));
+  check('neither added a row, an event or a ref', rowCounts() === before && git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']) === refs);
+}
 
 // ---- what must hold after all of it ------------------------------------------------------------
 
