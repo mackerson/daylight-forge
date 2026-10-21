@@ -89,7 +89,8 @@ section('materialising a detached workspace');
   } catch (err) {
     why = err instanceof WorkspaceRefused ? err.message : `wrong error: ${String(err)}`;
   }
-  check('a locked holdout present at the base is refused', /holdout/.test(why), why);
+  check('a locked holdout present at the base is refused, by count', /^1 holdout file present at base;/.test(why), why);
+  check('and the refusal names no holdout path or basename (P2-R45 D7)', !why.includes('secret-holdout'), why);
   const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(WORKSPACE_PREFIX))
     .filter((n) => { try { return JSON.parse(fs.readFileSync(path.join(os.tmpdir(), n, 'owner.json'), 'utf8')).pid === process.pid; } catch { return false; } });
   check('and leaves no workspace behind', left.length === 0, left.join(','));

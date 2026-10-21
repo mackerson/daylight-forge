@@ -18,6 +18,7 @@ import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { detectSandbox } from '../experiment/sandbox.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { Attempt, Candidate, Decision, Experiment, Mission, Need, WorkItem } from '../mission/types.ts';
@@ -790,6 +791,56 @@ section('negative: no sandbox means no author attempt');
   } finally {
     d.close();
   }
+}
+
+section('a holdout committed at the base (P2-R45 D7): refused by count, its path in no output');
+{
+  const objective = 'holdout at base';
+  const m = json<Mission>(run(['mission', 'create', repo, '--kind', 'implement', '--no-work-item', '--objective', objective,
+    '--rationale', 'r', '--confirm', confirmOf('adhoc-mission', objective).digest8, '--out', out, '--format', 'json']));
+  run(['mission', 'authorize', m.id, '--out', out, '--write', '--rationale', 'r', '--confirm', confirmOf('authorize-mission', m.id, ['--write']).digest8]);
+  for (const [role, file] of [['gate', 'add.test.js'], ['holdout', 'holdout.test.js']]) {
+    run(['gate', 'add', m.id, '--role', role, '--test', path.join(tmp, file), '--expect-exit', '0', '--expect-stdout', '# fail 0', '--name', file, '--out', out]);
+  }
+  run(['gate', 'baseline', m.id, repo, '--out', out]);
+  run(['gate', 'lock', m.id, '--out', out, '--rationale', 'r', '--confirm', confirmOf('lock-gates', m.id).digest8]);
+  let holdout!: { id: string; path: string };
+  {
+    const d = openDaylight(out);
+    try {
+      const x = d.store.experimentsFor(m.id, 'holdout')[0];
+      holdout = { id: x.id, path: x.testArtifact.path! };
+    } finally {
+      d.close();
+    }
+  }
+  // A base that carries the holdout's file, as a later commit on a side branch would.
+  git(['checkout', '-q', '-b', 'holdout-at-base', base]);
+  fs.mkdirSync(path.join(repo, path.dirname(holdout.path)), { recursive: true });
+  fs.writeFileSync(path.join(repo, holdout.path), HOLDOUT_TEST);
+  git(['add', '-A']);
+  git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@daylight.invalid', 'commit', '-q', '-m', 'holdout committed']);
+  const leaky = git(['rev-parse', 'HEAD']);
+  git(['checkout', '-q', 'main']);
+  {
+    const d = openDaylight(out);
+    try {
+      (d.store as unknown as { db: DatabaseSync }).db.prepare('UPDATE missions SET base_revision = ? WHERE id = ?').run(leaky, m.id);
+    } finally {
+      d.close();
+    }
+  }
+  const r = run(['forge', 'run', m.id, repo, '--tools', 'mock', '--out', out, '--format', 'json'], { DAYLIGHT_MOCK_ADAPTER: fixer });
+  // The id is listed by design (inspect, the lock); the path and its basename never are.
+  const leaks = (text: string) => [path.basename(holdout.path), holdout.path, SENTINEL].filter((s) => text.includes(s));
+  const err = (() => { try { return JSON.parse(r.out) as { error: string; refused: boolean }; } catch { return null; } })();
+  check('forge run refuses: no workspace, by count', r.code === 1 && err?.refused === true && /1 holdout file present at base/.test(err.error), r.out + r.err.slice(-300));
+  check('the JSON error and stderr name no holdout path or basename', leaks(r.out + r.err).length === 0, leaks(r.out + r.err).join(' '));
+  const events = run(['events', '--out', out, '--mission', m.id, '--limit', '100000', '--format', 'json']);
+  check('nor does any event of the mission', events.code === 0 && /present at base/.test(events.out) && leaks(events.out).length === 0,
+    `${events.code} ${leaks(events.out).join(' ')} ${events.err.slice(-200)}`);
+  const seen = run(['mission', 'inspect', m.id, '--out', out, '--format', 'json']).out;
+  check('nor the failed attempt\'s recorded failure in mission inspect', /present at base/.test(seen) && leaks(seen).length === 0, leaks(seen).join(' '));
 }
 
 done();
