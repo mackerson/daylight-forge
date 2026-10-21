@@ -29,6 +29,8 @@ import {
   IntegrationRefused, R5_INTEGRATE_DEPS, reconcileIntegrations, refTarget, type IntegrateDeps, type IntegrationStep,
 } from './integrate.ts';
 import { ImplementRefused, runImplement } from './orchestrate.ts';
+import { corpusPathsOf, staleTickets } from './authority.ts';
+import { packetContext } from './packets.ts';
 import { forgeryHold, forgeryShapesOf } from './forgery.ts';
 import { DecisionRefused } from './policy.ts';
 import { closeWave, fixTicketsFrom, runWaveReview, waveDue } from './wave.ts';
@@ -173,6 +175,7 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artif
   const tickets = host.tickets(campaignId);
   const open = host.openOwnerDecisions(campaignId);
   const tip = integrationTip(repo, campaignId);
+  const stale = staleTickets(ctx as DaylightContext, campaignId);
   const out = new Map<string, TicketState>();
   const landedOn = (m: Mission) => ctx.store.integrations(campaignId, { state: 'integrated', missionId: m.id })
     .find((i) => tip && i.integratedCommit && isAncestor(repo, i.integratedCommit, tip));
@@ -199,6 +202,12 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artif
       continue;
     }
     if (!m) {
+      // A traced ticket citing a record with no span at the corpus's current revision waits for a re-emitted plan (P2-R53).
+      const staleIds = stale.get(t.ticketId);
+      if (staleIds) {
+        set('stale', { reason: `cites ${staleIds.join(', ')}, stale at the corpus's current revision; a person re-emits and re-imports the plan` });
+        continue;
+      }
       const deps = t.dependsOn.filter((d) => out.get(d)?.status !== 'landed' && !landedTicket(ctx, campaign, tickets, d, repo, tip));
       set(deps.length ? 'waiting' : 'ready', deps.length ? { reason: `waits on ${deps.join(', ')}` } : {});
       continue;
@@ -713,6 +722,7 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         const r = await runImplement(ctx, {
           missionId: m.id, repo: root, tool, base: tipNow, ticket: t, brief: 'campaign', evaluate: false, repair, reserveUsd: reserve,
           ...(plan.derivedStatus && plan.statusPath ? { statusPath: plan.statusPath } : {}),
+          ...(plan.derivation ? { specContext: packetContext(ctx, { campaignId: campaign.id, ticketId: t.ticketId }), corpusPaths: corpusPathsOf(ctx, plan.derivation.corpusId, campaign.projectId) } : {}),
           maxTurns: Math.min(envelope.maxTurns, t.budget.maxTurns ?? Infinity),
           timeoutMs: Math.min(envelope.timeoutSeconds, t.budget.timeoutSeconds ?? Infinity) * 1000,
           sandbox: sandbox(), env: o.env, runs: o.runs,

@@ -230,6 +230,10 @@ function ticketState(ctx: DaylightContext, campaignId: string, workItemId: strin
   return ctx.store.integrations(campaignId, { state: 'integrated', missionId: by }).length ? 'landed' : 'in-flight';
 }
 
+/** In-repo documents of the corpus's current revision (not the mission's scope, which a revision moves), protected for a traced ticket's author. */
+export const corpusPathsOf = (ctx: DaylightContext, corpusId: string, projectId: string): string[] =>
+  (ctx.store.currentCorpusRevision(corpusId)?.docs ?? []).filter((d) => d.projectId === projectId).map((d) => d.path).sort();
+
 /** Lock obligations (`<ticketId>:<obId>`) whose IR records are stale, per locked experiment. */
 function staleGates(ctx: DaylightContext, campaignId: string, staleIds: ReadonlySet<string>): CorpusDiff['invalidated']['gates'] {
   const lock = ctx.store.campaignLockDecision(campaignId);
