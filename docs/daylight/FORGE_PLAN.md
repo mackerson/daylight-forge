@@ -615,6 +615,26 @@ rulings.
   by needs only.
 - **Status.** Decided (P2-R13, P2-R50, P2-R53). Covers the interface plan's ADR-43 and ADR-44.
 
+### ADR-44 — Traceability is a read; the ingestion benchmark says what it cannot fail (P2, WS-R16)
+
+- **Context.** Spec ingestion (wave 4) links a passage to records, components, packets, tickets
+  and landings across a dozen tables. A benchmark built from a fixture written from the answer
+  can pass checks that measure nothing.
+- **Decision.**
+  - Traces are derived on read from existing rows by named joins (`TRACE_JOINS`), forward from a
+    passage and backward from a landing; nothing new is stored. Passages are identified by
+    revision, document and bytes, and every quote digest is re-hashed on every trace. What cannot
+    be joined is a reported gap (a squash merge, an untraced v1 ticket, a stale record), never
+    a guess. Holdout basenames and record statements never reach a trace (P2-R40, P2-R53).
+  - The benchmark's checks are data, each with its bar and falsifiability per mode; the report
+    names every check mock mode cannot fail. Fixtures are directories (`bench.json` + `expected/`);
+    nothing in code names a project (P2-R52). A second, generated corpus keeps the scorer honest.
+  - Live modes are refused with one line until a live-spend grant exists (P2-R7).
+- **Consequences.** A trace is only as good as the rows: a merge that bypasses the integration
+  ref is invisible to `trace landing`, and the report says so. Mock-mode recall and precision are
+  1.0 by construction; only live-full measures planning.
+- **Status.** Decided (P2-R50, P2-R52, P2-R53).
+
 ## 6. Schema v2 and versioning constants
 
 The constants and DDL below are verbatim from the reconciled plan (F-6), with one change required

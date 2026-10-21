@@ -548,6 +548,7 @@ const counts = (states: Map<string, TicketState>) => {
  * ref, and returns the schedule the first pass would dispatch with each reservation.
  */
 export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Promise<CampaignRunResult> {
+  if (ctx.store.isBench()) throw new DirectorRefused('refused: this is a bench store (`ingest bench`, P2-R61); its campaign is a benchmark\'s and never runs');
   const host = o.host ?? r5Host(ctx);
   const campaign = ctx.store.mission(o.campaignId);
   if (!campaign || campaign.kind !== 'campaign') throw new DirectorRefused(`${o.campaignId} is not a campaign`);

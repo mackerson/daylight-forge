@@ -1,0 +1,63 @@
+{
+ "kind": "daylight-ingest-bench",
+ "v": 1,
+ "name": "harbor",
+ "title": "Harbor Ledger Standard (synthetic)",
+ "docs": {
+  "hl-standard": "hl-standard.md",
+  "hl-amendments": "hl-amendments.md",
+  "dr-01": "decisions/DR-01.md",
+  "dr-02": "decisions/DR-02.md",
+  "dr-03": "decisions/DR-03.md"
+ },
+ "repos": [
+  {
+   "alias": null,
+   "files": {
+    "hl-standard.md": "hl-standard.md",
+    "hl-amendments.md": "hl-amendments.md",
+    "decisions/": "decisions/",
+    "daylight.corpus.json": "daylight.corpus.json",
+    "harbor.toml": "harbor.toml",
+    "lib/": "lib/",
+    "svc/": "svc/",
+    "sectioner.hl.json": "expected/sectioner.hl.json"
+   }
+  }
+ ],
+ "manifest": {
+  "repo": "daylight.corpus.json",
+  "file": "daylight.corpus.json"
+ },
+ "expected": {
+  "groundTruth": "expected/plan.md",
+  "overlay": "expected/ir.overlay.json",
+  "blueprint": "expected/blueprint.json",
+  "packets": "expected/packets.json",
+  "seeds": "expected/seeds.json",
+  "invariants": "expected/invariants.json",
+  "review": null
+ },
+ "groundTruthRows": [
+  "| W1.K1 |",
+  "| W2.Q3 |"
+ ],
+ "revise": {
+  "doc": "dr-02",
+  "find": "When two vessels request one berth for the same window, the earlier request must win.",
+  "replace": "When two vessels request one berth for the same window, the larger vessel must win.",
+  "staleKeys": [
+   "dr02"
+  ],
+  "staleTickets": [
+   "W1.V2"
+  ]
+ },
+ "holdout": {
+  "path": "svc/berth/tests/allocate.rs",
+  "key": "hl-req-041"
+ },
+ "landing": {
+  "ticket": "W1.V2"
+ }
+}

@@ -48,6 +48,7 @@ export function ticketTone(s: TicketStatusWord): Word {
     case 'ready': return { name: 'ready', tone: 'dim' };
     case 'waiting': return { name: 'waiting', tone: 'dim' };
     case 'superseded': return { name: 'superseded', tone: 'dim' };
+    case 'stale': return { name: 'stale', tone: 'warn' };
     default: return { name: String(s), tone: 'warn' };
   }
 }
@@ -56,6 +57,7 @@ export function ticketTone(s: TicketStatusWord): Word {
 export const TICKET_FILL: Record<TicketStatusWord, string> = {
   landed: '#3fb37f', running: '#6ea8fe', integrating: '#8a5cf6', blocked: '#e5534b', regressed: '#c93c37',
   'waiting-owner': '#e0a33a', 'waiting-dependency': '#d29922', ready: '#8b949e', waiting: '#57606a', superseded: '#3b4048',
+  stale: '#bf8700',
 };
 
 export const BUCKET_WORDS: Record<StatusBucket, string> = {

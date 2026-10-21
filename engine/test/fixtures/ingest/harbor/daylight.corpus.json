@@ -1,0 +1,56 @@
+{
+ "kind": "daylight-corpus",
+ "version": 1,
+ "title": "Harbor Ledger Standard (synthetic)",
+ "docs": [
+  {
+   "key": "hl-standard",
+   "path": "hl-standard.md",
+   "role": "primary",
+   "domain": "harbor"
+  },
+  {
+   "key": "hl-amendments",
+   "path": "hl-amendments.md",
+   "role": "errata",
+   "domain": "harbor"
+  },
+  {
+   "key": "dr-01",
+   "path": "decisions/DR-01.md",
+   "role": "decision",
+   "domain": "harbor"
+  },
+  {
+   "key": "dr-02",
+   "path": "decisions/DR-02.md",
+   "role": "decision",
+   "domain": "harbor"
+  },
+  {
+   "key": "dr-03",
+   "path": "decisions/DR-03.md",
+   "role": "decision",
+   "domain": "harbor"
+  }
+ ],
+ "precedence": [
+  {
+   "over": "hl-amendments",
+   "under": "hl-standard",
+   "basis": {
+    "doc": "hl-standard",
+    "quote": "Where this standard and an amendment disagree, the amendment governs."
+   }
+  }
+ ],
+ "excluded": [
+  {
+   "path": "expected/plan.md",
+   "reason": "ground truth"
+  }
+ ],
+ "sectioner": {
+  "$ref": "sectioner.hl.json"
+ }
+}

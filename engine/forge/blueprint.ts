@@ -40,7 +40,7 @@ const MAX_IDS = 256;
 const MAX_REASON_BYTES = 1024;
 const MAX_SUMMARY_BYTES = 1024;
 /** Records a blueprint must place, each exactly once (§7). */
-const ASSIGNABLE: readonly IrKind[] = ['requirement', 'invariant', 'constraint', 'interface', 'acceptance-condition', 'dependency'];
+export const ASSIGNABLE: readonly IrKind[] = ['requirement', 'invariant', 'constraint', 'interface', 'acceptance-condition', 'dependency'];
 
 const sha256hex = (s: string) => createHash('sha256').update(s).digest('hex');
 type Obj = Record<string, unknown>;
@@ -573,7 +573,7 @@ export function approveBlueprintScope(ctx: DaylightContext, blueprintId: string,
 export function approveBlueprint(ctx: DaylightContext, input: { blueprintId: string; actor: string; rationale: string | undefined; confirm: string | undefined;
   env: Readonly<Record<string, string | undefined>>; invariantTags?: readonly string[] }): Decision {
   const scope = approveBlueprintScope(ctx, input.blueprintId, input.invariantTags);
-  assertHumanDecision(input.env, input.actor, input.confirm, digestOf(canonicalJson(scope)));
+  assertHumanDecision(input.env, input.actor, input.confirm, digestOf(canonicalJson(scope)), ctx.store);
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: a blueprint approval needs a rationale');
   const bp = ctx.store.blueprint(input.blueprintId)!;
   if (bp.status !== 'proposed') throw new DecisionRefused(`refused: blueprint ${bp.id} is ${bp.status}; only a proposed blueprint is approved`);

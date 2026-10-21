@@ -233,7 +233,7 @@ export interface GuardedInput {
  */
 export function approvePlan(ctx: DaylightContext, input: GuardedInput): Decision {
   const c = requireCampaign(ctx, input.campaignId);
-  assertHumanDecision(input.env, input.actor, input.confirm, confirmDigest(ctx, 'approve-plan', c.id).digest);
+  assertHumanDecision(input.env, input.actor, input.confirm, confirmDigest(ctx, 'approve-plan', c.id).digest, ctx.store);
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: a plan approval needs a rationale');
   const plan = planOf(ctx, c.id);
   const set = ctx.store.planApprovalSet(c.id);

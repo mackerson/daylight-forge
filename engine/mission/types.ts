@@ -66,6 +66,14 @@ export function isEntityId(kind: EntityKind, value: unknown): value is string {
 
 /** `human:<name>`, the only actor a Forge decision accepts. Bare `human` names nobody. */
 export const isHumanActor = (actor: string): boolean => /^human:\S+$/.test(actor);
+/**
+ * `bench:<step>`: the ingestion benchmark's scripted stand-in for a person (P2-R61). A store
+ * records one only when `ingest bench` created it with the bench mark, and a bench store records
+ * no other decision actor, so a row read back with a bench actor is on a throwaway store.
+ */
+export const isBenchActor = (actor: string): boolean => /^bench:[a-z][a-z0-9-]{0,31}$/.test(actor);
+/** The actor of a person's decision as the store reads it back: a person, or the bench's stand-in on a bench store. */
+export const isPersonActor = (actor: string): boolean => isHumanActor(actor) || isBenchActor(actor);
 
 // ---- identity ----------------------------------------------------------------
 
@@ -844,7 +852,7 @@ export const STATUS_BUCKETS: readonly StatusBucket[] = ['done', 'in-progress', '
 export const STATUS_BUCKET_OF: Readonly<Record<TicketStatus | 'regressed', StatusBucket>> = {
   landed: 'done', running: 'in-progress', integrating: 'in-progress',
   blocked: 'blocked', regressed: 'blocked',
-  'waiting-owner': 'requests', 'waiting-dependency': 'requests',   // a person acts (P2-R21)
+  'waiting-owner': 'requests', 'waiting-dependency': 'requests', stale: 'requests',   // a person acts (P2-R21); a person re-approves (P2-R53)
   ready: 'queued', waiting: 'queued',
   superseded: 'superseded',
 };
@@ -1347,7 +1355,8 @@ export type TicketStatus =
   | 'running' | 'integrating'        // live attempt | integration row pending/evaluating
   | 'waiting-dependency'             // its mission has an open request-dependency need: parked, the loop continues (P2-R21)
   | 'landed' | 'blocked'             // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
-  | 'regressed';                     // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
+  | 'regressed'                      // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
+  | 'stale';                         // cites a record with no span at the corpus's current revision; a person re-approves (P2-R53)
 
 export interface ApprovePlanScope { operation: 'approve-plan'; planDigest: string; planRevision: string;
   workItems: Record<string, string>;   // workItemId → contentDigest for every plan ticket: what setWorkItemStatus/assertImplementable check

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import { DAYLIGHT_DB_VERSION } from './types.ts';
+import { DAYLIGHT_DB_VERSION, isBenchActor } from './types.ts';
 
 /**
  * The Daylight database: one `daylight.db` beside `claims.db` in an output directory.
@@ -572,4 +572,24 @@ export function parseJson<T>(text: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Whether `ingest bench` created this store: a throwaway whose decisions are the bench's (P2-R61). */
+export function isBenchDb(db: DatabaseSync): boolean {
+  const r = db.prepare("SELECT value FROM daylight_meta WHERE key='bench'").get() as { value: string } | undefined;
+  return r?.value === '1';
+}
+
+/** Mark a fresh store as a bench store; refused once it holds any mission or decision. */
+export function markBenchDb(db: DatabaseSync): void {
+  const used = db.prepare('SELECT (SELECT COUNT(*) FROM missions) + (SELECT COUNT(*) FROM decisions) AS n').get() as { n: number };
+  if (used.n > 0) throw new Error('only a fresh store becomes a bench store');
+  db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('bench', '1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
+}
+
+/** P2-R61: the bench's stand-in decides only on a store `ingest bench` created, and there only it decides. */
+export function benchActorRefusal(db: DatabaseSync, actor: string): void {
+  const bench = isBenchDb(db);
+  if (isBenchActor(actor) && !bench) throw new Error(`a ${actor} decision is recorded only on a bench store; this store is not one`);
+  if (bench && !isBenchActor(actor)) throw new Error(`a bench store records bench:<step> decisions only, not ${actor}`);
 }

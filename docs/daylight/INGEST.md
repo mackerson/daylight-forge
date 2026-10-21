@@ -407,3 +407,127 @@ Read-only forms run anywhere: `corpus diff`, `blueprint validate|show`, `packets
 and a guarded act's preview (no `--confirm`). `review` and the `propose` forms run in an agent
 session only when every tool is a mock (P2-R50 Q5). Everything else writes rows or files and is a
 person's, from their own shell.
+
+## Traceability (WS-R16)
+
+`engine/forge/trace.ts` answers two questions from rows other modules write, and decides nothing:
+
+- **Forward**, from a passage (a section, a label, or a byte range of one document at a corpus
+  revision) or one record: the records spanning it → the approved blueprint's elements deriving
+  from them → the packets of those components that cite them → the tickets traced to them → each
+  ticket's work item and every ticket mission on it → candidates → gate rows and landings.
+- **Backward**, from a landed commit, an integration, a candidate or a ticket: the ticket → its
+  packet → the records it cites → their quoted passages: document, byte range, the revision's
+  commit. Every quote digest is re-hashed from the stored document bytes on every trace; a
+  mismatch is reported by record id.
+
+Each edge names the join it used (`TRACE_JOINS`): `ir_spans` overlap for passage → record,
+`blueprint_derivations` on an approved blueprint, `packets(blueprint_id, component_id)` and the
+packet body for element → packet, `ticket_trace` for packet/record → ticket,
+`campaign_tickets.work_item_id`, `candidates.mission_id`, `gate_evaluations` (an evaluation of a
+gate bound to the ticket's obligation in the lock is joined as `obligation-gate`), and
+`integrations.integrated_commit`.
+
+```
+daylight trace passage <corpus> --doc K (--section <id> | --label §11.3 | --range a-b) [--revision cr_…] [--format json]
+daylight trace requirement <ir_…> [--format json]
+daylight trace ticket <campaign> <ticketId> [--format json]
+daylight trace landing <commit | i_… | c_…> [--campaign m_…] [--format json]
+daylight trace matrix <campaign> [--format json|md] [--write]
+```
+
+All of it is read-only and runs in an agent session; only `matrix --write` (which writes
+`<out>/campaigns/<id>/trace-matrix.{json,md}`) is refused there.
+
+What a trace never shows: corpus text in JSON (passages are ids: revision, document, bytes);
+extractor or reviewer statements (P2-R40); any label naming a holdout basename of any campaign
+of the project (replaced, and counted as a gap). The markdown renderer asks `safeExcerpt` for
+each excerpt; a withheld one is counted, never printed.
+
+What a trace says instead of guessing, as `gaps`:
+
+- a commit on `main` reaches an integration only when the human merge fast-forwarded; after a
+  squash or rebase merge there is no row, and `trace landing` says so;
+- a ticket from a version-1 plan, or a hand-written one, is **untraced** (and listed as such in
+  the matrix);
+- a plan without `derivation` names no revision, so spans are read at the corpus's current
+  revision, and the report says that it did;
+- a record with no span at the current revision is **stale** (derived, never stored, P2-R53);
+  a record an errata deferred shows the deferral, not a component.
+
+`trace matrix` needs the authority chain (`authorityChainOf`, WS-R15).
+
+## The ingestion benchmark (WS-R16)
+
+`daylight ingest bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json]`,
+and `engine/test/forge-ingest-benchmark.ts` in `test:all` (mock mode, both corpora; it also runs
+the CLI and requires the same report). The benchmark is product code (`engine/forge/ingest-bench.ts`,
+P2-R57) and knows no project: the corpus is `--fixture`. In mock mode the extractor and reviewer
+are the `--extractor` script, run as the mock agent exactly as `DAYLIGHT_MOCK_ADAPTER` names one: a
+child process in the review sandbox that sees only its prompt and its MCP socket, its attempts
+recorded `mock`, never imported (P2-R61). The tests generate it from the fixture
+(`engine/test/lib/bench-extractor.ts`). The benchmark never acts as a person: its store is created
+with a `daylight_meta.bench = 1` mark, the person's steps (approve-ir, approve-blueprint,
+approve-plan, the gate lock, the landing) are `bench:<step>` actors that only such a store and
+the guard with it accept, a bench store records no other decision actor, and `export`, `import`,
+`campaign run` and `forge apply` refuse it. The store lives under a fresh directory in the system
+temp dir and is removed after the run.
+
+**Corpora.** Two fixtures under `engine/test/fixtures/ingest/`, each described by a `bench.json`
+(document keys, the repositories to commit, the answer files; paths relative to it). Answers are
+never in a corpus directory:
+
+- OLC: the documents are WS-R14's verbatim copy in `olc/` with its `NOTICE` (P2-R52); the
+  manifest, sectioner sidecar and seven seeds are WS-R14's `olc-config/`, referenced, not copied;
+  the benchmark's own files are in `olc-expected/`. Ground truth = the 28 M0 build
+  tickets of `execution-plan.md`'s tables (P2-R50 Q15), committed as `ground-truth.json` with
+  the source's digest; an IR overlay of 181 hand-checked records (P2-R50 Q9) plus one mechanical
+  record per remaining normative unit of the sectioner, each record marked `hand` or `mechanical`;
+  the mechanical part is regenerated from the registered index and compared on every run.
+- `harbor/` (answers under `harbor/expected/`): Harbor Ledger, a synthetic port-logistics standard with a different label scheme
+  and a > 40 KiB section body, generated by `engine/test/lib/synthetic-corpus.ts` against its
+  `expected/README.md` contract; regenerated and compared byte for byte in the test.
+
+**Checks are data** (`CHECKS` in `engine/forge/ingest-bench.ts`), the sixteen of
+ingest-interfaces v3 §11.3 plus fixture integrity, each with its bar and its falsifiability per
+mode. The report lists, by name, the checks mock mode cannot fail.
+
+What mock mode **proves**:
+
+- the fixture is sound: every quote sits at its byte offset, the mechanical records are exactly
+  what their rule yields over the current sectioner, no ground-truth row appears in a corpus
+  document (a sectioner change that moves units fails check 0 until the overlay is regenerated);
+- the scorer measures what it claims (mutation tests: remove a ticket and recall drops by one;
+  rewire an edge and precision drops; rename a ticket and only id exactness drops; drop a seed's
+  detection and the seed is missed);
+- scope is enforced: an M0 packet citing the book shell E9 moved to M1, or Harbor's audit export
+  planned in W1 after Amendment A3 moved it to W2, is a leak;
+- each fixture invariant has records, sits on a boundary and reaches an obligation; the component
+  DAG is acyclic and its `order` is its Kahn layers; precedence bases occur exactly once and
+  precedence never crosses a domain;
+- the pipeline on the real R14 and R15 code (register → scripted extractors through the real
+  outbox servers → review → approve-ir, findings matched by record, kind and quote digest →
+  coverage with seeds → blueprint and packets from the fixture files, every record placed once →
+  plan, campaign, lock with a holdout → a landing) holds together, identically run after run;
+  coverage on Harbor (its records are written beside the text, so an unmapped unit is a real
+  miss); every seed found by the deterministic detectors; the backward/forward trace round trip with
+  digests verified; a one-sentence revision staling exactly its records and tickets with no
+  existing row changed; a holdout basename kept out of packet context and excerpts.
+
+What mock mode **does not prove**, and says so:
+
+- ticket recall, id exactness, dependency recall and precision, path coverage, scope,
+  boundaries and ticket-ref resolution are **by construction**: the packets and blueprint were
+  written from the answer, so these test only the scorer and the import path;
+- coverage on OLC is **by construction** too: its mechanical records are the sectioner's own
+  units (rule `units`), so the scripted extractor maps every unit; the report says so per corpus;
+- nothing about extraction quality: the scripted extractor proposes the fixture's own records.
+  Live-extract measures that (unmapped normative ≤ 5 %, seeded contradictions 100 %, P2-R53
+  O-c); live-full adds the architect and packetizer (recall ≥ 26/28, edge precision ≥ 0.90);
+- the OLC seeds are WS-R14's (written beside the detectors they exercise); someone other than the
+  detectors' author should review them before merge. Harbor's six are generated with the corpus.
+
+**Live modes are refused** with one line: never from an agent session, and nowhere until a
+live-spend grant exists (P2-R7). Until WS-R14/R15 merge, their stages report `blocked` (the
+step-0 stubs say `not implemented`) and so do the checks reading them; the test fails on any
+`fail` or any stage that `failed`, so after the merge the same run is the integration test.

@@ -101,11 +101,12 @@ section('the DAG: a topological layering, stable');
 
 section('ticket states: every status a word and a fill');
 {
-  const statuses = ['superseded', 'waiting-owner', 'waiting', 'ready', 'running', 'integrating', 'waiting-dependency', 'landed', 'blocked', 'regressed'];
-  check('every TicketStatus, regressed included, is keyed in STATUS_BUCKET_OF', statuses.every((s) => TICKET_STATUSES.includes(s)) && TICKET_STATUSES.length === statuses.length);
+  const statuses = ['superseded', 'waiting-owner', 'waiting', 'ready', 'running', 'integrating', 'waiting-dependency', 'landed', 'blocked', 'regressed', 'stale'];
+  check('every TicketStatus, regressed and stale included, is keyed in STATUS_BUCKET_OF', statuses.every((s) => TICKET_STATUSES.includes(s)) && TICKET_STATUSES.length === statuses.length);
   check('each has its own word', new Set(statuses.map((s) => ticketTone(s).name)).size === statuses.length && statuses.every((s) => ticketTone(s).name !== s || s === ticketTone(s).name));
   check('each has a fill', statuses.every((s) => typeof TICKET_FILL[s] === 'string'));
   check('regressed reads as bad and buckets as blocked (P2-R47)', ticketTone('regressed').tone === 'bad' && STATUS_BUCKET_OF.regressed === 'blocked');
+  check('stale reads as a warning and buckets as a request', ticketTone('stale').tone === 'warn' && STATUS_BUCKET_OF.stale === 'requests');
   check('every bucket has a word', STATUS_BUCKETS.every((b) => bucketWord(b).name.length > 0));
   check('a live claim is a run; a dead one is a claim left behind',
     runWord({ pid: 7, alive: true }).name === 'running · pid 7' && runWord({ pid: 7, alive: false }).name === 'claim left by pid 7, not running' && runWord(null) === null);

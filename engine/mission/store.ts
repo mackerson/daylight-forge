@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonicalJson, digestOf } from './artifacts.ts';
-import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
+import { benchActorRefusal, DAYLIGHT_DB, isBenchDb, markBenchDb, openDaylightDb, parseJson } from './db.ts';
 import { pathViolations } from '../forge/policy.ts';
 import { authorLimits, type ProjectPolicy } from '../forge/project-policy.ts';
 
@@ -11,7 +11,7 @@ import { authorLimits, type ProjectPolicy } from '../forge/project-policy.ts';
 export const CAMPAIGN_AUTHOR_DEFAULTS = { maxTurns: 60, timeoutMs: 600_000 } as const;
 import {
   ATTEMPT_TRANSITIONS, campaignActorOf, canTransition, DECISION_OPERATIONS, DERIVED_OPERATIONS, ID_PREFIX, isCampaignActor,
-  isEntityId, isHumanActor, MISSION_TRANSITIONS,
+  isEntityId, isHumanActor, isPersonActor, MISSION_TRANSITIONS,
   NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, SANDBOX_REASONS, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
@@ -37,15 +37,9 @@ import type {
 import { ArtifactStore } from './artifacts.ts';
 
 /**
- * The mission store: what work was asked for, who attempted it, and what each attempt
- * produced. Everything here is bookkeeping about *work*; facts about the repository stay
- * in the claim store and are referenced by id.
- *
- * Two rules the whole design leans on are enforced here rather than left to callers.
- * Transitions are checked against the tables in `types.ts`, so a state the design never
- * drew cannot be reached by a typo. And nothing in this file closes a mission as a side
- * effect: a finished attempt finishes its task, and that is all it does. An exit code is
- * an observation, an outcome is a judgement, and only `closeMission` records one.
+ * The mission store: bookkeeping about work (asked for, attempted, produced); repository facts
+ * live in the claim store. Transitions are checked against `types.ts`'s tables, and nothing
+ * here closes a mission as a side effect: only `closeMission` records an outcome.
  */
 
 /** `lockGates` found a different gate set inside its transaction than the one the human confirmed. */
@@ -106,7 +100,7 @@ export function campaignGrantRefusal(d: Decision, parent: Decision | null | unde
     maxUsd?: unknown; permissions?: { write?: unknown; execute?: unknown; deploy?: unknown } };
   if (!isCampaignActor(d.actor)) return `decision ${d.id} is not a campaign actor's`;
   if (!parent || scope.derivedFrom !== parent.id) return `derived decision ${d.id} names no recorded authorize-campaign decision`;
-  if (parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+  if (parent.kind !== 'approve' || !isPersonActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
     return `decision ${parent.id} is not a human authorize-campaign decision`;
   }
   if (d.actor !== campaignActorOf(parent.missionId)) return `decision ${d.id} is recorded as ${d.actor}, not campaign ${parent.missionId}'s actor`;
@@ -138,7 +132,7 @@ export function grantsWrite(
   if (!d || d.missionId !== missionId || d.kind !== 'approve' || scope?.operation !== 'authorize-mission' || scope.permissions?.write !== true) {
     return false;
   }
-  if (isHumanActor(d.actor)) return true;
+  if (isPersonActor(d.actor)) return true;
   return !!mission && mission.id === missionId && campaignGrantRefusal(d, parent, mission) === null;
 }
 
@@ -159,7 +153,7 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
     return `decision ${d.id} is an adhoc-mission decision without the adhoc-mission operation`;
   }
   // Overriding gates is a Forge act whatever its scope says, so it names a person too.
-  if (d.kind === 'override' && !isHumanActor(d.actor)) {
+  if (d.kind === 'override' && !isPersonActor(d.actor)) {
     return `override decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
   }
   if (operation === undefined) return null;
@@ -179,7 +173,7 @@ export function decisionRefusal(d: Pick<Decision, 'id' | 'actor' | 'kind' | 'sco
   }
   // A Forge act is a person's, and says which person. An agent, a runner or a bare `human`
   // with no name cannot authorise, lock, approve or apply.
-  if (!isHumanActor(d.actor)) return `${String(operation)} decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
+  if (!isPersonActor(d.actor)) return `${String(operation)} decision ${d.id} needs a human:<name> actor, not ${d.actor}`;
   return null;
 }
 
@@ -421,6 +415,16 @@ export class MissionStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /** An `ingest bench` store (P2-R61). */
+  isBench(): boolean {
+    return isBenchDb(this.db);
+  }
+
+  /** Only a fresh store. */
+  markBench(): void {
+    markBenchDb(this.db);
   }
 
   /** The store's clock, which every row it writes is stamped with. */
@@ -1170,14 +1174,9 @@ export class MissionStore {
   }
 
   /**
-   * Conclude, as invalid, this project's pending experiments whose last run started before
-   * `startedBefore` and that `isLive` (when given) does not vouch for.
-   *
-   * The scratch-dir sweep only sees the current `/tmp`; a runner killed before a reboot
-   * leaves a pending row nothing else will ever conclude. Rows that never started are left
-   * alone: pending-and-never-run is a registered experiment, not a dead one. Gates and
-   * holdouts are never reaped: their runs land in `gate_evaluations`, and their own row's
-   * conclusion is not something a candidate run writes (interfaces-reconciled R-8).
+   * Conclude as invalid this project's pending experiments last started before `startedBefore`
+   * that `isLive` does not vouch for (a runner killed before a reboot). Never-started rows,
+   * gates and holdouts are left alone (interfaces-reconciled R-8).
    */
   reapPendingExperiments(opts: {
     projectId: string; startedBefore: number; isLive?: (experimentId: string) => boolean;
@@ -1661,11 +1660,9 @@ export class MissionStore {
   }
 
   /**
-   * A plan import's rows, in one transaction: each ticket whose digest is unchanged keeps its row
-   * and work item; a new or changed one gets its work item (idempotent by id) and its row; a plan
-   * ticket the plan no longer names loses its row, and its work item is superseded by the next
-   * `approve-plan`. Refused when a changed or dropped ticket's work item is being built by a
-   * mission that is not closed.
+   * A plan import's rows, one transaction: unchanged tickets keep row and work item, new or changed
+   * ones get both, dropped ones lose their row. Refused while a changed or dropped ticket's work
+   * item is being built by an open mission.
    */
   importPlanTickets(
     campaignId: string, entries: Array<{ workItem: CreateWorkItemInput & { id: string }; ticket: Omit<CampaignTicket, 'createdAt' | 'workItemId'> }>,
@@ -1782,16 +1779,13 @@ export class MissionStore {
   /** The campaign's most recent human `authorize-campaign` decision, or null. */
   campaignAuthorization(campaignId: string): Decision | null {
     return this.decisions(campaignId)
-      .filter((d) => d.kind === 'approve' && isHumanActor(d.actor) && d.scope.operation === 'authorize-campaign').at(-1) ?? null;
+      .filter((d) => d.kind === 'approve' && isPersonActor(d.actor) && d.scope.operation === 'authorize-campaign').at(-1) ?? null;
   }
 
   /**
-   * `authorize-campaign`, as one transaction. Refused unless the latest `approve-plan` names the
-   * current plan and the envelope does too; the latest `lock-campaign-gates` names the gate set
-   * the human confirmed (`expectedGateSetDigest`, a string compare); every ticket is an approved
-   * plan ticket; the caps are ordered and bounded; and turns and timeout are within
-   * `authorLimits` of `policy`, the parsed policy at the plan commit, which must be the one the
-   * envelope names (P2-R20). The only writer of an `authorize-campaign` decision.
+   * `authorize-campaign`, one transaction, its only writer: the latest approve-plan and lock name
+   * the current plan and confirmed gate set, every ticket is approved, caps ordered and bounded,
+   * turns and timeout within the envelope's policy's `authorLimits` (P2-R20).
    */
   authorizeCampaign(
     campaignId: string,
@@ -1841,7 +1835,7 @@ export class MissionStore {
   campaignHalts(campaignId: string): Decision[] {
     const all = this.decisions(campaignId);
     const resumed = new Set(all.filter((d) => (d.scope.operation === 'resume-campaign' || d.scope.operation === 'adopt-integration-tip')
-      && isHumanActor(d.actor)).map((d) => d.scope.haltDecisionId));
+      && isPersonActor(d.actor)).map((d) => d.scope.haltDecisionId));
     return all.filter((d) => d.scope.operation === 'halt-campaign' && !resumed.has(d.id)).reverse();
   }
 
@@ -1895,7 +1889,7 @@ export class MissionStore {
     const w = this.workItem(workItemId);
     if (!t || t.campaignId !== campaignId || t.origin === 'plan' || w?.status !== 'approved' || !w.decisionId) return null;
     const d = this.decision(w.decisionId);
-    return d && d.scope.operation === 'approve-work-item' && isHumanActor(d.actor) && movesWorkItem(d, w, 'approved') ? d : null;
+    return d && d.scope.operation === 'approve-work-item' && isPersonActor(d.actor) && movesWorkItem(d, w, 'approved') ? d : null;
   }
 
   /** Implement missions released by a `retry-ticket` decision (P2-R25, P2-R27): closed inconclusive or cancelled. */
@@ -1914,16 +1908,13 @@ export class MissionStore {
   }
 
   /**
-   * Why `request` falls outside the envelope of the human `authorize-campaign` decision
-   * `parentDecisionId`, or null. Rows only. The parent must be the campaign's current
-   * authorization; except for a halt (always allowed, fail closed): inside `notAfter`, not
-   * halted, the plan and gate lock it names still current, and for a ticket mission's act a
-   * ticket it covers (named, or admitted by a derived `admit-work-item`), no more execute or
-   * budget than it allows, and no second open mission on the ticket.
+   * Why `request` falls outside the envelope of the current `authorize-campaign` decision, or
+   * null (rows only). A halt always passes; otherwise inside `notAfter`, not halted, plan and
+   * lock current, a covered ticket, no more execute or budget, no second open mission on it.
    */
   envelopeRefusal(parentDecisionId: string, req: EnvelopeRequest): string | null {
     const parent = parentDecisionId ? this.decision(parentDecisionId) : null;
-    if (!parent || parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+    if (!parent || parent.kind !== 'approve' || !isPersonActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
       return `decision ${parentDecisionId || '(none)'} is not a human authorize-campaign decision`;
     }
     const campaign = this.mission(parent.missionId);
@@ -2115,11 +2106,8 @@ export class MissionStore {
   }
 
   /**
-   * The director admits a generated (fix) ticket's proposed work item within the envelope: the
-   * derived `admit-work-item` and `proposed → approved`, together. The fix lane is checked here
-   * against `policy`, the parsed policy at the plan commit (it must be the one the authorization
-   * names), and again by `recordDerivedDecision` against the built-in sets. Whether the finding is
-   * High is `admitIfWithinEnvelope`'s question.
+   * Admit a fix ticket's proposed work item within the envelope: the derived `admit-work-item`
+   * and `proposed → approved` together, the fix lane checked against the authorization's policy.
    */
   admitWorkItem(
     workItemId: string, campaignDecisionId: string, scope: { ticketId: string; findingId?: string; waveSeq: number }, policy: ProjectPolicy | null,
@@ -2196,7 +2184,7 @@ export class MissionStore {
         continue;
       }
       const parent = typeof d.scope.derivedFrom === 'string' ? this.decision(d.scope.derivedFrom) : null;
-      if (!parent || parent.kind !== 'approve' || !isHumanActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
+      if (!parent || parent.kind !== 'approve' || !isPersonActor(parent.actor) || parent.scope.operation !== 'authorize-campaign') {
         out.push(`derived decision ${d.id} names no human authorize-campaign decision`);
         continue;
       }
@@ -2629,10 +2617,8 @@ export class MissionStore {
   }
 
   /**
-   * The campaign gate set a lock of exactly these experiments would freeze, its bindings and its
-   * digest: the one computation behind `lockCampaignGates`, its `--confirm` preview and the
-   * director's preflight. A binding comes from the experiment's subject (`ticket:<id>`), which
-   * nothing rewrites after registration; the digest covers it and the ratchet flag (P2-R17).
+   * The gate set, bindings and digest a lock of these experiments would freeze: the one
+   * computation behind `lockCampaignGates`, its preview and the director's preflight (P2-R17).
    */
   campaignGateSet(campaignId: string, experimentIds: readonly string[], ratchet: boolean, obligations: Record<string, readonly string[]> = {}): {
     experiments: Experiment[]; bindings: Record<string, string | null>; roles: CampaignLockScope['roles']; gateSetDigest: string;
@@ -2913,7 +2899,7 @@ export class MissionStore {
     const d = this.decision(decisionId);
     if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
     // A person's approve-ir on this corpus only (P2-R59).
-    if (d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) {
+    if (d.scope.operation !== 'approve-ir' || !isPersonActor(d.actor) || d.missionId !== r.corpusId) {
       throw new Error(`decision ${decisionId} is not a person's approve-ir decision on corpus ${r.corpusId}`);
     }
     // Inferred, no basis: names its confirmed interpretation.
@@ -3043,7 +3029,7 @@ export class MissionStore {
     if (!b) throw new Error(`unknown blueprint ${id}`);
     if (!canTransition(IR_TRANSITIONS, b.status, to)) throw new IllegalTransition('blueprint', id, b.status, to);
     const d = this.decision(decisionId);
-    if (!d || d.projectId !== b.projectId || d.scope.operation !== 'approve-blueprint' || !isHumanActor(d.actor) || d.missionId !== b.corpusId) {
+    if (!d || d.projectId !== b.projectId || d.scope.operation !== 'approve-blueprint' || !isPersonActor(d.actor) || d.missionId !== b.corpusId) {
       throw new Error(`decision ${decisionId} is not a person's approve-blueprint decision on corpus ${b.corpusId}`);
     }
     this.db.prepare('UPDATE blueprints SET status=?, decision_id=?, updated_at=? WHERE id=?').run(to, decisionId, this.now(), id);
@@ -3149,7 +3135,7 @@ export class MissionStore {
     const r = this.irRecord(irId);
     const d = this.decision(decisionId);
     if (!r || (r.status !== 'rejected' && r.status !== 'superseded')) throw new Error(`record ${irId} is not rejected or superseded`);
-    if (!d || d.scope.operation !== 'approve-ir' || !isHumanActor(d.actor) || d.missionId !== r.corpusId) throw new Error(`decision ${decisionId} is not a person's approve-ir on corpus ${r.corpusId}`);
+    if (!d || d.scope.operation !== 'approve-ir' || !isPersonActor(d.actor) || d.missionId !== r.corpusId) throw new Error(`decision ${decisionId} is not a person's approve-ir on corpus ${r.corpusId}`);
     const ids = (this.db.prepare(`SELECT id FROM assumptions WHERE ir_id=? AND source='ir-interpretation' AND status='open'`).all(irId) as Array<{ id: string }>).map((x) => x.id);
     for (const id of ids) this.db.prepare(`UPDATE assumptions SET status='overturned', decision_id=?, updated_at=? WHERE id=? AND status='open'`).run(decisionId, this.now(), id);
     return ids;
@@ -3319,6 +3305,7 @@ export class MissionStore {
   }
 
   private writeDecision(d: Decision): Decision {
+    benchActorRefusal(this.db, d.actor);
     this.db
       .prepare(
         `INSERT INTO decisions
@@ -3538,15 +3525,15 @@ export function movesWorkItem(d: Decision, w: Pick<WorkItem, 'id' | 'contentDige
   const scope = d.scope as { operation?: unknown; workItemId?: unknown; contentDigest?: unknown; workItems?: unknown; supersedes?: unknown };
   const names = scope.workItemId === w.id && scope.contentDigest === w.contentDigest;
   if (scope.operation === 'approve-plan') {
-    if (d.kind !== 'approve' || !isHumanActor(d.actor)) return false;
+    if (d.kind !== 'approve' || !isPersonActor(d.actor)) return false;
     if (to === 'approved') return (scope.workItems as Record<string, unknown> | undefined)?.[w.id] === w.contentDigest;
     return to === 'superseded' && Array.isArray(scope.supersedes) && scope.supersedes.includes(w.id);
   }
   if (to === 'approved') {
-    return names && ((scope.operation === 'approve-work-item' && isHumanActor(d.actor))
+    return names && ((scope.operation === 'approve-work-item' && isPersonActor(d.actor))
       || (scope.operation === 'admit-work-item' && isCampaignActor(d.actor)));
   }
-  return names && scope.operation === 'reject-work-item' && isHumanActor(d.actor);
+  return names && scope.operation === 'reject-work-item' && isPersonActor(d.actor);
 }
 
 const MAX_NOT_AFTER_MS = 30 * 24 * 60 * 60 * 1000;

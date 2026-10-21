@@ -3,6 +3,7 @@ import { defaultOut } from '../paths.ts';
 import { mappedProject, mappedRoot, openDaylight, type DaylightContext } from '../mission/context.ts';
 import type { IngestSource } from '../mission/types.ts';
 import { ingestClaudeCode, isSessionId, OUTSIDE_CONTROLS, SessionRefused, type SkippedCounts } from './claude-code.ts';
+import { runIngestBench } from './bench.ts';
 
 /**
  * `daylight ingest claude-code --out <out> (--session <uuid> | --all) [--format json]` and
@@ -72,8 +73,14 @@ const print = (data: unknown) => process.stdout.write(`${JSON.stringify(data, nu
 /**
  * Entry for the dispatcher: `argv` starts after `ingest`. `env.projectsDir` overrides where
  * Claude Code's transcripts are looked for; the CLI leaves it to `$CLAUDE_CONFIG_DIR`.
+ *
+ * `ingest bench` is asynchronous and returns a promise that never rejects; the dispatcher
+ * (`runForgeCli`, an async function) returns whatever this returns, so either form is awaited.
  */
-export function runIngestCommand(argv: string[], env: { projectsDir?: string } = {}): number {
+export function runIngestCommand(argv: ['bench', ...string[]], env?: { projectsDir?: string; process?: NodeJS.ProcessEnv }): Promise<number>;
+export function runIngestCommand(argv: string[], env?: { projectsDir?: string; process?: NodeJS.ProcessEnv }): number;
+export function runIngestCommand(argv: string[], env: { projectsDir?: string; process?: NodeJS.ProcessEnv } = {}): number | Promise<number> {
+  if (argv[0] === 'bench') return runIngestBench(argv.slice(1), env.process ?? process.env);
   const [sub, ...rest] = argv;
   let asJson = false;
   try {
@@ -124,7 +131,7 @@ export function runIngestCommand(argv: string[], env: { projectsDir?: string } =
         return 0;
       }
       default:
-        throw new Usage('ingest needs one of: claude-code, list');
+        throw new Usage('ingest needs one of: claude-code, list, bench');
     }
   } catch (err) {
     if (err instanceof Usage || err instanceof SessionRefused) {
@@ -138,3 +145,4 @@ export function runIngestCommand(argv: string[], env: { projectsDir?: string } =
     return 1;
   }
 }
+

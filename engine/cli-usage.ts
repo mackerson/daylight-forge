@@ -67,6 +67,7 @@ usage:
                                 | acknowledge-forgery <c> --rationale '<why>' --confirm <c> [--declined]
   node engine/cli.ts confirm    <operation> <subject> [--write] [--execute] [--max-usd N] [--only x,…]   # what --confirm checks
   node engine/cli.ts ingest     claude-code (--session <uuid> | --all) | list
+                                bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json]   # live modes refused (P2-R7)
   node engine/cli.ts deps       snapshot <repo> [--out <dir>]   # cargo fetch --locked on the host, with network
                                 status <repo> [--out <dir>]     # recorded digest, Cargo.lock match, cache sizes
                                 requests [--mission <m>]        # dependencies authors asked for

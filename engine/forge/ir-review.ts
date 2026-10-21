@@ -631,7 +631,7 @@ function openInterpretation(ctx: DaylightContext, corpusId: string, irId: string
  */
 export function approveIr(ctx: DaylightContext, input: ApproveIrInput): Decision {
   const plan = planApproveIr(ctx, input.corpusId, input.set);
-  assertHumanDecision(input.env, input.actor, input.confirm, digestOf(canonicalJson(plan.scope)));
+  assertHumanDecision(input.env, input.actor, input.confirm, digestOf(canonicalJson(plan.scope)), ctx.store);
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: an IR approval needs a rationale');
   // A person is acting on this corpus: first finish what an earlier act's commit may have left unwritten.
   repairInterpretations(ctx, input.corpusId);

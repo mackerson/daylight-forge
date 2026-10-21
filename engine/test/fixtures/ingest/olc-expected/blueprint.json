@@ -1,0 +1,893 @@
+{
+ "kind": "daylight-blueprint-template",
+ "v": 1,
+ "note": "By construction from the ground truth (lanes → components) and AGENTS.md's layer table (boundaries). Strings \"ir:<key>\" resolve to ir ids; requirements are assigned by record, not by section. Records no element names go to `deferred` when their effective milestone is outside scope (an errata deferral moves its other passage), else to `outOfScope` with `rest`. Engine/MCP sit under pack-tooling; the spec leaves it open.",
+ "rest": "not placed by the benchmark blueprint: mission, principles or context the M0 tickets do not carry",
+ "place": [
+  {
+   "doc": "adr-0001",
+   "under": "*",
+   "as": "constraint",
+   "appliesTo": [
+    "S",
+    "Z",
+    "G",
+    "I",
+    "L",
+    "M",
+    "P",
+    "E"
+   ]
+  },
+  {
+   "doc": "adr-0002",
+   "under": "*",
+   "as": "component",
+   "component": "E",
+   "ticket": "M0.E2"
+  },
+  {
+   "doc": "adr-0003",
+   "under": "*",
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S1"
+  },
+  {
+   "doc": "adr-0004",
+   "under": "*",
+   "as": "component",
+   "component": "P",
+   "ticket": "M0.P2"
+  },
+  {
+   "doc": "adr-0005",
+   "under": "*",
+   "as": "component",
+   "component": "I",
+   "ticket": "M0.I2"
+  },
+  {
+   "doc": "adr-0006",
+   "under": "*",
+   "as": "component",
+   "component": "M",
+   "ticket": "M0.M1"
+  },
+  {
+   "doc": "adr-0007",
+   "under": "*",
+   "as": "component",
+   "component": "P",
+   "ticket": "M0.P5"
+  },
+  {
+   "doc": "adr-0008",
+   "under": "*",
+   "as": "component",
+   "component": "Z",
+   "ticket": "M0.Z1"
+  },
+  {
+   "doc": "adr-0009",
+   "under": "*",
+   "as": "component",
+   "component": "I",
+   "ticket": "M0.I4"
+  },
+  {
+   "doc": "adr-0010",
+   "under": "*",
+   "as": "deferred",
+   "to": "M1"
+  },
+  {
+   "doc": "adr-0011",
+   "under": "*",
+   "as": "deferred",
+   "to": "M1"
+  },
+  {
+   "doc": "adr-0012",
+   "under": "*",
+   "as": "component",
+   "component": "P",
+   "ticket": "M0.P4"
+  },
+  {
+   "doc": "adr-0013",
+   "under": "*",
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S4"
+  },
+  {
+   "doc": "adr-0014",
+   "under": "*",
+   "as": "component",
+   "component": "E",
+   "ticket": "M0.E1"
+  },
+  {
+   "doc": "adr-0015",
+   "under": "*",
+   "as": "deferred",
+   "to": "M1"
+  },
+  {
+   "doc": "olc-agents",
+   "under": [
+    "Layers"
+   ],
+   "as": "component",
+   "component": "E",
+   "ticket": "M0.E2"
+  },
+  {
+   "doc": "olc-agents",
+   "under": [
+    "Everything is a command"
+   ],
+   "as": "component",
+   "component": "E",
+   "ticket": "M0.E1"
+  },
+  {
+   "doc": "olc-agents",
+   "under": [
+    "The content rules"
+   ],
+   "as": "constraint",
+   "appliesTo": [
+    "I",
+    "P"
+   ]
+  },
+  {
+   "doc": "olc-agents",
+   "under": [
+    "Never panic"
+   ],
+   "as": "constraint",
+   "appliesTo": [
+    "S",
+    "Z",
+    "G",
+    "I",
+    "L",
+    "M",
+    "P",
+    "E"
+   ]
+  },
+  {
+   "doc": "olc-agents",
+   "under": [
+    "Testing and the CI gate"
+   ],
+   "as": "component",
+   "component": "E",
+   "ticket": "M0.E2"
+  },
+  {
+   "doc": "olc-agents",
+   "under": "*",
+   "as": "outOfScope",
+   "reason": "agent working rules (sessions, roles, lanes, hand-offs, owner decisions), not product requirements"
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "The three artifacts",
+    "What is deliberately not here"
+   ],
+   "as": "constraint",
+   "appliesTo": [
+    "S",
+    "Z",
+    "G",
+    "I",
+    "L",
+    "M",
+    "P",
+    "E"
+   ]
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "Identity"
+   ],
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S1"
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "Content model"
+   ],
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S4"
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "Surfacing"
+   ],
+   "as": "component",
+   "component": "P",
+   "ticket": "M0.P2"
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "Evidence and mastery"
+   ],
+   "as": "component",
+   "component": "L",
+   "ticket": "M0.L3"
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "Commands"
+   ],
+   "as": "component",
+   "component": "E",
+   "ticket": "M0.E1"
+  },
+  {
+   "doc": "olc-arch",
+   "under": [
+    "Renderer as a library"
+   ],
+   "as": "deferred",
+   "to": "M1"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E1 "
+   ],
+   "as": "component",
+   "component": "I",
+   "ticket": "M0.I2"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E4 "
+   ],
+   "as": "component",
+   "component": "P",
+   "ticket": "M0.P2"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E8 "
+   ],
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S4"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E9 "
+   ],
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S4"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E15 "
+   ],
+   "as": "component",
+   "component": "L",
+   "ticket": "M0.L1"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E16 "
+   ],
+   "as": "deferred",
+   "to": "M2"
+  },
+  {
+   "doc": "olc-errata",
+   "under": [
+    "E"
+   ],
+   "as": "deferred",
+   "to": "M1"
+  },
+  {
+   "doc": "cf-spec",
+   "under": "*",
+   "as": "outOfScope",
+   "reason": "Corpus Foundry is a separate product: an external boundary (CF §2), never an M0 component"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "5. ",
+    "6. ",
+    "26. ",
+    "28. "
+   ],
+   "as": "constraint",
+   "appliesTo": [
+    "S",
+    "Z",
+    "G",
+    "I",
+    "L",
+    "M",
+    "P",
+    "E"
+   ]
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "9. "
+   ],
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S3"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "10. "
+   ],
+   "as": "component",
+   "component": "I",
+   "ticket": "M0.I3"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "13. "
+   ],
+   "as": "component",
+   "component": "L",
+   "ticket": "M0.L3"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "14. "
+   ],
+   "as": "component",
+   "component": "P",
+   "ticket": "M0.P6"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "19. "
+   ],
+   "as": "component",
+   "component": "G",
+   "ticket": "M0.G2"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "22. "
+   ],
+   "as": "component",
+   "component": "Z",
+   "ticket": "M0.Z1"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "Identity classes"
+   ],
+   "as": "component",
+   "component": "S",
+   "ticket": "M0.S1"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "7. ",
+    "8. ",
+    "11",
+    "12. ",
+    "16. ",
+    "29. ",
+    "30. ",
+    "31. ",
+    "32. ",
+    "33. ",
+    "What v0.8",
+    "Plate"
+   ],
+   "as": "deferred",
+   "to": "M1"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "18. ",
+    "20. ",
+    "21",
+    "23. ",
+    "24. ",
+    "25. "
+   ],
+   "as": "deferred",
+   "to": "M2"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "15. ",
+    "17. "
+   ],
+   "as": "deferred",
+   "to": "M3"
+  },
+  {
+   "doc": "olc-spec",
+   "under": [
+    "27. "
+   ],
+   "as": "deferred",
+   "to": "M1"
+  }
+ ],
+ "body": {
+  "kind": "daylight-blueprint",
+  "version": 1,
+  "title": "OLC M0: the pack contract",
+  "scope": {
+   "milestones": [
+    "M0"
+   ]
+  },
+  "ticketIdTemplate": "{milestone}.{component}{k}",
+  "boundaries": [
+   {
+    "id": "pack-tooling",
+    "title": "Pack tools, schema and engine",
+    "domain": "olc",
+    "lifecycle": "in-repo",
+    "owns": [
+     "crates/schema/",
+     "crates/zip/",
+     "crates/store/",
+     "crates/graph/",
+     "crates/items/",
+     "crates/page/",
+     "crates/pack/",
+     "crates/media/",
+     "crates/engine/",
+     "crates/mcp/",
+     "apps/olc/",
+     "xtask/",
+     "plan/adr/",
+     "examples/"
+    ],
+    "bounds": [
+     "ir:h012"
+    ],
+    "invariants": [
+     "ir:h021",
+     "ir:h067"
+    ]
+   },
+   {
+    "id": "learner-app",
+    "title": "Learner app and renderer",
+    "domain": "olc",
+    "lifecycle": "in-repo",
+    "owns": [
+     "crates/render/",
+     "apps/olc-book/"
+    ],
+    "bounds": [
+     "ir:h011"
+    ],
+    "invariants": [
+     "ir:h019",
+     "ir:h004"
+    ]
+   },
+   {
+    "id": "private-evidence",
+    "title": "Private learner data",
+    "domain": "olc",
+    "lifecycle": "in-repo",
+    "owns": [
+     "crates/learner/"
+    ],
+    "bounds": [
+     "ir:h018"
+    ],
+    "invariants": [
+     "ir:h005",
+     "ir:h050",
+     "ir:h052"
+    ]
+   },
+   {
+    "id": "community-packs",
+    "title": "Community pack repositories",
+    "domain": "olc",
+    "lifecycle": "separate-repo",
+    "owns": [
+     "examples/"
+    ],
+    "bounds": [
+     "ir:h002"
+    ],
+    "invariants": [
+     "ir:h008",
+     "ir:h073"
+    ]
+   },
+   {
+    "id": "corpus-foundry",
+    "title": "Corpus Foundry",
+    "domain": "foundry",
+    "lifecycle": "external",
+    "owns": [],
+    "bounds": [
+     "ir:h180",
+     "ir:h181"
+    ],
+    "invariants": [
+     "ir:cf-learner"
+    ]
+   }
+  ],
+  "components": [
+   {
+    "id": "S",
+    "boundary": "pack-tooling",
+    "title": "Schema",
+    "owns": [
+     "crates/schema/",
+     "crates/page/src/model.rs"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h083",
+     "ir:h122",
+     "ir:h074",
+     "ir:h077",
+     "ir:h027",
+     "ir:h129",
+     "ir:h025",
+     "ir:h034",
+     "ir:h036",
+     "ir:h085",
+     "ir:h112",
+     "ir:h148",
+     "ir:h107",
+     "ir:h110"
+    ],
+    "dependsOn": [],
+    "provides": [
+     "schema.identity"
+    ],
+    "consumes": []
+   },
+   {
+    "id": "Z",
+    "boundary": "pack-tooling",
+    "title": "Container and store",
+    "owns": [
+     "crates/zip/",
+     "crates/store/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h070",
+     "ir:h163",
+     "ir:h072",
+     "ir:h137",
+     "ir:h071"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [
+     "zip.container"
+    ],
+    "consumes": []
+   },
+   {
+    "id": "G",
+    "boundary": "pack-tooling",
+    "title": "Graph",
+    "owns": [
+     "crates/graph/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h143",
+     "ir:h062",
+     "ir:h063"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [],
+    "consumes": []
+   },
+   {
+    "id": "I",
+    "boundary": "pack-tooling",
+    "title": "Items",
+    "owns": [
+     "crates/items/",
+     "examples/olc-pack-example/items/fixtures/"
+    ],
+    "shared": [
+     "examples/olc-pack-example/items/fixtures/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h022",
+     "ir:h024",
+     "ir:h040",
+     "ir:h082",
+     "ir:h102",
+     "ir:h130",
+     "ir:h028",
+     "ir:h026",
+     "ir:h139"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [],
+    "consumes": []
+   },
+   {
+    "id": "L",
+    "boundary": "private-evidence",
+    "title": "Learner",
+    "owns": [
+     "crates/learner/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h041",
+     "ir:h116",
+     "ir:h050",
+     "ir:h046",
+     "ir:h047",
+     "ir:h127",
+     "ir:h060",
+     "ir:h052",
+     "ir:h160",
+     "ir:h147",
+     "ir:h161"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [
+     "learner.recompute"
+    ],
+    "consumes": [
+     "schema.identity"
+    ]
+   },
+   {
+    "id": "M",
+    "boundary": "pack-tooling",
+    "title": "Media",
+    "owns": [
+     "crates/media/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h133",
+     "ir:h134"
+    ],
+    "dependsOn": [
+     "S",
+     "Z"
+    ],
+    "provides": [],
+    "consumes": [
+     "zip.container"
+    ]
+   },
+   {
+    "id": "P",
+    "boundary": "pack-tooling",
+    "title": "Pack",
+    "owns": [
+     "crates/pack/",
+     "crates/page/src/validate.rs",
+     "xtask/src/ci.rs",
+     "xtask/src/federation.rs",
+     "plan/adr/0007",
+     "examples/"
+    ],
+    "shared": [
+     "examples/olc-pack-example/",
+     "examples/",
+     "xtask/src/ci.rs",
+     "xtask/src/federation.rs"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h084",
+     "ir:h088",
+     "ir:adr4-surfacing",
+     "ir:h106",
+     "ir:h048",
+     "ir:h125",
+     "ir:h132",
+     "ir:h128",
+     "ir:h068",
+     "ir:adr4-tests",
+     "ir:h037",
+     "ir:h149",
+     "ir:h012",
+     "ir:oracle-digest",
+     "ir:h164",
+     "ir:h079",
+     "ir:h087",
+     "ir:h135",
+     "ir:h146",
+     "ir:h053",
+     "ir:h054",
+     "ir:h096"
+    ],
+    "dependsOn": [
+     "G",
+     "I",
+     "L",
+     "S",
+     "Z"
+    ],
+    "provides": [
+     "pack.release"
+    ],
+    "consumes": [
+     "zip.container",
+     "learner.recompute"
+    ]
+   },
+   {
+    "id": "E",
+    "boundary": "pack-tooling",
+    "title": "Engine, CLI, MCP, xtask",
+    "owns": [
+     "crates/engine/",
+     "crates/mcp/",
+     "apps/olc/",
+     "xtask/src/"
+    ],
+    "shared": [
+     "xtask/src/ci.rs",
+     "xtask/src/federation.rs"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h080",
+     "ir:h158",
+     "ir:h159",
+     "ir:h016",
+     "ir:h119",
+     "ir:h156",
+     "ir:h157",
+     "ir:h144"
+    ],
+    "dependsOn": [
+     "L",
+     "P",
+     "S"
+    ],
+    "provides": [
+     "engine.catalog"
+    ],
+    "consumes": [
+     "pack.release",
+     "learner.recompute"
+    ]
+   }
+  ],
+  "interfaces": [
+   {
+    "id": "schema.identity",
+    "owner": "S",
+    "irIds": [
+     "ir:h121"
+    ],
+    "summary": "The five identity newtypes and canonical digests.",
+    "crossesBoundary": true
+   },
+   {
+    "id": "zip.container",
+    "owner": "Z",
+    "irIds": [
+     "ir:h138"
+    ],
+    "summary": "Hostile read and deterministic write of release containers.",
+    "crossesBoundary": false
+   },
+   {
+    "id": "pack.release",
+    "owner": "P",
+    "irIds": [
+     "ir:h069"
+    ],
+    "summary": "A release and its non-self-referential digest.",
+    "crossesBoundary": false
+   },
+   {
+    "id": "learner.recompute",
+    "owner": "L",
+    "irIds": [
+     "ir:h049"
+    ],
+    "summary": "Mastery recompute after a retraction.",
+    "crossesBoundary": true
+   },
+   {
+    "id": "engine.catalog",
+    "owner": "E",
+    "irIds": [
+     "ir:h150"
+    ],
+    "summary": "The one command catalog.",
+    "crossesBoundary": false
+   }
+  ],
+  "order": [
+   [
+    "S"
+   ],
+   [
+    "G",
+    "I",
+    "L",
+    "Z"
+   ],
+   [
+    "M",
+    "P"
+   ],
+   [
+    "E"
+   ]
+  ],
+  "constraints": [
+   {
+    "irIds": [
+     "ir:h017",
+     "ir:h162"
+    ],
+    "appliesTo": [
+     "S",
+     "Z",
+     "G",
+     "I",
+     "L",
+     "M",
+     "P",
+     "E"
+    ]
+   }
+  ],
+  "deferred": [],
+  "outOfScope": []
+ }
+}

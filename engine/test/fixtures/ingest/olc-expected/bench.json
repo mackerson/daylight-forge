@@ -1,0 +1,82 @@
+{
+ "kind": "daylight-ingest-bench",
+ "v": 1,
+ "name": "olc",
+ "title": "Open Learning Commons v0.8 + Corpus Foundry v0.1",
+ "note": "Benchmark-only answers for the OLC corpus. Documents are WS-R14s verbatim fixture (../olc), the manifest, sectioner sidecar and seeds are WS-R14s (../olc-config); this directory adds only what the benchmark needs. Paths are relative to this file.",
+ "docs": {
+  "olc-spec": "../olc/docs/spec/open_learning_commons_spec_v0_8.md",
+  "olc-errata": "../olc/docs/spec/errata-v0_8.md",
+  "olc-agents": "../olc/AGENTS.md",
+  "olc-arch": "../olc/docs/architecture.md",
+  "cf-spec": "../olc/foundry/OLC_Corpus_Foundry_Spec_v0_1.md",
+  "adr-0001": "../olc/plan/adr/0001-license-and-clean-room.md",
+  "adr-0002": "../olc/plan/adr/0002-layering.md",
+  "adr-0003": "../olc/plan/adr/0003-identity-and-serialization.md",
+  "adr-0004": "../olc/plan/adr/0004-validation-and-editorial-axes.md",
+  "adr-0005": "../olc/plan/adr/0005-interaction-primitives.md",
+  "adr-0006": "../olc/plan/adr/0006-synthetic-media.md",
+  "adr-0007": "../olc/plan/adr/0007-monorepo-plus-example-pack.md",
+  "adr-0008": "../olc/plan/adr/0008-release-pack-container.md",
+  "adr-0009": "../olc/plan/adr/0009-generator-validator-independence.md",
+  "adr-0010": "../olc/plan/adr/0010-grounding-declarations.md",
+  "adr-0011": "../olc/plan/adr/0011-first-graph-and-first-chapter.md",
+  "adr-0012": "../olc/plan/adr/0012-the-m0-oracle.md",
+  "adr-0013": "../olc/plan/adr/0013-page-model-and-renderer-library.md",
+  "adr-0014": "../olc/plan/adr/0014-command-catalog-and-three-doors.md",
+  "adr-0015": "../olc/plan/adr/0015-bindings-as-packs.md"
+ },
+ "repos": [
+  {
+   "alias": null,
+   "files": {
+    "AGENTS.md": "../olc/AGENTS.md",
+    "docs/": "../olc/docs/",
+    "plan/": "../olc/plan/",
+    "daylight.corpus.json": "../olc-config/daylight.corpus.json",
+    "sectioner.olc.json": "../olc-config/sectioner.olc.json"
+   }
+  },
+  {
+   "alias": "foundry",
+   "files": {
+    "OLC_Corpus_Foundry_Spec_v0_1.md": "../olc/foundry/OLC_Corpus_Foundry_Spec_v0_1.md"
+   }
+  }
+ ],
+ "manifest": {
+  "repo": "daylight.corpus.json",
+  "file": "../olc-config/daylight.corpus.json"
+ },
+ "expected": {
+  "groundTruth": "ground-truth.json",
+  "overlay": "ir.overlay.json",
+  "blueprint": "blueprint.json",
+  "packets": "packets.json",
+  "seeds": "../olc-config/seeds.json",
+  "invariants": "invariants.json",
+  "review": "review.json"
+ },
+ "groundTruthRows": [
+  "| M0.S1 |",
+  "| M0.P2 |"
+ ],
+ "revise": {
+  "doc": "adr-0004",
+  "find": "- M0.P2 tests the two decisions separately; M0.L3 tests mastery against the bit.",
+  "replace": "- M0.P2 and M0.L3 test the two decisions together.",
+  "staleKeys": [
+   "adr4-tests"
+  ],
+  "staleTickets": [
+   "M0.P2"
+  ]
+ },
+ "holdout": {
+  "path": "examples/olc-pack-example/tests/release.digest",
+  "key": "oracle-digest"
+ },
+ "landing": {
+  "ticket": "M0.P2"
+ }
+}

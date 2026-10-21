@@ -1,0 +1,344 @@
+{
+ "kind": "daylight-packets-template",
+ "v": 1,
+ "note": "By construction from the ticket ↔ clause map in README.md.",
+ "packets": [
+  {
+   "ticketId": "W1.K1",
+   "componentId": "K",
+   "milestone": "W1",
+   "title": "Ledger record format",
+   "objective": "Implement Clause 2.1, Clause 2.2, Clause 2.3.",
+   "prerequisites": [],
+   "scope": [
+    "lib/ledger/src/record.rs"
+   ],
+   "requirements": [
+    "hl-req-010",
+    "hl-req-011",
+    "hl-req-012",
+    "dr01",
+    "dr01-c"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-010"
+     ],
+     "statement": "A test demonstrates 2.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W1.K2",
+   "componentId": "K",
+   "milestone": "W1",
+   "title": "Append-only ledger store",
+   "objective": "Implement Clause 3.1, Clause 3.2.",
+   "prerequisites": [
+    "W1.K1"
+   ],
+   "scope": [
+    "lib/ledger/src/store.rs",
+    "lib/ledger/tests/store.rs"
+   ],
+   "requirements": [
+    "hl-req-020",
+    "hl-req-022",
+    "am-a2"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-022"
+     ],
+     "statement": "A test demonstrates 3.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W1.V1",
+   "componentId": "V",
+   "milestone": "W1",
+   "title": "Berth registry",
+   "objective": "Implement Clause 4.1, Clause 4.2.",
+   "prerequisites": [
+    "W1.K1"
+   ],
+   "scope": [
+    "svc/berth/src/registry.rs"
+   ],
+   "requirements": [
+    "hl-req-030",
+    "hl-req-031",
+    "am-a1"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-030"
+     ],
+     "statement": "A test demonstrates 4.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W1.V2",
+   "componentId": "V",
+   "milestone": "W1",
+   "title": "Berth allocation",
+   "objective": "Implement Clause 5.1, Clause 5.2, Clause 5.3.",
+   "prerequisites": [
+    "W1.K2",
+    "W1.V1"
+   ],
+   "scope": [
+    "svc/berth/src/allocate.rs",
+    "svc/berth/tests/allocate.rs"
+   ],
+   "requirements": [
+    "hl-req-040",
+    "hl-req-041",
+    "hl-req-042",
+    "hl-req-043",
+    "dr02",
+    "dr02-c",
+    "am-a4"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-040"
+     ],
+     "statement": "A test demonstrates 5.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W1.V3",
+   "componentId": "V",
+   "milestone": "W1",
+   "title": "Tariff table loader",
+   "objective": "Implement Clause 6.1.",
+   "prerequisites": [
+    "W1.K1"
+   ],
+   "scope": [
+    "svc/tariff/src/table.rs"
+   ],
+   "requirements": [
+    "hl-req-050"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-050"
+     ],
+     "statement": "A test demonstrates 6.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W1.Q1",
+   "componentId": "Q",
+   "milestone": "W1",
+   "title": "Audit event capture",
+   "objective": "Implement Clause 7.1.",
+   "prerequisites": [
+    "W1.K2"
+   ],
+   "scope": [
+    "svc/audit/src/events.rs"
+   ],
+   "requirements": [
+    "hl-req-060"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-060"
+     ],
+     "statement": "A test demonstrates 7.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W2.K3",
+   "componentId": "K",
+   "milestone": "W2",
+   "title": "Ledger compaction",
+   "objective": "Implement Clause 3.3.",
+   "prerequisites": [
+    "W1.K2"
+   ],
+   "scope": [
+    "lib/ledger/src/compact.rs"
+   ],
+   "requirements": [
+    "hl-req-023"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-023"
+     ],
+     "statement": "A test demonstrates 3.3."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W2.K4",
+   "componentId": "K",
+   "milestone": "W2",
+   "title": "Ledger verification",
+   "objective": "Implement Clause 9.1, Clause 9.2.",
+   "prerequisites": [
+    "W2.K3"
+   ],
+   "scope": [
+    "lib/ledger/src/verify.rs",
+    "lib/ledger/tests/verify.rs"
+   ],
+   "requirements": [
+    "hl-req-080",
+    "hl-req-081"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-080"
+     ],
+     "statement": "A test demonstrates 9.1."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W2.V4",
+   "componentId": "V",
+   "milestone": "W2",
+   "title": "Rate calculation",
+   "objective": "Implement Clause 6.2.",
+   "prerequisites": [
+    "W1.V3",
+    "W1.V2"
+   ],
+   "scope": [
+    "svc/tariff/src/rate.rs",
+    "svc/tariff/tests/rate.rs"
+   ],
+   "requirements": [
+    "hl-req-051",
+    "dr03",
+    "dr03-c",
+    "am-a5"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-051"
+     ],
+     "statement": "A test demonstrates 6.2."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W2.V5",
+   "componentId": "V",
+   "milestone": "W2",
+   "title": "Invoicing",
+   "objective": "Implement Clause 6.3.",
+   "prerequisites": [
+    "W2.V4"
+   ],
+   "scope": [
+    "svc/tariff/src/invoice.rs"
+   ],
+   "requirements": [
+    "hl-req-052"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-052"
+     ],
+     "statement": "A test demonstrates 6.3."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W2.Q2",
+   "componentId": "Q",
+   "milestone": "W2",
+   "title": "Audit export",
+   "objective": "Implement Clause 7.2.",
+   "prerequisites": [
+    "W1.Q1"
+   ],
+   "scope": [
+    "svc/audit/src/export.rs"
+   ],
+   "requirements": [
+    "hl-req-061"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-061"
+     ],
+     "statement": "A test demonstrates 7.2."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "W2.Q3",
+   "componentId": "Q",
+   "milestone": "W2",
+   "title": "Audit retention",
+   "objective": "Implement Clause 8.1, Clause 8.2.",
+   "prerequisites": [
+    "W2.Q2"
+   ],
+   "scope": [
+    "svc/audit/src/retention.rs",
+    "svc/audit/tests/retention.rs"
+   ],
+   "requirements": [
+    "hl-req-070",
+    "hl-req-071",
+    "am-a6"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "hl-req-070"
+     ],
+     "statement": "A test demonstrates 8.1."
+    }
+   ],
+   "interfaces": []
+  }
+ ]
+}
