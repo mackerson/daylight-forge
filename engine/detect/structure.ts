@@ -130,7 +130,11 @@ function literalCorpus(graph: Graph): Set<string> {
   return out;
 }
 
-export function detectStructure(graph: Graph): StructureReport {
+/**
+ * `churn: false` runs no git at all: a materialised tree (refine's map at a revision) has no
+ * history of its own, and git run there would find whatever repository encloses it.
+ */
+export function detectStructure(graph: Graph, opts: { churn?: boolean } = {}): StructureReport {
   const files = new Set(graph.nodes.filter((n) => n.kind === 'file').map((n) => n.id));
   // HTML is not parsed into the graph, so offer it to entrypoint discovery separately.
   const htmlFiles = new Set([...files]);
@@ -359,7 +363,7 @@ export function detectStructure(graph: Graph): StructureReport {
     if (n.kind === 'file') continue;
     symbolsPerFile.set(n.file, (symbolsPerFile.get(n.file) ?? 0) + 1);
   }
-  const churn = churnByFile(graph.root);
+  const churn = opts.churn === false ? new Map<string, number>() : churnByFile(graph.root);
   const fanIns = [...files].map((f) => incoming.get(f)?.size ?? 0).sort((a, b) => a - b);
   // Relative, not absolute: "a lot of dependents" only means anything for this codebase.
   const p90 = fanIns[Math.floor(fanIns.length * 0.9)] ?? 0;
