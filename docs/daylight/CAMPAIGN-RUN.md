@@ -194,6 +194,14 @@ Derived from rows and the integration ref on every call: tickets by lane and sta
 how many landed, the authorization and any halt, assumptions pending the owner, needs, spend as
 `≥ $X (N unknown)` when anything is unknown, and each wave's findings. `--write` puts STATUS.md
 under `<out>/campaigns/<id>/`; nothing is ever written into the target repository (P2-R13).
+STATUS.md and `--format json` (`table`) carry kitkraft's STATUS table over the same states, and
+`run` is the run claim when one exists.
+
+## Reports and refine
+
+`campaign report` (a wave, the open landings or the whole campaign), `campaign list` and
+`campaign refine` (maps of the base and the tip, compared, and the focus ranking) are the REFINE
+stage: see [REFINE.md](REFINE.md).
 
 ## Events
 
