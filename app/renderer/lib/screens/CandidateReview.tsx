@@ -6,6 +6,7 @@ import {
 } from './forge-words.ts';
 import { Choice, GuardOutcome, RationalePicker, toneClass, useAct, type ForgeApi } from './ForgeParts.tsx';
 import { conclusionWord } from './mission-words.ts';
+import { FORGERY_WORDS } from './campaign-words.ts';
 
 /**
  * One candidate, for a person deciding on it.
@@ -62,6 +63,7 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
   const approve = approveAllowed(c);
   const apply = applyAllowed(c, inspect.decisions, inspect.applications ?? []);
   const flags = flaggedFiles(c);
+  const forged = data.forgeryShapes?.items ?? [];
   const diff = diffLines(data.diff.text);
   const closed = inspect.mission.state === 'closed';
   const text = kind === 'override' ? [rationale, note.trim()].filter(Boolean).join(' — ') : rationale.trim();
@@ -99,15 +101,15 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
             Approve and override show a checkbox in the system dialog; until you tick it, nothing is recorded.
           </p>
         )}
-        {!!data.forgeryShapes?.length && (
+        {!!forged.length && (
           <div className="card quiet" style={{ margin: '0 0 6px' }} data-forge="forgery-shapes">
             <p className="hint" style={{ fontSize: 11, margin: 0 }}>
-              Test-output forgery shapes (a heuristic, P2-R49) in {data.forgeryShapes.length} file{data.forgeryShapes.length === 1 ? '' : 's'}:
+              Test-output forgery shapes (a heuristic, P2-R49) in {forged.length} file{forged.length === 1 ? '' : 's'}:
               library code that could print a pass the gates read. Approve and override show a checkbox in the
               system dialog; until you tick it, nothing is recorded.
             </p>
             <ul className="rows num" style={{ overflowWrap: 'anywhere' }}>
-              {data.forgeryShapes.map((h) => <li key={h.path}>{h.path} · {h.shapes.join(', ')}</li>)}
+              {forged.map((h) => <li key={h.path}>{h.path} · {h.classes.map((k) => FORGERY_WORDS[k] ?? k).join(', ')}</li>)}
             </ul>
           </div>
         )}
@@ -245,7 +247,7 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
         </p>
         <GuardOutcome result={result} sample={sample} />
       </div>
-      {!!data.forgeryShapes?.length && <ForgeryReview id={c.id} api={api} sample={sample} closed={closed} onDone={onDone} />}
+      {!!forged.length && <ForgeryReview id={c.id} api={api} sample={sample} closed={closed} onDone={onDone} />}
     </div>
   );
 }

@@ -459,30 +459,6 @@ export const NEED_WORDS: Record<NeedKindWord, string> = {
   'forgery-shape-review': 'review forgery shape',
 };
 
-// ---- test-output forgery shapes (P2-R43, P2-R49) ---------------------------------------------
-
-/** One file's forgery shapes, as capture recorded them: the shape names, never the matched text. */
-export interface ForgeryHit { path: string; shapes: string[] }
-
-/**
- * The shapes in a candidate summary's per-file flags, the engine's `forgeryShapesOf` rule: an
- * unreadable summary is one hit on the whole diff, because what cannot be read cannot be cleared.
- */
-export function forgeryHitsOf(summaryText: string | null | undefined): ForgeryHit[] {
-  let summary: { flags?: Array<{ path?: unknown; forgeryShapes?: unknown }> };
-  try {
-    summary = JSON.parse(summaryText ?? '');
-  } catch {
-    return [{ path: '(the whole diff)', shapes: ['an unreadable candidate summary'] }];
-  }
-  const out: ForgeryHit[] = [];
-  for (const f of Array.isArray(summary?.flags) ? summary.flags : []) {
-    const shapes = Array.isArray(f.forgeryShapes) ? f.forgeryShapes.filter((x): x is string => typeof x === 'string') : [];
-    if (shapes.length) out.push({ path: typeof f.path === 'string' ? f.path : '(unknown path)', shapes });
-  }
-  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-}
-
 // ---- guarded acts -------------------------------------------------------------------------
 
 /** How a guarded act ended, as one line. Refusal text is the engine's, verbatim. */

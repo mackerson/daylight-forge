@@ -33,23 +33,29 @@ const DIGEST = `sha256:abcdef12${'0'.repeat(56)}`;
 const OUT = '/data/out';
 const REPO = '/data/repo';
 const SUMMARY = `sha256:${'5'.repeat(64)}`;
-const isRead = (a) => a[0] === 'confirm' || (a[0] === 'forge' && a[1] === 'candidate') || a[0] === 'artifact'
+const isRead = (a) => a[0] === 'confirm' || (a[0] === 'forge' && a[1] === 'candidate')
   || (a[0] === 'campaign' && ['list', 'show', 'status', 'report', 'refine'].includes(a[1])) || (a[0] === 'campaign' && a[1] === 'gate' && a[2] === 'list')
   || (a[0] === 'assumption' && a[1] === 'list') || a[0] === 'try-invariant';
 
 /**
- * A world: the CLI answers from `answers` by command, and every call is recorded. `summary` is
- * the candidate summary artifact's text, where the forgery shapes are read from (P2-R49);
+ * A world: the CLI answers from `answers` by command, and every call is recorded. `forged` is
+ * the forgery-shape items the engine reports on an approve/override preview and on `forge
+ * candidate` (P2-R49; null: the preview carries no report);
  * `reads` answers any other read-only command by its argv.
  */
-function world({ preview = { digest: DIGEST, digest8: 'abcdef12', lines: ['approve-candidate candidate'], refusal: null }, press = 1, checked = false, sample = false, repo = REPO, act = { ok: 1 }, summary = '{"flags":[]}', reads = () => undefined } = {}) {
+function world({ preview = { digest: DIGEST, digest8: 'abcdef12', lines: ['approve-candidate candidate'], refusal: null }, press = 1, checked = false, sample = false, repo = REPO, act = { ok: 1 }, forged = [], reads = () => undefined } = {}) {
   const calls = { cli: [], jobs: [], boxes: [], opens: [], json: [], watch: [] };
   const deps = {
     cliJson: async (argv) => {
       calls.cli.push(argv);
-      if (argv[0] === 'confirm') return typeof preview === 'function' ? preview(argv) : preview;
-      if (argv[0] === 'forge' && argv[1] === 'candidate') return { candidate: { id: argv[2], summaryArtifact: { id: SUMMARY, digest: SUMMARY } }, possibleSecrets: [] };
-      if (argv[0] === 'artifact') return summary === null ? { error: 'unknown artifact' } : { text: summary, truncated: false };
+      if (argv[0] === 'confirm') {
+        if (typeof preview === 'function') return preview(argv);
+        const candidateOp = argv[1] === 'approve-candidate' || argv[1] === 'override-candidate';
+        return preview && candidateOp && forged !== null ? { ...preview, forgeryShapes: { byClass: {}, items: forged } } : preview;
+      }
+      if (argv[0] === 'forge' && argv[1] === 'candidate') {
+        return { candidate: { id: argv[2], summaryArtifact: { id: SUMMARY, digest: SUMMARY } }, possibleSecrets: [], forgeryShapes: { byClass: {}, items: forged ?? [] } };
+      }
       const r = reads(argv);
       if (r !== undefined) return r;
       return act;
@@ -324,38 +330,40 @@ const flag = (argv, name) => {
 
   section('forgery shapes: approve and override need the dialog\'s checkbox (P2-R49)');
   {
-    const shaped = JSON.stringify({ flags: [{ path: 'src/report.rs', forgeryShapes: ['from_raw_fd(1)', 'test result: ok.'] }, { path: 'src/ok.rs' }] });
-    const { h, calls } = world({ summary: shaped, checked: true });
+    const shaped = [{ path: 'src/report.rs', classes: ['stdout-fd-write', 'test-summary-literal'] }];
+    const { h, calls } = world({ forged: shaped, checked: true });
     const r = await h['forge-decide']({ id: C, kind: 'approve', rationale: 'r', acknowledgeForgeryShape: true });
-    check('the dialog names the file and its shapes and carries an unchecked checkbox',
-      calls.boxes[0].detail.includes('src/report.rs: from_raw_fd(1), test result: ok.') && /forges test output/.test(calls.boxes[0].checkboxLabel) && calls.boxes[0].checkboxChecked === false);
-    check('the shapes are read from the candidate summary artifact, not from the renderer',
-      calls.cli.some((a) => a[0] === 'artifact' && a[1] === SUMMARY && flag(a, '--out') === OUT));
+    check('the dialog names the file and its classes and carries an unchecked checkbox',
+      calls.boxes[0].detail.includes('src/report.rs: stdout-fd-write, test-summary-literal') && /forges test output/.test(calls.boxes[0].checkboxLabel) && calls.boxes[0].checkboxChecked === false);
+    check('the shapes come from the engine\'s confirm preview, not the renderer and not a second read', calls.cli.length === 2);
     check('ticked, the act carries --acknowledge-forgery-shape', r.ok === true && mutations(calls)[0].includes('--acknowledge-forgery-shape'));
-    check('the outcome lists the shapes, paths and names only', r.forgeryShapes.length === 1 && r.forgeryShapes[0].path === 'src/report.rs');
+    check('the outcome lists paths and classes only', r.forgeryShapes.length === 1 && r.forgeryShapes[0].path === 'src/report.rs');
 
-    const { h: hu, calls: cu } = world({ summary: shaped, checked: false });
+    const { h: hu, calls: cu } = world({ forged: shaped, checked: false });
     const ru = await hu['forge-decide']({ id: C, kind: 'override', rationale: 'r', acknowledgeForgeryShape: true });
     check('unticked, nothing is recorded even if the renderer says it acknowledged', mutations(cu).length === 0 && ru.canceled === true && /forgery shapes/.test(ru.note ?? ''));
 
     const both = { digest: DIGEST, digest8: 'abcdef12', lines: ['x'], refusal: null, possibleSecrets: ['config/a.env'] };
-    const { h: hb, calls: cb } = world({ summary: shaped, preview: both, checked: true });
+    const { h: hb, calls: cb } = world({ forged: shaped, preview: both, checked: true });
     await hb['forge-decide']({ id: C, kind: 'approve', rationale: 'r' });
     check('a possible secret and a forgery shape share one checkbox and send both flags',
       /secret or forges/.test(cb.boxes[0].checkboxLabel) && mutations(cb)[0].includes('--acknowledge-possible-secret') && mutations(cb)[0].includes('--acknowledge-forgery-shape'));
 
-    const { h: hn, calls: cn } = world({ summary: null, checked: false });
+    const { h: hn, calls: cn } = world({ forged: null, checked: false });
     const rn = await hn['forge-decide']({ id: C, kind: 'approve', rationale: 'r' });
-    check('an unreadable summary fails closed: the checkbox is asked for the whole diff', rn.canceled === true && /the whole diff/.test(cn.boxes[0].detail) && mutations(cn).length === 0);
+    check('a preview with no forgery report fails closed: the checkbox is asked', rn.canceled === true && /reported no forgery-shape check/.test(cn.boxes[0].detail) && mutations(cn).length === 0);
 
-    const { h: hr, calls: cr } = world({ summary: shaped, checked: true });
+    const { h: hc, calls: cc } = world({ forged: [], checked: false });
+    const rc = await hc['forge-decide']({ id: C, kind: 'approve', rationale: 'r' });
+    check('an empty report asks for nothing', rc.ok === true && cc.boxes[0].checkboxLabel === undefined && !mutations(cc)[0].includes('--acknowledge-forgery-shape'));
+
+    const { h: hr, calls: cr } = world({ forged: shaped, checked: true });
     await hr['forge-decide']({ id: C, kind: 'reject', rationale: 'r' });
-    check('a reject reads no shapes and sends no acknowledgement',
-      !cr.cli.some((a) => a[0] === 'artifact') && cr.boxes[0].checkboxLabel === undefined && !mutations(cr)[0].includes('--acknowledge-forgery-shape'));
+    check('a reject shows no checkbox and sends no acknowledgement', cr.boxes[0].checkboxLabel === undefined && !mutations(cr)[0].includes('--acknowledge-forgery-shape'));
 
-    const { h: hv } = world({ summary: shaped });
+    const { h: hv } = world({ forged: shaped });
     const view = await hv['forge-candidate']({ id: C });
-    check('forge-candidate carries the shapes for the review screen', view.forgeryShapes.length === 1 && view.forgeryShapes[0].shapes.length === 2);
+    check('forge-candidate passes the engine\'s report through unchanged', view.forgeryShapes.items.length === 1 && view.forgeryShapes.items[0].classes.length === 2);
   }
 
   section('a rationale that looks like a flag stays text on every guarded handler (review M1)');
@@ -399,8 +407,7 @@ const flag = (argv, name) => {
       }
       check(`rationale ${probe} arrives as one --rationale= element and sets no flag, on all ${every.length} guarded acts`, bad.length === 0, bad.join(' | '));
     }
-    const shaped = JSON.stringify({ flags: [{ path: 'src/report.rs', forgeryShapes: ['from_raw_fd(1)'] }] });
-    const { h, calls } = world({ summary: shaped, checked: false });
+    const { h, calls } = world({ forged: [{ path: 'src/report.rs', classes: ['stdout-fd-write'] }], checked: false });
     const r = await h['forge-decide']({ id: C, kind: 'approve', rationale: '--acknowledge-forgery-shape' });
     check('with that rationale a forgery-shaped approve still demands the checkbox and records nothing unticked',
       r.canceled === true && typeof calls.boxes[0].checkboxLabel === 'string' && mutations(calls).length === 0);

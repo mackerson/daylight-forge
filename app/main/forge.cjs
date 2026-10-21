@@ -69,25 +69,20 @@ const scopePath = (v) => {
 /** Free text as one argv element; the engine reads `--key=value` whatever the value starts with. */
 const kv = (key, value) => `--${key}=${value}`;
 
-/** What `fail closed` reads as when a candidate's summary cannot be read: one hit on the whole diff. */
-const UNREADABLE_SUMMARY = [{ path: '(the whole diff)', shapes: ['an unreadable candidate summary'] }];
 /**
- * Test-output forgery shapes from a candidate summary's per-file flags (P2-R49), the engine's
- * `forgeryShapesOf` rule. Shape names and paths only; the matched text was never stored.
+ * The forgery shapes the engine reports on an approve/override preview (`forgeryShapes`,
+ * WS-R8's `CandidateForgeryShapes`: paths and classes, never matched text). A preview without
+ * a well-formed report is read as one unchecked item, so the dialog asks rather than assuming
+ * none (fail closed).
  */
-function forgeryHitsOf(text) {
-  let summary;
-  try {
-    summary = JSON.parse(text);
-  } catch {
-    return UNREADABLE_SUMMARY;
-  }
-  const out = [];
-  for (const f of Array.isArray(summary && summary.flags) ? summary.flags : []) {
-    const shapes = Array.isArray(f && f.forgeryShapes) ? f.forgeryShapes.filter((x) => typeof x === 'string').slice(0, 20) : [];
-    if (shapes.length) out.push({ path: typeof f.path === 'string' ? f.path : '(unknown path)', shapes });
-  }
-  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)).slice(0, 200);
+const UNREPORTED_SHAPES = [{ path: '(the engine reported no forgery-shape check)', classes: ['unclassified'] }];
+function forgeryItemsOf(p) {
+  const items = p && p.forgeryShapes && Array.isArray(p.forgeryShapes.items) ? p.forgeryShapes.items : null;
+  if (!items) return UNREPORTED_SHAPES;
+  return items.slice(0, 200).map((x) => ({
+    path: x && typeof x.path === 'string' ? x.path : '(unknown path)',
+    classes: x && Array.isArray(x.classes) ? x.classes.filter((c) => typeof c === 'string').slice(0, 10) : ['unclassified'],
+  }));
 }
 
 /** Which engine operation each act confirms (`ConfirmOperation` in engine/forge/confirm.ts). */
@@ -108,7 +103,6 @@ const ARGV = {
   run: (dir, id, repo, tool) => ['forge', 'run', id, repo, '--out', dir, '--tools', tool],
   specRegister: (dir, repo, rel) => ['spec', 'register', repo, '--file', rel, '--out', dir, '--format', 'json'],
   ingest: (dir) => ['ingest', 'claude-code', '--out', dir],
-  artifact: (dir, digest) => ['artifact', digest, '--out', dir, '--format', 'json'],
   forgeryReview: (dir, id) => ['forge', 'acknowledge-forgery', id, '--out', dir],
 
   campaigns: (dir) => ['campaign', 'list', '--out', dir, '--format', 'json'],
@@ -168,23 +162,6 @@ function handlersFor(deps) {
 
   /**
    * Preview, refusal or dialog, then the act. Cancel is the default button, so Enter on a
-   * dialog that appeared unexpectedly does nothing.
-   */
-  /**
-   * The forgery shapes on a candidate, read from its summary artifact through the CLI. Anything
-   * unreadable is one hit on the whole diff, so the dialog asks rather than assuming none.
-   */
-  async function forgeryShapesFor(candidateId, view) {
-    const r = view ?? await deps.cliJson(ARGV.candidate(dir(), candidateId), { timeout: 30_000 });
-    const digest = r && !r.error && r.candidate && r.candidate.summaryArtifact ? r.candidate.summaryArtifact.digest : null;
-    if (typeof digest !== 'string' || !DIGEST.test(digest)) return UNREADABLE_SUMMARY;
-    const a = await deps.cliJson(ARGV.artifact(dir(), digest), { timeout: 30_000 });
-    if (!a || a.error || typeof a.text !== 'string' || a.truncated) return UNREADABLE_SUMMARY;
-    return forgeryHitsOf(a.text);
-  }
-
-  /**
-   * Preview, refusal or dialog, then the act. Cancel is the default button, so Enter on a
    * dialog that appeared unexpectedly does nothing. `previewArgs` go to `confirm` only (the act
    * takes the same fact positionally); `notes` are main's own lines for the dialog.
    */
@@ -201,7 +178,7 @@ function handlersFor(deps) {
     // forgery shapes need the person to tick a box in this dialog (R16, P2-R49). The renderer
     // cannot tick it.
     const secretAsk = secrets && preview.possibleSecrets.length > 0;
-    const forged = forgery ? await forgeryShapesFor(subject) : [];
+    const forged = forgery ? forgeryItemsOf(raw) : [];
     const ask = secretAsk || forged.length > 0;
     if (secretAsk) shown.possibleSecrets = preview.possibleSecrets;
     if (forged.length) shown.forgeryShapes = forged;
@@ -216,7 +193,7 @@ function handlersFor(deps) {
         ...preview.lines,
         ...notes,
         ...(secretAsk ? ['', 'possible secrets in the diff:', ...preview.possibleSecrets.map((x) => `  ${x}`)] : []),
-        ...(forged.length ? ['', 'test-output forgery shapes (a heuristic):', ...forged.map((h) => `  ${h.path}: ${h.shapes.join(', ')}`)] : []),
+        ...(forged.length ? ['', 'test-output forgery shapes (a heuristic):', ...forged.map((h) => `  ${h.path}: ${h.classes.join(', ')}`)] : []),
         '', `recorded as ${who}`, `digest ${preview.digest}`,
       ].join('\n'),
       buttons: ['Cancel', verb],
@@ -261,8 +238,7 @@ function handlersFor(deps) {
     'forge-candidate': (p = {}) => {
       const id = idOf('candidate', p.id);
       if (!id) return { error: 'not a candidate id' };
-      return deps.cliJson(ARGV.candidate(dir(), id), { timeout: 30_000 }).then(async (r) =>
-        (r && !r.error ? { ...r, forgeryShapes: await forgeryShapesFor(id, r) } : r));
+      return deps.cliJson(ARGV.candidate(dir(), id), { timeout: 30_000 });
     },
 
     ledger: (p = {}) => {
@@ -750,4 +726,4 @@ function register(ipcMain, deps) {
   return handlers;
 }
 
-module.exports = { register, handlersFor, insideRepo, previewOf, forgeryHitsOf, ARGV };
+module.exports = { register, handlersFor, insideRepo, previewOf, ARGV };

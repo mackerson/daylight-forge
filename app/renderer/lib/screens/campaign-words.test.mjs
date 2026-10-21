@@ -14,7 +14,7 @@ import {
   campaignSpendWords, dagLayers, dagLayout, envelopeRows, focusTierWord, haltWord, OVERLAYS, overlayWord, proposedTickets, runWord,
   spendBar, spendWords, STATUS_BUCKET_OF, STATUS_BUCKETS, TICKET_FILL, TICKET_STATUSES, ticketTone, tierOf, blockedActWord,
 } from './campaign-words.ts';
-import { forgeryHitsOf, ledgerUsd, NEED_WORDS, needTarget } from './forge-words.ts';
+import { ledgerUsd, NEED_WORDS, needTarget } from './forge-words.ts';
 import {
   CAMPAIGN_NEEDS, FORGE_ASSUMPTIONS, FORGE_CAMPAIGN_LIST, FORGE_CAMPAIGN_SHOW, FORGE_CAMPAIGN_STATUS, FORGE_DRY_RUN, FORGED_CANDIDATE,
   SAMPLE_CAMPAIGN, SAMPLE_HOLDOUT_ID, U_OPEN, U_PENDING, CAMPAIGN_MISSIONS,
@@ -134,14 +134,6 @@ section('needs: each campaign need opens the screen that answers it');
     [...new Set([...CAMPAIGN_NEEDS.map((n) => n.kind), 'plan-approval', 'campaign-authorize'])].every((k) => typeof NEED_WORDS[k] === 'string') && NEED_WORDS['forgery-shape-review'] === 'review forgery shape');
   check('a need under a non-campaign mission belongs to no campaign',
     campaignOfNeedFrom([{ id: 'm_x', kind: 'implement' }], { m_x: [{ kind: 'blocked', ref: 'm_x', why: '' }] })({ kind: 'blocked', ref: 'm_x', why: '' }) === undefined);
-}
-
-section('forgery shapes from a candidate summary (P2-R49)');
-{
-  const hits = forgeryHitsOf(JSON.stringify({ flags: [{ path: 'src/b.rs', forgeryShapes: ['from_raw_fd(1)'] }, { path: 'src/a.ts', forgeryShapes: ['TAP version'] }, { path: 'src/c.ts' }] }));
-  check('only flagged files, sorted, shapes as named', hits.length === 2 && hits[0].path === 'src/a.ts' && hits[1].shapes[0] === 'from_raw_fd(1)');
-  check('an unreadable summary is one hit on the whole diff (fail closed)', forgeryHitsOf('not json')[0].path === '(the whole diff)' && forgeryHitsOf(null).length === 1);
-  check('a summary with no flags has none', forgeryHitsOf('{"flags":[]}').length === 0);
 }
 
 section('assumptions: the queue and its acts');

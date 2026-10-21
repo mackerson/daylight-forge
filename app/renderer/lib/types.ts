@@ -81,6 +81,7 @@ import type {
   MissionKind, Need, WorkItem, Candidate as ForgeCandidate, GateEvaluation, Application, IngestSource,
   Ledger, LedgerRow, DecisionOperation,
   CampaignRunResult, CampaignStatusReport, ForgeAssumptionRow, ForgeCampaignList, ForgeCampaignShow, RefineReport, WaveReport,
+  CandidateForgeryShapes,
 } from '../../../engine/mission/types.ts';
 import type { Evidence } from '../../../engine/store/types.ts';
 
@@ -147,11 +148,11 @@ export interface ForgeCandidatePayload {
   /** Paths whose diff matched a low-confidence secret shape (R16). Approve and override need them acknowledged. */
   possibleSecrets: string[];
   /**
-   * Test-output forgery shapes per file (P2-R49), read by main from the candidate summary's
-   * flags: shape names and paths, never the matched text. Approve and override need them
-   * acknowledged; in a campaign a person acknowledges or rejects them on their own.
+   * Test-output forgery shapes (P2-R49) as `forge candidate` reports them: classes and paths,
+   * never the matched text. Approve and override need them acknowledged; in a campaign a person
+   * acknowledges or rejects them on their own.
    */
-  forgeryShapes?: Array<{ path: string; shapes: string[] }>;
+  forgeryShapes?: CandidateForgeryShapes;
   diff: { text: string; truncated: boolean };
   gateEvaluations: GateEvaluation[];
 }
@@ -248,7 +249,7 @@ export interface GuardedResult {
   digest8?: string;
   lines?: string[];
   possibleSecrets?: string[];
-  forgeryShapes?: Array<{ path: string; shapes: string[] }>;
+  forgeryShapes?: CandidateForgeryShapes['items'];
   /** Why a dialog OK still recorded nothing (an unticked acknowledgement). */
   note?: string;
   result?: unknown;
