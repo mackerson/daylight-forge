@@ -15,6 +15,7 @@ import {
   approveIr, currentIrSetDigest, IR_FINDINGS_DIR, ingestIrFindings, irFindingIdOf, oirIdOf, planApproveIr, runIrReview, validateIrFinding,
 } from '../forge/ir-review.ts';
 import { OUTBOX_TOOLS } from '../forge/outbox.ts';
+import { runCorpusReviewCommand } from '../forge/commands-corpus-review.ts';
 import { confirmCodeOf } from '../forge/policy.ts';
 import { harness } from './harness.ts';
 import { addRecord, addRevision, addWindow, HUMAN, makeWorld, scriptedRunner, throws, throwsAsync } from './lib/ingest-world.ts';
@@ -193,6 +194,13 @@ section('the store moves a record only under a person\'s approve-ir decision on 
     rationale: 'other corpus', scope: { operation: 'approve-ir' }, artifactIds: [] });
   check('an approve-ir decision of another corpus is refused', /corpus/.test(throws(() => ctx.store.setIrStatus(loose.id, 'approved', elsewhere.id))?.message ?? ''));
   check('the record did not move', ctx.store.irRecord(loose.id)!.status === 'proposed');
+}
+
+section('the CLI has no agreement selector (review M4)');
+{
+  const code = await runCorpusReviewCommand(['approve-ir', corpus.id, '--min-agreement', '2', '--out', w.out], {});
+  const code2 = await runCorpusReviewCommand(['approve-ir', corpus.id, '--approve', owner.id, '--agreed-by', 'mock,mock:b', '--out', w.out], {});
+  check('approve-ir refuses an agreement flag as a usage error (exit 2), deciding nothing', code === 2 && code2 === 2 && ctx.store.irRecord(owner.id)!.decisionId === d.id);
 }
 
 section('supersede replaces an approved record only with one approved in the same act');
