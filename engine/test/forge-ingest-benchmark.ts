@@ -46,7 +46,7 @@ for (const name of ['olc', 'harbor']) {
     r.checks.filter((c) => c.status !== 'blocked').map((c) => `${c.id}=${c.status}`).join(' '));
   const byConstruction = r.checks.filter((c) => c.falsifiable === 'by-construction').map((c) => c.id).sort();
   check('the report names every check mock mode cannot fail, and why', byConstruction.length > 0
-    && JSON.stringify(r.nonFalsifiable.map((c) => c.id).sort()) === JSON.stringify(byConstruction) && r.nonFalsifiable.every((c) => /cannot fail/.test(c.why)));
+    && JSON.stringify(r.nonFalsifiable.map((c) => c.id).sort()) === JSON.stringify(byConstruction) && r.nonFalsifiable.every((c) => /cannot fail|by construction/.test(c.why)));
   check('the scorer on the fixture\'s own packets is 1.0 on every ratio (by construction)', Object.entries(r.scores.fixture)
     .filter(([k]) => ['recall', 'idExactness', 'depRecall', 'depPrecision', 'pathCoverage', 'scopeInLane'].includes(k)).every(([, v]) => v === 1), JSON.stringify(r.scores.fixture));
   check('all sixteen §11.3 checks and the fixture check are reported', r.checks.length === 17 && r.checks.map((c) => c.n).join(',') === [...Array(17).keys()].join(','));
@@ -228,6 +228,23 @@ for (const name of ['olc', 'harbor']) {
   const st = reports[name].stages.find((s) => s.id === 'packets');
   check(`${name}: R15 imports the benchmark's packets`, st?.status === 'ok', st?.detail);
 }
+
+section('the whole pipeline runs on real R14 + R15 code, and check 1 is labelled honestly (H4)');
+for (const name of ['olc', 'harbor']) {
+  const r = reports[name];
+  check(`${name}: every stage ran (none blocked or failed)`, r.stages.every((s) => s.status === 'ok' || (s.status === 'skipped' && s.detail === 'not in this fixture')),
+    r.stages.filter((s) => s.status !== 'ok').map((s) => `${s.id}:${s.status}`).join(' '));
+  for (const id of ['trace', 'revise', 'holdout']) {
+    const c = r.checks.find((x) => x.id === id)!;
+    check(`${name}: check ${c.n} ${id} ran and passed`, c.status === 'pass', `${c.status} ${c.detail} ${JSON.stringify(c.value)}`);
+  }
+  const cov = r.checks.find((x) => x.id === 'coverage')!;
+  check(`${name}: coverage passes after approve-ir`, cov.status === 'pass', JSON.stringify(cov.value));
+}
+check('OLC coverage is labelled by construction: its mechanical records are the sectioner\'s own units',
+  reports.olc.checks.find((c) => c.id === 'coverage')!.falsifiable === 'by-construction' && reports.olc.nonFalsifiable.some((c) => c.id === 'coverage'));
+check('Harbor coverage is falsifiable: its records are written beside the text, not read off the sectioner',
+  reports.harbor.checks.find((c) => c.id === 'coverage')!.falsifiable === 'falsifiable');
 
 section('findings are matched by a stable key, so the same run gives the same report (P2-R61)');
 {

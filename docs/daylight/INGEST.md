@@ -469,8 +469,7 @@ What mock mode **proves**:
 
 - the fixture is sound: every quote sits at its byte offset, the mechanical records are exactly
   what their rule yields over the current sectioner, no ground-truth row appears in a corpus
-  document (so a sectioner change that moves units fails check 0 or 1 until the overlay is
-  regenerated: falsifiable, sectioner against overlay);
+  document (a sectioner change that moves units fails check 0 until the overlay is regenerated);
 - the scorer measures what it claims (mutation tests: remove a ticket and recall drops by one;
   rewire an edge and precision drops; rename a ticket and only id exactness drops; drop a seed's
   detection and the seed is missed);
@@ -479,18 +478,22 @@ What mock mode **proves**:
 - each fixture invariant has records, sits on a boundary and reaches an obligation; the component
   DAG is acyclic and its `order` is its Kahn layers; precedence bases occur exactly once and
   precedence never crosses a domain;
-- once WS-R14/R15 are merged: the pipeline (register → scripted extractors through the real
-  outbox servers → review → approve-ir → coverage with seeds → blueprint and packets from the
-  fixture files → plan, campaign, lock → a landing) holds together; coverage arithmetic;
-  every seed found by the deterministic detectors; the backward/forward trace round trip with
+- the pipeline on the real R14 and R15 code (register → scripted extractors through the real
+  outbox servers → review → approve-ir, findings matched by record, kind and quote digest →
+  coverage with seeds → blueprint and packets from the fixture files, every record placed once →
+  plan, campaign, lock with a holdout → a landing) holds together, identically run after run;
+  coverage on Harbor (its records are written beside the text, so an unmapped unit is a real
+  miss); every seed found by the deterministic detectors; the backward/forward trace round trip with
   digests verified; a one-sentence revision staling exactly its records and tickets with no
   existing row changed; a holdout basename kept out of packet context and excerpts.
 
 What mock mode **does not prove**, and says so:
 
-- ticket recall, id exactness, dependency recall and precision, path coverage, boundaries and
-  ticket-ref resolution are **by construction**: the packets and blueprint were written from the
-  answer, so these test only the scorer and the import path;
+- ticket recall, id exactness, dependency recall and precision, path coverage, scope,
+  boundaries and ticket-ref resolution are **by construction**: the packets and blueprint were
+  written from the answer, so these test only the scorer and the import path;
+- coverage on OLC is **by construction** too: its mechanical records are the sectioner's own
+  units (rule `units`), so the scripted extractor maps every unit; the report says so per corpus;
 - nothing about extraction quality: the scripted extractor proposes the fixture's own records.
   Live-extract measures that (unmapped normative ≤ 5 %, seeded contradictions 100 %, P2-R53
   O-c); live-full adds the architect and packetizer (recall ≥ 26/28, edge precision ≥ 0.90);

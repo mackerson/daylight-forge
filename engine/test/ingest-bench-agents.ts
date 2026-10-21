@@ -47,7 +47,7 @@ export default function agents(fixture: BenchFixture): BenchAgents {
         const g: GateContext = { store: ctx.store, artifacts: ctx.artifacts, events: ctx.events, repoRoot: root, out: ctx.out, env: CLEAN_ENV };
         registerPlanGates(g, campaignId, plan);
         registerCampaignGate(g, { campaignId, role: 'holdout', ticketId: null, testSource: 'test("holdout", () => {});\n', basename: path.basename(holdoutPath),
-          prediction: { exitCode: 0 } });
+          prediction: { exitCode: 0, stdoutIncludes: ['# fail 0'] } });
         const c = ctx.store.mission(campaignId)!;
         // Baselines as rows, as forge-campaign-run-cli.ts records them: no sandbox here.
         for (const e of ctx.store.experimentsFor(campaignId)) {

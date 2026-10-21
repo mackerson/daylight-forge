@@ -115,6 +115,8 @@ const NOT_IMPLEMENTED = 'not implemented';
 interface CheckDef {
   id: string; n: number; title: string; needs: StageId[];
   falsifiable: Record<BenchMode, Falsifiable>; bar: Record<BenchMode, string>;
+  /** When the fixture itself decides it (a check one corpus answers by construction and another does not), why. */
+  byConstructionFor?(f: BenchFixture, mode: BenchMode): string | null;
   run(x: Inputs, mode: BenchMode): { ok: boolean; value: unknown; detail?: string };
 }
 const F = (mock: Falsifiable, extract: Falsifiable = mock, full: Falsifiable = extract): Record<BenchMode, Falsifiable> => ({ mock, 'live-extract': extract, 'live-full': full });
@@ -143,6 +145,9 @@ export const CHECKS: readonly CheckDef[] = [
         detail: problems.join('; ') };
     } },
   { id: 'coverage', n: 1, title: 'coverage arithmetic holds; unmapped normative units (after approve-ir when that stage ran)', needs: ['coverage'],
+    byConstructionFor: (f, mode) => (mode === 'mock' && f.overlay.mechanical.source === 'units'
+      ? 'the overlay\'s mechanical records are the sectioner\'s own units, so the scripted extractor maps every unit by construction: this tests the import path and the coverage arithmetic only'
+      : null),
     falsifiable: F('falsifiable'), bar: B('unmapped = 0', 'unmapped ≤ 5% of normative'),
     run: (x, mode) => {
       const t = x.coverage!.totals;
@@ -447,7 +452,9 @@ const STAGES: Stage[] = [
   } },
   { id: 'trace', needs: ['landing'], run: (x) => {
     x.backward = traceBackward(x.ctx!, { commit: x.landing!.integratedCommit!, campaignId: x.campaignId });
-    const span = x.backward.nodes.map((n) => spanOfNodeId(n.id)).find((s) => s !== null);
+    // The first passage by document and byte: a choice that does not depend on generated ids.
+    const span = x.backward.nodes.map((n) => spanOfNodeId(n.id)).filter((s) => s !== null)
+      .sort((a, b) => (a!.docKey === b!.docKey ? a!.start - b!.start : a!.docKey < b!.docKey ? -1 : 1))[0];
     if (!span) throw new Error('the backward trace reached no quoted passage');
     x.forward = traceForward(x.ctx!, { corpusId: x.corpusId!, docKey: span.docKey, range: [span.start, span.end], revisionId: span.revisionId });
     x.roundTrip = x.forward.nodes.some((n) => n.id === x.landing!.id)
@@ -456,7 +463,8 @@ const STAGES: Stage[] = [
   } },
   { id: 'revise', needs: ['campaign'], run: (x) => {
     const before = rowSnapshot(x.ctx!);
-    const was = new Set(x.ctx!.store.irRecords(x.corpusId!).filter((r) => r.span).map((r) => r.id));
+    // A rejected or superseded record is never carried to a new revision; staleness is a live record's (P2-R53).
+    const was = new Set(x.ctx!.store.irRecords(x.corpusId!).filter((r) => r.span && r.status !== 'rejected' && r.status !== 'superseded').map((r) => r.id));
     const r = x.fixture.bench.revise;
     const at = repoPathOf(x.fixture.bench, x.fixture.bench.docs[r.doc])!;
     const repo = at.alias === null ? x.root! : x.projects![at.alias];
@@ -520,8 +528,9 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; agents?: (
     if (!o.workDir && !o.keep) fs.rmSync(work, { recursive: true, force: true });
   }
   const ok = (id: StageId) => stages.find((s) => s.id === id)?.status === 'ok';
+  const falsifiableOf = (c: CheckDef): Falsifiable => (c.byConstructionFor?.(x.fixture, o.mode) ? 'by-construction' : c.falsifiable[o.mode]);
   const checks: CheckResult[] = CHECKS.map((c) => {
-    const base = { id: c.id, n: c.n, title: c.title, falsifiable: c.falsifiable[o.mode], bar: c.bar[o.mode] };
+    const base = { id: c.id, n: c.n, title: c.title, falsifiable: falsifiableOf(c), bar: c.bar[o.mode] };
     if (c.falsifiable[o.mode] === 'not-measured') return { ...base, status: 'not-measured', value: null, detail: '' };
     const missing = c.needs.find((n) => !ok(n));
     if (missing) return { ...base, status: 'blocked', value: null, detail: `stage ${missing}: ${stages.find((s) => s.id === missing)?.detail ?? 'not run'}` };
@@ -535,7 +544,8 @@ export async function runBenchmark(dir: string, o: { mode: BenchMode; agents?: (
   const fixturePlan = planOfPackets(x.fixture.packets, x.fixture.blueprint.body.components, x.fixture.bench.title);
   return {
     kind: 'daylight-ingest-bench-report', v: 1, corpus: x.fixture.bench.name, mode: o.mode, stages, checks,
-    nonFalsifiable: CHECKS.filter((c) => c.falsifiable[o.mode] === 'by-construction').map((c) => ({ id: c.id, title: c.title, why: BY_CONSTRUCTION })),
+    nonFalsifiable: CHECKS.filter((c) => falsifiableOf(c) === 'by-construction')
+      .map((c) => ({ id: c.id, title: c.title, why: c.byConstructionFor?.(x.fixture, o.mode) ?? BY_CONSTRUCTION })),
     scores: { fixture: ratioScore(scorePlan(x.fixture.gt, fixturePlan, { pathTolerance: 'parent-dir' })),
       emitted: x.plan ? ratioScore(scorePlan(x.fixture.gt, x.plan, { pathTolerance: 'parent-dir' })) : null },
     summary: { pass: checks.filter((c) => c.status === 'pass').length, fail: checks.filter((c) => c.status === 'fail').length,

@@ -1,7 +1,7 @@
 {
  "kind": "daylight-review-script",
  "v": 1,
- "note": "The scripted reviewer (§11.2): four findings. The scripted approve-ir set accepts two and dismisses two, matched to the stored findings by record id, kind and quote digest (P2-R61), never by order. Accepting the invented-requirement finding rejects that record; the omission gets a correction.",
+ "note": "The scripted reviewer (§11.2): four findings. The scripted approve-ir set accepts two and dismisses two, matched to the stored findings by record id, kind and quote digest (P2-R61), never by order. Accepting the invented-requirement finding rejects that record and a correction re-covers its passage with an honest statement; the omission gets a correction of its own.",
  "findings": [
   {
    "kind": "omission",
@@ -48,6 +48,14 @@
    "confidence": 1,
    "docKey": "olc-agents",
    "quote": "Packs come from USB sticks."
+  },
+  {
+   "kind": "requirement",
+   "source": "extracted",
+   "statement": "Every content revision carries a validation record naming its proof kind.",
+   "confidence": 1,
+   "docKey": "adr-0004",
+   "quote": "`validation`: `{ proof_kind, checks_passed[], tool_versions, report: RevisionDigest }`."
   }
  ]
 }
