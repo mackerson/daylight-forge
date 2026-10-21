@@ -19,6 +19,7 @@ import { CAMPAIGN_CONFIRM_OPS, campaignConfirm, runAssumptionCommand, runCampaig
 import { CAMPAIGN_RUN_CONFIRM_OPS, campaignRunConfirm, type CampaignRunConfirmOp } from './commands-campaign-run.ts';
 import { candidateForgeryShapes } from './forgery-classes.ts';
 import { runCorpusCommand } from './commands-corpus.ts';
+import { CORPUS_REVIEW_SUBCOMMANDS, ingestConfirmOf, runCorpusReviewCommand } from './commands-corpus-review.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -176,6 +177,8 @@ const OPERATIONS: readonly (ConfirmOperation | 'adjudicate')[] = [
   // Campaign and assumption acts (P2-R40, P2-R45 D6): the GUI confirms only through here.
   'approve-plan', 'authorize-campaign', 'retry-ticket', 'record-assumption', 'confirm-assumption', 'decide-assumption', 'overturn-assumption',
   'lock-campaign-gates', 'resume-campaign', 'adopt-integration-tip',
+  // Spec ingestion's two acts (P2-R56): the same digest the corpus command previews.
+  'approve-ir', 'approve-blueprint',
 ];
 
 /**
@@ -184,7 +187,7 @@ const OPERATIONS: readonly (ConfirmOperation | 'adjudicate')[] = [
  * actor (only those checks can fire, since the code is the digest's own), or why the act is
  * refused regardless; a UI shows it instead of a dialog.
  */
-function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
+function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv, argv: string[]) {
   const [operation, subjectId] = p.positionals as [ConfirmOperation | 'adjudicate' | undefined, string | undefined];
   if (!operation || !OPERATIONS.includes(operation)) throw new Usage(`confirm needs one of: ${OPERATIONS.join(', ')}`);
   if (!subjectId) throw new Usage(`confirm ${operation} needs a subject`);
@@ -205,6 +208,11 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
     if (operation === 'resolve-dependency-request') {
       // `deps resolve`'s digest, `--declined` included; the request lives in an outbox, not the store.
       const c = resolveConfirm(findDependencyRequest(ctx, subjectId), { declined: last(p, 'declined') === 'true' });
+      return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
+    }
+    if (operation === 'approve-ir' || operation === 'approve-blueprint') {
+      // The corpus command's own parse of the same flags, so the digest is the one its preview prints.
+      const c = ingestConfirmOf(ctx, operation, argv);
       return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
     }
     const campaignOp = (CAMPAIGN_CONFIRM_OPS as readonly string[]).includes(operation);
@@ -473,6 +481,7 @@ const GUARDED: Record<string, readonly string[]> = {
   'work-item': ['approve', 'reject'],
   campaign: ['approve-plan', 'lock', 'authorize', 'resume', 'adopt-tip', 'retry'],
   assumption: ['confirm', 'decide', 'overturn', 'record'],
+  corpus: ['approve-ir', 'approve-blueprint'],
 };
 
 /**
@@ -507,11 +516,12 @@ export async function runForgeCli(argv: string[], env: NodeJS.ProcessEnv = proce
       case 'assumption':
         return await runAssumptionCommand(args, env);
       case 'corpus':
+        if (sub && (CORPUS_REVIEW_SUBCOMMANDS as readonly string[]).includes(sub)) return await runCorpusReviewCommand(args, env);
         return await runCorpusCommand(rest, env);
       case 'confirm': {
         const cp = parse(rest);
         asJson = last(cp, 'format') === 'json';
-        const r = await confirmCommand(cp, outOf(cp, undefined), env);
+        const r = await confirmCommand(cp, outOf(cp, undefined), env, rest.slice(1));
         if (asJson) json(r);
         else {
           for (const l of r.lines) say(l);

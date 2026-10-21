@@ -95,8 +95,8 @@ export function corpusReviewReadOnly(sub: string | undefined, p: Parsed): boolea
 }
 
 /**
- * What a person confirms for the two ingest acts (the director wires these into `confirm.ts`'s
- * table and `OPERATIONS` at merge): `approve-ir` over the act's whole scope — every record at
+ * What a person confirms for the two ingest acts (`daylight confirm approve-ir|approve-blueprint`
+ * asks the same): `approve-ir` over the act's whole scope — every record at
  * its content digest, every finding disposition, the approved set's digest after it — and
  * `approve-blueprint` over the blueprint's digest, the IR set it was drawn over, what it
  * supersedes and the invariant tags it is checked against. Refused, with no code, when the act would be.
@@ -162,6 +162,16 @@ function setFrom(ctx: DaylightContext, corpusId: string, p: Parsed): ApproveIrSe
     kind: 'daylight-approve-ir', version: 1, corpusId, revisionId: rev.id, approve: [...new Set([...list(flag(p, 'approve')), ...swept])],
     reject: list(flag(p, 'reject')), accept: list(flag(p, 'accept')), dismiss: list(flag(p, 'dismiss')),
   };
+}
+
+/** `daylight confirm approve-ir|approve-blueprint <subject> …`: `argv` starts at the subject; the flags are the corpus command's. */
+export function ingestConfirmOf(ctx: DaylightContext, op: 'approve-ir' | 'approve-blueprint', argv: string[]): ConfirmDigest {
+  const p = parse(argv);
+  const subject = p.positionals[0];
+  if (!subject) throw new Usage(`confirm ${op} needs a subject`);
+  return op === 'approve-ir'
+    ? confirmIngest(ctx, op, subject, { set: setFrom(ctx, subject, p) })
+    : confirmIngest(ctx, op, subject, { invariantTags: list(flag(p, 'invariant-tags')) });
 }
 
 /** `--project alias=<repo>[@rev]`, repeatable. */

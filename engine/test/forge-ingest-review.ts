@@ -17,7 +17,7 @@ import {
   approveIr, currentIrSetDigest, repairInterpretations, IR_FINDINGS_DIR, ingestIrFindings, irFindingIdOf, oirIdOf, planApproveIr, runIrReview, validateIrFinding,
 } from '../forge/ir-review.ts';
 import { OUTBOX_TOOLS } from '../forge/outbox.ts';
-import { runCorpusReviewCommand } from '../forge/commands-corpus-review.ts';
+import { confirmIngest, runCorpusReviewCommand } from '../forge/commands-corpus-review.ts';
 import { confirmCodeOf } from '../forge/policy.ts';
 import { harness } from './harness.ts';
 import { addRecord, addRevision, addWindow, HUMAN, makeWorld, scriptedRunner, throws, throwsAsync } from './lib/ingest-world.ts';
@@ -238,6 +238,33 @@ const sup = act(set({ approve: [reworded.id], supersede: { [close.id]: reworded.
 check('the old record is superseded and the new one approved under one decision', ctx.store.irRecord(close.id)!.status === 'superseded'
   && ctx.store.irRecord(reworded.id)!.status === 'approved' && ctx.store.irRecord(close.id)!.decisionId === sup.id);
 check('no set file is read from anywhere but the host path given', !fs.existsSync(path.join(w.root, 'approve-ir.json')));
+
+section('daylight confirm approve-ir: the act\'s own digest, refused in an agent session (P2-R56)');
+{
+  const CLI = path.resolve(import.meta.dirname, '..', 'cli.ts');
+  const cli = (args: string[], env: Record<string, string> = {}) => {
+    const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'CLAUDECODE' && k !== 'DAYLIGHT_SESSION')) as Record<string, string>;
+    try {
+      return { code: 0, out: execFileSync(process.execPath, [CLI, ...args], { cwd: w.root, encoding: 'utf8', env: { ...clean, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }) };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+  };
+  const fresh = addRecord(w, { kind: 'constraint', docKey: 'ledger', quote: 'Every account must have exactly one owner.', statement: 'Ownership is single, as a constraint.' });
+  const rev = ctx.store.currentCorpusRevision(corpus.id)!;
+  const want = confirmIngest(ctx, 'approve-ir', corpus.id, { set: { kind: 'daylight-approve-ir', version: 1, corpusId: corpus.id, revisionId: rev.id, approve: [fresh.id], reject: [], accept: [], dismiss: [] } });
+  const viaConfirm = cli(['confirm', 'approve-ir', corpus.id, '--approve', fresh.id, '--out', w.out, '--format', 'json']);
+  const c = JSON.parse(viaConfirm.out || '{}') as { digest?: string; refusal?: string | null };
+  check('confirm approve-ir prints the digest the act confirms', viaConfirm.code === 0 && c.digest === want.digest && c.refusal === null, viaConfirm.out);
+  const preview = cli(['corpus', 'approve-ir', corpus.id, '--approve', fresh.id, '--out', w.out, '--format', 'json']);
+  check('and the corpus command\'s preview prints the same', preview.code === 2 && (JSON.parse(preview.out.slice(0, preview.out.lastIndexOf('}') + 1) || '{}') as { digest?: string }).digest === want.digest, preview.out);
+  const agent = JSON.parse(cli(['confirm', 'approve-ir', corpus.id, '--approve', fresh.id, '--out', w.out, '--format', 'json'], { CLAUDECODE: '1' }).out || '{}') as { refusal?: string | null };
+  check('under CLAUDECODE confirm says the act is refused', typeof agent.refusal === 'string' && agent.refusal.length > 0);
+  const acted = cli(['corpus', 'approve-ir', corpus.id, '--approve', fresh.id, '--confirm', want.digest8, '--out', w.out], { CLAUDECODE: '1' });
+  check('and the act itself is refused there, nothing approved', acted.code !== 0 && ctx.store.irRecord(fresh.id)!.status === 'proposed', acted.out);
+  check('confirm approve-ir takes no agreement selector either', cli(['confirm', 'approve-ir', corpus.id, '--min-agreement', '2', '--out', w.out]).code !== 0);
+}
 
 section('ingest-approvals-callers: only the corpus review CLI calls approveIr and approveBlueprint (P2-R56)');
 {

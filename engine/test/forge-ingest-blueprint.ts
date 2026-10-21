@@ -3,6 +3,7 @@
  * rule by a mutation of a valid blueprint, derivation rows, architects' proposals, and the guarded
  * `approve-blueprint`. Run: node engine/test/forge-ingest-blueprint.ts
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { BlueprintV1, IrRecord } from '../mission/types.ts';
@@ -140,6 +141,17 @@ check('a code confirmed for other invariant tags is refused', /--confirm/.test(t
 const exitPreview = await runCorpusReviewCommand(['approve-blueprint', good.blueprint.id, '--invariant-tags', 'safety,offline', '--out', w.out], { CLAUDECODE: '1' });
 const exitAct = await runCorpusReviewCommand(['approve-blueprint', good.blueprint.id, '--confirm', confirm(good.blueprint.id), '--rationale', 'x', '--out', w.out], { CLAUDECODE: '1' });
 check('the CLI previews in an agent session (exit 2) and refuses the act there (exit 1)', exitPreview === 2 && exitAct === 1);
+{
+  const CLI = path.resolve(import.meta.dirname, '..', 'cli.ts');
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'CLAUDECODE' && k !== 'DAYLIGHT_SESSION')) as Record<string, string>;
+  const viaConfirm = (env: Record<string, string> = {}) => JSON.parse(execFileSync(process.execPath, [CLI, 'confirm', 'approve-blueprint', good.blueprint.id,
+    '--invariant-tags', 'safety,offline', '--out', w.out, '--format', 'json'], { cwd: w.root, encoding: 'utf8', env: { ...clean, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })) as
+    { digest: string; refusal: string | null };
+  const want = confirmIngest(ctx, 'approve-blueprint', good.blueprint.id, { invariantTags: ['safety', 'offline'] });
+  const mine = viaConfirm();
+  check('daylight confirm approve-blueprint prints the act\'s digest (P2-R56)', mine.digest === want.digest && mine.refusal === null);
+  check('and under CLAUDECODE says the act is refused', typeof viaConfirm({ CLAUDECODE: '1' }).refusal === 'string');
+}
 const d = act(good.blueprint.id);
 const approved = ctx.store.blueprint(good.blueprint.id)!;
 check('one human decision approves it, naming its digest and IR set', approved.status === 'approved' && approved.decisionId === d.id
