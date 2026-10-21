@@ -18,6 +18,7 @@ import { campaignStatus, r5StatusHost } from './campaign-status.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, ticketStates, type TicketState } from './director.ts';
 import { candidateForgeryShapes } from './forgery-classes.ts';
 import { envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
+import { campaignSpendWords, capWords, spendWords } from './spend-words.ts';
 
 /**
  * The wave report, the campaign list and the STATUS table (WS-R8, docs/daylight/REFINE.md).
@@ -135,55 +136,8 @@ export function spendLineOf(ctx: Pick<DaylightContext, 'store'>, key: string, mi
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
-interface SpendFigures {
-  knownUsd: number; scannedUsd: number; scannedCount: number; reservationUsd: number; reservationCount: number;
-  unknownCount: number; runningCount: number;
-}
-
-/**
- * The shared words: the known figure first, a floor `≥` whenever something is unknown or still
- * running (also when nothing is known and only scanned or reserved dollars stand beside), scanned
- * and reservation-charged dollars beside, never inside, and never `$0.00` for spend nobody reported.
- */
-function wordsOf(f: SpendFigures, allUnknown: boolean): string {
-  const running = f.runningCount ? ` +${f.runningCount} running` : '';
-  const beside = [
-    f.scannedCount ? `${money(f.scannedUsd)} scanned, not known` : '',
-    f.reservationCount ? `${money(f.reservationUsd)} charged at reservation for ${f.reservationCount} unfinished` : '',
-  ].filter(Boolean);
-  if (allUnknown && !beside.length) return `unknown${running}`;
-  const floor = f.unknownCount > 0 || f.runningCount > 0;
-  const noCost = f.unknownCount ? `${f.unknownCount} attempt(s) reported no cost` : '';
-  const lead = f.knownUsd > 0 || !beside.length ? `${money(f.knownUsd)}${f.unknownCount ? ` (${f.unknownCount} unknown)` : ''}`
-    : noCost ? `unknown (${noCost})` : '';
-  const out = [lead, ...beside].filter(Boolean).join('; ') + running;
-  return floor ? `≥ ${out}` : out;
-}
-
-/**
- * A spend line as words a reader cannot misread (the ledger's rule, `ledger.ts` dollarsOf):
- * `—` for no attempt, `unknown` when nothing finished reported a figure, otherwise `wordsOf`.
- */
-export function spendWords(l: SpendLine): string {
-  if (l.attempts === 0) return '—';
-  const finished = l.attempts - l.runningCount;
-  if (finished === 0) return `${l.runningCount} running, nothing reported yet`;
-  return wordsOf(l, l.unknownCount === finished);
-}
-
-/** `CampaignSpend` as words for STATUS.md, by the same rules as `spendWords`. */
-export function campaignSpendWords(s: CampaignSpend): string {
-  const scannedUsd = round(s.spentUsd - s.knownUsd - s.reservationUsd);
-  if (s.knownUsd === 0 && s.unknownCount && !s.scannedCount && !s.reservationCount) {
-    return `unknown (${s.unknownCount} attempt(s) reported no cost)${s.runningCount ? ` +${s.runningCount} running` : ''}`;
-  }
-  return wordsOf({ ...s, scannedUsd }, false);
-}
-
-/** What counts against the cap, in words: `spentUsd` (known + scanned + reservation charges), a floor when anything is unknown or running. */
-export function capWords(s: CampaignSpend): string {
-  return `${s.unknownCount || s.runningCount ? '≥ ' : ''}${money(s.spentUsd)} counted against the ${money(s.capUsd)} cap`;
-}
+/** The spend words live once, shared with the renderer (P2-R60). */
+export { campaignSpendWords, capWords, spendWords };
 
 // ---- git --------------------------------------------------------------------------------
 

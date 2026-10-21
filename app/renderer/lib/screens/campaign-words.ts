@@ -1,4 +1,5 @@
 import { STATUS_BUCKET_OF, STATUS_BUCKETS } from '../../../../engine/mission/types.ts';
+import { campaignSpendWords, spendWords } from '../../../../engine/forge/spend-words.ts';
 import type {
   CampaignEnvelope, CampaignHaltReason, CampaignSpend, DiffStat, FindingSeverity, FocusItem, FocusKind, FocusRule,
   ForgeAssumptionRow, ForgeCampaignShow, ForgeryClass, Mission, Need, RefineOverlay, ReportBlocked, RunClaim,
@@ -90,45 +91,13 @@ export function severityWord(s: FindingSeverity): Word {
 
 // ---- spend --------------------------------------------------------------------------------
 
-const round = (n: number): number => Math.round(n * 100) / 100;
-
 /**
- * One spend line as words, the engine's `spendWords` (campaign-report.ts) case for case, so the
- * screen says what STATUS.md and the markdown report say: `—` for no attempts; `N running,
- * nothing reported yet` before anything finished; `unknown` when every finished attempt is
- * unknown and nothing is beside it; otherwise a floor `≥` whenever a figure is unknown or an
- * attempt is still running. Scanned dollars and reservation charges sit beside, never inside.
+ * One spend line, and the whole campaign's spend, as words: the engine's own functions
+ * (engine/forge/spend-words.ts, P2-R60), so the screen says what STATUS.md and the markdown
+ * report say and the two cannot drift. That module has no runtime import, so the bundle gains
+ * no engine runtime by importing it.
  */
-export function spendWords(l: SpendLine): string {
-  if (l.attempts === 0) return '—';
-  const finished = l.attempts - l.runningCount;
-  const running = l.runningCount ? ` +${l.runningCount} running` : '';
-  if (finished === 0) return `${l.runningCount} running, nothing reported yet`;
-  const beside = [
-    l.scannedCount ? `${money(l.scannedUsd)} scanned, not known` : '',
-    l.reservationCount ? `${money(l.reservationUsd)} charged at reservation for ${l.reservationCount} unfinished` : '',
-  ].filter(Boolean);
-  if (l.unknownCount === finished && !beside.length) return `${UNKNOWN}${running}`;
-  const unknown = l.unknownCount ? `${l.unknownCount} unknown` : '';
-  const known = l.knownUsd > 0 || !beside.length ? money(l.knownUsd) : '';
-  const floor = l.unknownCount || l.runningCount ? '≥ ' : '';
-  const lead = known ? `${floor}${known}${unknown ? ` (${unknown})` : ''}` : unknown;
-  return [lead, ...beside].filter(Boolean).join('; ') + running;
-}
-
-/** The whole campaign's spend, the engine's `campaignSpendWords` (STATUS.md) case for case. */
-export function campaignSpendWords(s: CampaignSpend): string {
-  const scannedUsd = round(s.spentUsd - s.knownUsd - s.reservationUsd);
-  const beside = [
-    s.scannedCount ? `${money(scannedUsd)} scanned, not known` : '',
-    s.reservationCount ? `${money(s.reservationUsd)} charged at reservation for ${s.reservationCount} unfinished` : '',
-  ].filter(Boolean);
-  const running = s.runningCount ? ` +${s.runningCount} running` : '';
-  if (s.knownUsd === 0 && s.unknownCount && !beside.length) return `${UNKNOWN} (${s.unknownCount} attempt(s) reported no cost)${running}`;
-  const floor = s.unknownCount || s.runningCount ? '≥ ' : '';
-  const known = s.knownUsd > 0 || !beside.length ? `${floor}${money(s.knownUsd)}${s.unknownCount ? ` (${s.unknownCount} unknown)` : ''}` : '';
-  return [known, ...beside].filter(Boolean).join('; ') + running;
-}
+export { campaignSpendWords, spendWords };
 
 export interface SpendBar {
   /**

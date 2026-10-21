@@ -65,6 +65,11 @@ section('spend: the engine\'s words, case for case (review M3)');
   const spends = grid.map((l) => ({ spentUsd: l.knownUsd + l.scannedUsd + l.reservationUsd, knownUsd: l.knownUsd, unknownCount: l.unknownCount, unknownUnansweredCount: 0,
     reservationCount: l.reservationCount, reservationUsd: l.reservationUsd, scannedCount: l.scannedCount, runningCount: l.runningCount, reservedUsd: 0, capUsd: 10 }));
   check('the campaign total reads exactly as the engine\'s campaignSpendWords', spends.every((x) => campaignSpendWords(x) === engineCampaignWords(x)));
+  check('the screen\'s spend words are the engine\'s own functions, not a copy (P2-R60)',
+    spendWords === engineWords && campaignSpendWords === engineCampaignWords);
+  const spendSrc = fs.readFileSync(path.join(here, '../../../../engine/forge/spend-words.ts'), 'utf8');
+  const runtimeImports = spendSrc.split('\n').filter((l) => /^\s*(import|export)\b.*\bfrom\b/.test(l) && !/^\s*import type\b/.test(l));
+  check('spend-words.ts has no runtime import, so the bundle gains no engine runtime', runtimeImports.length === 0 && !/\brequire\(|\bimport\(/.test(spendSrc), runtimeImports[0]);
   const unknownLines = [...FORGE_WAVE_REPORT.spend.lanes, ...FORGE_WAVE_REPORT.spend.tickets].filter((l) => l.unknownCount > 0);
   check('no sample line with an unknown cost renders a bare dollar figure', unknownLines.length > 0 && unknownLines.every((l) => /^(≥|unknown)/.test(spendWords(l))));
 }

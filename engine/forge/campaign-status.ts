@@ -2,7 +2,8 @@ import type { DaylightContext } from '../mission/context.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import type { CampaignStatusReport, FindingSeverity, Need, TicketStatus } from '../mission/types.ts';
 import { campaignNeeds } from './campaign-needs.ts';
-import { campaignSpendWords, capWords, runClaimOf, statusTable, statusTableLines } from './campaign-report.ts';
+import { runClaimOf, statusTable, statusTableLines } from './campaign-report.ts';
+import { campaignSpendWords, capWords } from './spend-words.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, landedRegressions, r5Host, ticketStates, type CampaignHost } from './director.ts';
 import { authorizationOf, envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
