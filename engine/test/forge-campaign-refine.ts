@@ -131,8 +131,22 @@ section('the map at a revision, and what the campaign introduced');
   fs.mkdirSync(path.join(enclosing, 'tmp'), { mode: 0o700 });
   const savedTmp = process.env.TMPDIR;
   process.env.TMPDIR = path.join(enclosing, 'tmp');
+  // Every git this process spawns is logged with its cwd and argv (a PATH wrapper).
+  const bin = path.join(tmp, 'git-wrapper-bin');
+  const gitLog = path.join(tmp, 'git-wrapper.log');
+  fs.mkdirSync(bin, { recursive: true });
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\t%s\\n' "$PWD" "$*" >> '${gitLog}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath}`;
   const r = refineReport(w.ctx, w.id, w.root);
+  process.env.PATH = savedPath;
   process.env.TMPDIR = savedTmp;
+  const gitLines = fs.existsSync(gitLog) ? fs.readFileSync(gitLog, 'utf8').split('\n').filter(Boolean) : [];
+  // createWorkspace's own hardened calls (siblingGit: --attr-source=, GIT_DIR the sibling bare dir) are
+  // by design; nothing else may run git with its cwd or -C in the tree.
+  const inTree = gitLines.filter((l) => /daylight-forge-[^\s/]+\/tree/.test(l) && !/--attr-source=|--git-dir=/.test(l));
+  check('no git runs in the materialised tree, other than createWorkspace\'s own (M1)', gitLines.length > 0 && inTree.length === 0, inTree.join('\n'));
   const real = fs.realpathSync(w.root);
   const revDir = refineMapDir(w.out, w.id, tip);
   const baseDir = refineMapDir(w.out, w.id, w.base);

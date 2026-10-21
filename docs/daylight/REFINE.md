@@ -73,8 +73,9 @@ daylight campaign refine <c> [<repo>] --cached [--format json]        # reads re
 - **The map at a revision.** Each of the base and the revision (default: the integration tip) is
   materialised with `createWorkspace`, the campaign's locked holdouts hidden, never the checkout.
   A committed locked holdout refuses the whole refine with a message that names no path. The tree
-  is mapped (duplication, parallel shapes, structure with git churn off, invariants from the tree's
-  own `daylight.invariants.json`) and written to `<out>/campaigns/<c>/maps/<sha>/`: `graph.json`
+  is walked, not listed by git, and mapped with no git run in it (duplication, parallel shapes,
+  structure with churn off, invariants from the tree's own `daylight.invariants.json`;
+  `detectCommunities` is not run, nothing reads its output for a refine map) and written to `<out>/campaigns/<c>/maps/<sha>/`: `graph.json`
   (stamped with the repository and the sha), `view.json`, `focus.json`, `findings.json`,
   `structure.json`, `invariants.json` and `map.json`. `map.json` is the cache key: the sha, the
   parser set and `MAP_FORMAT`. There is no claims database, no symbol index and no layout file:

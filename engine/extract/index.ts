@@ -33,6 +33,11 @@ export interface ExtractOptions {
   includeDeclarations?: boolean;
   /** Skip test files, which legitimately duplicate shapes and names. */
   includeTests?: boolean;
+  /**
+   * `false`: walk the directory and run no git. For a tree materialised outside its repository
+   * (refine), where git would resolve whatever repository encloses it. Default true.
+   */
+  tracked?: boolean;
 }
 
 /**
@@ -79,8 +84,8 @@ function gitTracked(root: string): string[] | null {
   }
 }
 
-export function walk(root: string): string[] {
-  const tracked = gitTracked(root);
+export function walk(root: string, o: { tracked?: boolean } = {}): string[] {
+  const tracked = o.tracked === false ? null : gitTracked(root);
   if (tracked) {
     return tracked.filter((f) => !f.split('/').some((seg) => IGNORED_DIRS.has(seg))).sort();
   }
@@ -164,7 +169,7 @@ export function extract(options: ExtractOptions): Graph {
   const cache = loadCache(options.cacheDir, parsers.map((p) => p.name).sort().join('+'));
   const liveHashes = new Set<string>();
 
-  const allFiles = walk(root);
+  const allFiles = walk(root, { tracked: options.tracked });
   const parseable = allFiles.filter((f) => {
     if (!parserFor(parsers, f)) return false;
     if (!includeDeclarations && f.endsWith('.d.ts')) return false;

@@ -117,7 +117,8 @@ export function mapRevision(ctx: Pick<DaylightContext, 'out' | 'store'>, o: { re
     throw err;
   }
   try {
-    const graph = extract({ root: ws.tree, cacheDir: path.join(ctx.out, '.cache') });
+    // No git in the materialised tree: it is walked, not listed (M1).
+    const graph = extract({ root: ws.tree, cacheDir: path.join(ctx.out, '.cache'), tracked: false });
     const findings = { ...detectDuplication(graph), d6: detectParallel(graph) };
     const structure = detectStructure(graph, { churn: false });
     const loaded = loadInvariants(ws.tree);
