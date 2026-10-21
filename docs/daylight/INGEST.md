@@ -61,7 +61,10 @@ There is no flag that selects by agreement; any flag but those above is refused.
 **Interpretations.** An approved `ambiguity` or `contradiction`, or an accepted
 `invented-requirement`, `ambiguity` or `contradiction` finding on a record still standing, opens
 one `ir-interpretation` assumption on the corpus: `open`, blocking, owner decision
-`OIR.<ten hex of the id>`, no default. It never picks a reading.
+`OIR.<ten hex of the id>`, no default. It never picks a reading. Rejecting or superseding the record
+later overturns its open interpretation under that act's decision. Interpretations are written
+after the decision commits; every `approve-ir` first writes any an earlier act left unwritten
+(`repairInterpretations`, idempotent).
 
 ## Blueprint
 
@@ -167,7 +170,12 @@ emit, commit, import, `approve-plan`.
 **The chain.** `authorityChainOf` re-derives corpus → section index → IR set → blueprint → packets →
 plan digest → envelope from rows and artifacts. `campaign authorize` refuses a broken chain, and
 `campaignAuthorizationRefusal` re-checks it on every director pass: a packet re-pointed in the rows
-while the plan digest stays put stops the campaign.
+while the plan digest stays put stops the campaign. The `ir` link also breaks when the specification
+moved under the plan (P2-R59): the current approved IR set is not the derivation's, or a cited record,
+the blueprint or an authorized ticket is stale; the refusal names them. A person may proceed with
+`campaign authorize --accept-ir-drift <current digest>`, recorded in the envelope and its confirm
+digest; any further drift breaks the link again. A traced ticket's own title, statement lines and
+examples that name a holdout basename are withheld from the author too, and counted.
 
 ## Agent sessions
 

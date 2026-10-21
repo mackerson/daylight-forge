@@ -6,13 +6,15 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
+import { DAYLIGHT_DB } from '../mission/db.ts';
 import type { ApproveIrSetV1, ExtractWindow, IrRecord } from '../mission/types.ts';
 import { decideAssumption } from '../forge/assumptions.ts';
 import { ingestNeeds } from '../forge/authority.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import {
-  approveIr, currentIrSetDigest, IR_FINDINGS_DIR, ingestIrFindings, irFindingIdOf, oirIdOf, planApproveIr, runIrReview, validateIrFinding,
+  approveIr, currentIrSetDigest, repairInterpretations, IR_FINDINGS_DIR, ingestIrFindings, irFindingIdOf, oirIdOf, planApproveIr, runIrReview, validateIrFinding,
 } from '../forge/ir-review.ts';
 import { OUTBOX_TOOLS } from '../forge/outbox.ts';
 import { runCorpusReviewCommand } from '../forge/commands-corpus-review.ts';
@@ -210,6 +212,19 @@ section('review L3: an interpretation opened by a finding on a proposed record c
   const after = ctx.store.assumption(u.id)!;
   check('the record\'s rejection overturns its open interpretation under the same decision', after.status === 'overturned' && after.decisionId === rej.id);
   check('and nothing asks for it any more', !ingestNeeds(ctx, corpus).some((n) => n.ref === u.id));
+}
+
+section('review L5: an interpretation lost between an approve-ir commit and its write is repaired by the next act');
+{
+  const lost = ctx.store.assumptionByOwnerDecision(corpus.projectId, oirIdOf(cadence.id))!;
+  const db = new DatabaseSync(path.join(w.out, DAYLIGHT_DB));
+  db.prepare('DELETE FROM assumptions WHERE id=?').run(lost.id);
+  db.close();
+  check('the crash is simulated: no interpretation of the approved ambiguity', ctx.store.assumptionByOwnerDecision(corpus.projectId, oirIdOf(cadence.id)) === null);
+  const extra = addRecord(w, { kind: 'requirement', docKey: 'ledger', quote: 'may be exported nightly', statement: 'Exports.' });
+  act(set({ reject: [extra.id] }));
+  check('the next approve-ir writes it again, once', ctx.store.assumptions(corpus.id).filter((a) => a.irId === cadence.id && a.status === 'open').length === 1);
+  check('repairInterpretations is idempotent', repairInterpretations(ctx, corpus.id).length === 0);
 }
 
 section('supersede replaces an approved record only with one approved in the same act');

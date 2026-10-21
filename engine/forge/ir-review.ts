@@ -598,6 +598,15 @@ export function irInterpretationAssumptions(ctx: DaylightContext, corpusId: stri
     .filter((a): a is Assumption => !!a);
 }
 
+/**
+ * Write every interpretation the corpus's approve-ir decisions imply and do not have yet (review
+ * L5): they are written after their decision commits, so a crash between the two leaves one
+ * unwritten. Idempotent; `approveIr` runs it before each act. Returns the rows it created.
+ */
+export function repairInterpretations(ctx: DaylightContext, corpusId: string): Assumption[] {
+  return ctx.store.decisions(corpusId).filter((d) => d.scope.operation === 'approve-ir').flatMap((d) => irInterpretationAssumptions(ctx, corpusId, d));
+}
+
 function openInterpretation(ctx: DaylightContext, corpusId: string, irId: string, question: string, rationale: string): Assumption | null {
   const r = ctx.store.irRecord(irId);
   if (!r) return null;
@@ -624,6 +633,8 @@ export function approveIr(ctx: DaylightContext, input: ApproveIrInput): Decision
   const plan = planApproveIr(ctx, input.corpusId, input.set);
   assertHumanDecision(input.env, input.actor, input.confirm, digestOf(canonicalJson(plan.scope)));
   if (!input.rationale?.trim()) throw new DecisionRefused('refused: an IR approval needs a rationale');
+  // A person is acting on this corpus: first finish what an earlier act's commit may have left unwritten.
+  repairInterpretations(ctx, input.corpusId);
   if (plan.refusals.length) {
     for (const r of plan.needInterpretation) {
       openInterpretation(ctx, input.corpusId, r.id, `inferred record ${r.id} rests on no section: is its reading what the specification intends?`,
