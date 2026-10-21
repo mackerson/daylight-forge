@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonicalJson, digestOf } from './artifacts.ts';
-import { DAYLIGHT_DB, openDaylightDb, parseJson } from './db.ts';
+import { benchActorRefusal, DAYLIGHT_DB, isBenchDb, markBenchDb, openDaylightDb, parseJson } from './db.ts';
 import { pathViolations } from '../forge/policy.ts';
 import { authorLimits, type ProjectPolicy } from '../forge/project-policy.ts';
 
@@ -11,7 +11,7 @@ import { authorLimits, type ProjectPolicy } from '../forge/project-policy.ts';
 export const CAMPAIGN_AUTHOR_DEFAULTS = { maxTurns: 60, timeoutMs: 600_000 } as const;
 import {
   ATTEMPT_TRANSITIONS, campaignActorOf, canTransition, DECISION_OPERATIONS, DERIVED_OPERATIONS, ID_PREFIX, isCampaignActor,
-  isBenchActor, isEntityId, isHumanActor, isPersonActor, MISSION_TRANSITIONS,
+  isEntityId, isHumanActor, isPersonActor, MISSION_TRANSITIONS,
   NETWORK_MODES, READ_ONLY_SANDBOX, SANDBOX_PROFILES, SANDBOX_REASONS, TASK_TRANSITIONS, WORK_ITEM_TRANSITIONS,
 } from './types.ts';
 import type {
@@ -37,15 +37,9 @@ import type {
 import { ArtifactStore } from './artifacts.ts';
 
 /**
- * The mission store: what work was asked for, who attempted it, and what each attempt
- * produced. Everything here is bookkeeping about *work*; facts about the repository stay
- * in the claim store and are referenced by id.
- *
- * Two rules the whole design leans on are enforced here rather than left to callers.
- * Transitions are checked against the tables in `types.ts`, so a state the design never
- * drew cannot be reached by a typo. And nothing in this file closes a mission as a side
- * effect: a finished attempt finishes its task, and that is all it does. An exit code is
- * an observation, an outcome is a judgement, and only `closeMission` records one.
+ * The mission store: bookkeeping about work (asked for, attempted, produced); repository facts
+ * live in the claim store. Transitions are checked against `types.ts`'s tables, and nothing
+ * here closes a mission as a side effect: only `closeMission` records an outcome.
  */
 
 /** `lockGates` found a different gate set inside its transaction than the one the human confirmed. */
@@ -423,17 +417,14 @@ export class MissionStore {
     this.db.close();
   }
 
-  /** Whether `ingest bench` created this store (P2-R61): a throwaway whose decisions are the bench's. */
+  /** An `ingest bench` store (P2-R61). */
   isBench(): boolean {
-    const r = this.db.prepare("SELECT value FROM daylight_meta WHERE key='bench'").get() as { value: string } | undefined;
-    return r?.value === '1';
+    return isBenchDb(this.db);
   }
 
-  /** Mark a fresh store as a bench store; refused once it holds any mission or decision. */
+  /** Only a fresh store. */
   markBench(): void {
-    const used = this.db.prepare('SELECT (SELECT COUNT(*) FROM missions) + (SELECT COUNT(*) FROM decisions) AS n').get() as { n: number };
-    if (used.n > 0) throw new Error('only a fresh store becomes a bench store');
-    this.db.prepare("INSERT INTO daylight_meta (key, value) VALUES ('bench', '1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
+    markBenchDb(this.db);
   }
 
   /** The store's clock, which every row it writes is stamped with. */
@@ -1183,14 +1174,9 @@ export class MissionStore {
   }
 
   /**
-   * Conclude, as invalid, this project's pending experiments whose last run started before
-   * `startedBefore` and that `isLive` (when given) does not vouch for.
-   *
-   * The scratch-dir sweep only sees the current `/tmp`; a runner killed before a reboot
-   * leaves a pending row nothing else will ever conclude. Rows that never started are left
-   * alone: pending-and-never-run is a registered experiment, not a dead one. Gates and
-   * holdouts are never reaped: their runs land in `gate_evaluations`, and their own row's
-   * conclusion is not something a candidate run writes (interfaces-reconciled R-8).
+   * Conclude as invalid this project's pending experiments last started before `startedBefore`
+   * that `isLive` does not vouch for (a runner killed before a reboot). Never-started rows,
+   * gates and holdouts are left alone (interfaces-reconciled R-8).
    */
   reapPendingExperiments(opts: {
     projectId: string; startedBefore: number; isLive?: (experimentId: string) => boolean;
@@ -1674,11 +1660,9 @@ export class MissionStore {
   }
 
   /**
-   * A plan import's rows, in one transaction: each ticket whose digest is unchanged keeps its row
-   * and work item; a new or changed one gets its work item (idempotent by id) and its row; a plan
-   * ticket the plan no longer names loses its row, and its work item is superseded by the next
-   * `approve-plan`. Refused when a changed or dropped ticket's work item is being built by a
-   * mission that is not closed.
+   * A plan import's rows, one transaction: unchanged tickets keep row and work item, new or changed
+   * ones get both, dropped ones lose their row. Refused while a changed or dropped ticket's work
+   * item is being built by an open mission.
    */
   importPlanTickets(
     campaignId: string, entries: Array<{ workItem: CreateWorkItemInput & { id: string }; ticket: Omit<CampaignTicket, 'createdAt' | 'workItemId'> }>,
@@ -1799,12 +1783,9 @@ export class MissionStore {
   }
 
   /**
-   * `authorize-campaign`, as one transaction. Refused unless the latest `approve-plan` names the
-   * current plan and the envelope does too; the latest `lock-campaign-gates` names the gate set
-   * the human confirmed (`expectedGateSetDigest`, a string compare); every ticket is an approved
-   * plan ticket; the caps are ordered and bounded; and turns and timeout are within
-   * `authorLimits` of `policy`, the parsed policy at the plan commit, which must be the one the
-   * envelope names (P2-R20). The only writer of an `authorize-campaign` decision.
+   * `authorize-campaign`, one transaction, its only writer: the latest approve-plan and lock name
+   * the current plan and confirmed gate set, every ticket is approved, caps ordered and bounded,
+   * turns and timeout within the envelope's policy's `authorLimits` (P2-R20).
    */
   authorizeCampaign(
     campaignId: string,
@@ -1927,12 +1908,9 @@ export class MissionStore {
   }
 
   /**
-   * Why `request` falls outside the envelope of the human `authorize-campaign` decision
-   * `parentDecisionId`, or null. Rows only. The parent must be the campaign's current
-   * authorization; except for a halt (always allowed, fail closed): inside `notAfter`, not
-   * halted, the plan and gate lock it names still current, and for a ticket mission's act a
-   * ticket it covers (named, or admitted by a derived `admit-work-item`), no more execute or
-   * budget than it allows, and no second open mission on the ticket.
+   * Why `request` falls outside the envelope of the current `authorize-campaign` decision, or
+   * null (rows only). A halt always passes; otherwise inside `notAfter`, not halted, plan and
+   * lock current, a covered ticket, no more execute or budget, no second open mission on it.
    */
   envelopeRefusal(parentDecisionId: string, req: EnvelopeRequest): string | null {
     const parent = parentDecisionId ? this.decision(parentDecisionId) : null;
@@ -2128,11 +2106,8 @@ export class MissionStore {
   }
 
   /**
-   * The director admits a generated (fix) ticket's proposed work item within the envelope: the
-   * derived `admit-work-item` and `proposed → approved`, together. The fix lane is checked here
-   * against `policy`, the parsed policy at the plan commit (it must be the one the authorization
-   * names), and again by `recordDerivedDecision` against the built-in sets. Whether the finding is
-   * High is `admitIfWithinEnvelope`'s question.
+   * Admit a fix ticket's proposed work item within the envelope: the derived `admit-work-item`
+   * and `proposed → approved` together, the fix lane checked against the authorization's policy.
    */
   admitWorkItem(
     workItemId: string, campaignDecisionId: string, scope: { ticketId: string; findingId?: string; waveSeq: number }, policy: ProjectPolicy | null,
@@ -2311,7 +2286,7 @@ export class MissionStore {
     return this.tx(() => {
       const a = this.assumption(id);
       if (!a) throw new Error(`unknown assumption ${id}`);
-      // An IR interpretation lives on its corpus mission (§6.3); it holds tickets by owner decision id, never files one.
+      // IR interpretations live on the corpus (§6.3) and file no follow-up.
       const interpretation = a.source === 'ir-interpretation';
       const c = interpretation ? this.requireMission(a.campaignId) : this.requireCampaign(a.campaignId);
       const op = input.scope.operation;
@@ -2642,10 +2617,8 @@ export class MissionStore {
   }
 
   /**
-   * The campaign gate set a lock of exactly these experiments would freeze, its bindings and its
-   * digest: the one computation behind `lockCampaignGates`, its `--confirm` preview and the
-   * director's preflight. A binding comes from the experiment's subject (`ticket:<id>`), which
-   * nothing rewrites after registration; the digest covers it and the ratchet flag (P2-R17).
+   * The gate set, bindings and digest a lock of these experiments would freeze: the one
+   * computation behind `lockCampaignGates`, its preview and the director's preflight (P2-R17).
    */
   campaignGateSet(campaignId: string, experimentIds: readonly string[], ratchet: boolean, obligations: Record<string, readonly string[]> = {}): {
     experiments: Experiment[]; bindings: Record<string, string | null>; roles: CampaignLockScope['roles']; gateSetDigest: string;
@@ -2666,8 +2639,7 @@ export class MissionStore {
     const bindings = Object.fromEntries(experiments.map((x) => [x.id, campaignBindingOf(x)]));
     const roles = Object.fromEntries(experiments.map((x) => [x.id, x.role])) as CampaignLockScope['roles'];
     const lines = experiments.map((x) => `${x.id}:${x.harnessDigest}:${x.role}:${bindings[x.id] ?? '*'}`).sort();
-    // Acceptance obligations a locked gate discharges (spec ingestion §8.4): in the digest only when
-    // there are any, so a lock without them digests as it always did.
+    // Obligations enter the digest only when present (§8.4).
     const bound: Record<string, string[]> = {};
     for (const [x, obs] of Object.entries(obligations)) {
       if (!ids.includes(x)) throw new Error(`obligations name experiment ${x}, which is not in the set being locked`);
@@ -2926,11 +2898,11 @@ export class MissionStore {
     if (!canTransition(IR_TRANSITIONS, r.status, to)) throw new IllegalTransition('IR record', id, r.status, to);
     const d = this.decision(decisionId);
     if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
-    // Only a person's approve-ir on this record's corpus moves it (P2-R56, P2-R59): no borrowed decision.
+    // A person's approve-ir on this corpus only (P2-R59).
     if (d.scope.operation !== 'approve-ir' || !isPersonActor(d.actor) || d.missionId !== r.corpusId) {
       throw new Error(`decision ${decisionId} is not a person's approve-ir decision on corpus ${r.corpusId}`);
     }
-    // An inferred record without basis is approved on its confirmed interpretation, which it then names.
+    // Inferred, no basis: names its confirmed interpretation.
     const u = o.assumptionId !== undefined ? this.assumption(o.assumptionId) : null;
     if (o.assumptionId !== undefined && (u?.irId !== id || u.status !== 'confirmed')) throw new Error(`assumption ${o.assumptionId} is not a confirmed interpretation of ${id}`);
     this.db.prepare('UPDATE ir_records SET status=?, decision_id=?, assumption_id=COALESCE(?, assumption_id), updated_at=? WHERE id=?')
@@ -3136,7 +3108,7 @@ export class MissionStore {
     }
   }
 
-  /** The campaign's trace as its current plan states it: the rows of an earlier import are replaced, in one transaction. */
+  /** Replaces the campaign's trace with its current plan's, in one transaction. */
   replaceTicketTrace(campaignId: string, rows: TicketTraceRow[]): void {
     this.tx(() => {
       if (rows.some((t) => t.campaignId !== campaignId)) throw new Error(`a trace row names another campaign than ${campaignId}`);
@@ -3158,10 +3130,7 @@ export class MissionStore {
       Array<Record<string, unknown>>).map(rowToTicketTrace);
   }
 
-  /**
-   * Overturn the open interpretations of a record a person's approve-ir rejected or superseded:
-   * a record that says nothing any more has no reading to decide. Returns the rows it moved.
-   */
+  /** Overturns the open interpretations of a rejected or superseded record (review L3). */
   closeInterpretations(irId: string, decisionId: string): string[] {
     const r = this.irRecord(irId);
     const d = this.decision(decisionId);
@@ -3336,9 +3305,7 @@ export class MissionStore {
   }
 
   private writeDecision(d: Decision): Decision {
-    // P2-R61: the bench's stand-in decides only on a store `ingest bench` created, and there only it decides.
-    if (isBenchActor(d.actor) && !this.isBench()) throw new Error(`a ${d.actor} decision is recorded only on a bench store; this store is not one`);
-    if (this.isBench() && !isBenchActor(d.actor)) throw new Error(`a bench store records bench:<step> decisions only, not ${d.actor}`);
+    benchActorRefusal(this.db, d.actor);
     this.db
       .prepare(
         `INSERT INTO decisions
