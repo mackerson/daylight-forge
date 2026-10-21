@@ -12,13 +12,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { detectSandbox } from '../experiment/sandbox.ts';
-import { outboxPathOf } from '../mcp/outbox-server.ts';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createOutboxServer, outboxPathOf } from '../mcp/outbox-server.ts';
 import { openDaylight } from '../mission/context.ts';
 import type { ExtractWindow, IrProposalContext } from '../mission/types.ts';
 import { corpusOf, registerCorpus } from '../forge/corpus.ts';
 import { runCorpusCommand } from '../forge/commands-corpus.ts';
 import { buildExtractPrompt, disagreementsOf, EXTRACT_PROMPT_DIGEST, extract, ingestIrProposals, irVersionOf } from '../forge/extract.ts';
-import { IR_PROPOSALS_DIR, irContentDigestOf, irIdOf, isIrRefusal, redactIrProposal, resolveQuote, validateIrProposal } from '../forge/ir.ts';
+import { IR_OUTBOX_SPEC, IR_PROPOSALS_DIR, irContentDigestOf, irIdOf, isIrRefusal, redactIrProposal, resolveQuote, validateIrProposal } from '../forge/ir.ts';
 import { configForDomain, windowsOf } from '../forge/sectioner.ts';
 import { harness } from './harness.ts';
 import { inProcessExtractor, MOCK_EXTRACTOR_SCRIPT, olcRepos } from './lib/ingest-fixture.ts';
@@ -82,6 +84,28 @@ check('the statement is redacted, the quote is not touched', (() => {
   const r = redactIrProposal({ ...(v as typeof good & { kind: 'invariant'; source: 'extracted' }), statement: 'call it with ghp_abcdefghijklmnopqrstuvwxyz0123456789' } as never);
   return !r.statement.includes('ghp_abc') && r.quote === good.quote;
 })());
+
+section('unknown keys are refused at the wire, through the real outbox server (review L-1)');
+{
+  const probe = ctx.store.createMission({ projectId: c.projectId, kind: 'audit', objective: 'wire probe', baseRevision: ctx.store.mission(corpusId)!.baseRevision, parentId: corpusId });
+  const t = ctx.store.createTask({ missionId: probe.id, role: 'extract', objective: 'wire probe', runnerHint: 'mock:wire' });
+  const a = ctx.store.startAttempt({ taskId: t.id, runnerId: 'agent:mock:wire' });
+  const server = createOutboxServer({ dir: A.out, attemptId: a.id, spec: { ...IR_OUTBOX_SPEC, validate: (raw: unknown) => validateIrProposal(raw, ctxFor(w6)) } }).server;
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await server.connect(st);
+  const client = new Client({ name: 'probe', version: '0' });
+  await client.connect(ct);
+  const call = async (args: Record<string, unknown>) =>
+    JSON.parse(((await client.callTool({ name: 'propose_ir_record', arguments: args })).content as Array<{ text: string }>)[0].text) as { accepted: boolean; field?: string };
+  const offsets = await call({ ...good, start: 5, end: 9 });
+  const status = await call({ ...good, status: 'approved' });
+  const plain = await call(good);
+  check('a proposal carrying offsets is refused on the wire, not stripped', offsets.accepted === false && offsets.field === 'payload', JSON.stringify(offsets));
+  check('a proposal carrying a status is refused on the wire', status.accepted === false && status.field === 'payload', JSON.stringify(status));
+  check('the same proposal without them is accepted', plain.accepted === true);
+  await client.close();
+  ctx.store.finishAttempt(a.id, { state: 'cancelled', costUsd: null, failure: 'wire probe' });
+}
 
 section('resolveQuote: host-computed byte spans, the exactly-once rule');
 const body = { start: 100, text: 'Café rules. A must hold. A must hold. Zed.' };

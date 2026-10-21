@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import { isEntityId } from '../mission/types.ts';
 
@@ -58,7 +58,10 @@ export function createOutboxServer<T>(o: { dir: string; attemptId: string; agent
       return 0;
     }
   };
-  server.registerTool(o.spec.tool, { description: o.spec.description, annotations: APPEND_ONLY, inputSchema: o.spec.inputSchema }, async (a: unknown) => {
+  // Passthrough, not the SDK's default strip: an unknown key (an offset, a status) must reach the
+  // spec's validator and be refused there, never silently dropped on the wire.
+  const inputSchema = z.object(o.spec.inputSchema).passthrough();
+  server.registerTool(o.spec.tool, { description: o.spec.description, annotations: APPEND_ONLY, inputSchema }, async (a: unknown) => {
     const valid = o.spec.validate(a);
     if (isRefusal(valid)) return refuse(valid.field, valid.refused);
     // Masked before the outbox: the line sits on disk until someone deletes it.
