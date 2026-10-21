@@ -19,6 +19,7 @@ import { buildWaveReport, campaignList, renderWaveReport, runClaimOf, spendWords
 import { registerCampaignGate, registerPlanGates } from '../forge/campaign-gates.ts';
 import { haltCampaign, importPlan, planOf, startTicketMission } from '../forge/campaign.ts';
 import { campaignReadOnly } from '../forge/commands-campaign.ts';
+import { parse } from '../forge/commands.ts';
 import { campaignSpend, r5Host, ticketStates } from '../forge/director.ts';
 import { ensureIntegrationRef, integrationRefFor, integrationTip, landCandidate, prepareIntegration } from '../forge/integrate.ts';
 import { closeWave, fixTicketsFrom } from '../forge/wave.ts';
@@ -77,6 +78,15 @@ function confirmsAct(name: string, out: string, confirmArgs: string[], act: stri
   const done = cli([...act, '--out', out, '--confirm', h?.digest8 ?? '00000000']);
   check(`${name}: the act accepts the printed code`, done.code === 0, `${done.code} ${done.err}`);
   return done.code === 0;
+}
+
+section('parse records bare flags apart from a literal true (I1, P2-R60)');
+{
+  const p = parse(['x', '--a', '--b=true', '--c', 'true', '--d', '--d=v', '--e=v', '--e']);
+  check('a bare flag reads true and is bare', p.flags.get('a')?.at(-1) === 'true' && !!p.bare?.has('a'));
+  check('--k=true and --k true are values, not bare', p.flags.get('b')?.at(-1) === 'true' && p.flags.get('c')?.at(-1) === 'true' && !p.bare?.has('b') && !p.bare?.has('c'));
+  check('the last occurrence decides', !p.bare?.has('d') && !!p.bare?.has('e'));
+  check('positionals are untouched', p.positionals.length === 1 && p.positionals[0] === 'x');
 }
 
 section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
@@ -155,6 +165,17 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   const bareDefault = cli(['confirm', 'record-assumption', id, '--question', 'q', '--default', '--out', s.out]);
   check('confirm record-assumption with a bare --default digests nothing: a usage error, as the act\'s preview', bareDefault.code === 2 && /--default needs a value/.test(bareDefault.err),
     `${bareDefault.code} ${bareDefault.out} ${bareDefault.err}`);
+  // I1 (P2-R60): a literal default "true" is a value, in both routes; only a bare flag is refused.
+  confirmsAct('record-assumption --default=true', s.out, ['record-assumption', id, '--question', 'Strict mode?', '--default=true'],
+    ['assumption', 'record', id, '--question', 'Strict mode?', '--default=true', '--rationale', 'r']);
+  confirmsAct('record-assumption --default true', s.out, ['record-assumption', id, '--question', 'Verbose?', '--default', 'true'],
+    ['assumption', 'record', id, '--question', 'Verbose?', '--default', 'true', '--rationale', 'r']);
+  reopen(s.out, (ctx) => {
+    const strict = ctx.store.assumptions(id).find((a) => a.question === 'Strict mode?');
+    check('the recorded default is the literal "true"', strict?.default === 'true', JSON.stringify(strict?.default));
+  });
+  const lastBare = cli(['confirm', 'record-assumption', id, '--question', 'q', '--default=true', '--default', '--out', s.out]);
+  check('confirm record-assumption: a bare --default after a valued one is still bare', lastBare.code === 2 && /--default needs a value/.test(lastBare.err), lastBare.err);
   const noTicket = cli(['confirm', 'retry-ticket', id, '--out', s.out]);
   check('confirm retry-ticket without --ticket is a usage error', noTicket.code === 2 && /--ticket is required/.test(noTicket.err), noTicket.err);
   confirmsAct('resume-campaign', s.out, ['resume-campaign', id, '--halt', haltId], ['campaign', 'resume', id, '--halt', haltId, '--rationale', 'go on']);

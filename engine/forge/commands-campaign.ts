@@ -58,11 +58,14 @@ const ASSUMPTION_GUARDED: readonly string[] = ['record', 'confirm', 'decide', 'o
 interface Parsed {
   positionals: string[];
   flags: Map<string, string>;
+  /** Flags given bare (`--k`, read as `'true'`), so a literal `--k=true` stays a value. */
+  bare?: Set<string>;
 }
 
 function parse(argv: string[]): Parsed {
   const positionals: string[] = [];
   const flags = new Map<string, string>();
+  const bare = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) {
@@ -71,11 +74,15 @@ function parse(argv: string[]): Parsed {
     }
     const eq = a.indexOf('=');
     const key = eq >= 0 ? a.slice(2, eq) : a.slice(2);
+    bare.delete(key);
     if (eq >= 0) flags.set(key, a.slice(eq + 1));
     else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) flags.set(key, argv[++i]);
-    else flags.set(key, 'true');
+    else {
+      flags.set(key, 'true');
+      bare.add(key);
+    }
   }
-  return { positionals, flags };
+  return { positionals, flags, bare };
 }
 
 const json = (data: unknown) => process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
@@ -208,6 +215,8 @@ function identityOf(s: string | undefined): CampaignEnvelope['identity'] | undef
 
 /** A flag's last value; `''` and `'true'` are passed through as given (a bare flag reads `'true'`). */
 export type FlagGet = (flag: string) => string | undefined;
+/** Whether a flag was given bare (`--k`) rather than as a value, `--k=true` included. */
+export type FlagBare = (flag: string) => boolean;
 
 /** The envelope flags over a getter, so `campaign authorize` and `confirm authorize-campaign` read them alike. */
 export function envelopeFlagsFrom(get: FlagGet): EnvelopeFlags {
@@ -248,7 +257,8 @@ export const CAMPAIGN_CONFIRM_OPS: readonly CampaignConfirmOp[] = [
  * flags, read by the same rules, as the act's own preview, so the code it shows is the one the
  * act accepts. Read-only. `--ticket` names the ticket for `retry-ticket` (the act's positional).
  */
-export function campaignConfirm(ctx: DaylightContext, op: CampaignConfirmOp, subjectId: string, get: FlagGet): ConfirmDigest {
+export function campaignConfirm(ctx: DaylightContext, op: CampaignConfirmOp, subjectId: string, get: FlagGet,
+  bare: FlagBare = (k) => get(k) === 'true'): ConfirmDigest {
   const flagOf = (k: string) => {
     const v = get(k);
     return v === 'true' ? undefined : v;
@@ -266,9 +276,9 @@ export function campaignConfirm(ctx: DaylightContext, op: CampaignConfirmOp, sub
     case 'retry-ticket':
       return confirmDigest(ctx, 'retry-ticket', subjectId, { retry: retryScopeOf(ctx, subjectId, needOf('ticket')) });
     case 'record-assumption': {
-      // A bare --default reads 'true' and the act refuses it; the getter cannot tell it from
-      // --default=true, so confirm refuses both rather than digest a default nobody gave.
-      if (get('default') === 'true') throw new Usage('--default needs a value; leave it out for an assumption with no default');
+      // A bare --default reads 'true' and the act refuses it; a literal --default=true is a value.
+      // Without `bare`, a 'true' is taken as bare: refused rather than digest a default nobody gave.
+      if (bare('default')) throw new Usage('--default needs a value; leave it out for an assumption with no default');
       const ticketId = flagOf('ticket');
       return confirmDigest(ctx, 'record-assumption', subjectId, { assumption: { question: needOf('question'), default: get('default') ?? '', ...(ticketId ? { ticketId } : {}) } });
     }
@@ -448,7 +458,7 @@ export async function runAssumptionCommand(argv: string[], env: NodeJS.ProcessEn
         const question = need(p, 'question');
         const dflt = p.flags.get('default') ?? '';
         // A bare --default parses as 'true'; a person who means no default leaves the flag out.
-        if (dflt === 'true' && !argv.includes('--default=true')) throw new Usage("--default needs a value; leave it out for an assumption with no default");
+        if (p.bare?.has('default')) throw new Usage("--default needs a value; leave it out for an assumption with no default");
         const ticketId = flag(p, 'ticket');
         const confirm = flag(p, 'confirm');
         return withCtx(out, (ctx) => {

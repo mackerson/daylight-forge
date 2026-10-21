@@ -43,11 +43,17 @@ export class Usage extends Error {}
 interface Parsed {
   positionals: string[];
   flags: Map<string, string[]>;
+  /**
+   * Flags whose last occurrence was bare (`--k`, read as `'true'`), so a literal `--k=true` stays
+   * a value. Absent on a mission-command parse, where a `'true'` is taken as bare.
+   */
+  bare?: Set<string>;
 }
 
 export function parse(argv: string[]): Parsed {
   const positionals: string[] = [];
   const flags = new Map<string, string[]>();
+  const bare = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) {
@@ -57,12 +63,16 @@ export function parse(argv: string[]): Parsed {
     const eq = a.indexOf('=');
     const key = eq >= 0 ? a.slice(2, eq) : a.slice(2);
     let value: string;
+    bare.delete(key);
     if (eq >= 0) value = a.slice(eq + 1);
     else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) value = argv[++i];
-    else value = 'true';
+    else {
+      value = 'true';
+      bare.add(key);
+    }
     flags.set(key, [...(flags.get(key) ?? []), value]);
   }
-  return { positionals, flags };
+  return { positionals, flags, bare };
 }
 
 const last = (p: Parsed, k: string): string | undefined => p.flags.get(k)?.at(-1);
@@ -199,9 +209,10 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
     const campaignOp = (CAMPAIGN_CONFIRM_OPS as readonly string[]).includes(operation);
     if (campaignOp || (CAMPAIGN_RUN_CONFIRM_OPS as readonly string[]).includes(operation)) {
       const get = (k: string) => last(p, k);
+      const bare = p.bare;
       const named = last(p, 'repo');
       const c = campaignOp
-        ? campaignConfirm(ctx, operation as CampaignConfirmOp, subjectId, get)
+        ? campaignConfirm(ctx, operation as CampaignConfirmOp, subjectId, get, bare ? (k) => bare.has(k) : undefined)
         : campaignRunConfirm(ctx, operation as CampaignRunConfirmOp, subjectId, get, named && named !== 'true' ? path.resolve(named) : mappedRoot(ctx.out));
       return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines: c.lines, refusal: guardCheck(env, actor, c.digest8, c.digest), possibleSecrets: [] };
     }
