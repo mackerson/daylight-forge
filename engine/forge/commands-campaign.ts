@@ -266,6 +266,9 @@ export function campaignConfirm(ctx: DaylightContext, op: CampaignConfirmOp, sub
     case 'retry-ticket':
       return confirmDigest(ctx, 'retry-ticket', subjectId, { retry: retryScopeOf(ctx, subjectId, needOf('ticket')) });
     case 'record-assumption': {
+      // A bare --default reads 'true' and the act refuses it; the getter cannot tell it from
+      // --default=true, so confirm refuses both rather than digest a default nobody gave.
+      if (get('default') === 'true') throw new Usage('--default needs a value; leave it out for an assumption with no default');
       const ticketId = flagOf('ticket');
       return confirmDigest(ctx, 'record-assumption', subjectId, { assumption: { question: needOf('question'), default: get('default') ?? '', ...(ticketId ? { ticketId } : {}) } });
     }

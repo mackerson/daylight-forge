@@ -152,6 +152,9 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
     haltId = haltCampaign(ctx, id, HUMAN, 'operator').id;
   });
   confirmsAct('retry-ticket', s.out, ['retry-ticket', id, '--ticket', 'C1'], ['campaign', 'retry', id, 'C1', '--rationale', 'sandbox fixed']);
+  const bareDefault = cli(['confirm', 'record-assumption', id, '--question', 'q', '--default', '--out', s.out]);
+  check('confirm record-assumption with a bare --default digests nothing: a usage error, as the act\'s preview', bareDefault.code === 2 && /--default needs a value/.test(bareDefault.err),
+    `${bareDefault.code} ${bareDefault.out} ${bareDefault.err}`);
   const noTicket = cli(['confirm', 'retry-ticket', id, '--out', s.out]);
   check('confirm retry-ticket without --ticket is a usage error', noTicket.code === 2 && /--ticket is required/.test(noTicket.err), noTicket.err);
   confirmsAct('resume-campaign', s.out, ['resume-campaign', id, '--halt', haltId], ['campaign', 'resume', id, '--halt', haltId, '--rationale', 'go on']);
