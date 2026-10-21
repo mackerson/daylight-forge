@@ -1,0 +1,898 @@
+{
+ "kind": "daylight-packets-template",
+ "v": 1,
+ "note": "By construction: one packet per ground-truth ticket (scope, prerequisites and ids copied from ground-truth.json), requirement and obligation records chosen by hand from ir.overlay.json hand records. Record keys resolve to ir ids at run time.",
+ "packets": [
+  {
+   "ticketId": "M0.S1",
+   "componentId": "S",
+   "milestone": "M0",
+   "title": "The five identity newtypes",
+   "objective": "The five identity newtypes and canonical JSON + sha256 digests.",
+   "prerequisites": [],
+   "scope": [
+    "crates/schema/src/id.rs",
+    "crates/schema/src/canon.rs",
+    "crates/schema/src/digest.rs"
+   ],
+   "requirements": [
+    "h083",
+    "h121",
+    "h122",
+    "h074"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h083"
+     ],
+     "statement": "Identities round-trip and canonical bytes are stable across key order."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "schema.identity",
+     "role": "provides",
+     "keys": [
+      "h121"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.S2",
+   "componentId": "S",
+   "milestone": "M0",
+   "title": "Record shapes",
+   "objective": "Record shapes for content revisions, runs, reports and decisions.",
+   "prerequisites": [
+    "M0.S1"
+   ],
+   "scope": [
+    "crates/schema/src/records/"
+   ],
+   "requirements": [
+    "h077",
+    "h027"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h027"
+     ],
+     "statement": "Receipts are records the validator writes, pinned by digest."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.S3",
+   "componentId": "S",
+   "milestone": "M0",
+   "title": "Item schemas for the six primitives",
+   "objective": "Item schemas for the six primitives.",
+   "prerequisites": [
+    "M0.S2"
+   ],
+   "scope": [
+    "crates/schema/src/items/"
+   ],
+   "requirements": [
+    "h129",
+    "h025"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h129"
+     ],
+     "statement": "Each of the six primitives has a valid and an invalid fixture."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.S4",
+   "componentId": "S",
+   "milestone": "M0",
+   "title": "Page/block model",
+   "objective": "The page/block model.",
+   "prerequisites": [
+    "M0.S2"
+   ],
+   "scope": [
+    "crates/page/src/model.rs",
+    "crates/schema/src/page.rs"
+   ],
+   "requirements": [
+    "h034",
+    "h036",
+    "h085",
+    "h112",
+    "h148",
+    "h107",
+    "h110"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h034"
+     ],
+     "statement": "Every block kind has a fixture; unknown kinds fail naming the block."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.Z1",
+   "componentId": "Z",
+   "milestone": "M0",
+   "title": "Hostile ZIP reader over &[u8] and Read+Seek",
+   "objective": "The hostile ZIP reader.",
+   "prerequisites": [
+    "M0.S1"
+   ],
+   "scope": [
+    "crates/zip/src/read.rs"
+   ],
+   "requirements": [
+    "h138",
+    "h070",
+    "h163"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h093"
+     ],
+     "statement": "Each rejection class has a fixture and a typed error."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "zip.container",
+     "role": "provides",
+     "keys": [
+      "h138"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.Z2",
+   "componentId": "Z",
+   "milestone": "M0",
+   "title": "Deterministic ZIP writer",
+   "objective": "The deterministic ZIP writer.",
+   "prerequisites": [
+    "M0.Z1"
+   ],
+   "scope": [
+    "crates/zip/src/write.rs"
+   ],
+   "requirements": [
+    "h072",
+    "h137"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h072"
+     ],
+     "statement": "Writing the same members twice yields identical bytes."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.Z3",
+   "componentId": "Z",
+   "milestone": "M0",
+   "title": "Content-addressed store + lockfile",
+   "objective": "The content-addressed store, lockfile and release cache.",
+   "prerequisites": [
+    "M0.Z2"
+   ],
+   "scope": [
+    "crates/store/src/"
+   ],
+   "requirements": [
+    "h071"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h071"
+     ],
+     "statement": "A crash mid-activate leaves the previous release active."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.G1",
+   "componentId": "G",
+   "milestone": "M0",
+   "title": "Load graph/*.toml into competency nodes with hard/soft/associative edges",
+   "objective": "Load the competency graph.",
+   "prerequisites": [
+    "M0.S1"
+   ],
+   "scope": [
+    "crates/graph/src/"
+   ],
+   "requirements": [
+    "h143"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h143"
+     ],
+     "statement": "A cycle and a dangling prerequisite fail naming the id."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.G2",
+   "componentId": "G",
+   "milestone": "M0",
+   "title": "Coverage",
+   "objective": "Coverage statements per node.",
+   "prerequisites": [
+    "M0.G1",
+    "M0.S3"
+   ],
+   "scope": [
+    "crates/graph/src/coverage.rs"
+   ],
+   "requirements": [
+    "h062",
+    "h063"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h062"
+     ],
+     "statement": "Coverage over the fixture pack matches a pinned statement."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.I1",
+   "componentId": "I",
+   "milestone": "M0",
+   "title": "Solvers and scorers for count-tap, tap-match, order-sequence",
+   "objective": "Solvers and scorers for three primitives.",
+   "prerequisites": [
+    "M0.S3"
+   ],
+   "scope": [
+    "crates/items/src/count_tap.rs",
+    "crates/items/src/tap_match.rs",
+    "crates/items/src/order_sequence.rs"
+   ],
+   "requirements": [
+    "h022",
+    "h024"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h022"
+     ],
+     "statement": "The scorer is total; a seed reproduces an instance."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.I2",
+   "componentId": "I",
+   "milestone": "M0",
+   "title": "Mechanical validators",
+   "objective": "Mechanical validators, predicate on declared geometry.",
+   "prerequisites": [
+    "M0.I1"
+   ],
+   "scope": [
+    "crates/items/src/validate/"
+   ],
+   "requirements": [
+    "h040",
+    "h082",
+    "h102",
+    "h130"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h102"
+     ],
+     "statement": "square-is-a-rectangle fails naming the predicate; the valid fixtures pass."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.I3",
+   "componentId": "I",
+   "milestone": "M0",
+   "title": "Regression corpus",
+   "objective": "The regression corpus.",
+   "prerequisites": [
+    "M0.I2"
+   ],
+   "scope": [
+    "crates/items/tests/fixtures/",
+    "examples/olc-pack-example/items/fixtures/"
+   ],
+   "requirements": [
+    "h028"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h028"
+     ],
+     "statement": "Every invalid fixture is refused, every valid one passes."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.I4",
+   "componentId": "I",
+   "milestone": "M0",
+   "title": "Independence check",
+   "objective": "The generator/validator independence check.",
+   "prerequisites": [
+    "M0.I2"
+   ],
+   "scope": [
+    "crates/items/src/independence.rs"
+   ],
+   "requirements": [
+    "h026",
+    "h139"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h139"
+     ],
+     "statement": "A same-model, same-template report is refused."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.P1",
+   "componentId": "P",
+   "milestone": "M0",
+   "title": "Source pack loader",
+   "objective": "The source pack loader.",
+   "prerequisites": [
+    "M0.S4",
+    "M0.G1",
+    "M0.Z3"
+   ],
+   "scope": [
+    "crates/pack/src/source.rs"
+   ],
+   "requirements": [
+    "h084",
+    "h088"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h084"
+     ],
+     "statement": "The example pack loads; an unknown key fails naming it."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.P2",
+   "componentId": "P",
+   "milestone": "M0",
+   "title": "Surfacing policy",
+   "objective": "The surfacing and evidence policy.",
+   "prerequisites": [
+    "M0.P1"
+   ],
+   "scope": [
+    "crates/pack/src/policy.rs"
+   ],
+   "requirements": [
+    "adr4-surfacing",
+    "h106",
+    "h048",
+    "h125",
+    "h132",
+    "h128",
+    "h068",
+    "adr4-tests"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "adr4-tests"
+     ],
+     "statement": "Surfacing and evidence are tested as two separate decisions."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.P3",
+   "componentId": "P",
+   "milestone": "M0",
+   "title": "Page-level validators",
+   "objective": "Page-level validators and olc validate.",
+   "prerequisites": [
+    "M0.P1",
+    "M0.I2",
+    "M0.G2"
+   ],
+   "scope": [
+    "crates/page/src/validate.rs",
+    "crates/pack/src/validate.rs"
+   ],
+   "requirements": [
+    "h037",
+    "h149"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h149"
+     ],
+     "statement": "A figure without alt text fails; the example pack passes."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.P4",
+   "componentId": "P",
+   "milestone": "M0",
+   "title": "olc pack build --profile starter --offline",
+   "objective": "olc pack build/verify; gate step 5.",
+   "prerequisites": [
+    "M0.P3",
+    "M0.Z2"
+   ],
+   "scope": [
+    "crates/pack/src/build.rs",
+    "crates/pack/src/verify.rs",
+    "examples/olc-pack-example/tests/release.digest",
+    "xtask/src/ci.rs"
+   ],
+   "requirements": [
+    "h069",
+    "h012",
+    "oracle-digest",
+    "h164"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "oracle-digest"
+     ],
+     "statement": "The build reproduces the pinned release digest offline."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "pack.release",
+     "role": "provides",
+     "keys": [
+      "h069"
+     ]
+    },
+    {
+     "interfaceId": "zip.container",
+     "role": "consumes",
+     "keys": [
+      "h138"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.P5",
+   "componentId": "P",
+   "milestone": "M0",
+   "title": "Federation oracle",
+   "objective": "The federation oracle.",
+   "prerequisites": [
+    "M0.P4"
+   ],
+   "scope": [
+    "xtask/src/federation.rs",
+    "examples/",
+    "plan/adr/0007"
+   ],
+   "requirements": [
+    "h079",
+    "h087",
+    "h135",
+    "h146"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h146"
+     ],
+     "statement": "A renamed copy builds and installs without the olc repository."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.P6",
+   "componentId": "P",
+   "milestone": "M0",
+   "title": "Advisories",
+   "objective": "Advisories that retract without mutating.",
+   "prerequisites": [
+    "M0.P4",
+    "M0.L4"
+   ],
+   "scope": [
+    "crates/pack/src/advisory.rs"
+   ],
+   "requirements": [
+    "h053",
+    "h054",
+    "h096"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h096"
+     ],
+     "statement": "A retraction recomputes mastery and leaves attempts untouched."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "learner.recompute",
+     "role": "consumes",
+     "keys": [
+      "h049"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.L1",
+   "componentId": "L",
+   "milestone": "M0",
+   "title": "Profiles + private DB",
+   "objective": "Profiles and the private database.",
+   "prerequisites": [
+    "M0.S2"
+   ],
+   "scope": [
+    "crates/learner/src/db/"
+   ],
+   "requirements": [
+    "h041",
+    "h116"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h041"
+     ],
+     "statement": "Two profiles never read each other's rows."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "schema.identity",
+     "role": "consumes",
+     "keys": [
+      "h121"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.L2",
+   "componentId": "L",
+   "milestone": "M0",
+   "title": "Append-only attempt events pinned to item/rubric/page/graph/release digests",
+   "objective": "Append-only attempt events.",
+   "prerequisites": [
+    "M0.L1",
+    "M0.S3"
+   ],
+   "scope": [
+    "crates/learner/src/evidence.rs"
+   ],
+   "requirements": [
+    "h050"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h050"
+     ],
+     "statement": "An event cannot be updated or deleted."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.L3",
+   "componentId": "L",
+   "milestone": "M0",
+   "title": "Mastery recompute",
+   "objective": "Mastery recompute against the evidence bit.",
+   "prerequisites": [
+    "M0.L2"
+   ],
+   "scope": [
+    "crates/learner/src/mastery.rs",
+    "crates/learner/src/scheduler.rs"
+   ],
+   "requirements": [
+    "h046",
+    "h047",
+    "h049",
+    "h127",
+    "adr4-tests"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "adr4-tests"
+     ],
+     "statement": "Mastery transitions read the evidence bit, never editorial state."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "learner.recompute",
+     "role": "provides",
+     "keys": [
+      "h049"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.L4",
+   "componentId": "L",
+   "milestone": "M0",
+   "title": "Badge earning",
+   "objective": "Badges, report.create and report.export.",
+   "prerequisites": [
+    "M0.L3"
+   ],
+   "scope": [
+    "crates/learner/src/badge.rs",
+    "crates/learner/src/report.rs"
+   ],
+   "requirements": [
+    "h060",
+    "h052",
+    "h160",
+    "h147",
+    "h161"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h161"
+     ],
+     "statement": "The export bundle holds no learner identifier."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.E1",
+   "componentId": "E",
+   "milestone": "M0",
+   "title": "CommandSpec catalog with the M0 command list",
+   "objective": "The command catalog and execute.",
+   "prerequisites": [
+    "M0.S1"
+   ],
+   "scope": [
+    "crates/engine/src/",
+    "apps/olc/src/main.rs"
+   ],
+   "requirements": [
+    "h080",
+    "h150",
+    "h158",
+    "h159"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h159"
+     ],
+     "statement": "Every catalog id has a CLI form and an execute test."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "engine.catalog",
+     "role": "provides",
+     "keys": [
+      "h150"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.E2",
+   "componentId": "E",
+   "milestone": "M0",
+   "title": "cargo xtask layers",
+   "objective": "cargo xtask layers and ci steps 1-4.",
+   "prerequisites": [],
+   "scope": [
+    "xtask/src/"
+   ],
+   "requirements": [
+    "h016",
+    "h119",
+    "h156",
+    "h157"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h156"
+     ],
+     "statement": "An upward dependency, a UI toolkit and a network client below L5 each fail."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.E3",
+   "componentId": "E",
+   "milestone": "M0",
+   "title": "MCP server over the catalog",
+   "objective": "The MCP server over the catalog.",
+   "prerequisites": [
+    "M0.E1"
+   ],
+   "scope": [
+    "crates/mcp/src/",
+    "apps/olc/src/mcp.rs"
+   ],
+   "requirements": [
+    "h159"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h159"
+     ],
+     "statement": "A scripted client lists commands and runs doctor and validate."
+    }
+   ],
+   "interfaces": []
+  },
+  {
+   "ticketId": "M0.E4",
+   "componentId": "E",
+   "milestone": "M0",
+   "title": "Wire pack.*, validate, report.*, advisory.apply, profile.*, item.attempt, badge.list into the catalog as their crates la",
+   "objective": "Wire the crates into the catalog.",
+   "prerequisites": [
+    "M0.E3",
+    "M0.P4",
+    "M0.P6",
+    "M0.L4"
+   ],
+   "scope": [
+    "crates/engine/src/commands/"
+   ],
+   "requirements": [
+    "h144"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h144"
+     ],
+     "statement": "The oracle statements each run through execute with JSON."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "pack.release",
+     "role": "consumes",
+     "keys": [
+      "h069"
+     ]
+    },
+    {
+     "interfaceId": "learner.recompute",
+     "role": "consumes",
+     "keys": [
+      "h049"
+     ]
+    }
+   ]
+  },
+  {
+   "ticketId": "M0.M1",
+   "componentId": "M",
+   "milestone": "M0",
+   "title": "SynthesisEngine trait + NullEngine",
+   "objective": "The synthesis engine trait and NullEngine.",
+   "prerequisites": [
+    "M0.S2",
+    "M0.Z3"
+   ],
+   "scope": [
+    "crates/media/src/"
+   ],
+   "requirements": [
+    "h133",
+    "h134"
+   ],
+   "obligations": [
+    {
+     "id": "ob1",
+     "keys": [
+      "h133"
+     ],
+     "statement": "The learner crate cannot reach a synthesis engine."
+    }
+   ],
+   "interfaces": [
+    {
+     "interfaceId": "zip.container",
+     "role": "consumes",
+     "keys": [
+      "h138"
+     ]
+    }
+   ]
+  }
+ ]
+}

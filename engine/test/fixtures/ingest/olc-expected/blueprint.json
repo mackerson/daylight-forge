@@ -1,0 +1,451 @@
+{
+ "kind": "daylight-blueprint-template",
+ "v": 1,
+ "note": "By construction from the ground truth (lanes → components) and AGENTS.md's layer table (boundaries). Strings \"ir:<key>\" resolve to ir ids; requirements are assigned by record, not by section. Records no element names go to `deferred` when their effective milestone is outside scope (an errata deferral moves its other passage), else to `outOfScope` with `rest`. Engine/MCP sit under pack-tooling; the spec leaves it open.",
+ "rest": "not placed by the benchmark blueprint: context, rationale or another milestone",
+ "body": {
+  "kind": "daylight-blueprint",
+  "version": 1,
+  "title": "OLC M0: the pack contract",
+  "scope": {
+   "milestones": [
+    "M0"
+   ]
+  },
+  "ticketIdTemplate": "{milestone}.{component}{k}",
+  "boundaries": [
+   {
+    "id": "pack-tooling",
+    "title": "Pack tools, schema and engine",
+    "domain": "olc",
+    "lifecycle": "in-repo",
+    "owns": [
+     "crates/schema/",
+     "crates/zip/",
+     "crates/store/",
+     "crates/graph/",
+     "crates/items/",
+     "crates/page/",
+     "crates/pack/",
+     "crates/media/",
+     "crates/engine/",
+     "crates/mcp/",
+     "apps/olc/",
+     "xtask/",
+     "plan/adr/"
+    ],
+    "bounds": [
+     "ir:h012"
+    ],
+    "invariants": [
+     "ir:h021",
+     "ir:h067"
+    ]
+   },
+   {
+    "id": "learner-app",
+    "title": "Learner app and renderer",
+    "domain": "olc",
+    "lifecycle": "in-repo",
+    "owns": [
+     "crates/render/",
+     "apps/olc-book/"
+    ],
+    "bounds": [
+     "ir:h011"
+    ],
+    "invariants": [
+     "ir:h019",
+     "ir:h004"
+    ]
+   },
+   {
+    "id": "private-evidence",
+    "title": "Private learner data",
+    "domain": "olc",
+    "lifecycle": "in-repo",
+    "owns": [
+     "crates/learner/"
+    ],
+    "bounds": [
+     "ir:h018"
+    ],
+    "invariants": [
+     "ir:h005",
+     "ir:h050",
+     "ir:h052"
+    ]
+   },
+   {
+    "id": "community-packs",
+    "title": "Community pack repositories",
+    "domain": "olc",
+    "lifecycle": "separate-repo",
+    "owns": [
+     "examples/"
+    ],
+    "bounds": [
+     "ir:h002"
+    ],
+    "invariants": [
+     "ir:h008",
+     "ir:h073"
+    ]
+   },
+   {
+    "id": "corpus-foundry",
+    "title": "Corpus Foundry",
+    "domain": "foundry",
+    "lifecycle": "external",
+    "owns": [],
+    "bounds": [
+     "ir:h180",
+     "ir:h181"
+    ],
+    "invariants": [
+     "ir:cf-learner"
+    ]
+   }
+  ],
+  "components": [
+   {
+    "id": "S",
+    "boundary": "pack-tooling",
+    "title": "Schema",
+    "owns": [
+     "crates/schema/",
+     "crates/page/src/model.rs"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h083",
+     "ir:h121",
+     "ir:h122",
+     "ir:h074",
+     "ir:h077",
+     "ir:h027",
+     "ir:h129",
+     "ir:h025",
+     "ir:h034",
+     "ir:h036",
+     "ir:h085",
+     "ir:h112",
+     "ir:h148",
+     "ir:h107",
+     "ir:h110"
+    ],
+    "dependsOn": [],
+    "provides": [
+     "schema.identity"
+    ],
+    "consumes": []
+   },
+   {
+    "id": "Z",
+    "boundary": "pack-tooling",
+    "title": "Container and store",
+    "owns": [
+     "crates/zip/",
+     "crates/store/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h138",
+     "ir:h070",
+     "ir:h163",
+     "ir:h072",
+     "ir:h137",
+     "ir:h071"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [
+     "zip.container"
+    ],
+    "consumes": []
+   },
+   {
+    "id": "G",
+    "boundary": "pack-tooling",
+    "title": "Graph",
+    "owns": [
+     "crates/graph/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h143",
+     "ir:h062",
+     "ir:h063"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [],
+    "consumes": []
+   },
+   {
+    "id": "I",
+    "boundary": "pack-tooling",
+    "title": "Items",
+    "owns": [
+     "crates/items/"
+    ],
+    "shared": [
+     "examples/olc-pack-example/items/fixtures/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h022",
+     "ir:h024",
+     "ir:h040",
+     "ir:h082",
+     "ir:h102",
+     "ir:h130",
+     "ir:h028",
+     "ir:h026",
+     "ir:h139"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [],
+    "consumes": []
+   },
+   {
+    "id": "L",
+    "boundary": "private-evidence",
+    "title": "Learner",
+    "owns": [
+     "crates/learner/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h041",
+     "ir:h116",
+     "ir:h050",
+     "ir:h046",
+     "ir:h047",
+     "ir:h049",
+     "ir:h127",
+     "ir:adr4-tests",
+     "ir:h060",
+     "ir:h052",
+     "ir:h160",
+     "ir:h147",
+     "ir:h161"
+    ],
+    "dependsOn": [
+     "S"
+    ],
+    "provides": [
+     "learner.recompute"
+    ],
+    "consumes": [
+     "schema.identity"
+    ]
+   },
+   {
+    "id": "M",
+    "boundary": "pack-tooling",
+    "title": "Media",
+    "owns": [
+     "crates/media/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h133",
+     "ir:h134"
+    ],
+    "dependsOn": [
+     "S",
+     "Z"
+    ],
+    "provides": [],
+    "consumes": [
+     "zip.container"
+    ]
+   },
+   {
+    "id": "P",
+    "boundary": "pack-tooling",
+    "title": "Pack",
+    "owns": [
+     "crates/pack/",
+     "crates/page/src/validate.rs",
+     "xtask/src/ci.rs",
+     "xtask/src/federation.rs",
+     "plan/adr/0007"
+    ],
+    "shared": [
+     "examples/olc-pack-example/",
+     "examples/"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h084",
+     "ir:h088",
+     "ir:adr4-surfacing",
+     "ir:h106",
+     "ir:h048",
+     "ir:h125",
+     "ir:h132",
+     "ir:h128",
+     "ir:h068",
+     "ir:adr4-tests",
+     "ir:h037",
+     "ir:h149",
+     "ir:h069",
+     "ir:h012",
+     "ir:oracle-digest",
+     "ir:h164",
+     "ir:h079",
+     "ir:h087",
+     "ir:h135",
+     "ir:h146",
+     "ir:h053",
+     "ir:h054",
+     "ir:h096"
+    ],
+    "dependsOn": [
+     "G",
+     "I",
+     "L",
+     "S",
+     "Z"
+    ],
+    "provides": [
+     "pack.release"
+    ],
+    "consumes": [
+     "zip.container",
+     "learner.recompute"
+    ]
+   },
+   {
+    "id": "E",
+    "boundary": "pack-tooling",
+    "title": "Engine, CLI, MCP, xtask",
+    "owns": [
+     "crates/engine/",
+     "crates/mcp/",
+     "apps/olc/",
+     "xtask/src/"
+    ],
+    "shared": [
+     "xtask/src/ci.rs",
+     "xtask/src/federation.rs"
+    ],
+    "sections": [],
+    "requirements": [
+     "ir:h080",
+     "ir:h150",
+     "ir:h158",
+     "ir:h159",
+     "ir:h016",
+     "ir:h119",
+     "ir:h156",
+     "ir:h157",
+     "ir:h144"
+    ],
+    "dependsOn": [
+     "L",
+     "P",
+     "S"
+    ],
+    "provides": [
+     "engine.catalog"
+    ],
+    "consumes": [
+     "pack.release",
+     "learner.recompute"
+    ]
+   }
+  ],
+  "interfaces": [
+   {
+    "id": "schema.identity",
+    "owner": "S",
+    "irIds": [
+     "ir:h121"
+    ],
+    "summary": "The five identity newtypes and canonical digests.",
+    "crossesBoundary": true
+   },
+   {
+    "id": "zip.container",
+    "owner": "Z",
+    "irIds": [
+     "ir:h138"
+    ],
+    "summary": "Hostile read and deterministic write of release containers.",
+    "crossesBoundary": false
+   },
+   {
+    "id": "pack.release",
+    "owner": "P",
+    "irIds": [
+     "ir:h069"
+    ],
+    "summary": "A release and its non-self-referential digest.",
+    "crossesBoundary": false
+   },
+   {
+    "id": "learner.recompute",
+    "owner": "L",
+    "irIds": [
+     "ir:h049"
+    ],
+    "summary": "Mastery recompute after a retraction.",
+    "crossesBoundary": true
+   },
+   {
+    "id": "engine.catalog",
+    "owner": "E",
+    "irIds": [
+     "ir:h150"
+    ],
+    "summary": "The one command catalog.",
+    "crossesBoundary": false
+   }
+  ],
+  "order": [
+   [
+    "S"
+   ],
+   [
+    "G",
+    "I",
+    "L",
+    "Z"
+   ],
+   [
+    "M",
+    "P"
+   ],
+   [
+    "E"
+   ]
+  ],
+  "constraints": [
+   {
+    "irIds": [
+     "ir:h017",
+     "ir:h162"
+    ],
+    "appliesTo": [
+     "S",
+     "Z",
+     "G",
+     "I",
+     "L",
+     "M",
+     "P",
+     "E"
+    ]
+   }
+  ],
+  "deferred": [],
+  "outOfScope": []
+ }
+}

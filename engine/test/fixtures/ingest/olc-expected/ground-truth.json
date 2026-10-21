@@ -1,0 +1,420 @@
+{
+ "kind": "daylight-ground-truth",
+ "v": 1,
+ "source": {
+  "file": "plan/execution-plan.md",
+  "sha256": "512cb5d16d01bcfb940a1b6e37f1bf6a27e452c049be10ad7ce56d673594c914",
+  "parser": "daylight-gt-tables/1"
+ },
+ "note": "The 28 M0 build tickets of plan/execution-plan.md, parsed from its tables (never its ASCII diagram, P2-R50 Q15) by engine/test/lib/plan-score.ts parseGroundTruth, then hand-checked row by row against the tables. Owner tickets (M0.O1-O4, no Paths column) and the M1 outline are not build tickets. Two hand corrections are listed; nothing else differs from the parser output.",
+ "corrections": [
+  {
+   "ticket": "M0.L3",
+   "field": "scope",
+   "from": "scheduler.rs",
+   "to": "crates/learner/src/scheduler.rs",
+   "why": "the cell names it relative to the previous path"
+  },
+  {
+   "lane": "P",
+   "field": "owns",
+   "removed": [
+    "graph/",
+    "governance/"
+   ],
+   "why": "the cell says examples/olc-pack-example/ except graph/ and governance/; the exceptions are not owned"
+  }
+ ],
+ "lanes": [
+  {
+   "id": "S",
+   "owns": [
+    "crates/schema",
+    "crates/page",
+    "docs/architecture.md"
+   ]
+  },
+  {
+   "id": "Z",
+   "owns": [
+    "crates/zip",
+    "crates/store"
+   ]
+  },
+  {
+   "id": "G",
+   "owns": [
+    "crates/graph"
+   ]
+  },
+  {
+   "id": "I",
+   "owns": [
+    "crates/items"
+   ]
+  },
+  {
+   "id": "P",
+   "owns": [
+    "crates/pack",
+    "crates/page",
+    "examples/olc-pack-example/"
+   ]
+  },
+  {
+   "id": "L",
+   "owns": [
+    "crates/learner"
+   ]
+  },
+  {
+   "id": "E",
+   "owns": [
+    "crates/engine",
+    "crates/mcp",
+    "apps/olc",
+    "xtask"
+   ]
+  },
+  {
+   "id": "M",
+   "owns": [
+    "crates/media"
+   ]
+  }
+ ],
+ "tickets": [
+  {
+   "id": "M0.S1",
+   "lane": "S",
+   "title": "The five identity newtypes",
+   "scope": [
+    "crates/schema/src/id.rs",
+    "crates/schema/src/canon.rs",
+    "crates/schema/src/digest.rs"
+   ],
+   "dependsOn": []
+  },
+  {
+   "id": "M0.S2",
+   "lane": "S",
+   "title": "Record shapes",
+   "scope": [
+    "crates/schema/src/records/"
+   ],
+   "dependsOn": [
+    "M0.S1"
+   ]
+  },
+  {
+   "id": "M0.S3",
+   "lane": "S",
+   "title": "Item schemas for the six primitives",
+   "scope": [
+    "crates/schema/src/items/"
+   ],
+   "dependsOn": [
+    "M0.S2"
+   ]
+  },
+  {
+   "id": "M0.S4",
+   "lane": "S",
+   "title": "Page/block model",
+   "scope": [
+    "crates/page/src/model.rs",
+    "crates/schema/src/page.rs"
+   ],
+   "dependsOn": [
+    "M0.S2"
+   ]
+  },
+  {
+   "id": "M0.Z1",
+   "lane": "Z",
+   "title": "Hostile ZIP reader over &[u8] and Read+Seek",
+   "scope": [
+    "crates/zip/src/read.rs"
+   ],
+   "dependsOn": [
+    "M0.S1"
+   ]
+  },
+  {
+   "id": "M0.Z2",
+   "lane": "Z",
+   "title": "Deterministic ZIP writer",
+   "scope": [
+    "crates/zip/src/write.rs"
+   ],
+   "dependsOn": [
+    "M0.Z1"
+   ]
+  },
+  {
+   "id": "M0.Z3",
+   "lane": "Z",
+   "title": "Content-addressed store + lockfile",
+   "scope": [
+    "crates/store/src/"
+   ],
+   "dependsOn": [
+    "M0.Z2"
+   ]
+  },
+  {
+   "id": "M0.G1",
+   "lane": "G",
+   "title": "Load graph/*.toml into competency nodes with hard/soft/associative edges",
+   "scope": [
+    "crates/graph/src/"
+   ],
+   "dependsOn": [
+    "M0.S1"
+   ]
+  },
+  {
+   "id": "M0.G2",
+   "lane": "G",
+   "title": "Coverage",
+   "scope": [
+    "crates/graph/src/coverage.rs"
+   ],
+   "dependsOn": [
+    "M0.G1",
+    "M0.S3"
+   ]
+  },
+  {
+   "id": "M0.I1",
+   "lane": "I",
+   "title": "Solvers and scorers for count-tap, tap-match, order-sequence",
+   "scope": [
+    "crates/items/src/count_tap.rs",
+    "crates/items/src/tap_match.rs",
+    "crates/items/src/order_sequence.rs"
+   ],
+   "dependsOn": [
+    "M0.S3"
+   ]
+  },
+  {
+   "id": "M0.I2",
+   "lane": "I",
+   "title": "Mechanical validators",
+   "scope": [
+    "crates/items/src/validate/"
+   ],
+   "dependsOn": [
+    "M0.I1"
+   ]
+  },
+  {
+   "id": "M0.I3",
+   "lane": "I",
+   "title": "Regression corpus",
+   "scope": [
+    "crates/items/tests/fixtures/",
+    "examples/olc-pack-example/items/fixtures/"
+   ],
+   "dependsOn": [
+    "M0.I2"
+   ]
+  },
+  {
+   "id": "M0.I4",
+   "lane": "I",
+   "title": "Independence check",
+   "scope": [
+    "crates/items/src/independence.rs"
+   ],
+   "dependsOn": [
+    "M0.I2"
+   ]
+  },
+  {
+   "id": "M0.P1",
+   "lane": "P",
+   "title": "Source pack loader",
+   "scope": [
+    "crates/pack/src/source.rs"
+   ],
+   "dependsOn": [
+    "M0.S4",
+    "M0.G1",
+    "M0.Z3"
+   ]
+  },
+  {
+   "id": "M0.P2",
+   "lane": "P",
+   "title": "Surfacing policy",
+   "scope": [
+    "crates/pack/src/policy.rs"
+   ],
+   "dependsOn": [
+    "M0.P1"
+   ]
+  },
+  {
+   "id": "M0.P3",
+   "lane": "P",
+   "title": "Page-level validators",
+   "scope": [
+    "crates/page/src/validate.rs",
+    "crates/pack/src/validate.rs"
+   ],
+   "dependsOn": [
+    "M0.P1",
+    "M0.I2",
+    "M0.G2"
+   ]
+  },
+  {
+   "id": "M0.P4",
+   "lane": "P",
+   "title": "olc pack build --profile starter --offline",
+   "scope": [
+    "crates/pack/src/build.rs",
+    "crates/pack/src/verify.rs",
+    "examples/olc-pack-example/tests/release.digest",
+    "xtask/src/ci.rs"
+   ],
+   "dependsOn": [
+    "M0.P3",
+    "M0.Z2"
+   ]
+  },
+  {
+   "id": "M0.P5",
+   "lane": "P",
+   "title": "Federation oracle",
+   "scope": [
+    "xtask/src/federation.rs",
+    "examples/",
+    "plan/adr/0007"
+   ],
+   "dependsOn": [
+    "M0.P4"
+   ]
+  },
+  {
+   "id": "M0.P6",
+   "lane": "P",
+   "title": "Advisories",
+   "scope": [
+    "crates/pack/src/advisory.rs"
+   ],
+   "dependsOn": [
+    "M0.P4",
+    "M0.L4"
+   ]
+  },
+  {
+   "id": "M0.L1",
+   "lane": "L",
+   "title": "Profiles + private DB",
+   "scope": [
+    "crates/learner/src/db/"
+   ],
+   "dependsOn": [
+    "M0.S2"
+   ]
+  },
+  {
+   "id": "M0.L2",
+   "lane": "L",
+   "title": "Append-only attempt events pinned to item/rubric/page/graph/release digests",
+   "scope": [
+    "crates/learner/src/evidence.rs"
+   ],
+   "dependsOn": [
+    "M0.L1",
+    "M0.S3"
+   ]
+  },
+  {
+   "id": "M0.L3",
+   "lane": "L",
+   "title": "Mastery recompute",
+   "scope": [
+    "crates/learner/src/mastery.rs",
+    "crates/learner/src/scheduler.rs"
+   ],
+   "dependsOn": [
+    "M0.L2"
+   ]
+  },
+  {
+   "id": "M0.L4",
+   "lane": "L",
+   "title": "Badge earning",
+   "scope": [
+    "crates/learner/src/badge.rs",
+    "crates/learner/src/report.rs"
+   ],
+   "dependsOn": [
+    "M0.L3"
+   ]
+  },
+  {
+   "id": "M0.E1",
+   "lane": "E",
+   "title": "CommandSpec catalog with the M0 command list",
+   "scope": [
+    "crates/engine/src/",
+    "apps/olc/src/main.rs"
+   ],
+   "dependsOn": [
+    "M0.S1"
+   ]
+  },
+  {
+   "id": "M0.E2",
+   "lane": "E",
+   "title": "cargo xtask layers",
+   "scope": [
+    "xtask/src/"
+   ],
+   "dependsOn": []
+  },
+  {
+   "id": "M0.E3",
+   "lane": "E",
+   "title": "MCP server over the catalog",
+   "scope": [
+    "crates/mcp/src/",
+    "apps/olc/src/mcp.rs"
+   ],
+   "dependsOn": [
+    "M0.E1"
+   ]
+  },
+  {
+   "id": "M0.E4",
+   "lane": "E",
+   "title": "Wire pack.*, validate, report.*, advisory.apply, profile.*, item.attempt, badge.list into the catalog as their crates la",
+   "scope": [
+    "crates/engine/src/commands/"
+   ],
+   "dependsOn": [
+    "M0.E3",
+    "M0.P4",
+    "M0.P6",
+    "M0.L4"
+   ]
+  },
+  {
+   "id": "M0.M1",
+   "lane": "M",
+   "title": "SynthesisEngine trait + NullEngine",
+   "scope": [
+    "crates/media/src/"
+   ],
+   "dependsOn": [
+    "M0.S2",
+    "M0.Z3"
+   ]
+  }
+ ]
+}
