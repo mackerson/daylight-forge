@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { canonicalJson, digestOf } from '../mission/artifacts.ts';
+import { digestOf } from '../mission/artifacts.ts';
 import { campaignBindingOf, GateSetMoved } from '../mission/store.ts';
 import type {
   CampaignLockScope, CampaignTicket, CampaignVerdictRows, Decision, ExpectedObservation, Experiment, GateEvaluation, GateHarness,
@@ -13,7 +13,7 @@ import { planFileOf } from './authority.ts';
 import { confirmDigest, type ConfirmDigest } from './confirm.ts';
 import { cargoTargetOf, GateRefused, record, recordIntegrated, registerGate, runContext, type AuthorBriefGate, type GateContext } from './gate.ts';
 import { expectedTip } from './integrate.ts';
-import { assertHumanDecision, confirmCodeOf } from './policy.ts';
+import { assertHumanDecision } from './policy.ts';
 import { policyAt } from './plan.ts';
 import { defaultGateHarness } from './project-policy.ts';
 import { createWorkspace } from './workspace.ts';
@@ -263,23 +263,10 @@ export function campaignLockRefusal(ctx: Pick<GateContext, 'store'>, campaignId:
   return null;
 }
 
-/**
- * What `campaign lock` confirms: `confirmDigest`'s lock-campaign-gates digest and lines, and with
- * obligations bound, the digest over them too plus one line per binding (holdouts counted, not
- * named). Until `confirm.ts` takes `obligations` (WS-R8's table, wired at merge), the CLI and
- * `lockCampaign` both ask this.
- */
+/** What `campaign lock` confirms: `confirmDigest`'s lock-campaign-gates digest and lines, obligations and vacuous acceptances included. */
 export function campaignLockConfirm(ctx: Pick<GateContext, 'store'>, campaignId: string, ids: readonly string[], ratchet: boolean,
   obligations: Record<string, string[]> = {}, acceptVacuous: readonly string[] = []): ConfirmDigest {
-  const base = confirmDigest(ctx as Parameters<typeof confirmDigest>[0], 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet, acceptVacuous });
-  if (!Object.values(obligations).some((o) => o.length)) return base;
-  const set = ctx.store.campaignGateSet(campaignId, ids, ratchet, obligations);
-  const vacuous = [...new Set(acceptVacuous)].sort();
-  const digest = vacuous.length ? digestOf(canonicalJson({ operation: 'lock-campaign-gates', gateSetDigest: set.gateSetDigest, acceptVacuous: vacuous })) : set.gateSetDigest;
-  const holdout = (x: string) => set.roles[x] === 'holdout';
-  const lines = Object.entries(set.obligations).filter(([x]) => !holdout(x)).map(([x, obs]) => `${x} discharges ${obs.join(', ')}`);
-  const held = Object.entries(set.obligations).filter(([x]) => holdout(x)).reduce((n, [, obs]) => n + obs.length, 0);
-  return { digest, digest8: confirmCodeOf(digest), lines: [...base.lines, ...lines, ...(held ? [`${held} obligation(s) bound to holdouts, counted, not named`] : [])] };
+  return confirmDigest(ctx as Parameters<typeof confirmDigest>[0], 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet, acceptVacuous, obligations });
 }
 
 /** Why the obligations offered at lock cannot be bound: a gate discharges only its own ticket's; each names a plan ticket's obligation. */

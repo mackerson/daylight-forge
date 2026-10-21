@@ -202,6 +202,17 @@ const lockWith = (obligations: Record<string, string[]>) => lockCampaign(g, { ca
 check('binding an obligation no ticket has is refused', /not an acceptance obligation/.test(throws(() => lockWith({ [suite.id]: ['W1.Z9:ob1'] }))?.message ?? ''));
 check('the obligations enter the gate-set digest', campaignLockConfirm(g, campaign.id, ids, false, { [suite.id]: ['W1.D1:ob1'] }).digest
   !== campaignLockConfirm(g, campaign.id, ids, false).digest);
+{
+  const ob = { [suite.id]: ['W1.D1:ob1'], [holdout.id]: ['W1.T1:ob1'] };
+  const viaGates = campaignLockConfirm(g, campaign.id, ids, false, ob);
+  const viaConfirm = confirmDigest(ctx, 'lock-campaign-gates', campaign.id, { experimentIds: ids, ratchet: false, obligations: ob });
+  check('confirm lock-campaign-gates and campaign lock agree with obligations (one path, P2-R56)', viaGates.digest === viaConfirm.digest
+    && viaGates.lines.join('\n') === viaConfirm.lines.join('\n'));
+  check('a visible gate\'s obligations are named; a holdout\'s are counted', viaConfirm.lines.includes(`${suite.id} discharges W1.D1:ob1`)
+    && viaConfirm.lines.includes('1 obligation(s) bound to holdouts, counted, not named') && !viaConfirm.lines.join().includes(holdout.id));
+  check('accepting a vacuous gate beside obligations changes the code', confirmDigest(ctx, 'lock-campaign-gates', campaign.id, { experimentIds: ids, ratchet: false, obligations: ob, acceptVacuous: [suite.id] }).digest
+    !== viaConfirm.digest && campaignLockConfirm(g, campaign.id, ids, false, ob, [suite.id]).digest !== viaConfirm.digest);
+}
 const lock = lockWith({ [suite.id]: ['W1.D1:ob1'] });
 check('the lock records which gate discharges which obligation', (lock.scope.obligations as Record<string, string[]>)[suite.id]?.join() === 'W1.D1:ob1');
 check('W1.T1:ob1 is bound to no locked gate', unboundObligations(ctx, campaign.id, ['W1.D1', 'W1.T1']).join() === 'W1.T1:ob1');

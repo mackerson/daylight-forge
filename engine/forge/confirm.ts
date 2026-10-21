@@ -54,6 +54,8 @@ export interface ConfirmOptions {
   ratchet?: boolean;
   /** `lock-campaign-gates`: gates accepted although they pass at base (`--accept-vacuous`); part of what is confirmed. */
   acceptVacuous?: readonly string[];
+  /** `lock-campaign-gates`: acceptance obligations each gate discharges (experiment → `<ticket>:ob<n>`); inside the gate-set digest. */
+  obligations?: Record<string, string[]>;
   /** `adopt-integration-tip`: the move being adopted and the halt it answers. Required. */
   adopt?: { ref: string; from: string; to: string; haltDecisionId: string };
   /** `authorize-mission`: what will be granted. Required. */
@@ -123,17 +125,21 @@ export function confirmDigest(
         throw new Error('lock-campaign-gates confirms a chosen set and a ratchet flag; pass the experiment ids and ratchet');
       }
       // The gate-set digest, which covers bindings, roles and the ratchet flag: what the lock records.
-      const { experiments, bindings, gateSetDigest } = store.campaignGateSet.call(ctx.store, subjectId, opts.experimentIds, opts.ratchet);
+      const set = store.campaignGateSet.call(ctx.store, subjectId, opts.experimentIds, opts.ratchet, opts.obligations ?? {});
+      const { experiments, bindings, gateSetDigest } = set;
       const holdouts = experiments.filter((x) => x.role === 'holdout').length;
       // Accepting a vacuous gate is part of the act: a code confirmed without it never confirms a lock with it.
       const vacuous = [...new Set(opts.acceptVacuous ?? [])].sort();
       const hidden = new Set(experiments.filter((x) => x.role === 'holdout').map((x) => x.id));
+      const heldObligations = Object.entries(set.obligations).filter(([x]) => hidden.has(x)).reduce((n, [, obs]) => n + obs.length, 0);
       return out(vacuous.length ? digestOf(canonicalJson({ operation, gateSetDigest, acceptVacuous: vacuous })) : gateSetDigest, [
         `lock ${experiments.length} campaign gate(s) on campaign ${subjectId}, ratchet ${opts.ratchet ? 'on' : 'off'}`,
         ...experiments.filter((x) => x.role !== 'holdout')
           .map((x) => `${x.role} ${x.id} ${bindings[x.id] ? `ticket ${bindings[x.id]}` : 'every ticket'} harness ${x.harnessDigest}`),
         ...(holdouts ? [`${holdouts} holdout(s), counted, not named`] : []),
         ...(vacuous.length ? [`accept as vacuous (passes at base): ${vacuous.map((v) => (hidden.has(v) ? 'a holdout' : v)).join(', ')}`] : []),
+        ...Object.entries(set.obligations).filter(([x, obs]) => obs.length && !hidden.has(x)).map(([x, obs]) => `${x} discharges ${obs.join(', ')}`),
+        ...(heldObligations ? [`${heldObligations} obligation(s) bound to holdouts, counted, not named`] : []),
       ]);
     }
     case 'adopt-integration-tip': {
