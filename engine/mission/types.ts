@@ -247,8 +247,11 @@ export type UsageSource = 'provider' | 'transcript' | 'none';
 /**
  * Where a dollar figure came from. `stdout-scan` is a figure read out of a process's output
  * by pattern, which is a guess and is labelled as one; only `provider` is the provider's own.
+ * `reservation` is an attempt that ended without finishing (cancelled, crashed, failed) and
+ * reported nothing: it is charged at the ceiling it was given (`max_cost_usd`, P2-R44), the
+ * most it could have spent, never at zero.
  */
-export type CostSource = 'provider' | 'stdout-scan' | 'none';
+export type CostSource = 'provider' | 'stdout-scan' | 'reservation' | 'none';
 
 /** Token counts. Each is `null` when unreported, and a null is never summed as zero. */
 export interface TokenUsage {
@@ -717,12 +720,20 @@ export interface Finding {
 
 /** What a campaign has spent, from rows, over every child mission (§4.6). Unknown is counted, never summed as zero. */
 export interface CampaignSpend {
-  /** Provider plus stdout-scan figures: scanned spend is money, not knowledge. */
+  /** Provider plus stdout-scan figures plus reservation charges (P2-R44): what counts against the cap. */
   spentUsd: number;
   /** Provider figures only. */
   knownUsd: number;
-  /** Finished attempts with no figure. Any one halts the campaign (P2-R11). */
+  /** Finished attempts with no figure: counted, never summed as zero. */
   unknownCount: number;
+  /**
+   * Of those, attempts that completed with no figure and that no person has seen through a
+   * resumed `spend-unknown` halt. Any one halts the campaign, once (P2-R11, P2-R44).
+   */
+  unknownUnansweredCount: number;
+  /** Attempts that ended unfinished with no figure, charged at their reservation (P2-R44); in `spentUsd`. */
+  reservationCount: number;
+  reservationUsd: number;
   scannedCount: number;
   runningCount: number;
   /** Σ `attempts.max_cost_usd` over running attempts (P2-R18). */
@@ -1171,6 +1182,9 @@ export interface LedgerRow {
   usdUnknownCount: number;
   /** Spend read from output by pattern: counted, never known. */
   usdScanned: number;
+  /** Unfinished attempts charged at their reservation (P2-R44): a ceiling, shown apart from known dollars. */
+  usdReservation: number;
+  reservationCount: number;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; unknownCount: number };
   candidates: { accepted: number; rejected: number; applied: number; overridden: number };
   decisions: number;
@@ -1298,7 +1312,8 @@ export type TicketStatus =
   | 'waiting' | 'ready'              // a dependency not landed | deps landed, no open mission, not exhausted
   | 'running' | 'integrating'        // live attempt | integration row pending/evaluating
   | 'waiting-dependency'             // its mission has an open request-dependency need: parked, the loop continues (P2-R21)
-  | 'landed' | 'blocked';            // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
+  | 'landed' | 'blocked'             // integrated and reachable from the ref | blocked or closed failed/inconclusive (a need)
+  | 'regressed';                     // landed, but its own gate fails on the tip: `campaign status` only, with a need (wave2 L7)
 
 export interface ApprovePlanScope { operation: 'approve-plan'; planDigest: string; planRevision: string;
   workItems: Record<string, string>;   // workItemId → contentDigest for every plan ticket: what setWorkItemStatus/assertImplementable check

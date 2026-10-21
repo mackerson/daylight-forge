@@ -102,7 +102,7 @@ CREATE TABLE attempts (
   cache_read_tokens  INTEGER,
   cache_write_tokens INTEGER,
   usage_source       TEXT NOT NULL DEFAULT 'none' CHECK (usage_source IN ('provider','transcript','none')),
-  cost_source        TEXT NOT NULL DEFAULT 'none' CHECK (cost_source IN ('provider','stdout-scan','none')),
+  cost_source        TEXT NOT NULL DEFAULT 'none' CHECK (cost_source IN ('provider','stdout-scan','reservation','none')),
   model              TEXT,
   parent_attempt_id  TEXT REFERENCES attempts(id),
   gate_set_digest    TEXT,
@@ -125,6 +125,8 @@ CREATE TABLE attempts (
   mcp_token_digest   TEXT UNIQUE,
   -- A cost nobody reported is not a cost (R10.2).
   CHECK (cost_source <> 'none' OR cost_usd IS NULL),
+  -- An unfinished attempt is charged at its reservation only when it had one (P2-R44).
+  CHECK (cost_source <> 'reservation' OR (max_cost_usd IS NOT NULL AND cost_usd = max_cost_usd AND state <> 'completed')),
   CHECK ((origin = 'ingested') = (sandbox_profile IS NULL)),
   CHECK ((sandbox_profile IS NULL) = (sandbox_network IS NULL)
     AND (sandbox_profile IS NULL) = (sandbox_write IS NULL)

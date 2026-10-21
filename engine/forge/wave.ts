@@ -5,6 +5,7 @@ import { createWaveReviewServer } from '../mcp/server.ts';
 import type { DaylightContext } from '../mission/context.ts';
 import { roleAllowlist, runMission } from '../mission/orchestrate.ts';
 import type { Attempt, CampaignTicket, CampaignWave, Finding, Integration, Mission } from '../mission/types.ts';
+import { parseSpec, specKey } from '../swarm/adapters.ts';
 import { FINDING_SEVERITIES } from '../mission/types.ts';
 import { gitIn } from './apply.ts';
 import type { CampaignHost } from './director.ts';
@@ -22,7 +23,7 @@ import { createWorkspace } from './workspace.ts';
  * Its review is an `audit` mission under the campaign: one blind reviewer per `reviewRoster`
  * entry, under the `review` profile, over a materialised tree of the wave's last commit (not
  * the checkout), with one tool, `report_finding`, that reads nothing back. Findings are
- * re-validated and redacted on the host, then each becomes a proposed fix ticket; only a High
+ * re-validated and redacted on the host, then each path becomes a proposed fix ticket; only a High
  * finding is admitted by the envelope, at most five per wave (P2-R10), through WS-R5.
  *
  * ADR-19 holds: a finding never touches a verdict or a landed commit. It only creates work
@@ -71,6 +72,22 @@ export function buildWaveReviewPrompt(w: CampaignWave, files: readonly string[])
   ].join('\n');
 }
 
+/**
+ * The roster as the reviewers it names: a repeated `mock` entry is another reviewer (wave2 L3),
+ * so it gets a key of its own instead of collapsing into the first. A repeated real provider is
+ * the same source and still collapses where the mission's roster is planned.
+ */
+export function reviewRosterOf(roster: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  return roster.map((entry) => {
+    const spec = parseSpec(entry);
+    const key = specKey(spec);
+    const n = (seen.get(key) ?? 0) + 1;
+    seen.set(key, n);
+    return n === 1 || spec.tool !== 'mock' ? entry : `mock:${spec.model ?? 'default'}-${n}`;
+  });
+}
+
 /** Files `from..to` changed, by name; read from git objects. */
 function changedFiles(repo: string, from: string, to: string): string[] {
   return gitIn({ repo }, ['diff', '--name-only', '--no-renames', '-z', from, to, '--']).toString('utf8').split('\0').filter(Boolean).sort();
@@ -112,7 +129,7 @@ export async function runWaveReview(ctx: DaylightContext, campaignId: string, se
   try {
     const serve = (attempt: Attempt): McpServer => createWaveReviewServer({ dir: ctx.out, attemptId: attempt.id, paths: files }).server;
     await runMission(ctx, {
-      missionId: review.id, repo: o.repo, tools: o.roster, role: 'review', prompt: buildWaveReviewPrompt(w, files), sandbox: o.sandbox,
+      missionId: review.id, repo: o.repo, tools: reviewRosterOf(o.roster), role: 'review', prompt: buildWaveReviewPrompt(w, files), sandbox: o.sandbox,
       tree: tree.tree, reviewServer: { serve, allowedTools: roleAllowlist('waveReview') }, timeoutMs: o.timeoutMs,
       // All reviewers at once, each reserving its share of the review's budget.
       concurrency: o.roster.length,
@@ -204,9 +221,11 @@ export function ingestFindings(ctx: DaylightContext, reviewMissionId: string): F
 const rank = (s: Finding['severity']) => FINDING_SEVERITIES.indexOf(s);
 
 /**
- * One proposed fix ticket per finding of wave `seq` (corroborated duplicates are one), most
- * severe first (§6.3), filed by WS-R5 (`fileFixTicket`, P2-R36). Each is offered to the
- * envelope; R5 admits a High one up to the wave's cap, and anything else waits for a person.
+ * One proposed fix ticket per path of wave `seq`, filed for its most severe finding (§6.3) by
+ * WS-R5 (`fileFixTicket`, P2-R36); every other finding on that path, corroborated or not, points
+ * at the same ticket, so one reviewer cannot spend the wave's fix budget on one file (wave2 L5).
+ * Each ticket is offered to the envelope; R5 admits a High one up to the wave's cap, and anything
+ * else waits for a person.
  */
 export function fixTicketsFrom(ctx: Pick<DaylightContext, 'store'>, campaignId: string, seq: number, host: CampaignHost): { filed: CampaignTicket[]; admitted: string[] } {
   const findings = ctx.store.findings(campaignId, { waveSeq: seq })
@@ -214,13 +233,20 @@ export function fixTicketsFrom(ctx: Pick<DaylightContext, 'store'>, campaignId: 
   const filed: CampaignTicket[] = [];
   const admitted: string[] = [];
   const done = new Set<string>();
+  const byPath = new Map(findings.filter((f) => f.fixTicketId).map((f) => [f.path, f.fixTicketId!]));
   for (const f of findings) {
     if (f.fixTicketId || done.has(f.id)) continue;
+    const same = byPath.get(f.path);
+    if (same) {
+      ctx.store.updateFinding(f.id, { fixTicketId: same });
+      continue;
+    }
     for (const g of f.corroboratedBy) done.add(g);
     const ticketId = host.fileFixTicket(campaignId, { waveSeq: seq, finding: f });
     const t = host.tickets(campaignId).find((x) => x.ticketId === ticketId);
     if (!t) throw new Error(`fix ticket ${ticketId} of finding ${f.id} was not filed`);
     ctx.store.updateFinding(f.id, { fixTicketId: t.ticketId });
+    byPath.set(f.path, t.ticketId);
     filed.push(t);
     // Every finding is offered; the envelope admits a High one only, at most its per-wave cap (P2-R10).
     if (host.admitIfWithinEnvelope(campaignId, t.workItemId, { seq, admitted: admitted.length, severity: f.severity, findingId: f.id }).admitted) admitted.push(t.ticketId);
