@@ -147,11 +147,15 @@ export function parseCorpusManifest(raw: Buffer | string): CorpusManifest | Corp
 
 const spanKey = (s: IrSpanRef | null) => (s ? { docKey: s.docKey, sectionId: s.sectionId, start: s.start, end: s.end, quoteDigest: s.quoteDigest } : null);
 
-/** What the corpus is, as one digest: documents by key, precedence and dependencies with their basis spans (no revision id). */
+/**
+ * What the corpus is, as one digest: each document's key, role, domain and bytes, precedence and
+ * dependencies with their basis spans. Content-addressed (P2-R63): no commit, path, project or
+ * revision id, so the same documents at any commit are the same corpus; commits stay on the row.
+ */
 export function corpusDigestOf(docs: CorpusDoc[], p: ResolvedPrecedence[], d: ResolvedDependency[]): string {
   return digestOf(canonicalJson({
     v: 1,
-    docs: sorted(docs, (x) => x.key).map((x) => ({ key: x.key, role: x.role, domain: x.domain, path: x.path, projectId: x.projectId, commit: x.commit, digest: x.digest })),
+    docs: sorted(docs, (x) => x.key).map((x) => ({ key: x.key, role: x.role, domain: x.domain, digest: x.digest })),
     precedence: p.map((x) => ({ over: x.over, under: x.under, basis: spanKey(x.basis) })),
     dependencies: d.map((x) => ({ from: x.from, on: x.on, kinds: x.kinds, basis: spanKey(x.basis) })),
   }));
@@ -225,8 +229,8 @@ export function revisionShapeRefusal(prev: Pick<CorpusRevision, 'docs'>, next: A
  * Register a corpus: its manifest at `rev` (default HEAD) of `repo`, every document it names at
  * that commit (or at its `--project` repository's), the section index. One new `corpus` mission,
  * revision seq 1, `ready`. With `corpusId`, the next revision (seq + 1) of that corpus mission
- * instead, never a new mission; its current revision when nothing changed. Refused, before any row
- * is written, for anything the manifest rules, the caps or the byte rules refuse, and for a
+ * instead, never a new mission; the existing revision when its documents and config are unchanged,
+ * at any commit. Refused, before any row is written, for anything the manifest rules, the caps or the byte rules refuse, and for a
  * revision whose documents changed shape (`revisionShapeRefusal`).
  */
 export function registerCorpus(ctx: DaylightContext, repo: string, manifest: string,
@@ -364,9 +368,9 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
   if (prev) {
     const why = revisionShapeRefusal(prev, docs);
     if (why) throw new CorpusRefused(`not a revision of corpus ${existing!.id}: ${why}`);
-    const same = ctx.store.corpusRevisionByDigest(existing!.id, corpusDigest);
-    if (same && same.sectionSetDigest === sectionSetDigestOf(index)) return same;
-    if (same) throw new CorpusRefused(`corpus ${existing!.id} already has a revision of these documents (${same.id}); a sectioner-config-only change is not a new revision`);
+    // Same documents and same config, at any commit: the revision already exists (P2-R63).
+    const same = ctx.store.corpusRevisionByDigest(existing!.id, corpusDigest, configDigest);
+    if (same) return same;
   }
   const sectionCount = index.docs.reduce((n, d) => n + d.sections.length, 0);
   if (sectionCount > MAX_SECTIONS) throw new CorpusRefused(`the corpus has ${sectionCount} sections; at most ${MAX_SECTIONS}`);
@@ -406,6 +410,7 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
     },
   });
   if (!existing) mission = ctx.store.transitionMission(mission.id, 'ready');
+  else mission = ctx.store.setCorpusScope(mission.id, docs.filter((d) => d.projectId === project.id).map((d) => d.path), commit);
   return revision;
 }
 

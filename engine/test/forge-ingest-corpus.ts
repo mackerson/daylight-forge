@@ -96,6 +96,8 @@ const revB = registerCorpus(ctxB, B.olc, 'daylight.corpus.json', { projects: { f
 check('the same documents at another checkout give the same section set and config digests', revB.sectionSetDigest !== '' && revB.configDigest === rev.configDigest
   && revB.docs.every((d) => rev.docs.find((x) => x.key === d.key)?.digest === d.digest));
 check('a revision id never enters the corpus digest', revB.id !== rev.id && revB.precedence[0].basis!.revisionId === revB.id);
+check('the same documents in another repository at another commit are the same corpus digest (P2-R63)', revB.corpusDigest === rev.corpusDigest
+  && revB.docs.find((d) => d.key === 'olc-spec')!.commit !== rev.docs.find((d) => d.key === 'olc-spec')!.commit);
 ctxB.close();
 
 section('refusals: whole, before any row');
@@ -288,6 +290,37 @@ check('the mission stays ready', ctx.store.mission(rev.corpusId)!.state === 'rea
 check('registering the same documents again returns that revision, writing nothing',
   registerCorpus(ctx, A.olc, 'daylight.corpus.json', { rev: c2, projects: { foundry: A.foundry }, corpusId: rev.corpusId }).id === rev2.id
   && ctx.store.corpusRevisions(rev.corpusId).length === 2);
+const c3 = writeAndCommit(A.olc, { 'notes/unrelated.md': '# unrelated\n' }, 'unrelated');
+const atC3 = registerCorpus(ctx, A.olc, 'daylight.corpus.json', { rev: c3, projects: { foundry: A.foundry }, corpusId: rev.corpusId });
+check('identical documents and config at a different commit return the existing revision (P2-R63)', atC3.id === rev2.id && c3 !== c2
+  && ctx.store.corpusRevisions(rev.corpusId).length === 2);
+const sidecar = JSON.parse(fs.readFileSync(path.join(A.olc, 'sectioner.olc.json'), 'utf8')) as { threshold: number };
+writeAndCommit(A.olc, { 'sectioner.olc.json': JSON.stringify({ ...sidecar, threshold: 0.6 }) }, 'raise threshold');
+const rev3 = registerCorpus(ctx, A.olc, 'daylight.corpus.json', { projects: { foundry: A.foundry }, corpusId: rev.corpusId });
+check('a config-only change is a new revision: same corpus digest, new config and section index', rev3.seq === 3 && rev3.corpusDigest === rev2.corpusDigest
+  && rev3.configDigest !== rev2.configDigest && rev3.sectionSetDigest !== rev2.sectionSetDigest
+  && corpusOf(ctx, rev.corpusId, rev3.id).index.sentences.length < corpusOf(ctx, rev.corpusId, rev2.id).index.sentences.length);
+check('and registering it again returns it', registerCorpus(ctx, A.olc, 'daylight.corpus.json', { projects: { foundry: A.foundry }, corpusId: rev.corpusId }).id === rev3.id);
+writeAndCommit(A.olc, { 'sectioner.olc.json': JSON.stringify(sidecar) }, 'restore threshold');
+check('back to the old config at a newer commit: the seq 2 revision again, nothing minted',
+  registerCorpus(ctx, A.olc, 'daylight.corpus.json', { projects: { foundry: A.foundry }, corpusId: rev.corpusId }).id === rev2.id && ctx.store.corpusRevisions(rev.corpusId).length === 3);
+const inRepo = (r: { docs: Array<{ projectId: string }> }) => r.docs.filter((d) => d.projectId === mission.projectId).length;
+const adrBody = '# ADR 0016: Revisions carry their scope\n\nStatus: Accepted.\n\n## Decision\n- A revision must protect its new documents.\n';
+const c4 = writeAndCommit(A.olc, { 'plan/adr/0016-revisions-carry-scope.md': adrBody }, 'add ADR 0016');
+const rev4 = registerCorpus(ctx, A.olc, 'daylight.corpus.json', { projects: { foundry: A.foundry }, corpusId: rev.corpusId });
+const moved = ctx.store.mission(rev.corpusId)!;
+check('an added ADR is a new revision with 21 documents', rev4.seq === 4 && rev4.docs.length === 21);
+check('the corpus mission\'s scope follows it: every in-repo document, the new ADR included (review F-2)', moved.scope.paths?.length === inRepo(rev4)
+  && inRepo(rev4) === 20 && !!moved.scope.paths?.includes('plan/adr/0016-revisions-carry-scope.md'), String(moved.scope.paths?.length));
+check('and its base revision is the commit the revision was read at', moved.baseRevision === c4 && rev4.commits[mission.projectId] === c4);
+check('setCorpusScope refuses a mission that is not a corpus', (() => {
+  try {
+    ctx.store.setCorpusScope(review.id, [], c4);
+    return false;
+  } catch {
+    return true;
+  }
+})());
 const m7 = manifest();
 m7.docs = m7.docs.map((d) => (d.key === 'olc-errata' ? { ...d, role: 'related' } : d));
 writeAndCommit(A.olc, { 'daylight.corpus.json': JSON.stringify(m7) }, 'reshape');
