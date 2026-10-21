@@ -364,16 +364,12 @@ export type ForgeScreen = 'missions' | 'work-items' | 'ledger' | 'ingest' | 'cam
 export type ImplementTab = 'attempts' | 'gates' | 'candidate';
 export type CampaignTab = 'overview' | 'report' | 'assumptions' | 'refine';
 
-/** `forgery-shape-review` (P2-R49) is named here until `NeedKind` carries it on this branch's base. */
-export type NeedKindWord = Need['kind'] | 'forgery-shape-review';
-export type AnyNeed = Omit<Need, 'kind'> & { kind: NeedKindWord };
-
 export interface NeedTarget {
   screen: ForgeScreen; missionId?: string; tab?: ImplementTab; candidateId?: string;
   campaignId?: string; campaignTab?: CampaignTab;
 }
 
-const CAMPAIGN_NEED_TAB: Partial<Record<NeedKindWord, CampaignTab>> = {
+const CAMPAIGN_NEED_TAB: Partial<Record<Need['kind'], CampaignTab>> = {
   'plan-approval': 'overview', 'campaign-authorize': 'overview', 'campaign-halted': 'overview',
   'assumption-pending': 'assumptions', 'owner-decision': 'assumptions',
 };
@@ -385,9 +381,9 @@ const CAMPAIGN_NEED_TAB: Partial<Record<NeedKindWord, CampaignTab>> = {
  * candidate, where the diff is read and the shapes acknowledged or rejected.
  */
 export function needTarget(
-  n: AnyNeed,
+  n: Need,
   missionOfCandidate: (id: string) => string | undefined = () => undefined,
-  campaignOfNeed: (n: AnyNeed) => string | undefined = () => undefined,
+  campaignOfNeed: (n: Need) => string | undefined = () => undefined,
 ): NeedTarget {
   const mission = /^m_[0-9a-f]{32}$/.test(n.ref) ? n.ref : undefined;
   const campaign = campaignOfNeed(n);
@@ -424,9 +420,9 @@ export function needTarget(
 }
 
 /** One list from the work-item listing and the per-mission needs, each need once. */
-export function mergeNeeds<N extends AnyNeed = Need>(...lists: ReadonlyArray<readonly N[] | undefined>): N[] {
+export function mergeNeeds(...lists: ReadonlyArray<readonly Need[] | undefined>): Need[] {
   const seen = new Set<string>();
-  const out: N[] = [];
+  const out: Need[] = [];
   for (const list of lists) {
     for (const n of list ?? []) {
       const k = `${n.kind}\u0000${n.ref}`;
@@ -440,7 +436,7 @@ export function mergeNeeds<N extends AnyNeed = Need>(...lists: ReadonlyArray<rea
 
 export const needsStrip = (running: number, needs: number): string => `${running} running · ${needs} need you`;
 
-export const NEED_WORDS: Record<NeedKindWord, string> = {
+export const NEED_WORDS: Record<Need['kind'], string> = {
   blocked: 'blocked',
   dispute: 'dispute',
   'spec-ambiguity': 'spec ambiguity',

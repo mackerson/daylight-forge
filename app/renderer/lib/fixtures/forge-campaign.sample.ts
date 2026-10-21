@@ -114,9 +114,8 @@ export const FORGE_ASSUMPTIONS: ForgeAssumptionRow[] & { _sample?: typeof SAMPLE
 
 // ---- needs ---------------------------------------------------------------------------------
 
-/** `forgery-shape-review` is P2-R49's need kind; `NeedKind` gains it with WS-R13. */
-const FORGERY_NEED = { kind: 'forgery-shape-review', ref: FORGED_CANDIDATE,
-  why: `ticket FIX.2: candidate ${FORGED_CANDIDATE}: library code shaped like forged test output (a heuristic); in src/fix/reader.rs (from_raw_fd(1))` } as unknown as Need;
+const FORGERY_NEED: Need = { kind: 'forgery-shape-review', ref: FORGED_CANDIDATE,
+  why: `ticket FIX.2: candidate ${FORGED_CANDIDATE}: library code shaped like forged test output (a heuristic); in src/fix/reader.rs (from_raw_fd(1))` };
 export const CAMPAIGN_NEEDS: Need[] = [
   { kind: 'campaign-halted', ref: SAMPLE_CAMPAIGN, why: 'halted for spend-unknown: a finished attempt of API.3 reported no cost; resume once spend is checked' },
   { kind: 'blocked', ref: SAMPLE_CAMPAIGN, why: `ticket UI.1 landed, but its gate fails on the tip ${commit('7e').slice(0, 12)} (ui-status-renders); a later landing broke it, so a person looks` },

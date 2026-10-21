@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { MissionNeed, Need } from '../types.ts';
 import {
-  mergeNeeds, NEED_WORDS, needsStrip, needTarget, shortRef, type AnyNeed, type CampaignTab, type ForgeScreen, type NeedTarget,
+  mergeNeeds, NEED_WORDS, needsStrip, needTarget, shortRef, type CampaignTab, type ForgeScreen, type NeedTarget,
 } from './forge-words.ts';
 import { Choice, type ForgeApi } from './ForgeParts.tsx';
 import { WorkItems } from './WorkItems.tsx';
@@ -29,7 +29,7 @@ export function Forge({
   /** For a need that names a candidate: the mission it belongs to, when the view knows. */
   missionOfCandidate: (id: string) => string | undefined;
   /** For a need listed under a campaign mission: that campaign. */
-  campaignOfNeed: (n: AnyNeed) => string | undefined;
+  campaignOfNeed: (n: Need) => string | undefined;
   /** The open campaign and its tab, or none (the list). */
   campaign: { id: string | null; tab: CampaignTab };
   onCampaign: (c: { id: string | null; tab: CampaignTab }) => void;
@@ -47,10 +47,10 @@ export function Forge({
   }, [api]);
   useEffect(() => { void loadNeeds(); }, [loadNeeds, screen]);
 
-  const needs = mergeNeeds<AnyNeed>(itemNeeds, ...Object.values(missionNeeds ?? {}));
+  const needs = mergeNeeds(itemNeeds, ...Object.values(missionNeeds ?? {}));
 
   /** A candidate need the view cannot place is looked up once, then opened. */
-  const open = async (n: AnyNeed) => {
+  const open = async (n: Need) => {
     const t = needTarget(n, missionOfCandidate, campaignOfNeed);
     if (!t.missionId && /^c_[0-9a-f]{32}$/.test(n.ref)) {
       const r = await api.candidate(n.ref);

@@ -1,11 +1,11 @@
 import { STATUS_BUCKET_OF, STATUS_BUCKETS } from '../../../../engine/mission/types.ts';
 import type {
   CampaignEnvelope, CampaignHaltReason, CampaignSpend, DiffStat, FindingSeverity, FocusItem, FocusKind, FocusRule,
-  ForgeAssumptionRow, ForgeCampaignShow, ForgeryClass, Mission, RefineOverlay, ReportBlocked, RunClaim,
+  ForgeAssumptionRow, ForgeCampaignShow, ForgeryClass, Mission, Need, RefineOverlay, ReportBlocked, RunClaim,
   SpendLine, StatusBucket, TicketStatus, WaveReport, CampaignAuthorizeForm,
 } from '../types.ts';
 import type { Word } from './mission-words.ts';
-import type { AnyNeed, CampaignTab } from './forge-words.ts';
+import type { CampaignTab } from './forge-words.ts';
 
 /**
  * The words and the little layout the campaign screens use. Pure, so it is tested without a
@@ -328,7 +328,7 @@ export function assumptionActs(a: Pick<ForgeAssumptionRow, 'status'>): Array<'co
  * Which campaign a need belongs to. Needs arrive keyed by mission (`mission list`), so a need
  * listed under a campaign mission is that campaign's.
  */
-export function campaignOfNeedFrom(missions: readonly Pick<Mission, 'id' | 'kind'>[], needs: Record<string, readonly AnyNeed[]> | undefined): (n: AnyNeed) => string | undefined {
+export function campaignOfNeedFrom(missions: readonly Pick<Mission, 'id' | 'kind'>[], needs: Record<string, readonly Need[]> | undefined): (n: Need) => string | undefined {
   const campaigns = new Set(missions.filter((m) => m.kind === 'campaign').map((m) => m.id));
   const by = new Map<string, string>();
   for (const [mid, list] of Object.entries(needs ?? {})) {

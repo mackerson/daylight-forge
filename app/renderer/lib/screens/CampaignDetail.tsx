@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type {
-  CampaignRunResult, DaylightEvent, ForgeCampaignPayload, ForgeCampaignRow, GuardedResult, WaveReport,
+  CampaignRunResult, DaylightEvent, ForgeCampaignPayload, ForgeCampaignRow, GuardedResult, Need, WaveReport,
 } from '../types.ts';
 import {
   authorizeDefaults, authorizeProblems, BUCKET_WORDS, blockedActWord, campaignSpendBar, CAMPAIGN_TABS, dateWord, envelopeRows,
   haltWord, proposedTickets, RATIONALE_PRESETS_CAMPAIGN, runWord, spendBar, STATUS_BUCKETS, type AuthorizeFields, type CampaignTab,
 } from './campaign-words.ts';
-import { NEED_WORDS, shortRef, type AnyNeed, type NeedTarget } from './forge-words.ts';
+import { NEED_WORDS, shortRef, type NeedTarget } from './forge-words.ts';
 import { CampaignDag } from './CampaignDag.tsx';
 import { SpendBarView } from './CampaignParts.tsx';
 import { Choice, GuardOutcome, KEEP_CASE, RationalePicker, toneClass, useAct, type ForgeApi } from './ForgeParts.tsx';
@@ -34,7 +34,7 @@ export function CampaignDetail({ api, sample, id, tab, onTab, onBack, onOpen, on
   onBack: () => void;
   onOpen: (t: NeedTarget) => void;
   /** A need, answered where the needs strip would answer it (a candidate is looked up first). */
-  onNeed: (n: AnyNeed) => void;
+  onNeed: (n: Need) => void;
 }) {
   const [data, setData] = useState<ForgeCampaignPayload | null>(null);
   const [row, setRow] = useState<ForgeCampaignRow | null>(null);
@@ -99,7 +99,7 @@ function Section({ title, children, forge }: { title: string; children: ReactNod
 
 function Overview({ api, sample, data, row, events, onReload, onOpen, onNeed, onTab }: {
   api: ForgeApi; sample: boolean; data: ForgeCampaignPayload; row: ForgeCampaignRow | null; events: DaylightEvent[];
-  onReload: () => Promise<void>; onOpen: (t: NeedTarget) => void; onNeed: (n: AnyNeed) => void; onTab: (t: CampaignTab) => void;
+  onReload: () => Promise<void>; onOpen: (t: NeedTarget) => void; onNeed: (n: Need) => void; onTab: (t: CampaignTab) => void;
 }) {
   const { show, status } = data;
   const id = show.campaign.id;
@@ -124,7 +124,7 @@ function Overview({ api, sample, data, row, events, onReload, onOpen, onNeed, on
   const adoptNeed = status.needs.find((n) => n.kind === 'campaign-halted' && !!n.commit);
   const adoptTo = adoptNeed?.commit ?? '';
   const copy = (text: string) => { void navigator.clipboard?.writeText(text); };
-  const needs = status.needs as AnyNeed[];
+  const needs = status.needs;
 
   return (
     <div className="stack">

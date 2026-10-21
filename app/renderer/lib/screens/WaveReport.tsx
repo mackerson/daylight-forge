@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import type { CampaignStatusReport, ReportWave, WaveReport } from '../types.ts';
+import type { CampaignStatusReport, Need, ReportWave, WaveReport } from '../types.ts';
 import {
   BUCKET_WORDS, blockedActWord, diffWords, FORGERY_WORDS, scopeWord, severityWord, spendBar, spendWords, STATUS_BUCKETS,
 } from './campaign-words.ts';
-import { NEED_WORDS, shortRef, type AnyNeed, type NeedTarget } from './forge-words.ts';
+import { NEED_WORDS, shortRef, type NeedTarget } from './forge-words.ts';
 import { SpendBarView } from './CampaignParts.tsx';
 import { Choice, KEEP_CASE, toneClass, type ForgeApi } from './ForgeParts.tsx';
 
@@ -18,7 +18,7 @@ export function WaveReportView({ api, id, status, onOpen, onNeed }: {
   id: string;
   status: CampaignStatusReport;
   onOpen: (t: NeedTarget) => void;
-  onNeed: (n: AnyNeed) => void;
+  onNeed: (n: Need) => void;
 }) {
   const latest = status.waves.length ? status.waves[status.waves.length - 1].seq : 'open';
   const [wave, setWave] = useState<ReportWave>(latest);
@@ -52,7 +52,7 @@ export function WaveReportView({ api, id, status, onOpen, onNeed }: {
   );
 }
 
-function Report({ r, onOpen, onNeed }: { r: WaveReport; onOpen: (t: NeedTarget) => void; onNeed: (n: AnyNeed) => void }) {
+function Report({ r, onOpen, onNeed }: { r: WaveReport; onOpen: (t: NeedTarget) => void; onNeed: (n: Need) => void }) {
   const cap = r.spend.campaign.capUsd;
   return (
     <>
@@ -146,7 +146,7 @@ function Report({ r, onOpen, onNeed }: { r: WaveReport; onOpen: (t: NeedTarget) 
         <div className="card">
           <h3>needs · {r.needs.length}</h3>
           <ul className="rows" style={{ fontSize: 12 }}>
-            {(r.needs as AnyNeed[]).map((n) => (
+            {r.needs.map((n) => (
               <li key={`${n.kind}:${n.ref}`} style={{ overflowWrap: 'anywhere' }}>
                 <button className="chip" onClick={() => onNeed(n)} style={KEEP_CASE}>{NEED_WORDS[n.kind] ?? n.kind}</button> {n.why}
               </li>
