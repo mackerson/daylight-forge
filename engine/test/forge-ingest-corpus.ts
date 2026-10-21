@@ -55,6 +55,22 @@ check('corpus.registered records ids, digests and counts, and the excluded paths
 const c = corpusOf(ctx, rev.corpusId);
 check('corpusOf re-reads the index and the config from their artifacts', c.index.docs.length === 20 && c.config.domains?.olc?.milestone === '^M\\d+$');
 
+section('--project alias=<repo>@HEAD and @<sha> parse (review L-4)');
+{
+  const P = olcRepos(path.join(tmp, 'at'));
+  const sha = git(P.foundry, 'rev-parse', 'HEAD');
+  const cc = openDaylight(P.out);
+  const viaHead = registerCorpus(cc, P.olc, 'daylight.corpus.json', { projects: { foundry: `${P.foundry}@HEAD` } });
+  const viaSha = registerCorpus(cc, P.olc, 'daylight.corpus.json', { projects: { foundry: `${P.foundry}@${sha}` } });
+  check('@HEAD binds the repository at HEAD', viaHead.docs.find((d) => d.key === 'cf-spec')!.commit === sha);
+  check('@<sha> binds it at that commit', viaSha.docs.find((d) => d.key === 'cf-spec')!.commit === sha);
+  const atDir = path.join(tmp, 'at', 'found@ry');
+  fs.cpSync(P.foundry, atDir, { recursive: true });
+  check('a path holding an @ with no revision is the whole path', registerCorpus(cc, P.olc, 'daylight.corpus.json', { projects: { foundry: atDir } })
+    .docs.find((d) => d.key === 'cf-spec')!.commit === sha);
+  cc.close();
+}
+
 section('a corpus never travels by file (§12, the P2-R14 analog)');
 const throwsMsg = (fn: () => unknown) => {
   try {

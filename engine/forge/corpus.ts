@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalJson, digestOf } from '../mission/artifacts.ts';
 import { requireMappedRepo, type DaylightContext } from '../mission/context.ts';
@@ -174,15 +175,27 @@ function occurrences(hay: Buffer, needle: Buffer): number[] {
   return at;
 }
 
+const isDir = (p: string): boolean => {
+  try {
+    return fs.statSync(path.resolve(p)).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
 interface Bound { alias: string; root: string; projectId: string; commit: string }
 
 /** `alias=<repo>[@rev]` values, as `corpus register --project` passes them. */
 function bindProjects(projects: Record<string, string>): Bound[] {
   return Object.entries(projects).sort(([a], [b]) => (a < b ? -1 : 1)).map(([alias, spec]) => {
     if (!NAME.test(alias)) throw new CorpusRefused('a --project alias is a lower-case name');
+    // `<repo>@<rev>` splits at the last `@` only when the suffix is a revision name and the prefix
+    // is a directory; otherwise the whole value is the path (a path may hold an `@`).
     const at = spec.lastIndexOf('@');
-    const rev = at > 0 && /^[0-9A-Za-z][0-9A-Za-z._/~^-]{0,199}$/.test(spec.slice(at + 1)) ? spec.slice(at + 1) : 'HEAD';
-    const root = path.resolve(at > 0 && rev !== 'HEAD' ? spec.slice(0, at) : spec);
+    const suffix = at > 0 ? spec.slice(at + 1) : '';
+    const split = at > 0 && /^[0-9A-Za-z][0-9A-Za-z._/~^-]{0,199}$/.test(suffix) && isDir(spec.slice(0, at));
+    const rev = split ? suffix : 'HEAD';
+    const root = path.resolve(split ? spec.slice(0, at) : spec);
     let projectId: string;
     try {
       projectId = identifyProject(root).id;
