@@ -99,6 +99,18 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
             Approve and override show a checkbox in the system dialog; until you tick it, nothing is recorded.
           </p>
         )}
+        {!!data.forgeryShapes?.length && (
+          <div className="card quiet" style={{ margin: '0 0 6px' }} data-forge="forgery-shapes">
+            <p className="hint" style={{ fontSize: 11, margin: 0 }}>
+              Test-output forgery shapes (a heuristic, P2-R49) in {data.forgeryShapes.length} file{data.forgeryShapes.length === 1 ? '' : 's'}:
+              library code that could print a pass the gates read. Approve and override show a checkbox in the
+              system dialog; until you tick it, nothing is recorded.
+            </p>
+            <ul className="rows num" style={{ overflowWrap: 'anywhere' }}>
+              {data.forgeryShapes.map((h) => <li key={h.path}>{h.path} · {h.shapes.join(', ')}</li>)}
+            </ul>
+          </div>
+        )}
         {!!flags.whole.length && (
           <div className="toolbar wrap" style={{ marginBottom: 6 }}>
             <span className="num">whole diff</span>
@@ -233,6 +245,50 @@ export function CandidateReview({ id, inspect, api, sample, onDone }: {
         </p>
         <GuardOutcome result={result} sample={sample} />
       </div>
+      {!!data.forgeryShapes?.length && <ForgeryReview id={c.id} api={api} sample={sample} closed={closed} onDone={onDone} />}
+    </div>
+  );
+}
+
+/**
+ * The campaign's act on a forgery-shaped candidate (P2-R49): it waits as `waiting-owner` until
+ * a person acknowledges the shapes (it may then land if its checks pass) or rejects them (the
+ * ticket is repaired). Two different confirm codes; main's dialog shows which.
+ */
+function ForgeryReview({ id, api, sample, closed, onDone }: { id: string; api: ForgeApi; sample: boolean; closed: boolean; onDone: () => void }) {
+  const [declined, setDeclined] = useState(false);
+  const [rationale, setRationale] = useState(RATIONALE_PRESETS['acknowledge-forgery'][0]);
+  const [pending, result, run] = useAct();
+  return (
+    <div className="card" data-forge="forgery-review">
+      <h3>forgery shapes · acknowledge or reject</h3>
+      <div className="toolbar wrap">
+        <Choice
+          options={[{ value: 'acknowledge', label: 'acknowledge' }, { value: 'reject', label: 'reject the shapes' }]}
+          value={declined ? 'reject' : 'acknowledge'}
+          onChange={(k) => { setDeclined(k === 'reject'); setRationale(RATIONALE_PRESETS[k === 'reject' ? 'reject-forgery' : 'acknowledge-forgery'][0]); }}
+          disabled={closed}
+        />
+      </div>
+      <RationalePicker presets={RATIONALE_PRESETS[declined ? 'reject-forgery' : 'acknowledge-forgery']} value={rationale} onChange={setRationale} disabled={closed} />
+      <div className="toolbar wrap" style={{ marginTop: 8 }}>
+        <button
+          className={declined ? 'btn bad' : 'btn warn'}
+          disabled={pending || closed || !rationale.trim()}
+          data-forge="forgery-review-button"
+          onClick={() => void run(async () => {
+            const r = await api.forgeryReview({ id, declined, rationale: rationale.trim() });
+            if (r.ok) onDone();
+            return r;
+          })}
+        >
+          {pending ? 'asking…' : declined ? 'reject the shapes' : 'acknowledge the shapes'}
+        </button>
+        <span className="dim" style={{ fontSize: 11 }}>
+          {declined ? 'the candidate will not land; its ticket is repaired' : 'the candidate may land once its checks pass'}
+        </span>
+      </div>
+      <GuardOutcome result={result} sample={sample} />
     </div>
   );
 }

@@ -29,13 +29,18 @@ export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
 
   const rows = doc?.rows ?? [];
   // A known sum stays null until some row has a provider figure: no row's null becomes a zero.
-  const total = rows.reduce<Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'>>(
+  // Reservation charges (P2-R44) are summed apart from known dollars, as the engine lists them.
+  type Money = Pick<LedgerJsonRow, 'attempts' | 'usdKnown' | 'usdUnknownCount' | 'usdScanned'> & { usdReservation: number; reservationCount: number };
+  const reservationOf = (r: LedgerJsonRow) => r as LedgerJsonRow & { usdReservation?: number; reservationCount?: number };
+  const total = rows.reduce<Money>(
     (t, r) => ({
       attempts: t.attempts + r.attempts,
       usdKnown: r.usdKnown === null ? t.usdKnown : (t.usdKnown ?? 0) + r.usdKnown,
       usdUnknownCount: t.usdUnknownCount + r.usdUnknownCount, usdScanned: t.usdScanned + r.usdScanned,
+      usdReservation: t.usdReservation + (reservationOf(r).usdReservation ?? 0),
+      reservationCount: t.reservationCount + (reservationOf(r).reservationCount ?? 0),
     }),
-    { attempts: 0, usdKnown: null, usdUnknownCount: 0, usdScanned: 0 },
+    { attempts: 0, usdKnown: null, usdUnknownCount: 0, usdScanned: 0, usdReservation: 0, reservationCount: 0 },
   );
   const ingestedRows = rows.filter(isIngestedRow).length;
 
@@ -74,6 +79,12 @@ export function Ledger({ api, sample }: { api: ForgeApi; sample: boolean }) {
           <div className="toolbar wrap">
             <span className="num">total</span>
             <strong className="money" data-forge="ledger-total">{ledgerUsd(total)}</strong>
+            {total.reservationCount > 0 && (
+              <span className="pill warn" style={{ textTransform: 'none' }} data-forge="ledger-reservation"
+                title="unfinished attempts charged at the reservation they were given (P2-R44): counted against a campaign's cap, never its tickets' budgets">
+                ${total.usdReservation.toFixed(2)} charged at reservation · {total.reservationCount} unfinished
+              </span>
+            )}
             <span className="num">{total.attempts} attempts</span>
             {ingestedRows > 0 && <span className="pill warn">{ingestedRows} row{ingestedRows === 1 ? '' : 's'} include work {OUTSIDE}</span>}
           </div>
