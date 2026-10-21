@@ -28,8 +28,8 @@ import { createWorkspace, WorkspaceRefused } from './workspace.ts';
  * `campaign refine` (WS-R8, P2-R40, ADR-40): the map of the integration tip and of the campaign
  * base, each materialised through `createWorkspace` with the campaign's holdouts hidden, never
  * the checkout; their findings compared; the campaign's rows ranked by `FOCUS_RULES`. It writes
- * derived files under `<out>` only (the map directories, the shared parse cache and
- * `refine.json`), no row and no ref, so it runs in an agent session.
+ * derived files under `<out>` only (the map directories, the shared parse cache,
+ * `refine.json` and `refine.tip.json`), no row and no ref, so it runs in an agent session.
  */
 
 /** Part of the map cache key, with the revision and the parser set. */

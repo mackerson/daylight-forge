@@ -113,7 +113,8 @@ An item that matches no rule is dropped.
 
 Under `CLAUDECODE` or `DAYLIGHT_SESSION`: `campaign list`, `campaign report` without `--write`,
 and `campaign refine` in every form run; refine writes only derived files under `<out>` (the map
-directories, the shared parse cache `<out>/.cache` and `refine.json`), no row and no ref
-(P2-R40). `campaign report --write` is refused there, like `status --write`. `daylight confirm`
+directories, the shared parse cache `<out>/.cache`, `refine.json` and `refine.tip.json` beside
+it), no row and no ref (P2-R40). `campaign report --write` is refused there, like `status
+--write`. `daylight confirm`
 prints the digest of every campaign and assumption act, with `refusal` set in an agent session;
 the act itself is refused there (P2-R45). `campaign run` is never started by the GUI (ADR-40).
