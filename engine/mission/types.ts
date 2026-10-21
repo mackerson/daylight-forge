@@ -46,6 +46,11 @@ export const ID_PREFIX = {
   assumption: 'u',
   integration: 'i',
   finding: 'f',
+  corpusRevision: 'cr',
+  irRecord: 'ir',
+  irFinding: 'rf',
+  blueprint: 'bp',
+  packet: 'pk',
 } as const;
 export type EntityKind = keyof typeof ID_PREFIX;
 
@@ -96,7 +101,7 @@ export interface Revision {
  * writes or executes.
  */
 export type MissionKind =
-  | 'explore' | 'verify' | 'implement' | 'remediate' | 'audit' | 'work' | 'spec' | 'campaign';
+  | 'explore' | 'verify' | 'implement' | 'remediate' | 'audit' | 'work' | 'spec' | 'campaign' | 'corpus';
 export type MissionState = 'draft' | 'ready' | 'running' | 'blocked' | 'closed';
 /**
  * Recorded separately from state, and only ever set by `close`. A process exiting 0 is not an
@@ -214,7 +219,8 @@ export interface Mission {
 
 export type TaskRole =
   | 'map' | 'review' | 'compare' | 'experiment' | 'decide' | 'custom'
-  | 'author' | 'gate' | 'decompose' | 'session';
+  | 'author' | 'gate' | 'decompose' | 'session'
+  | 'extract' | 'ir-review' | 'architect' | 'packetize';
 
 export interface Task {
   id: string;
@@ -657,7 +663,9 @@ export type NeedKind =
   | 'candidate-decision' | 'apply' | 'work-item-undecided' | 'mission-awaiting-authorize'
   | 'request-dependency'
   | 'plan-approval' | 'campaign-authorize' | 'campaign-halted' | 'assumption-pending' | 'owner-decision'
-  | 'forgery-shape-review';
+  | 'forgery-shape-review'
+  | 'ir-undecided' | 'ir-interpretation' | 'ir-finding-open' | 'blueprint-undecided' | 'spec-review' | 'spec-stale' | 'evidence-stale'
+  | 'gate-stale';
 
 /** Something a person must do. Derived from rows on every read, never stored. */
 export interface Need {
@@ -1058,7 +1066,8 @@ export type DecisionOperation =
   | 'resolve-dependency-request'
   | 'approve-plan' | 'lock-campaign-gates' | 'authorize-campaign' | 'halt-campaign' | 'resume-campaign'
   | 'adopt-integration-tip' | 'integrate-candidate' | 'admit-work-item' | 'confirm-assumption' | 'decide-assumption'
-  | 'overturn-assumption' | 'retry-ticket' | 'acknowledge-forgery-shape';
+  | 'overturn-assumption' | 'retry-ticket' | 'acknowledge-forgery-shape'
+  | 'approve-ir' | 'approve-blueprint';
 
 export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'authorize-mission', 'lock-gates', 'approve-work-item', 'reject-work-item',
@@ -1067,6 +1076,7 @@ export const DECISION_OPERATIONS: readonly DecisionOperation[] = [
   'approve-plan', 'lock-campaign-gates', 'authorize-campaign', 'halt-campaign', 'resume-campaign',
   'adopt-integration-tip', 'integrate-candidate', 'admit-work-item', 'confirm-assumption', 'decide-assumption',
   'overturn-assumption', 'retry-ticket', 'acknowledge-forgery-shape',
+  'approve-ir', 'approve-blueprint',
 ];
 
 /** `mission authorize`: the only act that turns `write` on (ADR-9, ADR-34). */
@@ -1112,7 +1122,8 @@ export type ForgeDecisionScope =
   | AuthorizeScope | LockGatesScope | CandidateDecisionScope | WorkItemDecisionScope
   | AdhocMissionScope
   | ApprovePlanScope | CampaignLockScope | AuthorizeCampaignScope | IntegrateCandidateScope | AdmitWorkItemScope
-  | HaltCampaignScope | ResumeCampaignScope | AdoptTipScope | AssumptionDecisionScope | RetryTicketScope;
+  | HaltCampaignScope | ResumeCampaignScope | AdoptTipScope | AssumptionDecisionScope | RetryTicketScope
+  | ApproveIrScope | ApproveBlueprintScope;
 
 export interface Decision {
   id: string;
@@ -1249,15 +1260,20 @@ export type DaylightEventInput = Omit<DaylightEvent, 'schemaVersion' | 'id' | 's
 // docs/daylight/CAMPAIGN.md; ADR-36, ADR-37.
 
 export const PLAN_KIND = 'daylight-plan' as const;
+/** Kept for version-1 imports; a plan file carries `version ∈ PLAN_VERSIONS` (v2: spec ingestion, WS-R15). */
 export const PLAN_VERSION = 1 as const;
+export const PLAN_VERSIONS = [1, 2] as const;
 
-export interface PlanFileV1 {
-  kind: typeof PLAN_KIND; version: typeof PLAN_VERSION; title: string;
+/** One plan type for both versions (P2-R53 D-b); the v2 fields are optional and refused on a version-1 file. */
+export interface PlanFile {
+  kind: typeof PLAN_KIND; version: 1 | 2; title: string;
   derivedStatus?: boolean; statusPath?: string;     // STATUS is derived; statusPath is protected for authors
   defaults?: { budget?: TicketBudget; acceptance?: TicketAcceptance };
   campaignGates: PlanCampaignGateV1[];              // project-wide regression gates
-  lanes: PlanLaneV1[]; ownerDecisions?: PlanOwnerDecisionV1[]; tickets: PlanTicketV1[];
+  lanes: PlanLaneV1[]; ownerDecisions?: PlanOwnerDecisionV1[]; tickets: PlanTicket[];
+  derivation?: PlanDerivation;                      // version 2 only
 }
+export type PlanFileV1 = PlanFile;
 export interface PlanCampaignGateV1 {   // an ordinary R2 gate (P2-R16)
   id: string;                    // /^[a-z][a-z0-9-]{0,31}$/
   role: 'regression';            // must pass at base and on every integrated tree
@@ -1276,7 +1292,7 @@ export interface PlanOwnerDecisionV1 {
   question: string; options?: string[]; blocking: boolean; rationale?: string;
   default?: string;              // required when blocking is false
 }
-export interface PlanTicketV1 {
+export interface PlanTicket {
   id: string;                    // /^[A-Z][A-Z0-9]*(\.[A-Z0-9]+)*$/, <= 32 chars, e.g. "M2.A1"
   lane: string; title: string;   // title <= MAX_TITLE_CHARS (proposal.ts), one line
   statement: string | string[];  // <= MAX_STATEMENT_BYTES joined (proposal.ts)
@@ -1285,7 +1301,12 @@ export interface PlanTicketV1 {
   scope: string[];               // repo-relative prefixes; becomes MissionScope.paths
   acceptance?: TicketAcceptance; // default plan.defaults.acceptance, else { kind: 'ci-only' }
   budget?: TicketBudget;
+  // version 2 only (spec ingestion, WS-R15):
+  requirementIds?: string[]; interfaceContracts?: Array<{ interfaceId: string; role: 'provides' | 'consumes'; irIds: string[] }>;
+  artifacts?: Array<{ path: string; kind: 'source' | 'test' | 'fixture' | 'doc' | 'config'; irIds: string[] }>;
+  acceptanceObligations?: Array<{ id: string; irIds: string[]; statement: string }>; context?: boolean; packetId?: string;
 }
+export type PlanTicketV1 = PlanTicket;
 export type TicketAcceptance =
   | { kind: 'gate'; tests: PlanGateTestV1[] }                                   // public tests at the plan commit, bound to the ticket
   | { kind: 'ci-only' }
@@ -1295,7 +1316,8 @@ export interface TicketBudget { maxUsd?: number; maxTurns?: number; timeoutSecon
 export interface PlanRefusal { path: string; rule: PlanRule; detail: string }
 export type PlanRule = 'shape' | 'version' | 'duplicate-id' | 'unknown-lane' | 'unknown-dependency' | 'self-dependency' | 'cycle'
   | 'scope-path' | 'scope-protected' | 'scope-outside-lane' | 'lane-overlap' | 'unknown-owner-decision' | 'owner-default-missing'
-  | 'acceptance-path' | 'acceptance-harness' | 'gate-expectation' | 'policy' | 'text' | 'too-many' | 'too-large';
+  | 'acceptance-path' | 'acceptance-harness' | 'gate-expectation' | 'policy' | 'text' | 'too-many' | 'too-large'
+  | 'trace-shape' | 'derivation';
 
 /** Where a campaign ticket came from: the approved plan, a wave-review finding, or an overturned assumption. */
 export type TicketOrigin = 'plan' | 'fix' | 'follow-up';
@@ -1344,6 +1366,7 @@ export interface CampaignLockScope {
   operation: 'lock-campaign-gates'; experimentIds: string[]; harnessDigests: Record<string, string>; vacuousOverrides: string[];
   bindings: Record<string, string | null>;                       // experimentId → ticket id; null = regression / unbound holdout
   roles: Record<string, 'regression' | 'gate' | 'holdout'>; ratchet: boolean;
+  obligations?: Record<string, string[]>;                         // experimentId → `<ticketId>:<obId>` (spec ingestion, §8.4)
   gateSetDigest: string;      // sha256 over sorted "<x_id>:<harnessDigest>:<role>:<ticket|*>" lines plus "ratchet:<bool>"
 }
 
@@ -1368,7 +1391,7 @@ export interface RetryTicketScope { operation: 'retry-ticket'; ticketId: string;
   closedMissionId: string; reason: string }
 
 export type AssumptionStatus = 'open' | 'pending' | 'confirmed' | 'overturned';
-export type AssumptionSource = 'plan-default' | 'operator';
+export type AssumptionSource = 'plan-default' | 'operator' | 'ir-interpretation';
 export interface Assumption {
   id: string; projectId: string; campaignId: string;                 // id: u_…
   missionId?: string; ticketId?: string; ownerDecisionId?: string;   // what it was taken for; plan ownerDecisions[].id
@@ -1376,6 +1399,7 @@ export interface Assumption {
   status: AssumptionStatus; blocking: boolean; source: AssumptionSource;
   recordedBy: string;                                                // 'daylight' (import) | human:<n>
   decisionId?: string; followUpWorkItemId?: string;                  // the human decision; overturn's follow-up
+  irId?: string;                                                     // ir-interpretation: the record it interprets; campaignId is then the corpus mission
   createdAt: number; updatedAt: number;
 }
 export interface AssumptionDecisionScope { operation: 'confirm-assumption' | 'decide-assumption' | 'overturn-assumption';
@@ -1395,3 +1419,245 @@ export interface EnvelopeRequest {
   /** `admit-work-item` of a fix ticket: the wave it is admitted in, for the per-wave cap (P2-R10). */
   waveSeq?: number;
 }
+
+// ---- spec ingestion (WS-R14/R15/R16) ---------------------------------------------
+//
+// A corpus of specification documents, sectioned deterministically, read by blind extractors into
+// Spec IR records a person approves, then a blueprint, work packets and a version-2 plan. Every agent
+// arrow is a proposal in an outbox, re-validated on the host; every `approved` is a human decision
+// naming content digests; staleness is derived from `ir_spans`, never written (P2-R53).
+// docs/daylight/INGEST.md; ADR-41..44.
+
+/** `daylight.corpus.json`, read from git at a commit; never written by Daylight. */
+export const CORPUS_KIND = 'daylight-corpus' as const;
+export type CorpusDocRole = 'primary' | 'errata' | 'decision' | 'related';
+export interface CorpusDocSpec {
+  key: string;                   // /^[a-z][a-z0-9-]{0,31}$/; with `dir` a prefix: each file becomes `<key>-<leading digits | slug>`
+  path?: string; dir?: string;   // exactly one; `dir` = every *.md directly under it at the commit, sorted
+  role: CorpusDocRole; domain: string;   // /^[a-z][a-z0-9-]{0,31}$/: one product's documents; precedence never crosses domains
+  project?: string;              // alias of another mapped repo, bound on the CLI (`--project alias=<repo>[@rev]`); absent = the manifest's repo
+  title?: string;
+}
+export interface CorpusPrecedence { over: string; under: string;      // doc key or `role:<role>@<domain>`; same domain only
+  basis?: { doc: string; quote: string } }                           // the sentence that says so; must occur exactly once
+export interface CorpusDependency { from: string; on: string;         // domains: `from` cites `on`, never overrides it (O-a)
+  kinds: IrKind[]; basis: { doc: string; quote: string } }
+export interface CorpusManifest { kind: typeof CORPUS_KIND; version: 1; title: string; docs: CorpusDocSpec[];
+  precedence: CorpusPrecedence[]; dependencies?: CorpusDependency[];
+  excluded?: Array<{ path: string; reason: string }>;   // recorded, not read (ground truth, TOML sidecars)
+  sectioner?: Partial<SectionerConfig> | { $ref: string };   // inline, or a repo-relative JSON sidecar at the same commit
+}
+export interface CorpusDoc { key: string; role: CorpusDocRole; domain: string; path: string; projectId: string; commit: string;
+  artifact: ArtifactRef; digest: string; bytes: number }
+export interface ResolvedPrecedence { over: string; under: string; basis: IrSpanRef | null }
+export interface ResolvedDependency { from: string; on: string; kinds: IrKind[]; basis: IrSpanRef }
+export interface CorpusRevision {
+  id: string; corpusId: string; projectId: string; seq: number;     // cr_…; corpusId: m_ of kind 'corpus'
+  manifestPath: string; manifestDigest: string; commits: Record<string, string>;   // projectId → commit
+  corpusDigest: string;
+  docs: CorpusDoc[]; precedence: ResolvedPrecedence[]; dependencies: ResolvedDependency[]; unordered: Array<[string, string]>;
+  sectionIndex: ArtifactRef; sectionSetDigest: string; sectionerVersion: string; configDigest: string; createdAt: number;
+}
+
+/** The hierarchical sectioner's output (pure, no LLM). Offsets are UTF-8 bytes, half-open. */
+export interface Section {
+  id: string;                // `${docKey}:${anchorPath}`; > 200 chars → first 160 + '~' + sha256(full)[0..12]
+  docKey: string; label: string | null;
+  title: string; level: number; parentId: string | null;   // level 0 = synthetic root
+  start: number; end: number;            // heading line → next heading of level ≤ this
+  bodyStart: number; bodyEnd: number;    // heading line excluded, first child heading excluded
+  bodyDigest: string;
+  informative: boolean; withdrawn: boolean; openDecision: boolean;   // own heading/first line, or inherited from any ancestor
+}
+export interface NormativeSentence { id: string /* `${sectionId}#s${k}` over all units */; sectionId: string; docKey: string; start: number; end: number;
+  score: number; cues: string[] /* cue ids from config */; hedges: string[] }
+export type BuiltinXrefKind = 'section' | 'decision' | 'errata' | 'correction' | 'ticket' | 'milestone' | 'enumerated' | 'figure' | 'doc-version';
+export type XrefKind = BuiltinXrefKind | string;   // a non-built-in kind must be listed in SectionerConfig.xrefKinds
+export type XrefLink = 'cites' | 'implements' | 'supersedes' | 'amends' | 'resolves';
+export interface CrossRef { fromSection: string; start: number; end: number; raw: string /* ≤ 64 chars */; kind: XrefKind; link: XrefLink;
+  target: string | null; resolved: boolean; reason?: 'no-such-label' | 'ambiguous' | 'other-version' | 'out-of-corpus' | 'other-domain' }
+export interface SectionIndex { v: 2; sectionerVersion: string; configDigest: string; corpusDigest: string;
+  docs: Array<{ key: string; digest: string; sections: Section[] }>; sentences: NormativeSentence[] /* score ≥ config.threshold */; refs: CrossRef[] }
+
+/** Sectioner configuration as versioned data (P2-R52, P2-R53 D-e, P2-R54): no project vocabulary in code. */
+export interface SectionerConfig {
+  v: 1; threshold: number;
+  labels: Array<{ id: string; heading: string /* regex on heading text */; label: string /* '§$1' */; roles?: CorpusDocRole[]; docTitle?: string }>;
+  xrefs: Array<{ id: string; pattern: string; kind: XrefKind; label?: string /* template resolving to a label */; scope: 'doc' | 'domain' | 'any' }>;
+  cues: Array<{ id: string; pattern: string /* regex, case-insensitive, word-bounded */; weight: number; type: 'normative' | 'hedge' }>;
+  imperatives: string[];
+  ruleSections: string[];
+  informative: string[];
+  openDecision: string[];
+  tags: string[];                // default IR tag vocabulary ([] = free text, ≤ 32 chars each)
+  milestone: string | null;      // default regex for attrs.milestone; null = free text ≤ 16 chars
+  domains?: Record<string, { milestone?: string | null; tags?: string[] }>;   // P2-R54: per-domain overrides, in configDigest
+  xrefKinds?: string[];          // project xref kinds beyond the built-ins
+}
+
+/** Windows: + linked ≤ 12 KiB + framing ≤ 12 KiB stays ≤ the 64 KiB prompt wall. */
+export const WINDOW_TARGET_BYTES = 16 * 1024;
+export const MAX_WINDOW_BYTES = 40 * 1024;
+export interface ExtractWindow { id: string /* `win${seq}:${digest12}` */; docKey: string; sectionIds: string[]; parts?: Array<{ sectionId: string; start: number; end: number }>;
+  bytes: number; linked: string[] /* resolved xref targets, other docs first, ≤ 12 KiB */; ancestors: Array<{ id: string; title: string }> }
+
+/** Spec IR. */
+export const IR_KINDS = ['requirement', 'invariant', 'constraint', 'interface', 'acceptance-condition', 'decision', 'dependency', 'non-goal', 'deferral',
+  'open-question', 'ambiguity', 'contradiction'] as const;
+export type IrKind = (typeof IR_KINDS)[number];
+export type IrSource = 'extracted' | 'inferred';        // intent (the text says it) vs interpretation (the reader concluded it)
+export type IrStatus = 'proposed' | 'approved' | 'rejected' | 'superseded';   // staleness is derived, never a status
+export const IR_TRANSITIONS: Record<IrStatus, readonly IrStatus[]> = { proposed: ['approved', 'rejected', 'superseded'], approved: ['superseded'], rejected: [], superseded: [] };
+export interface IrSpanRef { revisionId: string; docKey: string; sectionId: string; start: number; end: number; quote: string; quoteDigest: string }
+export interface IrAttrs { tags?: string[] /* ≤ 8, in config.tags */; milestone?: string /* config.milestone */; subject?: string /* ≤ 80 */;
+  polarity?: 'positive' | 'negative'; numbers?: Array<{ value: number; unit?: string }> /* ≤ 16 */; interfaceName?: string /* ≤ 120 */;
+  dependency?: { from: string; to: string }; deferral?: { to: string }; decision?: { ref: string; status: 'proposed' | 'accepted' | 'superseded' };
+  ticketRefs?: string[] /* ≤ 16; ids the text names: data, never a binding */ }
+export interface IrRecord {
+  id: string; projectId: string; corpusId: string;
+  kind: IrKind; source: IrSource; statement: string; attrs: IrAttrs;
+  span: IrSpanRef | null;        // at the revision asked for (current by default); null = no span there (inferred, or stale)
+  other: IrSpanRef | null;       // contradiction / ambiguity / dependency: the second passage
+  basisSections: string[];
+  confidence: number; contentDigest: string;
+  status: IrStatus; irVersion: string; observedBy: string[]; proposedBy: string;
+  decisionId?: string; assumptionId?: string; overriddenBy: string[]; createdAt: number; updatedAt: number;
+}
+export interface IrObservation { irId: string; attemptId: string; runnerId: string; windowId: string; confidence: number; at: number }
+export interface IrProposal {          // crosses MCP; unknown keys refused; first refusal only
+  kind: IrKind; source: IrSource; statement: string /* ≤ 4 KiB, multi-line allowed */; confidence: number /* 0..1 */; attrs?: IrAttrs;
+  section: string;                     // a section id of this window (primary or linked)
+  quote: string;                       // verbatim from that body, ≤ 2 KiB; '' only when source = 'inferred'
+  occurrence?: number;                 // integer ≥ 1; required when the quote occurs more than once in the section
+  other?: { section: string; quote: string /* ≤ 2 KiB */; occurrence?: number };
+  basisSections?: string[];            // ≤ 8 section ids of this window
+}
+export type IrProposalField = 'payload' | 'kind' | 'source' | 'section' | 'quote' | 'occurrence' | 'statement' | 'confidence' | 'attrs' | 'other' | 'basisSections' | 'count';
+export interface IrProposalContext { window: ExtractWindow; config: SectionerConfig; bodyOf: (sectionId: string) => { start: number; text: string } }
+export type DisagreementKind = 'single-extractor' | 'kind-differs' | 'statement-differs' | 'attrs-differ' | 'source-differs';
+export interface IrDisagreement { windowId: string; sectionId: string; start: number; end: number; kind: DisagreementKind; irIds: string[]; extractors: string[] }
+
+/** Coverage and omission report. */
+export interface SpanRef { docKey: string; sectionId: string; start: number; end: number }
+export interface CoverageReport {
+  kind: 'daylight-coverage'; v: 1; corpusId: string; revisionId: string; corpusDigest: string; irVersions: string[]; irSetDigest: string | null;
+  totals: { documents: number; sections: number; windows: number; normative: number; mapped: number; mappedApproved: number; unprocessed: number;
+    records: Record<IrKind, number>; byStatus: Record<IrStatus, number>; stale: number; inferred: number; unsupported: number; withheldExcerpts: number };
+  documents: Array<{ key: string; role: CorpusDocRole; domain: string; sections: number; normative: number; mapped: number }>;
+  unprocessedSections: Array<{ sectionId: string; label: string | null; reason: 'no-window' | 'no-attempt' | 'attempt-failed' | 'no-records' }>;
+  unmapped: Array<{ sentenceId: string; sectionId: string; label: string | null; start: number; end: number; score: number }>;
+  ambiguities: Array<{ at: SpanRef; detector: 'extractor' | 'hedge' | 'open-decision' | 'disagreement' | 'review'; irIds: string[]; confidence: number }>;
+  contradictions: Array<{ a: SpanRef; b: SpanRef; crossDocument: boolean; crossDomain: boolean; declaredDependency: boolean; irIds: string[]; confidence: number;
+    detector: 'extractor' | 'modal-polarity' | 'numeric' | 'review';
+    resolution: { by: 'precedence'; over: string; basis: SpanRef | null } | { by: 'unordered' } | { by: 'none' } }>;
+  unsupported: Array<{ irId: string; kind: IrKind }>; stale: Array<{ irId: string; status: IrStatus }>;
+  danglingRefs: Array<Pick<CrossRef, 'fromSection' | 'start' | 'end' | 'raw' | 'kind' | 'reason'>>;
+  disagreements: IrDisagreement[]; seeded?: SeededDefectResult[];
+}
+export type SeedKind = 'modal-contradiction' | 'numeric-contradiction' | 'cross-doc-contradiction' | 'hedge-ambiguity' | 'dangling-ref' | 'unordered-precedence';
+export interface SeededDefect { id: string; kind: SeedKind; docKey: string; afterSectionId: string; text: string; expect: Array<'hedge' | 'modal-polarity' | 'numeric' | 'dangling' | 'precedence'> }
+export interface SeededDefectResult { id: string; kind: SeedKind; insertedAt: SpanRef; detected: boolean; by: string[] }
+
+/** Independent IR review (WS-R15). */
+export const IR_FINDING_KINDS = ['omission', 'contradiction', 'invented-requirement', 'wrong-dependency', 'infeasible-boundary', 'wrong-kind', 'wrong-span', 'ambiguity'] as const;
+export type IrFindingKind = (typeof IR_FINDING_KINDS)[number];
+export interface ReportedIrFinding { kind: IrFindingKind; severity: FindingSeverity; title: string /* ≤ 120, one line */; statement: string /* ≤ 4 KiB */;
+  irId?: string /* required except omission */; elementId?: string /* required for infeasible-boundary */; section: string; quote?: string /* ≤ 2 KiB */ }
+export interface IrFinding { id: string /* rf_ */; projectId: string; corpusId: string; reviewMissionId: string; attemptId: string; kind: IrFindingKind;
+  severity: FindingSeverity; irId: string | null; elementId: string | null; span: IrSpanRef | null; title: string; statement: string;
+  findingArtifact: ArtifactRef; corroboratedBy: string[]; disposition: 'open' | 'accepted' | 'dismissed'; decisionId?: string; createdAt: number }
+export interface ApproveIrSetV1 { kind: 'daylight-approve-ir'; version: 1; corpusId: string; revisionId: string;
+  approve: string[]; reject: string[]; supersede?: Record<string, string> /* old ir id → new ir id */;
+  accept: string[]; dismiss: string[]; corrections?: IrProposal[] /* human-written; quotes must resolve */ }
+export interface ApproveIrScope { operation: 'approve-ir'; corpusId: string; revisionId: string; corpusDigest: string;
+  approve: Record<string, string>; reject: Record<string, string>; supersede: Record<string, string>;
+  findings: Record<string, 'accepted' | 'dismissed'>; corrections: string[];
+  irSetDigest: string }
+export interface ApproveIrInput { corpusId: string; actor: string; rationale: string | undefined; confirm: string | undefined;
+  env: Readonly<Record<string, string | undefined>>; set: ApproveIrSetV1 }
+
+/** Blueprint (WS-R15). */
+export const BLUEPRINT_KIND = 'daylight-blueprint' as const;
+export interface BlueprintV1 {
+  kind: typeof BLUEPRINT_KIND; version: 1; title: string; corpusDigest: string; irSetDigest: string;
+  scope: { milestones: string[] };
+  ticketIdTemplate: string;
+  boundaries: BlueprintBoundaryV1[]; components: BlueprintComponentV1[]; interfaces: BlueprintInterfaceV1[];
+  order: string[][];
+  constraints: Array<{ irIds: string[]; appliesTo: string[] }>;
+  deferred: Array<{ irId: string; to: string }>; outOfScope: Array<{ irId: string; reason: string /* ≤ 1 KiB */ }>;
+}
+export interface BlueprintBoundaryV1 { id: string /* /^[a-z][a-z0-9-]{0,31}$/ */; title: string; domain: string;
+  lifecycle: 'in-repo' | 'separate-repo' | 'external'; owns: string[]; bounds: string[]; invariants: string[] }
+export interface BlueprintComponentV1 { id: string /* /^[A-Z][A-Z0-9]{0,7}$/: a plan lane 1:1, 'FIX' reserved */; boundary: string; title: string;
+  owns: string[]; shared?: string[]; sections: string[] /* assigned whole */; requirements: string[]; dependsOn: string[]; provides: string[]; consumes: string[] }
+export interface BlueprintInterfaceV1 { id: string /* /^[a-z][a-z0-9.-]{0,63}$/ */; owner: string; irIds: string[]; summary: string; crossesBoundary: boolean }
+export interface Blueprint { id: string /* bp_ */; projectId: string; corpusId: string; revisionId: string; body: BlueprintV1; bodyArtifact: ArtifactRef;
+  blueprintDigest: string; status: 'proposed' | 'approved' | 'rejected' | 'superseded'; proposedBy: string; attemptId?: string;
+  decisionId?: string; createdAt: number; updatedAt: number }
+export type BlueprintRule = 'shape' | 'version' | 'digest' | 'unknown-ir' | 'ir-not-approved' | 'ir-stale' | 'ir-overridden' | 'unassigned' | 'duplicate-assignment'
+  | 'owns-outside-boundary' | 'owns-overlap' | 'external-owns' | 'unknown-component' | 'cycle' | 'order' | 'interface-owner' | 'interface-unreachable'
+  | 'boundary-crossing' | 'invariant-unplaced' | 'bounds-empty' | 'ticket-template' | 'text';
+export interface BlueprintRefusal { path: string; rule: BlueprintRule; detail: string }
+export interface BlueprintDerivation { blueprintId: string; elementId: string; irId: string;
+  role: 'bounds' | 'invariant' | 'requirement' | 'interface' | 'constraint' | 'deferred' | 'out-of-scope' }
+export interface ApproveBlueprintScope { operation: 'approve-blueprint'; corpusId: string; blueprintId: string; blueprintDigest: string; irSetDigest: string; supersedes: string | null }
+
+/** Work packets (WS-R15). */
+export interface WorkPacket {
+  id: string;                  // pk_ + 32 hex of sha256(canonicalJson([blueprintId, ticketId, packetDigest]))
+  blueprintId: string; componentId: string; ticketId: string; milestone: string;
+  title: string; objective: string; prerequisites: string[]; scope: string[];
+  requirementIds: string[]; interfaceContracts: Array<{ interfaceId: string; role: 'provides' | 'consumes'; irIds: string[] }>;
+  artifacts: Array<{ path: string; kind: 'source' | 'test' | 'fixture' | 'doc' | 'config'; irIds: string[] }>;
+  acceptanceObligations: Array<{ id: string /* /^ob[0-9]{1,3}$/ */; irIds: string[]; statement: string /* ≤ 1 KiB */ }>;
+  integrationDeps: string[]; blocksOn: string[] /* OIR.* */; examples: string[]; negativeExamples: string[];
+  packetDigest: string; status: 'proposed' | 'emitted' | 'superseded';   // stale is derived
+}
+export interface AuthorContext { spans: Array<{ irId: string; label: string | null; docKey: string; quote: string }>; bytes: number; truncated: number; withheld: number }
+export interface PlanDerivation { corpusId: string; corpusDigest: string; irSetDigest: string; blueprintId: string; blueprintDigest: string; packetSetDigest: string }
+
+/** Authority and invalidation (WS-R15; P2-R53). */
+export interface AuthorityChain { corpusDigest: string; sectionSetDigest: string; configDigest: string; irVersions: string[]; irSetDigest: string | null;
+  blueprintId: string | null; blueprintDigest: string | null; packetSetDigest: string | null; planDigest: string | null;
+  approvePlanDecisionId: string | null; authorizeDecisionId: string | null; lockDecisionId: string | null;
+  breaks: Array<{ link: 'corpus' | 'sections' | 'ir' | 'blueprint' | 'packets' | 'plan' | 'envelope'; why: string }> }
+export type CarryStatus = 'carried' | 'moved' | 'review' | 'stale';
+export interface CorpusDiff { kind: 'daylight-corpus-diff'; corpusId: string; from: string; to: string;
+  docs: Array<{ key: string; from: string | null; to: string | null }>;
+  sections: { added: string[]; removed: string[]; changed: string[]; renamed: Array<{ from: string; to: string }> };
+  records: Array<{ irId: string; status: CarryStatus; to: IrSpanRef | null; reason: 'quote-missing' | 'quote-ambiguous' | 'section-removed' | 'section-changed'
+    | 'overriding-doc-changed' | 'config-changed' | null }>;
+  invalidated: { blueprints: string[]; packets: string[]; assumptions: string[];
+    tickets: Array<{ campaignId: string; ticketId: string; workItemId: string; state: 'unconsumed' | 'in-flight' | 'landed'; irIds: string[] }>;
+    gates: Array<{ campaignId: string; experimentId: string; obligations: string[] }> } }
+
+/** Traceability (WS-R16). */
+export type TraceNodeType = 'document' | 'section' | 'unit' | 'ir' | 'boundary' | 'component' | 'interface' | 'packet' | 'ticket' | 'work-item' | 'mission'
+  | 'candidate' | 'gate-evaluation' | 'integration' | 'application' | 'assumption' | 'finding';
+export const TRACE_JOINS = ['span-overlap', 'ir-span', 'derivation', 'packet-component', 'packet-ticket', 'ticket-trace', 'ticket-work-item', 'consumed-by',
+  'candidate-mission', 'evaluation', 'obligation-gate', 'landing', 'application', 'assumption', 'finding'] as const;
+export type TraceJoin = (typeof TRACE_JOINS)[number];
+export interface TraceNode { type: TraceNodeType; id: string; label: string; status?: string; stale?: boolean; digest?: string }
+export interface TraceEdge { from: string; to: string; via: TraceJoin }
+export interface TraceReport { kind: 'daylight-trace'; v: 1; direction: 'forward' | 'backward'; root: TraceNode; nodes: TraceNode[]; edges: TraceEdge[];
+  gaps: Array<{ at: string; missing: TraceNodeType; why: string }>; verified: { quotesRehashed: number; mismatches: string[] } }
+export interface TraceMatrix { kind: 'daylight-trace-matrix'; v: 1; campaignId: string; chain: AuthorityChain; untracedTickets: string[];
+  rows: Array<{ irId: string; kind: IrKind; label: string | null; tags: string[]; components: string[]; tickets: string[];
+    evidence: 'none' | 'gate-bound' | 'landed' | 'landed-gates-pass' | 'stale'; gaps: string[] }> }
+
+/**
+ * Store rows. `NewIrRecord` also carries the columns the record's text lives in (`docKey`, `quote`,
+ * `otherQuote`) and where it was first seen (`firstRevision`), which the DDL requires and `IrRecord`
+ * reaches only through its spans.
+ */
+export type NewIrRecord = Omit<IrRecord, 'span' | 'other' | 'status' | 'decisionId' | 'assumptionId' | 'overriddenBy' | 'observedBy' | 'createdAt' | 'updatedAt'>
+  & { docKey: string | null; quote: string; otherQuote: string | null; firstRevision: string; proposalArtifact?: string };
+export interface IrSpanRow { irId: string; revisionId: string; role: 'primary' | 'other'; docKey: string; sectionId: string; start: number; end: number;
+  quoteDigest: string; carry: 'proposed' | 'carried' | 'moved' | 'review' }
+export interface IrLinkRow { fromIr: string; toIr: string; kind: 'contradicts' | 'overrides' | 'duplicates' | 'refines' | 'depends-on' | 'same-contract' | 'ambiguous-with';
+  basis: 'extractor' | 'detector' | 'precedence' | 'dependency' | 'review' | 'human'; createdAt: number }
+export interface PacketRow extends Pick<WorkPacket, 'id' | 'blueprintId' | 'componentId' | 'ticketId' | 'packetDigest' | 'status'> { projectId: string;
+  bodyArtifact: ArtifactRef; proposedBy: string; attemptId?: string; createdAt: number; updatedAt: number }
+export interface TicketTraceRow { campaignId: string; ticketId: string; irId: string; role: 'requirement' | 'obligation' | 'interface' | 'artifact' | 'context';
+  detail: string | null; packetId: string | null; handEdited: boolean }

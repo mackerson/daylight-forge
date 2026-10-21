@@ -277,8 +277,9 @@ CREATE TABLE assumptions (
   mission_id TEXT REFERENCES missions(id), ticket_id TEXT, owner_decision_id TEXT,
   question TEXT NOT NULL, default_value TEXT NOT NULL, rationale TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('open','pending','confirmed','overturned')), blocking INTEGER NOT NULL CHECK (blocking IN (0,1)),
-  source TEXT NOT NULL CHECK (source IN ('plan-default','operator')), recorded_by TEXT NOT NULL,
-  decision_id TEXT REFERENCES decisions(id), follow_up_work_item_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('plan-default','operator','ir-interpretation')), recorded_by TEXT NOT NULL,
+  decision_id TEXT REFERENCES decisions(id), follow_up_work_item_id TEXT, ir_id TEXT REFERENCES ir_records(id),
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   CHECK (status IN ('open','pending') OR decision_id IS NOT NULL),
   CHECK (status <> 'confirmed' OR default_value <> ''),
   CHECK (status <> 'pending' OR recorded_by GLOB 'human:*' OR (source = 'plan-default' AND decision_id IS NOT NULL))
@@ -377,6 +378,58 @@ CREATE TABLE findings (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, campaign_i
   wave_seq INTEGER NOT NULL, review_mission_id TEXT NOT NULL REFERENCES missions(id), attempt_id TEXT NOT NULL REFERENCES attempts(id),
   path TEXT NOT NULL, severity TEXT NOT NULL CHECK (severity IN ('high','medium','low')), title TEXT NOT NULL, statement TEXT NOT NULL,
   finding_artifact TEXT NOT NULL, corroborated_by TEXT NOT NULL DEFAULT '[]', fix_ticket_id TEXT, created_at INTEGER NOT NULL);
+
+-- Spec ingestion (WS-R14/R15/R16). Staleness has no column: it is the absence of an ir_spans row at
+-- the corpus's current revision (P2-R53). Rows here are added, never rewritten, by a revision.
+CREATE TABLE corpus_revisions (id TEXT PRIMARY KEY, corpus_id TEXT NOT NULL REFERENCES missions(id), project_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  manifest_path TEXT NOT NULL, manifest_digest TEXT NOT NULL, commits TEXT NOT NULL, corpus_digest TEXT NOT NULL, docs TEXT NOT NULL, precedence TEXT NOT NULL,
+  dependencies TEXT NOT NULL, unordered TEXT NOT NULL, section_index TEXT NOT NULL REFERENCES artifacts(id), section_set_digest TEXT NOT NULL,
+  sectioner_version TEXT NOT NULL, config_digest TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (corpus_id, seq), UNIQUE (corpus_id, corpus_digest));
+CREATE TABLE ir_records (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
+  kind TEXT NOT NULL CHECK (kind IN ('requirement','invariant','constraint','interface','acceptance-condition','decision','dependency','non-goal','deferral',
+    'open-question','ambiguity','contradiction')),
+  source TEXT NOT NULL CHECK (source IN ('extracted','inferred')), doc_key TEXT, quote TEXT NOT NULL, other_quote TEXT, statement TEXT NOT NULL,
+  attrs TEXT NOT NULL DEFAULT '{}', basis_sections TEXT NOT NULL DEFAULT '[]', confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+  content_digest TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected','superseded')), ir_version TEXT NOT NULL,
+  proposed_by TEXT NOT NULL, first_revision TEXT NOT NULL REFERENCES corpus_revisions(id), proposal_artifact TEXT, decision_id TEXT REFERENCES decisions(id),
+  assumption_id TEXT REFERENCES assumptions(id), overridden_by TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (status NOT IN ('approved','rejected','superseded') OR decision_id IS NOT NULL),
+  CHECK (source = 'inferred' OR (quote <> '' AND doc_key IS NOT NULL)),
+  CHECK (status <> 'approved' OR source = 'extracted' OR basis_sections <> '[]' OR assumption_id IS NOT NULL));
+CREATE INDEX ir_records_corpus ON ir_records(corpus_id, status, kind);
+CREATE TABLE ir_spans (ir_id TEXT NOT NULL REFERENCES ir_records(id), revision_id TEXT NOT NULL REFERENCES corpus_revisions(id),
+  role TEXT NOT NULL CHECK (role IN ('primary','other')), doc_key TEXT NOT NULL, section_id TEXT NOT NULL, start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL,
+  quote_digest TEXT NOT NULL, carry TEXT NOT NULL CHECK (carry IN ('proposed','carried','moved','review')),
+  CHECK (start_byte >= 0 AND end_byte > start_byte), PRIMARY KEY (ir_id, revision_id, role));
+CREATE INDEX ir_spans_locate ON ir_spans(revision_id, doc_key, start_byte);
+CREATE TABLE ir_observations (ir_id TEXT NOT NULL REFERENCES ir_records(id), attempt_id TEXT NOT NULL REFERENCES attempts(id), runner_id TEXT NOT NULL,
+  window_id TEXT NOT NULL, confidence REAL NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (ir_id, attempt_id));
+CREATE TABLE ir_links (from_ir TEXT NOT NULL REFERENCES ir_records(id), to_ir TEXT NOT NULL REFERENCES ir_records(id),
+  kind TEXT NOT NULL CHECK (kind IN ('contradicts','overrides','duplicates','refines','depends-on','same-contract','ambiguous-with')),
+  basis TEXT NOT NULL CHECK (basis IN ('extractor','detector','precedence','dependency','review','human')), created_at INTEGER NOT NULL, PRIMARY KEY (from_ir, to_ir, kind));
+CREATE TABLE ir_findings (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
+  review_mission_id TEXT NOT NULL REFERENCES missions(id), attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  kind TEXT NOT NULL CHECK (kind IN ('omission','contradiction','invented-requirement','wrong-dependency','infeasible-boundary','wrong-kind','wrong-span','ambiguity')),
+  severity TEXT NOT NULL CHECK (severity IN ('high','medium','low')), ir_id TEXT REFERENCES ir_records(id), element_id TEXT, span TEXT, title TEXT NOT NULL,
+  statement TEXT NOT NULL, finding_artifact TEXT NOT NULL, corroborated_by TEXT NOT NULL DEFAULT '[]', decision_id TEXT REFERENCES decisions(id),
+  disposition TEXT NOT NULL CHECK (disposition IN ('open','accepted','dismissed')), created_at INTEGER NOT NULL, CHECK (disposition = 'open' OR decision_id IS NOT NULL));
+CREATE TABLE blueprints (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, corpus_id TEXT NOT NULL REFERENCES missions(id),
+  revision_id TEXT NOT NULL REFERENCES corpus_revisions(id), ir_set_digest TEXT NOT NULL, body_artifact TEXT NOT NULL, blueprint_digest TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('proposed','approved','rejected','superseded')), proposed_by TEXT NOT NULL, attempt_id TEXT REFERENCES attempts(id),
+  decision_id TEXT REFERENCES decisions(id), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK (status NOT IN ('approved','rejected') OR decision_id IS NOT NULL));
+CREATE TABLE blueprint_derivations (blueprint_id TEXT NOT NULL REFERENCES blueprints(id), element_id TEXT NOT NULL, ir_id TEXT NOT NULL REFERENCES ir_records(id),
+  role TEXT NOT NULL CHECK (role IN ('bounds','invariant','requirement','interface','constraint','deferred','out-of-scope')), PRIMARY KEY (blueprint_id, element_id, ir_id, role));
+CREATE INDEX blueprint_derivations_ir ON blueprint_derivations(ir_id);
+CREATE TABLE packets (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, blueprint_id TEXT NOT NULL REFERENCES blueprints(id), component_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL, packet_digest TEXT NOT NULL, body_artifact TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('proposed','emitted','superseded')),
+  proposed_by TEXT NOT NULL, attempt_id TEXT REFERENCES attempts(id), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE (blueprint_id, ticket_id, packet_digest));
+CREATE TABLE ticket_trace (campaign_id TEXT NOT NULL REFERENCES missions(id), ticket_id TEXT NOT NULL, ir_id TEXT NOT NULL REFERENCES ir_records(id),
+  role TEXT NOT NULL CHECK (role IN ('requirement','obligation','interface','artifact','context')), detail TEXT, packet_id TEXT REFERENCES packets(id),
+  hand_edited INTEGER NOT NULL DEFAULT 0 CHECK (hand_edited IN (0,1)), PRIMARY KEY (campaign_id, ticket_id, ir_id, role));
+CREATE INDEX ticket_trace_ir ON ticket_trace(ir_id);
+CREATE INDEX assumptions_owner_decision ON assumptions(project_id, owner_decision_id);
 `;
 
 /**
