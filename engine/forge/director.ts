@@ -747,7 +747,10 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
       const no = campaignSpendRefusal(spend, envelope, reserve);
       if (no) {
         emit(campaign, 'cost', 'campaign.spend.refused', { spent: spend.spentUsd, reserved: spend.reservedUsd, cap: spend.capUsd, unknownCount: spend.unknownCount, waveSeq: seq });
-        if (no.halt) halt(no.halt);
+        // A campaign that spent exactly its cap with nothing left to build has finished, not
+        // halted (wave2 L2): only the review is skipped, and it says so.
+        const finished = no.halt === 'spend-cap' && ![...ticketStates(ctx, campaign.id, root, host).values()].some((x) => x.status === 'ready');
+        if (no.halt && !finished) halt(no.halt);
         return;
       }
       reviewing.add(seq);

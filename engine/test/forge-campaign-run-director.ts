@@ -429,6 +429,24 @@ section('spend: a resume re-checks a breach before the candidate that caused it 
   w.ctx.close();
 }
 
+section('spend: a campaign that spends exactly its cap with everything landed ends completed (wave2 L2, p10b)');
+{
+  const w = nodeWorld('exactcap', [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` },
+    { id: 'B', lane: 'LB', scope: ['src/b.js'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+  ]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 0.15, maxUsdPerMission: 0.1, waveSize: 10, reviewRoster: ['mock'] });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), {
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" }, cost: 0.1 }, B: { first: { 'src/b.js': "module.exports = () => 'B';\n" }, cost: 0.05 },
+  });
+  const r = await run(w, author, { concurrency: 1 });
+  check('A $0.10 + B $0.05 = the $0.15 cap: both landed, not halted', r.halted === null && r.refused === null && r.statuses.A === 'landed' && r.statuses.B === 'landed',
+    JSON.stringify({ halted: r.halted, statuses: r.statuses, spend: r.spend }));
+  check('the due wave review was refused for want of budget, and said so', w.ctx.events.forMission(w.campaign.id).some((e) => e.name === 'campaign.spend.refused' && e.payload.waveSeq === 1)
+    && !w.ctx.store.decisions(w.campaign.id).some((d) => d.scope.operation === 'halt-campaign'));
+  w.ctx.close();
+}
+
 section('spend: after a spend halt no wave review launches (P2-R35, review H1)');
 {
   const w = nodeWorld('reviewhalt', [
