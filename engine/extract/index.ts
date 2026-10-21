@@ -54,17 +54,15 @@ const ASSET_RE = /\.(css|scss|sass|less|styl|svg|png|jpe?g|gif|webp|avif|ico|wof
 /**
  * A vendored bundle is not authored code, and letting one in wrecks every downstream
  * number — a single copy of three.js contributed ~8000 symbols to a 25-file repo and
- * buried the real findings. Detected by shape rather than by name so it generalises:
- * bundles are large and have very long lines.
+ * buried the real findings. Vendor status needs a vendoring path (node_modules, vendor/,
+ * third_party/, dist/, *.min.*) or 1 MiB of source; size alone below that never decides,
+ * so a large authored file is still mapped (P2-R62).
  */
-export function looksVendored(source: string): boolean {
-  // Size alone is decisive with room to spare: in this repo the largest authored
-  // source file is ~17KB and the vendored three.js builds are 650KB and 1.4MB.
-  if (source.length > 200_000) return true;
-  // Minified bundles can be smaller but give themselves away by line length.
-  if (source.length < 50_000) return false;
-  const newlines = source.split('\n').length;
-  return source.length / Math.max(newlines, 1) > 200;
+const VENDOR_PATH_RE = /(^|\/)(node_modules|vendor|third_party|dist)\/|\.min\.[^/]+$/;
+const VENDOR_BYTES = 1024 * 1024;
+
+export function looksVendored(rel: string, source: string): boolean {
+  return VENDOR_PATH_RE.test(rel) || Buffer.byteLength(source, 'utf8') >= VENDOR_BYTES;
 }
 
 /** Files git already ignores are not ours to analyse. Falls back to a walk. */
@@ -218,7 +216,7 @@ export function extract(options: ExtractOptions): Graph {
       continue;
     }
 
-    if (!includeVendored && looksVendored(source)) {
+    if (!includeVendored && looksVendored(rel, source)) {
       graph.stats.vendoredSkipped++;
       continue;
     }
@@ -357,7 +355,7 @@ export function extract(options: ExtractOptions): Graph {
     } catch {
       continue; // A test we cannot read is not worth a diagnostic; it is not part of the map.
     }
-    if (!includeVendored && looksVendored(source)) continue;
+    if (!includeVendored && looksVendored(rel, source)) continue;
 
     const contentHash = createHash('sha256').update(source).digest('hex').slice(0, 12);
     // Keyed by provider as well: two providers producing different records for the same

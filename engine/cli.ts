@@ -256,7 +256,7 @@ function emitExtract(args: Args, graph: Graph): void {
       ` · external ${s.externalImports} · unresolved ${s.unresolvedImports} (${pct(s.unresolvedImports, s.imports)}) · assets ${s.assetImports} skipped`,
   );
   if (s.vendoredSkipped) {
-    console.log(`     ${s.vendoredSkipped} vendored bundle(s) skipped (large, long-line files)`);
+    console.log(`     ${s.vendoredSkipped} vendored file(s) skipped (vendoring paths, or 1 MiB and over)`);
   }
   console.log(`L1   ${mstats.groups} groups at depth ${args.depth} (from ${mstats.files} files)`);
   console.log(`     shapes ${graph.shapes.length} · callables ${graph.functions.length}`);

@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { extract } from '../extract/index.ts';
+import { extract, looksVendored } from '../extract/index.ts';
 import { aliasesFromTsconfig, Resolver } from '../extract/resolve.ts';
 import { evaluate } from '../invariants/engine.ts';
 import type { Graph } from '../graph/types.ts';
@@ -85,15 +85,22 @@ console.log('\nextraction');
   write('src/helper.ts', 'export const helper = () => 1;\n');
   write('src/thing.ts', 'export class Thing { constructor(public name: string) {} }\n');
   write('src/styles.css', '.a { color: red }\n');
-  // Large single-line file: a vendored bundle by shape rather than by name.
-  write('src/vendor.js', 'var x=1;'.repeat(30000));
+  // Vendored by path (P2-R62): a third_party/ directory and a *.min.* bundle, whatever their size.
+  write('src/third_party/bundle.js', 'var x=1;'.repeat(30000));
+  write('src/lib.min.js', 'var y=2;');
+  // A 250 KB authored source file is mapped: size alone below 1 MiB never makes a file vendored.
+  write('src/big.ts', Array.from({ length: 6000 }, (_, i) => `export const v${i} = ${i}; // padding padding padding`).join('\n') + '\n');
 
   const cacheDir = path.join(tmp, '.cache');
   const g: Graph = extract({ root: tmp, cacheDir });
 
   const files = g.nodes.filter((n) => n.kind === 'file').map((n) => n.id).sort();
   check('finds the source files', files.includes('src/index.ts') && files.includes('src/thing.ts'));
-  check('skips a vendored bundle', !files.includes('src/vendor.js') && g.stats.vendoredSkipped === 1);
+  check('skips vendored files by path', !files.includes('src/third_party/bundle.js') && !files.includes('src/lib.min.js') && g.stats.vendoredSkipped === 2);
+  check('maps a 250 KB tracked .ts file (P2-R62)', fs.statSync(path.join(tmp, 'src/big.ts')).size > 250_000 && files.includes('src/big.ts'));
+  check('looksVendored: 1 MiB decides alone; a size under it never does', looksVendored('src/huge.ts', 'x'.repeat(1024 * 1024))
+    && !looksVendored('src/large.ts', 'x'.repeat(1024 * 1024 - 1)) && looksVendored('a/node_modules/p/i.js', '') && looksVendored('third_party/x.c', '')
+    && looksVendored('web/dist/app.js', '') && !looksVendored('src/distance.ts', '') && !looksVendored('src/vendors.ts', ''));
   check('counts assets separately from failures',
     g.stats.assetImports === 1 && g.stats.unresolvedImports === 0);
   check('marks a package external',
