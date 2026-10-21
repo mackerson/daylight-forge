@@ -265,6 +265,21 @@ export function assertPartition(units: Array<Pick<NormativeSentence, 'id'>>, p: 
   if (bad.length || seen.size !== units.length) throw new Error(`coverage arithmetic does not hold: ${bad.length} unit(s) not in exactly one of mapped and unmapped`);
 }
 
+/**
+ * The two swap points for P2-R58: at merge the integrator replaces these bodies with WS-R15's shared
+ * `isIrStale` and `irSetDigestAt`; every R14 caller (coverage, `corpus ir list --stale`) goes
+ * through them. Until then: stale = an extracted record with no span at the revision read; the IR
+ * set = sorted `<id>:<contentDigest>` of approved records with a span there, joined by newlines.
+ */
+export function ingestRecordStale(r: Pick<IrRecord, 'source' | 'span'>): boolean {
+  return r.source === 'extracted' && !r.span;
+}
+
+export function ingestIrSetDigest(approved: Array<Pick<IrRecord, 'id' | 'contentDigest' | 'span' | 'other'>>): string | null {
+  const lines = approved.filter((r) => r.span || r.other).map((r) => `${r.id}:${r.contentDigest}`).sort();
+  return lines.length ? digestOf(lines.join('\n')) : null;
+}
+
 export function coverageOf(ctx: DaylightContext, corpusId: string, o: { revisionId?: string; seeds?: SeededDefect[] } = {}): CoverageReport {
   const c = corpusOf(ctx, corpusId, o.revisionId);
   const domainOf = (k: string) => c.docs.find((d) => d.key === k)?.domain ?? '';
@@ -315,9 +330,8 @@ export function coverageOf(ctx: DaylightContext, corpusId: string, o: { revision
     })),
     ...detectModalConflicts(units, live), ...detectNumericConflicts(units, live),
   ].map((x) => resolveContradiction(x, c));
-  const isStale = (r: IrRecord) => r.source === 'extracted' && !r.span && r.status !== 'rejected' && r.status !== 'superseded';
   const unsupported = live.filter((r) => r.source === 'inferred' && !r.basisSections.length && !r.assumptionId).map((r) => ({ irId: r.id, kind: r.kind }));
-  const stale = records.filter(isStale).map((r) => ({ irId: r.id, status: r.status }));
+  const stale = records.filter((r) => ingestRecordStale(r) && r.status !== 'rejected' && r.status !== 'superseded').map((r) => ({ irId: r.id, status: r.status }));
   const danglingRefs = c.index.refs.filter((r) => !r.resolved).map(({ fromSection, start, end, raw, kind, reason }) => ({ fromSection, start, end, raw, kind, reason }));
 
   const holdouts = holdoutBasenamesOf(ctx, c.projectId);
@@ -329,10 +343,9 @@ export function coverageOf(ctx: DaylightContext, corpusId: string, o: { revision
   const byStatus: Record<IrStatus, number> = { proposed: 0, approved: 0, rejected: 0, superseded: 0 };
   for (const r of records) byStatus[r.status]++;
   // currentIrSetDigest's formula (§6.2): sorted "<id>:<contentDigest>" of approved records with a span at the revision.
-  const setLines = approved.filter((r) => r.span || r.other).map((r) => `${r.id}:${r.contentDigest}`).sort();
   const report: CoverageReport = {
     kind: 'daylight-coverage', v: 1, corpusId, revisionId: c.id, corpusDigest: c.corpusDigest,
-    irVersions: [...new Set(records.map((r) => r.irVersion))].sort(), irSetDigest: setLines.length ? digestOf(setLines.join('\n')) : null,
+    irVersions: [...new Set(records.map((r) => r.irVersion))].sort(), irSetDigest: ingestIrSetDigest(approved),
     totals: {
       documents: c.docs.length, sections: c.index.docs.reduce((n, d) => n + d.sections.length, 0), windows: windows.length, normative: units.length, mapped,
       mappedApproved: units.filter((u) => covered(u, approved)).length, unprocessed: unprocessedSections.length, records: records0, byStatus,
