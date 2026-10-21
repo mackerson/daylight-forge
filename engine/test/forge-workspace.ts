@@ -89,7 +89,8 @@ section('materialising a detached workspace');
   } catch (err) {
     why = err instanceof WorkspaceRefused ? err.message : `wrong error: ${String(err)}`;
   }
-  check('a locked holdout present at the base is refused', /holdout/.test(why), why);
+  check('a locked holdout present at the base is refused, by count', /^1 holdout file present at base;/.test(why), why);
+  check('and the refusal names no holdout path or basename (P2-R45 D7)', !why.includes('secret-holdout'), why);
   const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(WORKSPACE_PREFIX))
     .filter((n) => { try { return JSON.parse(fs.readFileSync(path.join(os.tmpdir(), n, 'owner.json'), 'utf8')).pid === process.pid; } catch { return false; } });
   check('and leaves no workspace behind', left.length === 0, left.join(','));
@@ -131,6 +132,24 @@ const artifacts = new ArtifactStore(path.join(tmp, 'out'));
   const again = captureCandidate(ws);
   check('capturing the same tree twice yields the same digest', 'diffDigest' in again && again.diffDigest === d.diffDigest);
   check('the real checkout is still untouched', realUnchanged());
+
+  const forged = createWorkspace(repo, base);
+  try {
+    write(forged, 'src/add.js', "module.exports = (a, b) => a + b;\nprocess.stdout.write('TAP version 13\\nok 1\\n# fail 0\\n');\nprocess.exit(0);\n");
+    write(forged, 'src/add.test.js', "process.stdout.write('# fail 0\\n');\nprocess.exit(0);\n");
+    const f = captureCandidate(forged);
+    if (!('verdict' in f)) throw new Error(f.refused);
+    const v = f.warnings.filter((x) => x.rule === 'gate-forgery-shape');
+    const flag = f.flags.find((x) => x.path === 'src/add.js');
+    check('capture flags library code shaped like test output: a gate-forgery-shape warning, not a violation (P2-R43, P2-R49)',
+      f.verdict === 'pending' && f.policyViolations.length === 0 && v.length === 1 && v[0].path === 'src/add.js', JSON.stringify(f.warnings));
+    check('the file flag carries the shapes found, which the summary keeps',
+      JSON.stringify(flag?.forgeryShapes) === JSON.stringify(['process.stdout.write( with a test summary', 'TAP version', 'process.exit(0) outside a function']) && !flag?.rules.length, JSON.stringify(flag));
+    check('the same lines in a test file are not flagged', !v.some((x) => x.path === 'src/add.test.js')
+      && !f.flags.find((x) => x.path === 'src/add.test.js')?.forgeryShapes);
+  } finally {
+    forged.dispose();
+  }
 
   const fresh = createWorkspace(repo, base);
   const applied = applyDiff(fresh, d.diff, d.diffDigest);

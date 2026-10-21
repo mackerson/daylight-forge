@@ -11,6 +11,7 @@ import { HARDENED_GIT_CONFIG, hardenedGitEnv } from '../experiment/runner.ts';
 import { gitIn, parseRaw, rediff, scratchFor, type Scratch } from './apply.ts';
 import { envelopeRefusal } from './campaign.ts';
 import { applyRefFor, confirmDigest } from './confirm.ts';
+import { forgeryHold } from './forgery.ts';
 import { assertHumanDecision } from './policy.ts';
 import { commitMessage } from './trailers.ts';
 import { EMPTY_TREE } from './workspace.ts';
@@ -379,6 +380,8 @@ export function landIntegration(ctx: IntegrateContext, integrationId: string, o:
     const refused = landingRefusal(ctx.store, i);
     if (refused) throw new IntegrationRefused(refused);
     const c = ctx.store.candidate(i.candidateId)!;
+    const held = forgeryHold(ctx, c);
+    if (held) throw new IntegrationRefused(`${held.why}; it is not landed`);
     const m = ctx.store.mission(i.missionId)!;
     const auth = authorizationOf(ctx.store, i.campaignId);
     if (!auth) throw new IntegrationRefused(`campaign ${i.campaignId} has no human authorize-campaign decision`);

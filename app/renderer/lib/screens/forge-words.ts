@@ -421,6 +421,7 @@ export const NEED_WORDS: Record<Need['kind'], string> = {
   'campaign-halted': 'campaign halted',
   'assumption-pending': 'confirm assumption',
   'owner-decision': 'owner decision',
+  'forgery-shape-review': 'review forgery shape',
 };
 
 // ---- guarded acts -------------------------------------------------------------------------

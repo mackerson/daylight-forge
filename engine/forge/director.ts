@@ -29,6 +29,7 @@ import {
   IntegrationRefused, R5_INTEGRATE_DEPS, reconcileIntegrations, refTarget, type IntegrateDeps, type IntegrationStep,
 } from './integrate.ts';
 import { ImplementRefused, runImplement } from './orchestrate.ts';
+import { forgeryHold, forgeryShapesOf } from './forgery.ts';
 import { DecisionRefused } from './policy.ts';
 import { closeWave, fixTicketsFrom, runWaveReview, waveDue } from './wave.ts';
 
@@ -164,7 +165,7 @@ const FINAL_VERDICTS = new Set(['accepted-by-gates', 'rejected-by-gates', 'gates
  * Every ticket's status, derived from rows and the integration ref on each call (§4.2). The
  * effective set is the envelope's tickets plus generated tickets a decision approved.
  */
-export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketState> {
+export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketState> {
   const campaign = ctx.store.mission(campaignId);
   if (!campaign || campaign.kind !== 'campaign') throw new DirectorRefused(`${campaignId} is not a campaign`);
   const auth = authorizationOf(ctx.store, campaignId);
@@ -231,7 +232,15 @@ export function ticketStates(ctx: Pick<DaylightContext, 'store' | 'out'>, campai
       set('blocked', { reason: `candidate ${c.id} is accepted; with autoApply none a person approves and applies it` });
       continue;
     }
-    if (c && last && c.attemptId === last.id && !ctx.store.integrations(campaignId, { missionId: m.id }).some((i) => i.candidateId === c.id && i.state !== 'abandoned')) {
+    const unintegrated = !!c && !!last && c.attemptId === last.id
+      && !ctx.store.integrations(campaignId, { missionId: m.id }).some((i) => i.candidateId === c.id && i.state !== 'abandoned');
+    // P2-R49: forgery shapes park the candidate for a person; acknowledged, it integrates; rejected, it is repaired.
+    const hold = unintegrated ? forgeryHold(ctx, c!) : null;
+    if (hold?.state === 'waiting') {
+      set('waiting-owner', { reason: hold.why });
+      continue;
+    }
+    if (unintegrated && !hold) {
       set('integrating', { queued: c });
       continue;
     }
@@ -266,7 +275,7 @@ function landedTicket(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, ti
     .some((i) => i.integratedCommit && isAncestor(repo, i.integratedCommit, tip)));
 }
 
-export function ticketStatuses(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketStatus> {
+export function ticketStatuses(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Map<string, TicketStatus> {
   return new Map([...ticketStates(ctx, campaignId, repo, host)].map(([id, s]) => [id, s.status]));
 }
 
@@ -409,7 +418,11 @@ export function repairBrief(ctx: Pick<DaylightContext, 'store' | 'artifacts'>, c
   return {
     attempt, priorCandidateId: c.id, outcome, failures, hiddenFailures,
     conflictPaths: integration?.state === 'conflict' ? integration.conflictPaths : [],
-    policy: c.policyViolations.map((v) => (v.path === null ? v.rule : `${v.rule}: ${v.path}`)),
+    policy: [
+      ...c.policyViolations.map((v) => (v.path === null ? v.rule : `${v.rule}: ${v.path}`)),
+      // A person rejected its forgery shapes (P2-R49): the author is told where, so the repair drops them.
+      ...(forgeryHold(ctx, c)?.state === 'rejected' ? forgeryShapesOf(ctx.artifacts, c).map((h) => `gate-forgery-shape: ${h.path} (${h.shapes.join(', ')})`) : []),
+    ],
     priorDiff,
   };
 }
@@ -434,7 +447,7 @@ function tipLanding(ctx: Pick<DaylightContext, 'store'>, campaignId: string, rep
  * Each earlier-landed ticket's own public gates (role `gate`, bound to it by the lock) that have
  * no evaluation on the tip's landing yet: what `recheckLanded` runs (wave2 L7).
  */
-function landedGates(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Array<{ ticketId: string; experimentId: string; at: Integration }> {
+function landedGates(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Array<{ ticketId: string; experimentId: string; at: Integration }> {
   const lock = campaignLockOf(ctx, campaignId);
   const at = tipLanding(ctx, campaignId, repo);
   if (!lock || !at) return [];
@@ -452,7 +465,7 @@ function landedGates(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: st
  * `regressed`, each with a need (wave2 L7). From rows: the latest evaluation of the gate on the
  * tip's landing at the locked harness.
  */
-export function landedRegressions(ctx: Pick<DaylightContext, 'store' | 'out'>, campaignId: string, repo: string, host: CampaignHost): Map<string, { gates: string[]; tip: string }> {
+export function landedRegressions(ctx: Pick<DaylightContext, 'store' | 'out' | 'artifacts'>, campaignId: string, repo: string, host: CampaignHost): Map<string, { gates: string[]; tip: string }> {
   const out = new Map<string, { gates: string[]; tip: string }>();
   const lock = campaignLockOf(ctx, campaignId);
   if (!lock) return out;
@@ -483,6 +496,12 @@ export function campaignRunNeeds(ctx: DaylightContext, campaign: Mission, host: 
     for (const [ticketId, r] of landedRegressions(ctx, campaign.id, repo, host)) {
       out.push({ kind: 'blocked', ref: campaign.id, why: `ticket ${ticketId} landed, but its gate fails on the tip ${r.tip.slice(0, 12)} (${r.gates.join(', ')}); a later landing broke it, so a person looks` });
     }
+  }
+  for (const t of host.tickets(campaign.id)) {
+    const m = missionsOf(ctx, campaign, t).at(-1);
+    const c = m && m.state !== 'closed' ? latestCandidate(ctx.store, m) : undefined;
+    const hold = c ? forgeryHold(ctx, c) : null;
+    if (c && hold?.state === 'waiting') out.push({ kind: 'forgery-shape-review', ref: c.id, why: `ticket ${t.ticketId}: ${hold.why}` });
   }
   const at = repo ? refTarget(repo, integrationRefFor(campaign.id)) : null;
   const want = expectedTip(ctx.store, campaign.id);
@@ -726,6 +745,8 @@ export async function runCampaign(ctx: DaylightContext, o: DirectorOptions): Pro
         halt('integration-moved');
         return;
       }
+      // P2-R49: never integrated, so never landed, before a person reviews its forgery shapes.
+      if (forgeryHold(ctx, ctx.store.candidate(item.candidateId)!)) return;
       let i: Integration;
       try {
         i = prepareIntegration(ictx, item.candidateId, { ticketId: t.ticketId, deps: host.integrate });
