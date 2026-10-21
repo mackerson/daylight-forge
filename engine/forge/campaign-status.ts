@@ -64,7 +64,8 @@ export function campaignStatus(ctx: DaylightContext, campaignId: string, repo: s
       ref, base: campaign.baseRevision, tip, landed: landedCount,
       mergeHint: `git merge --ff-only ${ref}`,
     },
-    authorization: { decisionId: auth?.id ?? null, notAfter: auth ? envelopeOf(auth).notAfter : null, halted: haltOf(ctx.store, campaignId)?.reason ?? null },
+    authorization: { decisionId: auth?.id ?? null, notAfter: auth ? envelopeOf(auth).notAfter : null, halted: haltOf(ctx.store, campaignId)?.reason ?? null,
+      haltDecisionId: haltOf(ctx.store, campaignId)?.decision.id ?? null },
     lanes: [...byLane].sort(([a], [b]) => (a < b ? -1 : 1)).map(([lane, byStatus]) => ({ lane, total: Object.values(byStatus).reduce((n, x) => n + x, 0), byStatus })),
     tickets: [...states.values()].map((s) => ({
       id: s.ticket.ticketId, lane: s.ticket.lane, status: s.status, ...(s.mission ? { missionId: s.mission.id } : {}), attempts: s.attempts,

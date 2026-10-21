@@ -508,8 +508,12 @@ export function campaignRunNeeds(ctx: DaylightContext, campaign: Mission, host: 
   if (repo && at && at !== want) {
     // A ref that no longer contains the last explained commit (deleted and recreated, or rewound)
     // is restored to it; one that only gained commits is adopted where it is (wave2 L4).
-    const how = isAncestor(repo, want, at) ? '`daylight campaign adopt-tip`' : `\`daylight campaign adopt-tip --to ${want}\`, which puts it back where the rows say`;
-    out.push({ kind: 'campaign-halted', ref: campaign.id, why: `${integrationRefFor(campaign.id)} is at ${at}, which no landing explains; a person runs ${how}` });
+    const adopts = isAncestor(repo, want, at);
+    const how = adopts ? '`daylight campaign adopt-tip`' : `\`daylight campaign adopt-tip --to ${want}\`, which puts it back where the rows say`;
+    out.push({
+      kind: 'campaign-halted', ref: campaign.id, why: `${integrationRefFor(campaign.id)} is at ${at}, which no landing explains; a person runs ${how}`,
+      commit: adopts ? at : want,
+    });
   }
   return out;
 }

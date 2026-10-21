@@ -17,6 +17,7 @@ import { runDecideCommand } from './commands-decide.ts';
 import { runDepsCommand } from './commands-deps.ts';
 import { CAMPAIGN_CONFIRM_OPS, campaignConfirm, runAssumptionCommand, runCampaignCommand, type CampaignConfirmOp } from './commands-campaign.ts';
 import { CAMPAIGN_RUN_CONFIRM_OPS, campaignRunConfirm, type CampaignRunConfirmOp } from './commands-campaign-run.ts';
+import { candidateForgeryShapes } from './forgery-classes.ts';
 import { candidateView, ImplementRefused, possibleSecrets, runImplement } from './orchestrate.ts';
 import { assertHumanDecision, DecisionRefused, guardCheck } from './policy.ts';
 import { registerSpec, SpecRefused } from './spec.ts';
@@ -224,7 +225,10 @@ function confirmCommand(p: Parsed, out: () => string, env: NodeJS.ProcessEnv) {
       ? [...c.lines, ...possible.map((p) => `possible secret in ${p}: acknowledge it (--acknowledge-possible-secret) to ${operation === 'approve-candidate' ? 'approve' : 'override'}`)]
       : c.lines;
     const refusal = guardCheck(env, actor, c.digest8, c.digest) ?? (operation === 'authorize-mission' && execute && !write ? EXEC_WITHOUT_WRITE : null);
-    return { operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines, refusal, possibleSecrets: possible };
+    return {
+      operation, subjectId, actor, digest: c.digest, digest8: c.digest8, lines, refusal, possibleSecrets: possible,
+      ...(candidate ? { forgeryShapes: candidateForgeryShapes(ctx.artifacts, candidate) } : {}),
+    };
   });
 }
 
@@ -388,6 +392,7 @@ async function forge(sub: string | undefined, p: Parsed, out: () => string, asJs
         return {
           candidate: v.candidate,
           possibleSecrets: v.possibleSecrets,
+          forgeryShapes: v.forgeryShapes,
           diff: { text: v.diff.text, truncated: v.diff.truncated },
           gateEvaluations: publicGateEvaluations(ctx, ctx.store.gateEvaluations({ candidateId })),
         };

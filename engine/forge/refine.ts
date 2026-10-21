@@ -18,7 +18,7 @@ import { gitIn } from './apply.ts';
 import { heldTickets } from './assumptions.ts';
 import { holdoutPaths } from './campaign-gates.ts';
 import { r5StatusHost } from './campaign-status.ts';
-import { changedFiles, forgeryShapesOf } from './campaign-report.ts';
+import { changedFiles, reportForgeryShapes } from './campaign-report.ts';
 import { ticketStates } from './director.ts';
 import { integrationRefFor, integrationTip } from './integrate.ts';
 import { FOCUS_RULES, rankFocus } from './refine-focus.ts';
@@ -275,7 +275,7 @@ function factsFrom(ctx: DaylightContext, rows: Rows): FocusItem[] {
     });
   }
   const landed = new Set(landings.keys());
-  const forgery = forgeryShapesOf(ctx, campaign, tickets, landed);
+  const forgery = reportForgeryShapes(ctx, campaign, tickets, landed);
   for (const id of [...new Set(forgery.items.map((i) => i.ticketId))].sort(byId)) {
     const items = forgery.items.filter((i) => i.ticketId === id);
     out.push({

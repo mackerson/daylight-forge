@@ -5,7 +5,7 @@ import { runClaimFile } from '../mission/orchestrate.ts';
 import { FINDING_SEVERITIES, FORGERY_CLASSES, STATUS_BUCKET_OF, STATUS_BUCKETS } from '../mission/types.ts';
 import type {
   Attempt, CampaignEnvelope, CampaignSpend, CampaignTicket, DiffStat, ExperimentConclusion, Finding, FindingSeverity, ForgeCampaignList,
-  ForgeCampaignRow, ForgeryClass, Integration, Mission, Need, ReportAssumption, ReportBlocked, ReportFinding, ReportForgeryShapes, ReportLanding,
+  ForgeCampaignRow, Integration, Mission, Need, ReportAssumption, ReportBlocked, ReportFinding, ReportForgeryShapes, ReportLanding,
   ReportReview, RunClaim, SpendLine, StatusBucket, StatusTable, StatusTableRow, TicketStatus, WaveReport,
 } from '../mission/types.ts';
 import { gitIn } from './apply.ts';
@@ -14,6 +14,7 @@ import { campaignAuthorizationRefusal, planOf } from './campaign.ts';
 import { campaignNeeds } from './campaign-needs.ts';
 import { campaignStatus, r5StatusHost } from './campaign-status.ts';
 import { campaignRunNeeds, campaignSpend, haltOf, ticketStates, type TicketState } from './director.ts';
+import { candidateForgeryShapes } from './forgery-classes.ts';
 import { envelopeOf, integrationRefFor, integrationTip } from './integrate.ts';
 
 /**
@@ -98,6 +99,7 @@ export function spendLineOf(ctx: Pick<DaylightContext, 'store'>, key: string, mi
     unknownCount: attempts.filter((a) => !live(a) && a.costUsd === null).length,
     runningCount: attempts.filter(live).length,
     reservationCount: attempts.filter((a) => source(a) === 'reservation').length,
+    reservationUsd: sum(attempts.filter((a) => source(a) === 'reservation')),
   };
 }
 
@@ -113,10 +115,9 @@ export function spendWords(l: SpendLine): string {
   const finished = l.attempts - l.runningCount;
   const running = l.runningCount ? ` +${l.runningCount} running` : '';
   if (finished === 0) return `${l.runningCount} running, nothing reported yet`;
-  const reservedUsd = round(l.spentUsd - l.knownUsd - l.scannedUsd);
   const beside = [
     l.scannedCount ? `${money(l.scannedUsd)} scanned, not known` : '',
-    l.reservationCount ? `${money(reservedUsd)} charged at reservation for ${l.reservationCount} unfinished` : '',
+    l.reservationCount ? `${money(l.reservationUsd)} charged at reservation for ${l.reservationCount} unfinished` : '',
   ].filter(Boolean);
   if (l.unknownCount === finished && !beside.length) return `unknown${running}`;
   const unknown = l.unknownCount ? `${l.unknownCount} unknown` : '';
@@ -129,15 +130,13 @@ export function spendWords(l: SpendLine): string {
 /**
  * `CampaignSpend` as words for STATUS.md, by the same rules as `spendWords`: scanned and
  * reservation-charged dollars beside the known figure, never inside it, and no `$0.00` for spend
- * nobody reported. Reads WS-R12's reservation fields when present.
+ * nobody reported.
  */
 export function campaignSpendWords(s: CampaignSpend): string {
-  const r = s as CampaignSpend & { reservationUsd?: number; reservationCount?: number };
-  const reservedUsd = r.reservationUsd ?? 0;
-  const scannedUsd = round(s.spentUsd - s.knownUsd - reservedUsd);
+  const scannedUsd = round(s.spentUsd - s.knownUsd - s.reservationUsd);
   const beside = [
     s.scannedCount ? `${money(scannedUsd)} scanned, not known` : '',
-    r.reservationCount ? `${money(reservedUsd)} charged at reservation for ${r.reservationCount} unfinished` : '',
+    s.reservationCount ? `${money(s.reservationUsd)} charged at reservation for ${s.reservationCount} unfinished` : '',
   ].filter(Boolean);
   const running = s.runningCount ? ` +${s.runningCount} running` : '';
   if (s.knownUsd === 0 && s.unknownCount && !beside.length) return `unknown (${s.unknownCount} attempt(s) reported no cost)${running}`;
@@ -189,30 +188,20 @@ export function ticketMissions(ctx: Pick<DaylightContext, 'store'>, campaign: Mi
 const authorAttemptCount = (ctx: Pick<DaylightContext, 'store'>, missionId: string) =>
   ctx.store.tasks(missionId).filter((t) => t.role === 'author').reduce((n, t) => n + ctx.store.attempts(t.id).length, 0);
 
-/** The classes of a `gate-forgery-shape` why, read from the shape names WS-R13 writes into it (never matched text). */
-export function forgeryClasses(why: string | undefined): Array<ForgeryClass | 'unclassified'> {
-  const w = why ?? '';
-  const out: ForgeryClass[] = [];
-  if (/from_raw_fd\(1\)|libc::write\(1|fs\.writeSync\(1|process\.stdout\.write\(|stdout-fd-write/.test(w)) out.push('stdout-fd-write');
-  if (/test result: ok\.|running 0 tests|TAP version|test summary|test-summary-literal/.test(w)) out.push('test-summary-literal');
-  if (/process::exit|process\.exit|process-exit/.test(w)) out.push('process-exit');
-  return out.length ? out : ['unclassified'];
-}
-
 /** The forgery-shape warnings on the candidates of `tickets` (P2-R43, P2-R49): counts, ids, paths and classes only. */
-export function forgeryShapesOf(ctx: Pick<DaylightContext, 'store'>, campaign: Mission, tickets: readonly CampaignTicket[], landed: ReadonlySet<string>): ReportForgeryShapes {
+export function reportForgeryShapes(ctx: Pick<DaylightContext, 'store' | 'artifacts'>, campaign: Mission, tickets: readonly CampaignTicket[], landed: ReadonlySet<string>): ReportForgeryShapes {
   const byClass = Object.fromEntries([...FORGERY_CLASSES, 'unclassified'].map((c) => [c, 0])) as ReportForgeryShapes['byClass'];
   const items: ReportForgeryShapes['items'] = [];
   for (const t of [...tickets].sort((a, b) => byId(a.ticketId, b.ticketId))) {
     for (const m of ticketMissions(ctx, campaign, t)) {
       for (const c of ctx.store.candidates(m.id)) {
-        const hits = c.policyViolations.filter((v) => (v.rule as string) === 'gate-forgery-shape');
-        if (!hits.length) continue;
-        const classes = [...new Set(hits.flatMap((v) => forgeryClasses(v.why)))].sort(byId);
+        const shapes = candidateForgeryShapes(ctx.artifacts, c);
+        if (!shapes.items.length) continue;
+        const classes = [...new Set(shapes.items.flatMap((i) => i.classes))].sort(byId);
         for (const k of classes) byClass[k]++;
         items.push({
           ticketId: t.ticketId, missionId: m.id, candidateId: c.id, attemptId: c.attemptId,
-          paths: [...new Set(hits.map((v) => v.path).filter((p): p is string => !!p))].sort(byId), classes, ticketLanded: landed.has(t.ticketId),
+          paths: shapes.items.map((i) => i.path).sort(byId), classes, ticketLanded: landed.has(t.ticketId),
         });
       }
     }
@@ -384,7 +373,7 @@ export function buildWaveReport(ctx: DaylightContext, campaignId: string, repo: 
     spend: { campaign: campaignSpend(ctx, campaignId), scope: scopeLine, tickets: ticketLines, lanes, waves: waveLines, reviews },
     needs, blocked,
     holdouts: holdoutCounts(ctx, campaignId, tip),
-    forgeryShapes: forgeryShapesOf(ctx, campaign, forgeryScope, landedTickets),
+    forgeryShapes: reportForgeryShapes(ctx, campaign, forgeryScope, landedTickets),
     status: status.table,
   };
 }
@@ -420,6 +409,7 @@ function campaignLine(r: WaveReport): SpendLine {
     key: 'campaign', attempts: all.reduce((n, l) => n + l.attempts, 0), spentUsd: c.spentUsd, knownUsd: c.knownUsd,
     scannedUsd: round(all.reduce((n, l) => n + l.scannedUsd, 0)), scannedCount: c.scannedCount, unknownCount: c.unknownCount,
     runningCount: c.runningCount, reservationCount: all.reduce((n, l) => n + l.reservationCount, 0),
+    reservationUsd: round(all.reduce((n, l) => n + l.reservationUsd, 0)),
   };
 }
 
@@ -523,7 +513,7 @@ function campaignRow(ctx: DaylightContext, c: Mission): ForgeCampaignRow {
     id: c.id, projectId: c.projectId, title, state: c.state, createdAt: c.createdAt,
     planRevision: plan?.planRevision ?? null,
     planApproved: !!plan && ctx.store.latestDecision(c.id, 'approve-plan')?.scope.planDigest === plan.planDigest,
-    authorization: { decisionId: auth?.id ?? null, refusal, notAfter: auth ? envelopeOf(auth).notAfter : null },
+    authorization: { decisionId: auth?.id ?? null, refusal, notAfter: auth ? envelopeOf(auth).notAfter : null, haltDecisionId: haltOf(ctx.store, c.id)?.decision.id ?? null },
     halted: haltOf(ctx.store, c.id)?.reason ?? null,
     run: runClaimOf(ctx.out, c.id),
     runHint: `daylight campaign run ${c.id} ${shellWord(root ?? '<repo>')} --out ${shellWord(ctx.out)}`,

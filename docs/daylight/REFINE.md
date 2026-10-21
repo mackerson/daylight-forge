@@ -36,7 +36,10 @@ daylight campaign report <c> [<repo>] [--wave <n> | --open | --all] [--format js
   warning (P2-R43): a warning that parks the candidate with a `forgery-shape-review` need until a
   person acknowledges or rejects it (P2-R49). Counted by class (`stdout-fd-write`,
   `test-summary-literal`, `process-exit`, else `unclassified`) and listed by ticket, candidate
-  and path. No text of the diff is ever read back or shown.
+  and path, from the shape names capture records in the candidate summary; no text of the diff is
+  ever read back or shown. `forge candidate --format json` and the `confirm approve-candidate` /
+  `override-candidate` preview carry the same per-candidate `forgeryShapes` (counts by class, each
+  path's classes).
 - **Status.** kitkraft's table: `done`, `in-progress`, `blocked` (with `regressed`), `requests`
   (waiting on a person), and `queued` and `superseded`, counted and never hidden. `campaign
   status` and STATUS.md show the same table.
@@ -52,7 +55,8 @@ daylight campaign list [<repo>] [--format json]
 ```
 
 One row per campaign, newest first: plan and approval, authorization (its refusal verbatim),
-halt, the six-bucket counts, needs, assumptions, spend, the integration tip, and the run claim.
+halt (with `authorization.haltDecisionId`, as `campaign status` has it, for resume and
+adopt-tip), the six-bucket counts, needs, assumptions, spend, the integration tip, and the run claim.
 A run claim is `<out>/mission-run.<id>.pid`: read, checked with `kill(pid, 0)`, never written or
 signalled; a dead pid reads as a claim left behind. `runHint` is the command a person runs from
 a terminal. When the project root is not on this machine, statuses are not derived and the row

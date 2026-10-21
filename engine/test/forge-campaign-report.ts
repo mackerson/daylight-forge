@@ -26,7 +26,7 @@ import { r5StatusHost } from '../forge/campaign-status.ts';
 import { runClaimFile } from '../mission/orchestrate.ts';
 import { newId } from '../mission/store.ts';
 import { openDaylight, type DaylightContext } from '../mission/context.ts';
-import { STATUS_BUCKET_OF, STATUS_BUCKETS, type CampaignStatusReport, type ForgeAssumptionRow, type ForgeCampaignList, type ForgeCampaignShow, type PlanFileV1, type SpendLine, type WaveReport } from '../mission/types.ts';
+import { STATUS_BUCKET_OF, STATUS_BUCKETS, type CandidateForgeryShapes, type CampaignStatusReport, type ForgeAssumptionRow, type ForgeCampaignList, type ForgeCampaignShow, type PlanFileV1, type SpendLine, type WaveReport } from '../mission/types.ts';
 import {
   approve, authorize, CLEAN_ENV, git, HUMAN, imported, lock, lockedGateSet, ROOT, tmp,
 } from './forge-campaign-fixture.ts';
@@ -139,6 +139,10 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   reopen(s.out, (ctx) => {
     haltId = haltCampaign(ctx, id, HUMAN, 'integration-moved').id;
   });
+  const moved = git(s.root, 'rev-parse', integrationRefFor(id));
+  const halted = json<CampaignStatusReport>(cli(['campaign', 'status', id, s.root, '--out', s.out, '--format', 'json']));
+  const need = halted?.needs.find((n) => n.kind === 'campaign-halted' && n.ref === haltId);
+  check('the integration-moved halt\'s need carries the commit adopt-tip adopts, ref still the halt id', need?.commit === moved, JSON.stringify(halted?.needs));
   const viaMap = json<Confirmed>(cli(['confirm', 'adopt-integration-tip', id, '--halt', haltId, '--out', s.out, '--format', 'json']));
   const viaRepo = json<Confirmed>(cli(['confirm', 'adopt-integration-tip', id, '--halt', haltId, '--repo', s.root, '--out', s.out, '--format', 'json']));
   check('adopt-integration-tip reads the repo from --repo, else the out dir\'s map, to the same digest', !!viaMap && viaMap.digest === viaRepo?.digest);
@@ -257,14 +261,21 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const t2 = ctx.store.createTask({ missionId: u2.id, role: 'author', objective: 'author', runnerHint: 'mock:1' });
   const a2 = ctx.store.startAttempt({ taskId: t2.id, runnerId: 'agent:mock:default', sandbox });
   ctx.store.finishAttempt(a2.id, { state: 'completed', costUsd: 0.3, costSource: 'stdout-scan' });
+  // An attempt cut short with no figure is charged at its reservation (P2-R44).
+  const t3 = ctx.store.createTask({ missionId: u2.id, role: 'author', objective: 'author', runnerHint: 'mock:2' });
+  const a3 = ctx.store.startAttempt({ taskId: t3.id, runnerId: 'agent:mock:default', sandbox, maxCostUsd: 0.5 });
+  ctx.store.finishAttempt(a3.id, { state: 'failed', costUsd: null });
   const forgedDiff = Buffer.from(`+process.stdout.write("${FORGED_TEXT} # pass 1 # fail 0");\n`);
   const forged = ctx.store.createCandidate({
     missionId: u2.id, attemptId: a2.id, projectId: c.projectId, baseCommit: tip,
     diffArtifact: ctx.artifacts.put(forgedDiff, { kind: 'diff', projectId: c.projectId, revision: tip, label: 'candidate diff' }),
-    summaryArtifact: ctx.artifacts.put('{}', { kind: 'summary', projectId: c.projectId, revision: tip, label: 'summary' }),
+    // The shape names capture records in the summary flags (R13): constants, never the matched text.
+    summaryArtifact: ctx.artifacts.put(JSON.stringify({ flags: [
+      { path: 'src/ui/v.ts', forgeryShapes: ['process.stdout.write( with a test summary', 'process.exit(0) outside a function'] },
+      { path: 'src/ui/elsewhere.ts', possibleSecretHits: 1 },
+    ] }), { kind: 'summary', projectId: c.projectId, revision: tip, label: 'summary' }),
     files: filesOf({ 'src/ui/v.ts': 'x' }),
-    policyViolations: [{ rule: 'gate-forgery-shape' as never, path: 'src/ui/v.ts', why: 'heuristic (P2-R43): added non-test code has process.stdout.write( with a test summary, process.exit(0) outside a function, a shape that can forge a gate\'s pass' },
-      { rule: 'outside-scope', path: 'src/ui/elsewhere.ts' }],
+    policyViolations: [],
     secretHits: 0, gateSetDigest: lockedGateSet(ctx, id)!, profile: { name: 'author', network: 'none', write: true, exec: false }, attemptState: 'completed',
   });
 
@@ -294,16 +305,19 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const ui = r.spend.lanes.find((l) => l.key === 'UI')!;
   const u2line = r.spend.tickets.find((l) => l.key === 'U2')!;
   check('the attempt with no cost is one unknown on its ticket and its lane', u2line.unknownCount === 1 && ui.unknownCount === 1 && camp.unknownCount === 1);
-  check('scanned dollars are never inside knownUsd, and are their own figure', u2line.knownUsd === 0 && u2line.scannedUsd === 0.3 && u2line.spentUsd === 0.3);
+  check('scanned dollars are never inside knownUsd, and are their own figure', u2line.knownUsd === 0 && u2line.scannedUsd === 0.3);
+  check('a reservation charge is counted with its dollars, inside spentUsd, never known', u2line.reservationCount === 1 && u2line.reservationUsd === 0.5
+    && u2line.spentUsd === 0.8 && camp.reservationUsd === 0.5 && sum(closing, 'reservationUsd') === camp.reservationUsd, JSON.stringify(u2line));
   check('a review line carries the review mission\'s spend', r.spend.reviews.some((l) => l.key === 'review:1' && l.knownUsd === 0.02));
   check('wave 1\'s line is its tickets\' missions', r.spend.waves.length === 1 && r.spend.waves[0].attempts === 2);
   const uiWords = md.split('\n').find((l) => l.startsWith('- lane UI:')) ?? '';
-  check('markdown prints unknown spend as unknown, never $0.00, and scanned beside', /unknown/.test(uiWords) && !/\$0\.00/.test(uiWords) && /scanned, not known/.test(uiWords), uiWords);
+  check('markdown prints unknown spend as unknown, never $0.00, scanned and reserved beside', /unknown/.test(uiWords) && !/\$0\.00/.test(uiWords)
+    && /scanned, not known/.test(uiWords) && /\$0\.50 charged at reservation for 1 unfinished/.test(uiWords), uiWords);
   check('spendWords: unknown alone, a floor with some known, a dash for nothing',
-    spendWords({ ...u2line, attempts: 1, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0 }) === 'unknown'
-      && /^≥ \$0\.05 \(1 unknown\)$/.test(spendWords({ ...u2line, attempts: 2, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0.05, knownUsd: 0.05 }))
-      && spendWords({ ...u2line, attempts: 0 }) === '—'
-      && /charged at reservation for 1 unfinished/.test(spendWords({ ...u2line, attempts: 1, unknownCount: 0, scannedCount: 0, scannedUsd: 0, spentUsd: 2, knownUsd: 0, reservationCount: 1 })));
+    spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 1, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0 }) === 'unknown'
+      && /^≥ \$0\.05 \(1 unknown\)$/.test(spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 2, unknownCount: 1, scannedCount: 0, scannedUsd: 0, spentUsd: 0.05, knownUsd: 0.05 }))
+      && spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 0 }) === '—'
+      && /^\$2\.00 charged at reservation for 1 unfinished$/.test(spendWords({ ...u2line, reservationCount: 0, reservationUsd: 0, attempts: 1, unknownCount: 0, scannedCount: 0, scannedUsd: 0, spentUsd: 2, knownUsd: 0, reservationCount: 1, reservationUsd: 2 })));
 
   const holdoutPath = w.holdout.testArtifact.path ?? '';
   check('holdouts are counted: one locked, not run at the tip', r.holdouts.locked === 1 && r.holdouts.atTip['not-run'] === 1);
@@ -345,6 +359,7 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   check('the forgery-shaped candidate is counted, by ticket, path and class, as a heuristic',
     fsh.heuristic && fsh.candidates === 1 && fsh.items[0].ticketId === 'U2' && fsh.items[0].candidateId === forged.id && fsh.items[0].paths.join() === 'src/ui/v.ts'
       && fsh.items[0].classes.join() === 'process-exit,stdout-fd-write,test-summary-literal' && fsh.byClass['stdout-fd-write'] === 1 && !fsh.items[0].ticketLanded, JSON.stringify(fsh));
+  check('a flag without shapes is not a forgery shape', !JSON.stringify(fsh).includes('elsewhere'));
   check('the report never carries the violating diff\'s text', !text.includes(FORGED_TEXT) && !md.includes(FORGED_TEXT));
   check('markdown names it a warning with its forgery-shape-review need', /Forgery-shaped candidates \(heuristic\)/.test(md) && md.includes('forgery-shape-review'));
 
@@ -375,6 +390,16 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   section('the CLI: report, list, refine run in an agent session; report --write does not');
   const status = json<CampaignStatusReport>(cli(['campaign', 'status', id, root, '--out', w.out, '--format', 'json']));
   check('campaign status --format json carries the same STATUS table and a run claim', JSON.stringify(status?.table) === JSON.stringify(r.status) && status?.run === null);
+  const cand = json<{ forgeryShapes?: CandidateForgeryShapes }>(cli(['forge', 'candidate', forged.id, '--out', w.out, '--format', 'json']));
+  check('forge candidate --format json carries the forgery shapes by class and path',
+    JSON.stringify(cand?.forgeryShapes?.items) === JSON.stringify([{ path: 'src/ui/v.ts', classes: ['process-exit', 'stdout-fd-write', 'test-summary-literal'] }])
+      && cand?.forgeryShapes?.byClass['test-summary-literal'] === 1, JSON.stringify(cand?.forgeryShapes));
+  for (const op of ['approve-candidate', 'override-candidate']) {
+    const pv = json<{ forgeryShapes?: CandidateForgeryShapes }>(cli(['confirm', op, forged.id, '--out', w.out, '--format', 'json']));
+    check(`confirm ${op} carries them too`, JSON.stringify(pv?.forgeryShapes) === JSON.stringify(cand?.forgeryShapes), JSON.stringify(pv));
+  }
+  const clean = json<{ forgeryShapes?: CandidateForgeryShapes }>(cli(['forge', 'candidate', r.landed[0].candidateId, '--out', w.out, '--format', 'json']));
+  check('a candidate without shapes has none', clean?.forgeryShapes?.items.length === 0);
   for (const v of ['CLAUDECODE', 'DAYLIGHT_SESSION']) {
     const rep = cli(['campaign', 'report', id, root, '--out', w.out, '--format', 'json'], { [v]: '1' });
     check(`${v}: campaign report runs, exit 0, the same report`, rep.code === 0 && json<WaveReport>(rep)?.landed.length === 2, `${rep.code} ${rep.err}`);
@@ -424,6 +449,13 @@ section('the wave report: landings, spend, holdouts, the STATUS table, forgery s
   const r1 = rows?.find((a) => a.ownerDecisionId === 'O1');
   check('assumption list rows carry held tickets and the plan\'s options', r1?.heldTickets.join() === 'U1' && r1.options.join() === 'error,panic'
     && rows?.find((a) => a.ownerDecisionId === 'O2')?.options.length === 0, JSON.stringify(r1));
+  const haltCtx = openDaylight(w.out);
+  const halt = haltCampaign(haltCtx, id, HUMAN, 'operator');
+  haltCtx.close();
+  const halted = json<CampaignStatusReport>(cli(['campaign', 'status', id, root, '--out', w.out, '--format', 'json']));
+  const listed = json<ForgeCampaignList>(cli(['campaign', 'list', '--out', w.out, '--format', 'json']))?.campaigns.find((x) => x.id === id);
+  check('status and list name the unanswered halt for resume and adopt-tip', halted?.authorization.haltDecisionId === halt.id && halted.authorization.halted === 'operator'
+    && listed?.authorization.haltDecisionId === halt.id, JSON.stringify([halted?.authorization, listed?.authorization]));
   check('the read-only set gains list, report without --write and refine',
     campaignReadOnly('list') && campaignReadOnly('report') && campaignReadOnly('refine')
       && !campaignReadOnly('report', { positionals: [], flags: new Map([['write', 'true']]) }));
