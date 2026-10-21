@@ -18,7 +18,7 @@ import { SpecRefused } from './spec.ts';
  *
  *   corpus register <repo> --manifest daylight.corpus.json [--rev HEAD] [--project alias=<repo>[@rev]]… [--format json]
  *   corpus show|sections <corpus> [--revision cr_…] [--doc K] [--format json]
- *   corpus extract <corpus> <repo> --tools a,b [--windows win1,…] [--timeout s] [--format json]
+ *   corpus extract <corpus> <repo> --tools a,b [--windows win1,…] [--force] [--timeout s] [--format json]
  *   corpus coverage <corpus> [--revision cr_…] [--format json|md] [--write]
  *   corpus ir list <corpus> [--status s] [--kind k] [--section id] [--stale] [--format json]
  *
@@ -178,11 +178,12 @@ export async function runCorpusCommand(argv: string[], env: NodeJS.ProcessEnv, d
         const timeoutMs = timeout === undefined ? undefined : Number(timeout) * 1000;
         if (timeoutMs !== undefined && !(timeoutMs > 0)) throw new Usage('--timeout is seconds');
         const r = await withContext(outFor(repo), (ctx) => extract(ctx, corpusId, path.resolve(repo), tools, {
-          runner: deps.runner ?? defaultRunner(timeoutMs), windows: list(last(p, 'windows')),
+          runner: deps.runner ?? defaultRunner(timeoutMs), windows: list(last(p, 'windows')), force: p.flags.has('force'),
         }));
-        if (asJson) json({ proposed: r.proposed.length, refused: r.refused, irVersion: r.irVersion });
+        if (asJson) json({ ran: r.ran, skipped: r.skipped, proposed: r.proposed.length, observed: r.observed, refused: r.refused, irVersion: r.irVersion });
         else {
-          say(`${r.proposed.length} IR record(s) proposed; ${r.refused.length} outbox line(s) refused; ${r.irVersion}`);
+          say(`windows × tools: ${r.ran} extracted, ${r.skipped} skipped (already done; --force re-extracts)`);
+          say(`${r.proposed.length} new IR record(s), ${r.observed} new observation(s); ${r.refused.length} outbox line(s) refused; ${r.irVersion}`);
           for (const x of r.refused) say(`  refused ${x.attemptId} line ${x.line ?? '-'}: ${x.field} ${x.reason}`);
         }
         return 0;

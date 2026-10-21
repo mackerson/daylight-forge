@@ -111,10 +111,14 @@ const rosterOf = (ctx: DaylightContext, corpusId: string): string[] =>
 
 /**
  * Extract a corpus's windows (all, or those named by id or `winN`) with each tool, blind, then
- * ingest. Tasks are reused per (window artifact, tool), so a rerun is a new attempt on the same task.
+ * ingest. A (window, tool) whose task is done is skipped and counted, never silently re-reported:
+ * a done task takes no new attempt. `force` re-extracts it under a fresh task with the same window
+ * and tool (so the roster, and the IR version, are unchanged). A task left failed or queued by an
+ * earlier run is run again. `proposed` is this run's new records; `observed` its new observations
+ * of records already filed.
  */
-export async function extract(ctx: DaylightContext, corpusId: string, repo: string, tools: string[], o: { runner: OutboxRunner; windows?: string[] }):
-  Promise<{ proposed: IrRecord[]; refused: OutboxRefusal[]; irVersion: string }> {
+export async function extract(ctx: DaylightContext, corpusId: string, repo: string, tools: string[], o: { runner: OutboxRunner; windows?: string[]; force?: boolean }):
+  Promise<{ proposed: IrRecord[]; refused: OutboxRefusal[]; irVersion: string; observed: number; ran: number; skipped: number }> {
   const c = corpusOf(ctx, corpusId);
   const mission = ctx.store.mission(corpusId)!;
   const { project } = requireMappedRepo(ctx.out, repo);
@@ -126,6 +130,7 @@ export async function extract(ctx: DaylightContext, corpusId: string, repo: stri
   const wanted = o.windows?.length ? all.filter((w) => o.windows!.some((x) => w.id === x || w.id.startsWith(`${x}:`))) : all;
   if (o.windows?.length && !wanted.length) throw new Error('no window of this corpus matches --windows');
   const taskIds: string[] = [];
+  let skipped = 0;
   const existing = ctx.store.tasks(corpusId).filter((t) => t.role === 'extract');
   for (const w of wanted) {
     const art = ctx.artifacts.put(canonicalJson(w), {
@@ -133,7 +138,13 @@ export async function extract(ctx: DaylightContext, corpusId: string, repo: stri
     });
     ctx.store.recordArtifact(art);
     for (const tool of roster) {
-      const task = existing.find((t) => t.runnerHint === tool && t.inputs[0]?.id === art.id) ?? ctx.store.createTask({
+      const mine = existing.filter((t) => t.runnerHint === tool && t.inputs[0]?.id === art.id);
+      const open = mine.find((t) => t.state !== 'done');
+      if (!open && mine.length && !o.force) {
+        skipped++;
+        continue;
+      }
+      const task = open ?? ctx.store.createTask({
         missionId: corpusId, role: 'extract', objective: `extract ${w.id} (blind)`, inputs: [art], requiredOutputs: [], runnerHint: tool,
       });
       taskIds.push(task.id);
@@ -144,7 +155,7 @@ export async function extract(ctx: DaylightContext, corpusId: string, repo: stri
     const w = windowOfTask(ctx, task);
     return readers.get(w.id) ?? readers.set(w.id, windowReader(c, w)).get(w.id)!;
   };
-  await o.runner(ctx, {
+  if (taskIds.length) await o.runner(ctx, {
     missionId: corpusId, repo, tools: roster,
     outbox: {
       role: 'extract', taskIds, allowedTools: roleAllowlist('extract'),
@@ -160,9 +171,9 @@ export async function extract(ctx: DaylightContext, corpusId: string, repo: stri
       },
     },
   });
-  const { refused } = ingestIrProposals(ctx, corpusId);
+  const { created, observed, refused } = ingestIrProposals(ctx, corpusId);
   return {
-    proposed: ctx.store.irRecords(corpusId, { status: 'proposed' }), refused,
+    proposed: created, refused, observed, ran: taskIds.length, skipped,
     irVersion: irVersionOf({ corpusDigest: c.corpusDigest, sectionSetDigest: c.sectionSetDigest, configDigest: c.configDigest, roster: rosterOf(ctx, corpusId), promptDigest: EXTRACT_PROMPT_DIGEST }),
   };
 }

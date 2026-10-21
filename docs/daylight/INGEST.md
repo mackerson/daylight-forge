@@ -128,8 +128,12 @@ titles. Measured: OLC spec v0.8 (89 KB) packs into 6 windows.
 ## Spec IR and extraction
 
 ```
-daylight corpus extract <corpus> <repo> --tools a,b [--windows win1,…] [--timeout s]
+daylight corpus extract <corpus> <repo> --tools a,b [--windows win1,…] [--force] [--timeout s]
 ```
+
+A (window, tool) already extracted is skipped and counted (`N extracted, M skipped`); `--force`
+re-extracts it under a fresh task with the same window and tool, so the IR version is unchanged and
+a re-read of the same words is another observation. The counts are this run's.
 
 At least two distinct extractors (`mock,mock:b` counts as two). One task per (window, tool),
 role `extract`, bound to its window by `inputs[0]` (the window JSON as a `report` artifact), run
@@ -200,7 +204,7 @@ detected contradiction.
 ```
 daylight corpus register <repo> --manifest daylight.corpus.json [--rev HEAD] [--project alias=<repo>[@rev]]… [--format json]
 daylight corpus show|sections <corpus> [--revision cr_…] [--doc K] [--format json]
-daylight corpus extract <corpus> <repo> --tools a,b [--windows …] [--timeout s]
+daylight corpus extract <corpus> <repo> --tools a,b [--windows …] [--force] [--timeout s]
 daylight corpus coverage <corpus> [--revision cr_…] [--format json|md] [--write]   # --write → <out>/corpus/<id>/coverage.{json,md}
 daylight corpus ir list <corpus> [--status s] [--kind k] [--section id] [--stale] [--format json]
 ```

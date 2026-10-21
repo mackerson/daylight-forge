@@ -88,7 +88,7 @@ usage:
                                   (each --rationale '<why>' --confirm <c8>)
   node engine/cli.ts corpus     register <repo> --manifest <path> [--rev R] [--project alias=<repo>[@rev]]…
                                 show|sections <corpus> [--revision cr_…] [--doc K] | ir list <corpus> [--status s] [--kind k] [--stale]
-                                extract <corpus> <repo> --tools a,b [--windows w,…] [--timeout s] | coverage <corpus> [--format json|md] [--write]
+                                extract <corpus> <repo> --tools a,b [--windows w,…] [--force] [--timeout s] | coverage <corpus> [--format json|md] [--write]
   node engine/cli.ts artifact   <digest>
   node engine/cli.ts events     --since <n> [--mission <id>]
   node engine/cli.ts demo       prepare [--dest <dir>] | replay --recording <file>

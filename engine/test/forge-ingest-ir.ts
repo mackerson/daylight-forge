@@ -188,6 +188,39 @@ check('a torn last line is left alone', !forged.refused.some((x) => x.attemptId 
 check('an outbox naming no attempt is reported', forged.refused.some((x) => x.attemptId === 'a_' + 'e'.repeat(32)));
 check('the valid new line is filed', forged.created.length === 1 && forged.created[0].statement === 'A new reading of the same words.');
 
+section('a rerun on done (window, tool) pairs is reported as skipped; --force re-extracts (review M-1)');
+const attemptsNow = () => ctx.store.tasks(corpusId).filter((t) => t.role === 'extract').flatMap((t) => ctx.store.attempts(t.id)).length;
+const attemptsBefore = attemptsNow();
+let runnerCalls = 0;
+const counting: typeof runner = Object.assign(async (cc: Parameters<typeof runner>[0], run: Parameters<typeof runner>[1]) => {
+  runnerCalls++;
+  await runner(cc, run);
+}, { calls: runner.calls });
+const rerun = await extract(ctx, corpusId, A.olc, ['mock', 'mock:b'], { runner: counting, windows: [wAgreed.id, w6.id] });
+check('a rerun skips every done pair, counts them, and starts nothing', rerun.ran === 0 && rerun.skipped === 4 && runnerCalls === 0 && attemptsNow() === attemptsBefore,
+  JSON.stringify({ ran: rerun.ran, skipped: rerun.skipped, runnerCalls }));
+check('and reports no new records as if it had extracted them', rerun.proposed.length === 0);
+const cliOut: string[] = [];
+const sw = process.stdout.write.bind(process.stdout);
+process.stdout.write = ((x: string) => {
+  cliOut.push(x);
+  return true;
+}) as typeof process.stdout.write;
+ctx.close();
+const cliCode = await runCorpusCommand(['extract', corpusId, A.olc, '--tools', 'mock,mock:b', '--windows', `${wAgreed.id},${w6.id}`, '--out', A.out],
+  { PATH: process.env.PATH, HOME: process.env.HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, { runner: counting });
+process.stdout.write = sw;
+check('the CLI says how many pairs it extracted and skipped', cliCode === 0 && cliOut.join('').includes('0 extracted, 4 skipped'), cliOut.join(''));
+const ctx3 = openDaylight(A.out);
+const forcedRun = await extract(ctx3, corpusId, A.olc, ['mock', 'mock:b'], { runner: counting, windows: [w6.id], force: true });
+const tasksOf6 = ctx3.store.tasks(corpusId).filter((t) => t.role === 'extract' && JSON.parse(ctx3.artifacts.get(t.inputs[0]).toString()).id === w6.id);
+check('--force re-extracts under fresh tasks: new attempts, same window and tools', forcedRun.ran === 2 && forcedRun.skipped === 0 && tasksOf6.length === 4
+  && tasksOf6.every((t) => t.state === 'done'));
+check('the IR version is unchanged by a forced rerun (same roster)', forcedRun.irVersion === r.irVersion);
+check('a re-read of the same text is an observation, not a new record', forcedRun.proposed.length === 0 && forcedRun.observed >= 1);
+ctx3.close();
+const ctxAgain = openDaylight(A.out);
+
 section('a mock extractor script, sandboxed, through runMission and the CLI');
 const live = detectSandbox();
 check('bwrap is installed (an outbox role is always sandboxed)', live.available, live.why);
@@ -196,10 +229,10 @@ fs.writeFileSync(mockScript, MOCK_EXTRACTOR_SCRIPT);
 const adr7 = windows.find((w) => w.docKey === 'adr-0007')!;
 const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME, TMPDIR: privateTmp,
   DAYLIGHT_MOCK_ADAPTER: mockScript, CLAUDECODE: '1' };
-const before = ctx.store.irRecords(corpusId).length;
+const before = ctxAgain.store.irRecords(corpusId).length;
 // runMission resolves the mock adapter from the process environment, as the CLI's own process does.
 process.env.DAYLIGHT_MOCK_ADAPTER = mockScript;
-ctx.close();
+ctxAgain.close();
 const w = process.stdout.write.bind(process.stdout);
 let text = '';
 process.stdout.write = ((s: string) => {
