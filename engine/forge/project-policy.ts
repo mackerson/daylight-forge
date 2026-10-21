@@ -91,11 +91,13 @@ export const PROTECTED_SETS: Readonly<Record<ProtectedSetName, readonly Protecte
     { kind: 'segment', values: ['.husky'], label: 'anything under .husky/' },
     {
       kind: 'basename',
-      values: ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yml', 'lefthook.yaml', '.lefthook.yaml', 'lefthook-local.yml', 'lefthook-local.yaml',
-        '.lefthook-local.yml', '.lefthook-local.yaml'],
-      label: 'git hook managers\' config (.pre-commit-config.yaml, lefthook.yml, .lefthook.yml, lefthook.yaml, .lefthook.yaml, lefthook-local.yml, '
-        + 'lefthook-local.yaml, .lefthook-local.yml, .lefthook-local.yaml) at any depth',
+      // lefthook reads each of these names with each extension, at the root or under .config/ (P2-R38).
+      values: ['.pre-commit-config.yaml', ...['lefthook', '.lefthook', 'lefthook-local', '.lefthook-local']
+        .flatMap((n) => ['.yml', '.yaml', '.json', '.jsonc', '.toml'].map((ext) => `${n}${ext}`))],
+      label: 'git hook managers\' config (.pre-commit-config.yaml; lefthook, .lefthook, lefthook-local and .lefthook-local as .yml, .yaml, '
+        + '.json, .jsonc or .toml, .config/ included) at any depth',
     },
+    { kind: 'segment', values: ['.lefthook-local'], label: 'anything under .lefthook-local/ (lefthook\'s local script directory)' },
   ] satisfies ProtectedRule[]),
   node: Object.freeze([
     { kind: 'basename', values: ['package.json'], label: 'package.json at any depth' },
