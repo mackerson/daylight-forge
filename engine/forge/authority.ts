@@ -99,7 +99,7 @@ export const packetSetDigestOf = (pairs: ReadonlyArray<{ ticketId: string; packe
   digestOf(pairs.map((p) => `${p.ticketId}:${p.packetDigest}`).sort().join('\n'));
 
 /** The plan a campaign was last imported at, from its artifact; null when it has none or it no longer parses. */
-export function planFileOf(ctx: DaylightContext, campaignId: string): { plan: PlanFile; planDigest: string } | null {
+export function planFileOf(ctx: Pick<DaylightContext, 'store' | 'artifacts'>, campaignId: string): { plan: PlanFile; planDigest: string } | null {
   const at = ctx.store.currentPlan(campaignId);
   const ref = at ? ctx.store.artifact(at.planArtifact) : null;
   if (!at || !ref) return null;

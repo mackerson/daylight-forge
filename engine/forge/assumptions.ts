@@ -24,12 +24,30 @@ function requireCampaign(ctx: DaylightContext, id: string): Mission {
   return m;
 }
 
-/** One `open` row per owner decision the plan names that this campaign does not have yet. */
+/** An `OIR.*` owner decision: an IR interpretation recorded on its corpus (§6.3), never a plan default. */
+const isInterpretationId = (id: string) => id.startsWith('OIR.');
+
+/**
+ * The IR interpretation an `OIR.*` id names, on any mission of the project, or null. One human
+ * decision on it unblocks both the record and every ticket that blocks on it.
+ */
+function interpretationOf(ctx: DaylightContext, projectId: string, ownerDecisionId: string): Assumption | null {
+  if (!isInterpretationId(ownerDecisionId)) return null;
+  const a = ctx.store.assumptionByOwnerDecision(projectId, ownerDecisionId);
+  return a?.source === 'ir-interpretation' ? a : null;
+}
+
+/**
+ * One `open` row per owner decision the plan names that this campaign does not have yet. An
+ * `OIR.*` id that resolves to its corpus's interpretation gets no row here: there is one
+ * assumption, never a second plan-default one (P2-R53 D-d).
+ */
 export function seedPlanAssumptions(ctx: DaylightContext, campaignId: string, plan: PlanFileV1): Assumption[] {
   const have = new Set(ctx.store.assumptions(campaignId).map((a) => a.ownerDecisionId).filter(Boolean));
+  const projectId = ctx.store.mission(campaignId)?.projectId ?? '';
   const out: Assumption[] = [];
   for (const o of plan.ownerDecisions ?? []) {
-    if (have.has(o.id)) continue;
+    if (have.has(o.id) || interpretationOf(ctx, projectId, o.id)) continue;
     const a = ctx.store.recordAssumption({
       campaignId, ownerDecisionId: o.id, question: o.question, default: o.default ?? '', rationale: o.rationale?.trim() || 'named in the plan',
       status: 'open', blocking: o.blocking, source: 'plan-default', recordedBy: 'daylight',
@@ -167,12 +185,16 @@ function followUpOf(
   };
 }
 
-/** Tickets that wait on an owner: every ticket whose `blocksOn` names an owner decision still `open`. */
+/**
+ * Tickets that wait on an owner: every ticket whose `blocksOn` names an owner decision still
+ * `open`, the campaign's own or (for `OIR.*`) its corpus's interpretation.
+ */
 export function waitingOwner(ctx: DaylightContext, campaignId: string): Map<string, string[]> {
   const open = new Set(ctx.store.assumptions(campaignId, { status: 'open' }).map((a) => a.ownerDecisionId).filter((x): x is string => !!x));
+  const projectId = ctx.store.mission(campaignId)?.projectId ?? '';
   const out = new Map<string, string[]>();
   for (const t of ctx.store.campaignTickets(campaignId)) {
-    const on = t.blocksOn.filter((o) => open.has(o));
+    const on = t.blocksOn.filter((o) => open.has(o) || interpretationOf(ctx, projectId, o)?.status === 'open');
     if (on.length) out.set(t.ticketId, on);
   }
   return out;
@@ -191,6 +213,14 @@ export function assumptionNeeds(ctx: DaylightContext, campaign: Mission): Need[]
         why: `assumption ${a.id} waits for its owner${held.length ? `; it holds ${plural(held.length, 'ticket')}: ${held.join(', ')}` : ''}`,
       });
     }
+  }
+  // The corpus's interpretations this campaign's tickets block on, once each.
+  const oirs = new Map<string, string[]>();
+  for (const t of ctx.store.campaignTickets(campaign.id)) for (const o of t.blocksOn) if (isInterpretationId(o)) oirs.set(o, [...(oirs.get(o) ?? []), t.ticketId]);
+  for (const [o, held] of oirs) {
+    const a = interpretationOf(ctx, campaign.projectId, o);
+    if (a?.status !== 'open') continue;
+    out.push({ kind: 'ir-interpretation', ref: a.id, why: `interpretation ${o} (${a.id}) waits for its owner; it holds ${plural(held.length, 'ticket')}: ${held.join(', ')}` });
   }
   return out;
 }
