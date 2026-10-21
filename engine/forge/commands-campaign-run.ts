@@ -7,6 +7,7 @@ import type { SandboxProfile } from '../experiment/sandbox.ts';
 import {
   baselineCampaign, listCampaignGates, lockableIds, lockCampaign, registerCampaignGate, registerPlanGates,
 } from './campaign-gates.ts';
+import { campaignBindingOf } from '../mission/store.ts';
 import { haltCampaign, resumeCampaign } from './campaign.ts';
 import { campaignStatus, r5StatusHost, renderCampaignStatus, type StatusHost } from './campaign-status.ts';
 import { actorFor, parse, Usage } from './commands.ts';
@@ -28,7 +29,7 @@ import type { FlagGet } from './commands-campaign.ts';
  *        [--harness node|cargo] [--crate <dir>] [--name <basename>]
  *   gate list <c>
  *   baseline <c> <repo> [--runs n] [--timeout s]
- *   lock <c> --ratchet|--no-ratchet --rationale '<why>' [--accept-vacuous x,…] --confirm <c8>
+ *   lock <c> --ratchet|--no-ratchet --rationale '<why>' [--accept-vacuous x,…] [--obligations T:ob1,x_…=T:ob2] --confirm <c8>
  *   run <c> <repo> [--concurrency N] [--max-waves K] [--dry-run]
  *   status <c> [<repo>] [--write]
  *   halt <c> --rationale '<why>'
@@ -64,6 +65,35 @@ const num = (s: string | undefined): number | undefined => {
   return n;
 };
 
+/**
+ * `--obligations` read as the lock's experiment → `<ticket>:ob<n>` map (spec ingestion §8.4). A bare
+ * `<ticket>:ob<n>` binds to the one gate of that ticket in the set; `<experiment>=<ticket>:ob<n>`
+ * names the gate, regression gate or holdout outright. Whether the binding is allowed is
+ * `lockCampaign`'s to refuse; this only resolves the names. Undefined when the flag is absent.
+ */
+export function lockObligationsOf(ctx: Pick<GateContext, 'store'>, ids: readonly string[], raw: string | undefined): Record<string, string[]> | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'true') throw new Usage('--obligations takes <ticket>:ob<n> or <experiment>=<ticket>:ob<n>, comma-separated');
+  const out: Record<string, string[]> = {};
+  for (const item of list(raw)) {
+    const eq = item.indexOf('=');
+    let experimentId: string;
+    const ob = eq >= 0 ? item.slice(eq + 1) : item;
+    if (eq >= 0) experimentId = item.slice(0, eq);
+    else {
+      const ticket = ob.split(':')[0];
+      const gates = ids.filter((id) => {
+        const x = ctx.store.experiment(id);
+        return x?.role === 'gate' && campaignBindingOf(x) === ticket;
+      });
+      if (gates.length !== 1) throw new Usage(`--obligations ${ob}: ticket ${ticket} has ${gates.length} gate(s) in the set; name one as <experiment>=${ob}`);
+      experimentId = gates[0];
+    }
+    (out[experimentId] ??= []).push(ob);
+  }
+  return out;
+}
+
 export type CampaignRunConfirmOp = 'lock-campaign-gates' | 'resume-campaign' | 'adopt-integration-tip';
 export const CAMPAIGN_RUN_CONFIRM_OPS: readonly CampaignRunConfirmOp[] = ['lock-campaign-gates', 'resume-campaign', 'adopt-integration-tip'];
 
@@ -82,7 +112,8 @@ export function campaignRunConfirm(ctx: DaylightContext, op: CampaignRunConfirmO
     case 'lock-campaign-gates': {
       const ratchet = get('ratchet') === 'true' ? true : get('no-ratchet') === 'true' ? false : undefined;
       if (ratchet === undefined) throw new Usage('--ratchet or --no-ratchet is required');
-      return confirmDigest(ctx, 'lock-campaign-gates', subjectId, { experimentIds: lockableIds(ctx, subjectId), ratchet, acceptVacuous: list(get('accept-vacuous')) });
+      const ids = lockableIds(ctx, subjectId);
+      return confirmDigest(ctx, 'lock-campaign-gates', subjectId, { experimentIds: ids, ratchet, acceptVacuous: list(get('accept-vacuous')), obligations: lockObligationsOf(ctx, ids, get('obligations')) });
     }
     case 'resume-campaign':
       return confirmDigest(ctx, 'resume-campaign', subjectId, { haltDecisionId: needOf('halt') });
@@ -180,8 +211,9 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
         return await withCtx((ctx) => {
           const g = gctx(ctx, '');
           const ids = lockableIds(g, campaignId);
+          const obligations = lockObligationsOf(g, ids, last(p, 'obligations'));
           if (confirm === undefined) {
-            const preview = confirmDigest(g, 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet, acceptVacuous: list(last(p, 'accept-vacuous')) });
+            const preview = confirmDigest(g, 'lock-campaign-gates', campaignId, { experimentIds: ids, ratchet, acceptVacuous: list(last(p, 'accept-vacuous')), obligations });
             if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
             else {
               for (const l of preview.lines) say(l);
@@ -192,6 +224,7 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
           }
           const d = lockCampaign(g, {
             campaignId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), ratchet, confirm, acceptVacuous: list(last(p, 'accept-vacuous')), env,
+            ...(obligations ? { obligations } : {}),
           });
           if (asJson) json(d);
           else say(`locked campaign gates ${String(d.scope.gateSetDigest)} (ratchet ${ratchet ? 'on' : 'off'}) by ${d.actor} (${d.id}); authorize with --expected-gate-set ${String(d.scope.gateSetDigest)}`);
