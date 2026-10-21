@@ -104,7 +104,7 @@ daylight campaign approve-plan <campaign> --rationale '…' --confirm <digest8>
 The one approval of a plan. It goes through the same guard as every other Forge decision (ADR-20):
 refused under `CLAUDECODE` or `DAYLIGHT_SESSION`, refused for anyone but the OS user, refused
 without the first eight hex of the digest being confirmed. Without `--confirm` it prints what it
-would approve and the digest, and exits 0 (P2-R40); that preview runs in an agent session too.
+would approve and the digest, and exits 2 (P2-R45); that preview runs in an agent session too.
 
 The digest covers the campaign, the plan digest and revision, and every plan ticket's work item at
 its content digest. One decision then moves every proposed plan work item to `approved`,

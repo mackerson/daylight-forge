@@ -146,7 +146,7 @@ const code8 = (digest: string) => digest.replace(/^sha256:/, '').slice(0, 8);
 /** A guarded act: without --confirm it shows a digest and exits 2; with the digest's code it runs. */
 const confirmed = (args: string[]): { preview: Ran; act: Ran } => {
   const preview = cli([...args, '--format', 'json']);
-  const digest = preview.code === 0 || preview.code === 2 ? parsed<{ digest: string }>(preview).digest : '';
+  const digest = preview.code === 2 ? parsed<{ digest: string }>(preview).digest : '';
   return { preview, act: cli([...args, '--format', 'json', '--confirm', code8(digest)]) };
 };
 
@@ -170,7 +170,7 @@ const imp = cli(['campaign', 'import', repo, '--file', 'daylight.plan.json', '--
 const campaignId = imp.code === 0 ? parsed<{ campaign: { id: string } }>(imp).campaign.id : '';
 check('import: one campaign with three plan tickets', imp.code === 0 && parsed<{ added: string[] }>(imp).added.length === 3, imp.err);
 const approve = confirmed(['campaign', 'approve-plan', campaignId, '--rationale', 'plan read']);
-check('approve-plan: the digest first, then the approval', approve.preview.code === 0 && approve.act.code === 0, approve.act.err);
+check('approve-plan: the digest first, then the approval', approve.preview.code === 2 && approve.act.code === 0, approve.act.err);
 
 section('a holdout, the baseline and the lock');
 const reg = cli(['campaign', 'gate', 'register', campaignId, '--role', 'holdout', '--ticket', 'B', '--file', holdoutFile, '--expect-exit', '0', '--expect-stdout', '# fail 0', '--format', 'json']);
@@ -181,7 +181,7 @@ check('baseline: the regression gate passes at base, the three ticket gates and 
   && baseRows.filter((g) => g.conclusion === 'supported').length === 1 && baseRows.filter((g) => g.conclusion === 'falsified').length === 4, baseline.err || baseline.out);
 const lock = confirmed(['campaign', 'lock', campaignId, '--no-ratchet', '--rationale', 'gates read']);
 const gateSet = lock.act.code === 0 ? String(parsed<Decision>(lock.act).scope.gateSetDigest) : '';
-check('lock: the gate-set digest first, then the lock', lock.preview.code === 0 && lock.act.code === 0 && gateSet.startsWith('sha256:'), lock.act.err);
+check('lock: the gate-set digest first, then the lock', lock.preview.code === 2 && lock.act.code === 0 && gateSet.startsWith('sha256:'), lock.act.err);
 
 section('authorize-campaign against that lock');
 const envelope = ['--roster', 'mock', '--max-usd-total', '10', '--max-usd-per-mission', '1', '--max-turns', '40', '--timeout', '600', '--max-attempts', '3',
@@ -190,7 +190,7 @@ const wrongSet = confirmed(['campaign', 'authorize', campaignId, '--expected-gat
 check('an --expected-gate-set that is not the lock\'s is refused', wrongSet.act.code === 1, wrongSet.act.err);
 const authz = confirmed(['campaign', 'authorize', campaignId, '--expected-gate-set', gateSet, ...envelope]);
 const auth = authz.act.code === 0 ? parsed<Decision>(authz.act) : null;
-check('authorized', authz.preview.code === 0 && auth?.scope.operation === 'authorize-campaign' && auth.actor.startsWith('human:'), authz.act.err);
+check('authorized', authz.preview.code === 2 && auth?.scope.operation === 'authorize-campaign' && auth.actor.startsWith('human:'), authz.act.err);
 
 // ---- the run ------------------------------------------------------------------------------------
 
@@ -261,9 +261,9 @@ check('status needs are listed once each', new Set(needKinds(report)).size === n
 section('an overturned assumption\'s follow-up, approved by a person, lands');
 const rec = confirmed(['assumption', 'record', campaignId, '--question', 'Does d stay d0?', '--default', 'yes', '--rationale', 'noted']);
 const assumptionId = rec.act.code === 0 ? parsed<{ id: string }>(rec.act).id : '';
-check('a person records an assumption', rec.preview.code === 0 && rec.act.code === 0, rec.act.err);
+check('a person records an assumption', rec.preview.code === 2 && rec.act.code === 0, rec.act.err);
 const over = confirmed(['assumption', 'overturn', assumptionId, '--value', 'no', '--follow-up', 'd says D', '--lane', 'LA', '--scope', 'src/d.js', '--rationale', 'changed my mind']);
-check('and overturns it with a follow-up', over.preview.code === 0 && over.act.code === 0, over.act.err);
+check('and overturns it with a follow-up', over.preview.code === 2 && over.act.code === 0, over.act.err);
 const fu = ctx.store.campaignTickets(campaignId).find((t) => t.origin === 'follow-up');
 check('the follow-up FU.1 is filed proposed', fu?.ticketId === 'FU.1' && ctx.store.workItem(fu.workItemId)?.status === 'proposed');
 const proposed = parsed<CampaignStatusReport>(cli(['campaign', 'status', campaignId, repo, '--format', 'json']));
@@ -288,7 +288,7 @@ const halted = cli(['campaign', 'run', campaignId, repo, '--format', 'json']);
 check('a run while halted dispatches nothing and says so', halted.code === 1 && children().length === missionsAtHalt
   && parsed<RunResult>(halted).landed.length === 0, halted.err || halted.out.slice(-400));
 const resume = confirmed(['campaign', 'resume', campaignId, '--halt', haltId, '--rationale', 'go on']);
-check('resume without --confirm shows the digest (exit 0); with it the halt is answered', resume.preview.code === 0 && resume.act.code === 0
+check('resume without --confirm shows the digest (exit 2); with it the halt is answered', resume.preview.code === 2 && resume.act.code === 0
   && ctx.store.campaignHalts(campaignId).length === 0, resume.act.err);
 const run3 = cli(['campaign', 'run', campaignId, repo, '--format', 'json']);
 check('after the resume a run finds nothing left to do', run3.code === 0 && parsed<RunResult>(run3).landed.length === 0, run3.err);

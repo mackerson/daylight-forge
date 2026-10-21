@@ -41,8 +41,8 @@ import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
  * guard: a session that imports the functions directly is outside the threat model, like raw
  * SQL (ADR-37), and the confirmed act's own guard refuses a session again.
  *
- * Contract as the other Forge commands: `--out`, `--format json`, exit 0 when it ran or printed
- * a preview's digest (P2-R40), 2 for bad arguments, 1 for a refusal or a failure.
+ * Contract as the other Forge commands: `--out`, `--format json`, exit 0 when it ran, 2 for bad
+ * arguments or a missing `--confirm` (the digest is printed, P2-R45), 1 for a refusal or a failure.
  */
 
 /** R5's own; WS-R6's `CAMPAIGN_RUN_SUBCOMMANDS` are joined at dispatch (a top-level spread would read it inside an import cycle). */
@@ -176,15 +176,15 @@ function readCtx<T>(out: () => string, fn: (ctx: DaylightContext) => T): T {
   return withCtx(out, fn);
 }
 
-/** Without `--confirm`: show what would be confirmed, and stop. A preview ran, so exit 0 (P2-R40). */
+/** Without `--confirm`: show what would be confirmed, and stop with exit 2 (P2-R45). */
 function preview(c: { digest: string; lines: string[] }, asJson: boolean): number {
   if (asJson) json({ confirm: 'required', digest: c.digest, lines: c.lines });
   else {
     for (const l of c.lines) say(l);
     say(`digest ${c.digest}`);
   }
-  console.error('next: re-run with --confirm <the first eight hex characters of the digest>');
-  return 0;
+  console.error('usage: re-run with --confirm <the first eight hex characters of the digest>');
+  return 2;
 }
 
 /** `--fix-lane 5:1.5` or `off`. */

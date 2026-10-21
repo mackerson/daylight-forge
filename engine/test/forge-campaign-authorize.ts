@@ -117,10 +117,10 @@ section('previews of guarded acts run in an agent session; the confirmed act doe
   for (const v of ['CLAUDECODE', 'DAYLIGHT_SESSION']) {
     for (const [name, args] of previews) {
       const r = cli([...args, '--out', s.out, '--format', 'json'], { [v]: '1' });
-      const digest = r.code === 0 ? (JSON.parse(r.out) as { digest?: string }).digest : undefined;
-      check(`${v}: the ${name} preview exits 0 with its digest`, r.code === 0 && /^sha256:[0-9a-f]{64}$/.test(digest ?? ''), `${r.code} ${r.err}`);
+      const digest = r.code === 2 ? (JSON.parse(r.out) as { digest?: string }).digest : undefined;
+      check(`${v}: the ${name} preview exits 2 with its digest`, r.code === 2 && /^sha256:[0-9a-f]{64}$/.test(digest ?? ''), `${r.code} ${r.err}`);
       const text = cli([...args, '--out', s.out], { [v]: '1' });
-      check(`${v}: and prints it as text`, text.code === 0 && /^digest sha256:|^gate set sha256:/m.test(text.out), `${text.code} ${text.err}`);
+      check(`${v}: and prints it as text`, text.code === 2 && /^digest sha256:|^gate set sha256:/m.test(text.out), `${text.code} ${text.err}`);
       const act = cli([...args, '--out', s.out, '--confirm', (digest ?? 'sha256:00000000').slice(7, 15)], { [v]: '1' });
       check(`${v}: ${name} --confirm is refused at the CLI`, act.code === 1 && act.err.includes(v) && act.err.includes('refused'), `${act.code} ${act.err}`);
       const bare = cli([...args, '--out', s.out, '--confirm'], { [v]: '1' });
