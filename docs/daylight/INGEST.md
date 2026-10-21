@@ -401,14 +401,14 @@ the blueprint or an authorized ticket is stale; the refusal names them. A person
 digest; any further drift breaks the link again. A traced ticket's own title, statement lines and
 examples that name a holdout basename are withheld from the author too, and counted.
 
-## Agent sessions
+## Agent sessions: review, blueprints and packets
 
 Read-only forms run anywhere: `corpus diff`, `blueprint validate|show`, `packets list|context`,
 and a guarded act's preview (no `--confirm`). `review` and the `propose` forms run in an agent
 session only when every tool is a mock (P2-R50 Q5). Everything else writes rows or files and is a
 person's, from their own shell.
 
-## Traceability (WS-R16)
+## Traceability
 
 `engine/forge/trace.ts` answers two questions from rows other modules write, and decides nothing:
 
@@ -457,7 +457,7 @@ What a trace says instead of guessing, as `gaps`:
 
 `trace matrix` needs the authority chain (`authorityChainOf`, WS-R15).
 
-## The ingestion benchmark (WS-R16)
+## The ingestion benchmark
 
 `daylight ingest bench --mode mock|live-extract|live-full --fixture <dir> --extractor <script> [--format json]`,
 and `engine/test/forge-ingest-benchmark.ts` in `test:all` (mock mode, both corpora; it also runs
