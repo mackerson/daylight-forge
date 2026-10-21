@@ -1,4 +1,5 @@
 import { ambiguities } from '../forge/decompose.ts';
+import { ingestNeeds } from '../forge/authority.ts';
 import { campaignNeeds, directorApplies } from '../forge/campaign-needs.ts';
 import { dependencyNeeds } from '../forge/dependency-requests.ts';
 import type { DaylightContext } from './context.ts';
@@ -155,6 +156,7 @@ export function needsOf(ctx: DaylightContext, mission: Mission, comparison?: Com
     case 'spec': return specNeeds(ctx, mission);
     case 'implement': return implementNeeds(ctx, mission);
     case 'campaign': return campaignNeeds(ctx, mission);
+    case 'corpus': return ingestNeeds(ctx, mission);
     case 'work': return [];
     default: return disputeNeeds(ctx, mission, comparison);
   }

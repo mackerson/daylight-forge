@@ -15,6 +15,8 @@ import type { GateContext } from '../forge/gate.ts';
 import {
   authorityChainOf, carryForward, diffCorpus, ingestNeeds, irSetDigestAt, isIrStale, staleBlueprints, stalePackets, staleTickets,
 } from '../forge/authority.ts';
+import { campaignNeeds } from '../forge/campaign-needs.ts';
+import { needsOf } from '../mission/needs.ts';
 import { approveBlueprint, blueprintContext, importBlueprint, validateBlueprint } from '../forge/blueprint.ts';
 import { approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, type EnvelopeFlags } from '../forge/campaign.ts';
 import { campaignLockConfirm, lockCampaign, registerPlanGates } from '../forge/campaign-gates.ts';
@@ -201,6 +203,9 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   check('staleTickets derives it for the director (TicketStatus stale lands with R16)', staleTickets(ctx, campaign.id).get('W1.D1')?.join() === r2.id);
   check('the campaign needs the gate looked at; the corpus the record and its interpretation', ingestNeeds(ctx, campaign).some((n) => n.kind === 'gate-stale' && n.ref === suite.id)
     && ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-stale' && n.ref === r2.id) && ingestNeeds(ctx, corpus).some((n) => n.kind === 'spec-stale' && n.ref === u.id));
+  check('campaignNeeds carries the ingest needs exactly once (P2-R56)', campaignNeeds(ctx, campaign).filter((n) => n.kind === 'gate-stale' && n.ref === suite.id).length === 1
+    && campaignNeeds(ctx, campaign).filter((n) => n.kind === 'gate-stale' || n.kind === 'evidence-stale').length === ingestNeeds(ctx, campaign).length);
+  check('needsOf a corpus mission is its ingest needs', JSON.stringify(needsOf(ctx, corpus)) === JSON.stringify(ingestNeeds(ctx, corpus)) && needsOf(ctx, corpus).some((n) => n.ref === r2.id));
   const drift = authorityChainOf(ctx, campaign.id).breaks.find((x) => x.link === 'ir');
   check('P2-R59: a stale cited record breaks the chain\'s ir link, naming it', !!drift && drift.why.includes(r2.id), JSON.stringify(authorityChainOf(ctx, campaign.id).breaks));
   check('P2-R59: the director pass after the revision is refused, naming the stale record', (campaignAuthorizationRefusal(ctx, campaign.id) ?? '').includes(r2.id));
