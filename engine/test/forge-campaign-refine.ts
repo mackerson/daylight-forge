@@ -193,6 +193,14 @@ section('the map at a revision, and what the campaign introduced');
   refineReport(w.ctx, w.id, w.root);
   const remapped = JSON.parse(fs.readFileSync(mapJson, 'utf8')) as typeof record;
   check('another parser set in map.json is re-mapped (L1)', fs.statSync(mapJson).mtimeMs !== stamp && remapped.parsers.join() === record.parsers.join(), JSON.stringify(remapped.parsers));
+  // --cached revalidates the map cache key (L2): another MAP_FORMAT is stale until mapped again.
+  fs.writeFileSync(mapJson, JSON.stringify({ ...remapped, format: MAP_FORMAT + 1 }));
+  check('--cached says stale when a map\'s format is not this MAP_FORMAT', readRefine(w.out, w.id, w.root)?.stale === true);
+  refineReport(w.ctx, w.id, w.root);
+  check('and not stale once mapped again', readRefine(w.out, w.id, w.root)?.stale === false);
+  const ofBase = refineReport(w.ctx, w.id, w.root, { rev: w.base });
+  check('a report of --rev <base> is not stale while nothing moved', ofBase.rev === w.base && readRefine(w.out, w.id, w.root)?.stale === false);
+  refineReport(w.ctx, w.id, w.root);
   check('the checkout is untouched (HEAD, index, worktree, refs)', repoState(w.root) === before);
 
   const rows = refineReport(w.ctx, w.id, w.root, { rowsOnly: true });

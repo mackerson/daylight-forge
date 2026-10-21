@@ -53,6 +53,8 @@ export function refineMapDir(out: string, campaignId: string, rev: string): stri
 }
 
 const refineFile = (out: string, campaignId: string) => path.join(out, 'campaigns', campaignId, 'refine.json');
+/** Beside refine.json: the integration tip when it was written, so `--cached` knows whether anything moved since. */
+const refineTipFile = (out: string, campaignId: string) => path.join(out, 'campaigns', campaignId, 'refine.tip.json');
 
 function resolveRev(repo: string, rev: string): string {
   try {
@@ -405,14 +407,28 @@ export function refineReport(ctx: DaylightContext, campaignId: string, repo: str
   if (!o.rowsOnly) {
     fs.mkdirSync(path.dirname(refineFile(ctx.out, campaignId)), { recursive: true });
     fs.writeFileSync(refineFile(ctx.out, campaignId), `${JSON.stringify(report, null, 2)}\n`);
+    fs.writeFileSync(refineTipFile(ctx.out, campaignId), `${JSON.stringify({ tip: integrationTip(root, campaignId) ?? base })}\n`);
   }
   return report;
 }
 
-/** The last `refine.json`, `stale` when the integration tip moved since; null when none was written. */
+/** Whether a map this report names is still what `mapRevision` would read as cached. */
+function mapCurrent(out: string, ref: RefineMapRef): boolean {
+  const m = readJson<MapRecord>(path.join(out, ref.dir, 'map.json'));
+  return !!m && m.format === MAP_FORMAT && m.rev === ref.rev && m.parsers.join('\n') === activeParsers().map((p) => p.name).sort(byId).join('\n');
+}
+
+/**
+ * The last `refine.json`, `stale` when the integration tip moved since it was written, or when a
+ * map it names no longer matches the cache key (another MAP_FORMAT or parser set); null when none
+ * was written. A report of `--rev` is not stale merely for not being of the tip.
+ */
 export function readRefine(out: string, campaignId: string, repo: string | null): RefineReport | null {
   const r = readJson<RefineReport>(refineFile(out, campaignId));
   if (!r || r.kind !== 'daylight-refine' || r.campaignId !== campaignId) return null;
-  const tip = repo ? integrationTip(repo, campaignId) ?? r.base : null;
-  return { ...r, stale: tip !== null && tip !== r.rev };
+  const then = readJson<{ tip?: string }>(refineTipFile(out, campaignId))?.tip ?? r.rev;
+  const now = repo ? integrationTip(repo, campaignId) ?? r.base : null;
+  const moved = now !== null && now !== then;
+  const maps = r.maps ? mapCurrent(out, r.maps.base) && mapCurrent(out, r.maps.rev) : true;
+  return { ...r, stale: moved || !maps };
 }

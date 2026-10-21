@@ -69,7 +69,7 @@ says so.
 ```
 daylight campaign refine <c> [<repo>] [--rev <sha>] [--format json]   # maps base and tip if not cached; writes refine.json
 daylight campaign refine <c> [<repo>] --rows-only [--format json]     # no map: the rows' focus tiers only
-daylight campaign refine <c> [<repo>] --cached [--format json]        # reads refine.json; stale when the tip moved
+daylight campaign refine <c> [<repo>] --cached [--format json]        # reads refine.json; stale when the tip moved since, or a map's cache key changed
 ```
 
 - **The map at a revision.** Each of the base and the revision (default: the integration tip) is
