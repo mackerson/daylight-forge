@@ -358,6 +358,54 @@ const flag = (argv, name) => {
     check('forge-candidate carries the shapes for the review screen', view.forgeryShapes.length === 1 && view.forgeryShapes[0].shapes.length === 2);
   }
 
+  section('a rationale that looks like a flag stays text on every guarded handler (review M1)');
+  {
+    // The engine's argv parser (engine/forge/commands.ts parse): `--k=v`, else `--k v` unless v starts `--`, else `--k` = 'true'.
+    const engineParse = (argv) => {
+      const flags = new Map();
+      for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (!a.startsWith('--')) continue;
+        const eq = a.indexOf('=');
+        if (eq >= 0) flags.set(a.slice(2, eq), a.slice(eq + 1));
+        else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) flags.set(a.slice(2), argv[++i]);
+        else flags.set(a.slice(2), 'true');
+      }
+      return flags;
+    };
+    const U = `u_${'6'.repeat(32)}`;
+    const D = `d_${'7'.repeat(32)}`;
+    const locked = (a) => (a[0] === 'campaign' && a[1] === 'gate' ? { lock: { gateSetDigest: DIGEST } } : undefined);
+    const form = {
+      roster: ['mock'], reviewRoster: [], maxUsdTotal: 40, maxUsdPerMission: 2, maxTurns: 60, timeoutSeconds: 600,
+      maxAttempts: 3, concurrency: 6, execute: false, autoApply: 'integration-ref', fixLane: 'off', notAfterHours: 72,
+    };
+    const every = [
+      ['mission-authorize', { id: M, write: true }], ['gate-lock', { id: M }], ['forge-decide', { id: C, kind: 'approve' }],
+      ['forge-decide', { id: C, kind: 'override' }], ['forge-decide', { id: C, kind: 'reject' }], ['work-item-decide', { id: W, kind: 'approve' }],
+      ['forge-campaign-approve-plan', { id: M }], ['forge-campaign-authorize', { id: M, ...form }], ['forge-campaign-retry', { id: M, ticketId: 'API.2' }],
+      ['forge-campaign-resume', { id: M, haltId: D }], ['forge-campaign-adopt-tip', { id: M, haltId: D }],
+      ['forge-assumption-decide', { id: U, kind: 'confirm' }], ['forge-campaign-forgery-review', { id: C, declined: false }],
+    ];
+    for (const probe of ['--acknowledge-forgery-shape', '--acknowledge-possible-secret', '--confirm']) {
+      const bad = [];
+      for (const [name, payload] of every) {
+        const { h, calls } = world({ reads: locked, checked: false });
+        await h[name]({ ...payload, rationale: probe });
+        const act = mutations(calls)[0];
+        const f = act ? engineParse(act) : null;
+        const leaked = probe === '--confirm' ? f.get('confirm') !== 'abcdef12' : act.includes(probe) || f.has(probe.slice(2));
+        if (!act || f.get('rationale') !== probe || leaked) bad.push(`${name}:${JSON.stringify(act)}`);
+      }
+      check(`rationale ${probe} arrives as one --rationale= element and sets no flag, on all ${every.length} guarded acts`, bad.length === 0, bad.join(' | '));
+    }
+    const shaped = JSON.stringify({ flags: [{ path: 'src/report.rs', forgeryShapes: ['from_raw_fd(1)'] }] });
+    const { h, calls } = world({ summary: shaped, checked: false });
+    const r = await h['forge-decide']({ id: C, kind: 'approve', rationale: '--acknowledge-forgery-shape' });
+    check('with that rationale a forgery-shaped approve still demands the checkbox and records nothing unticked',
+      r.canceled === true && typeof calls.boxes[0].checkboxLabel === 'string' && mutations(calls).length === 0);
+  }
+
   section('campaign guarded acts: preview, dialog, act; actor, code, paths and refs are main\'s');
   {
     const U = `u_${'6'.repeat(32)}`;

@@ -304,7 +304,7 @@ function handlersFor(deps) {
       ];
       return guarded({
         operation: 'authorize-mission', subject: id, verb: 'Authorize mission', confirmArgs: grant,
-        act: [...ARGV.authorize(dir(), id), '--rationale', rationale],
+        act: [...ARGV.authorize(dir(), id), kv('rationale', rationale)],
       });
     },
 
@@ -322,7 +322,7 @@ function handlersFor(deps) {
       }
       return guarded({
         operation: 'lock-gates', subject: id, verb: 'Lock gates',
-        act: [...ARGV.gateLock(dir(), id), '--rationale', rationale, ...(vacuous.length ? ['--accept-vacuous', vacuous.join(',')] : [])],
+        act: [...ARGV.gateLock(dir(), id), kv('rationale', rationale), ...(vacuous.length ? ['--accept-vacuous', vacuous.join(',')] : [])],
       });
     },
 
@@ -336,7 +336,7 @@ function handlersFor(deps) {
       if (!rationale) return { error: p.kind === 'override' ? 'an override needs a rationale' : 'a decision needs a rationale' };
       return guarded({
         operation, subject: id, verb: `${p.kind[0].toUpperCase()}${p.kind.slice(1)} candidate`,
-        act: [...ARGV.decide(dir(), p.kind, id), '--rationale', rationale],
+        act: [...ARGV.decide(dir(), p.kind, id), kv('rationale', rationale)],
         secrets: p.kind === 'approve' || p.kind === 'override',
         forgery: p.kind === 'approve' || p.kind === 'override',
       });
@@ -361,7 +361,7 @@ function handlersFor(deps) {
       if (!id || !operation || !rationale) return { error: 'a work item decision needs an item, approve or reject, and a rationale' };
       return guarded({
         operation, subject: id, verb: p.kind === 'approve' ? 'Approve work item' : 'Reject work item',
-        act: [...ARGV.workItemDecide(dir(), p.kind, id), '--rationale', rationale],
+        act: [...ARGV.workItemDecide(dir(), p.kind, id), kv('rationale', rationale)],
       });
     },
 
