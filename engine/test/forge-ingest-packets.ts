@@ -226,6 +226,13 @@ const prompt = buildAuthorPrompt({ title: 't', statement: 's', examples: [], neg
 check('the author prompt fences it as SPEC-CONTEXT and says only how many were withheld', /<<<SPEC-CONTEXT-/.test(prompt) && /1 passage\(s\) withheld/.test(prompt)
   && !prompt.includes('offline.test.mjs') && !prompt.includes('Scans may be kept'));
 
+{
+  const named = { title: 'Scans and offline.test.mjs', statement: 'Record scans.\nMake offline.test.mjs pass.', examples: ['offline.test.mjs passes', 'a scan has a time'], negativeExamples: [] };
+  const p2 = buildAuthorPrompt(named, { missionId: campaign.id, gateSetDigest: 'g', gates: [] }, null, undefined, c);
+  check('P2-R59: a holdout basename in the ticket\'s title, statement or examples never reaches the WORK fence', !p2.includes('offline.test.mjs')
+    && p2.includes('Record scans.') && p2.includes('a scan has a time') && /3 line\(s\) of the work withheld/.test(p2), p2.slice(0, 600));
+}
+
 section('tampering: a re-pointed packet with the plan digest unchanged breaks the chain; a moved quote refuses the run');
 const db = new DatabaseSync(path.join(w.out, DAYLIGHT_DB));
 const planDigest = ctx.store.currentPlan(campaign.id)!.planDigest;

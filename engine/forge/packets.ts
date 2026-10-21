@@ -506,8 +506,10 @@ export function emitPlan(ctx: DaylightContext, blueprintId: string, o: { default
  * (a masked quote breaks its digest); the author is told only how many were withheld. Bounded by
  * `maxBytes`; the rest is counted as truncated. Never the whole specification.
  */
-export function packetContext(ctx: DaylightContext, ticket: { campaignId: string; ticketId: string }, o: { maxBytes?: number } = {}): AuthorContext {
-  const empty: AuthorContext = { spans: [], bytes: 0, truncated: 0, withheld: 0 };
+export function packetContext(ctx: DaylightContext, ticket: { campaignId: string; ticketId: string }, o: { maxBytes?: number } = {}):
+  AuthorContext & { holdouts: readonly string[] } {
+  const holdouts = holdoutPaths(ctx, ticket.campaignId).map((p) => path.posix.basename(p)).filter(Boolean);
+  const empty = { spans: [], bytes: 0, truncated: 0, withheld: 0, holdouts };
   const at = planFileOf(ctx, ticket.campaignId);
   const d = at?.plan.derivation;
   const t = at?.plan.tickets.find((x) => x.id === ticket.ticketId);
@@ -515,11 +517,11 @@ export function packetContext(ctx: DaylightContext, ticket: { campaignId: string
   const rev = ctx.store.corpusRevisionByDigest(d.corpusId, d.corpusDigest);
   if (!rev) throw new ImplementRefused(`ticket ${t.id}'s plan names corpus revision ${d.corpusDigest}, which is not recorded`);
   const m = revisionMaterial(ctx, rev.id);
-  const holdouts = holdoutPaths(ctx, ticket.campaignId).map((p) => path.posix.basename(p)).filter(Boolean);
   const ids = [...new Set([...(t.requirementIds ?? []), ...(t.acceptanceObligations ?? []).flatMap((x) => x.irIds),
     ...(t.interfaceContracts ?? []).flatMap((x) => x.irIds), ...(t.artifacts ?? []).flatMap((x) => x.irIds)])];
   const max = o.maxBytes ?? MAX_AUTHOR_CONTEXT_BYTES;
-  const out: AuthorContext = { spans: [], bytes: 0, truncated: 0, withheld: 0 };
+  // `holdouts` stays in memory: buildAuthorPrompt withholds the ticket text naming one; it never enters a prompt.
+  const out = { spans: [] as AuthorContext['spans'], bytes: 0, truncated: 0, withheld: 0, holdouts };
   for (const id of ids) {
     const span = ctx.store.irRecord(id, rev.id)?.span;
     if (!span) throw new ImplementRefused(`record ${id} cited by ticket ${t.id} has no span at the plan's revision`);
