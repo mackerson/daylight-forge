@@ -100,6 +100,15 @@ section('confirm knows every campaign and assumption act (P2-R40, P2-R45 D6)');
   check('approve-plan with --rationale= and the right code is refused for the empty rationale', empty.code === 1 && /needs a rationale/.test(empty.err), `${empty.code} ${empty.err}`);
 
   confirmsAct('approve-plan', s.out, ['approve-plan', id], ['campaign', 'approve-plan', id, '--rationale', 'read']);
+  // --ratchet is in the digest: confirm agrees with the act's own preview for each, and they differ (L1).
+  const ratchetOf = (flag: string) => ({
+    confirm: json<Confirmed>(cli(['confirm', 'lock-campaign-gates', id, flag, '--out', s.out, '--format', 'json']))?.digest,
+    act: json<{ digest: string }>(cli(['campaign', 'lock', id, flag, '--rationale', 'read', '--out', s.out, '--format', 'json']))?.digest,
+  });
+  const on = ratchetOf('--ratchet');
+  const off = ratchetOf('--no-ratchet');
+  check('confirm lock-campaign-gates --ratchet digests as the act does, and not as --no-ratchet', !!on.confirm && on.confirm === on.act && off.confirm === off.act && on.confirm !== off.confirm,
+    JSON.stringify({ on, off }));
   confirmsAct('lock-campaign-gates', s.out, ['lock-campaign-gates', id, '--no-ratchet'], ['campaign', 'lock', id, '--no-ratchet', '--rationale', 'read']);
   let gateSet = '';
   reopen(s.out, (ctx) => {

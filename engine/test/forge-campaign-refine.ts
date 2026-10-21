@@ -186,6 +186,13 @@ section('the map at a revision, and what the campaign introduced');
   const mtime = fs.statSync(path.join(revDir, 'map.json')).mtimeMs;
   const again = refineReport(w.ctx, w.id, w.root);
   check('a second refine reads the cache: map.json untouched, the same report', fs.statSync(path.join(revDir, 'map.json')).mtimeMs === mtime && JSON.stringify(again) === JSON.stringify(r));
+  // The parser set is part of the key: a map made by another parser set is made again.
+  const mapJson = path.join(revDir, 'map.json');
+  fs.writeFileSync(mapJson, JSON.stringify({ ...record, parsers: ['some-other-parser'] }));
+  const stamp = fs.statSync(mapJson).mtimeMs;
+  refineReport(w.ctx, w.id, w.root);
+  const remapped = JSON.parse(fs.readFileSync(mapJson, 'utf8')) as typeof record;
+  check('another parser set in map.json is re-mapped (L1)', fs.statSync(mapJson).mtimeMs !== stamp && remapped.parsers.join() === record.parsers.join(), JSON.stringify(remapped.parsers));
   check('the checkout is untouched (HEAD, index, worktree, refs)', repoState(w.root) === before);
 
   const rows = refineReport(w.ctx, w.id, w.root, { rowsOnly: true });
