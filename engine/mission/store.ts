@@ -29,6 +29,12 @@ import { FINDING_SEVERITIES } from './types.ts';
 import type {
   CampaignLockScope, CampaignWave, Finding, FindingSeverity, Integration, IntegrationMethod, IntegrationState,
 } from './types.ts';
+import { IR_TRANSITIONS } from './types.ts';
+import type {
+  Blueprint, BlueprintDerivation, BlueprintV1, CorpusRevision, IrAttrs, IrFinding, IrFindingKind, IrKind, IrLinkRow, IrObservation,
+  IrRecord, IrSpanRef, IrSpanRow, IrStatus, NewIrRecord, PacketRow, TicketTraceRow,
+} from './types.ts';
+import { ArtifactStore } from './artifacts.ts';
 
 /**
  * The mission store: what work was asked for, who attempted it, and what each attempt
@@ -401,6 +407,8 @@ export class MissionStore {
   private now: () => number;
   /** Set only while authorizeCampaign records its decision. */
   private authorizingCampaign = false;
+  /** Bodies the spec-ingestion rows hold by artifact id (a blueprint's), read and re-verified on load. */
+  private bodies: ArtifactStore;
 
   constructor(outDir: string, now: () => number = () => Date.now()) {
     // The output directory usually exists by the time anyone has a mission to record, but
@@ -408,6 +416,7 @@ export class MissionStore {
     fs.mkdirSync(outDir, { recursive: true });
     this.db = openDaylightDb(path.join(outDir, DAYLIGHT_DB));
     this.now = now;
+    this.bodies = new ArtifactStore(outDir);
   }
 
   close(): void {
@@ -455,9 +464,18 @@ export class MissionStore {
     if (input.kind === 'campaign' && (input.permissions?.execute || input.parentId !== undefined)) {
       throw new Error('a campaign mission plans and grants; it never executes and has no parent');
     }
-    if (input.parentId !== undefined) {
+    if (input.kind === 'corpus' && (input.permissions?.execute || input.parentId !== undefined)) {
+      throw new Error('a corpus mission registers and reads specification documents; it never executes and has no parent');
+    }
+    const parentOf = input.parentId !== undefined ? this.mission(input.parentId) : null;
+    if (parentOf?.kind === 'corpus') {
+      // A corpus's only child is its blind IR review (spec ingestion §6.1).
+      if (parentOf.projectId !== input.projectId || input.kind !== 'audit') {
+        throw new Error(`a corpus mission's child is an audit mission of project ${parentOf.projectId}, not ${input.kind}`);
+      }
+    } else if (input.parentId !== undefined) {
       // A parent is a campaign of the same project; its children build its tickets or review its waves.
-      const parent = this.mission(input.parentId);
+      const parent = parentOf;
       if (!parent || parent.kind !== 'campaign' || parent.projectId !== input.projectId) {
         throw new Error(`parent ${input.parentId} is not a campaign mission of project ${input.projectId}`);
       }
@@ -2215,7 +2233,13 @@ export class MissionStore {
   // ---- assumptions ------------------------------------------------------------------
 
   recordAssumption(input: Omit<Assumption, 'id' | 'createdAt' | 'updatedAt' | 'projectId' | 'decisionId' | 'followUpWorkItemId'> & { decisionId?: string }): Assumption {
-    const c = this.requireCampaign(input.campaignId);
+    // An IR interpretation lives on its corpus mission and names its record; it is always a need (P2-R12, §6.3).
+    const interpretation = input.source === 'ir-interpretation';
+    const c = interpretation ? this.requireMission(input.campaignId) : this.requireCampaign(input.campaignId);
+    if (interpretation && (c.kind !== 'corpus' || input.irId === undefined || input.status !== 'open')) {
+      throw new Error('an ir-interpretation assumption is recorded open, on a corpus mission, naming its IR record');
+    }
+    if (!interpretation && input.irId !== undefined) throw new Error('only an ir-interpretation assumption names an IR record');
     if (input.status !== 'open' && input.status !== 'pending') throw new Error('an assumption is recorded open or pending');
     // P2-R12: only a person's row is recorded pending; a plan default becomes pending only by approve-plan.
     if (input.status === 'pending' && !isHumanActor(input.recordedBy)) throw new Error(`refused: a row recorded by ${input.recordedBy} is open, never pending`);
@@ -2228,12 +2252,12 @@ export class MissionStore {
     this.db
       .prepare(
         `INSERT INTO assumptions (id, project_id, campaign_id, mission_id, ticket_id, owner_decision_id, question, default_value, rationale,
-           status, blocking, source, recorded_by, decision_id, follow_up_work_item_id, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`,
+           status, blocking, source, recorded_by, decision_id, follow_up_work_item_id, ir_id, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)`,
       )
       .run(
         id, c.projectId, c.id, input.missionId ?? null, input.ticketId ?? null, input.ownerDecisionId ?? null, input.question, input.default,
-        input.rationale, input.status, input.blocking ? 1 : 0, input.source, input.recordedBy, input.decisionId ?? null, at, at,
+        input.rationale, input.status, input.blocking ? 1 : 0, input.source, input.recordedBy, input.decisionId ?? null, input.irId ?? null, at, at,
       );
     return this.assumption(id)!;
   }
@@ -2767,6 +2791,392 @@ export class MissionStore {
       .map(rowToApplication);
   }
 
+  // ---- spec ingestion (WS-R14/R15/R16) ------------------------------------------------
+  //
+  // Rows only; the rules are in engine/forge/{corpus,ir,ir-review,blueprint,packets,authority}.ts.
+  // Every insert is idempotent on its key. A revision adds spans and never rewrites one, so
+  // staleness is the absence of a row (P2-R53). Status setters move only along their tables.
+
+  insertCorpusRevision(r: Omit<CorpusRevision, 'createdAt'>): CorpusRevision {
+    const have = this.corpusRevision(r.id);
+    if (have) return have;
+    const corpus = this.requireMission(r.corpusId);
+    if (corpus.kind !== 'corpus' || corpus.projectId !== r.projectId) throw new Error(`${r.corpusId} is not a corpus mission of project ${r.projectId}`);
+    if (!isEntityId('corpusRevision', r.id)) throw new Error(`${r.id} is not a corpus revision id`);
+    if (this.corpusRevisionByDigest(r.corpusId, r.corpusDigest)) throw new Error(`corpus ${r.corpusId} already has a revision at ${r.corpusDigest}`);
+    this.db
+      .prepare(
+        `INSERT INTO corpus_revisions (id, corpus_id, project_id, seq, manifest_path, manifest_digest, commits, corpus_digest, docs, precedence,
+           dependencies, unordered, section_index, section_set_digest, sectioner_version, config_digest, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        r.id, r.corpusId, r.projectId, r.seq, r.manifestPath, r.manifestDigest, JSON.stringify(r.commits), r.corpusDigest, JSON.stringify(r.docs),
+        JSON.stringify(r.precedence), JSON.stringify(r.dependencies), JSON.stringify(r.unordered), r.sectionIndex.id, r.sectionSetDigest,
+        r.sectionerVersion, r.configDigest, this.now(),
+      );
+    return this.corpusRevision(r.id)!;
+  }
+
+  corpusRevision(id: string): CorpusRevision | null {
+    const r = this.db.prepare('SELECT * FROM corpus_revisions WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToCorpusRevision(r) : null;
+  }
+
+  corpusRevisions(corpusId: string): CorpusRevision[] {
+    return (this.db.prepare('SELECT * FROM corpus_revisions WHERE corpus_id=? ORDER BY seq').all(corpusId) as Array<Record<string, unknown>>)
+      .map((r) => this.rowToCorpusRevision(r));
+  }
+
+  currentCorpusRevision(corpusId: string): CorpusRevision | null {
+    const r = this.db.prepare('SELECT * FROM corpus_revisions WHERE corpus_id=? ORDER BY seq DESC LIMIT 1').get(corpusId) as
+      Record<string, unknown> | undefined;
+    return r ? this.rowToCorpusRevision(r) : null;
+  }
+
+  corpusRevisionByDigest(corpusId: string, corpusDigest: string): CorpusRevision | null {
+    const r = this.db.prepare('SELECT * FROM corpus_revisions WHERE corpus_id=? AND corpus_digest=?').get(corpusId, corpusDigest) as
+      Record<string, unknown> | undefined;
+    return r ? this.rowToCorpusRevision(r) : null;
+  }
+
+  /** Recorded `proposed`; only `setIrStatus`, under a human decision, moves it. */
+  insertIrRecord(r: NewIrRecord): IrRecord {
+    const have = this.irRecord(r.id);
+    if (have) return have;
+    if (!isEntityId('irRecord', r.id)) throw new Error(`${r.id} is not an IR record id`);
+    const corpus = this.requireMission(r.corpusId);
+    if (corpus.kind !== 'corpus' || corpus.projectId !== r.projectId) throw new Error(`${r.corpusId} is not a corpus mission of project ${r.projectId}`);
+    const at = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO ir_records (id, project_id, corpus_id, kind, source, doc_key, quote, other_quote, statement, attrs, basis_sections, confidence,
+           content_digest, status, ir_version, proposed_by, first_revision, proposal_artifact, overridden_by, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'proposed',?,?,?,?,'[]',?,?)`,
+      )
+      .run(
+        r.id, r.projectId, r.corpusId, r.kind, r.source, r.docKey, r.quote, r.otherQuote, r.statement, JSON.stringify(r.attrs ?? {}),
+        JSON.stringify(r.basisSections ?? []), r.confidence, r.contentDigest, r.irVersion, r.proposedBy, r.firstRevision, r.proposalArtifact ?? null,
+        at, at,
+      );
+    return this.irRecord(r.id)!;
+  }
+
+  /** The record with its spans at `revisionId`, by default its corpus's current revision; no span there = stale. */
+  irRecord(id: string, revisionId?: string): IrRecord | null {
+    const r = this.db.prepare('SELECT * FROM ir_records WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToIrRecord(r, revisionId ?? this.currentCorpusRevision(r.corpus_id as string)?.id ?? null) : null;
+  }
+
+  irRecords(corpusId: string, f: { status?: IrStatus; kind?: IrKind; docKey?: string; sectionId?: string; revisionId?: string } = {}): IrRecord[] {
+    const revisionId = f.revisionId ?? this.currentCorpusRevision(corpusId)?.id ?? null;
+    return (this.db.prepare('SELECT * FROM ir_records WHERE corpus_id=? ORDER BY created_at, id').all(corpusId) as Array<Record<string, unknown>>)
+      .map((r) => this.rowToIrRecord(r, revisionId))
+      .filter((r) => (f.status === undefined || r.status === f.status) && (f.kind === undefined || r.kind === f.kind)
+        && (f.docKey === undefined || r.span?.docKey === f.docKey) && (f.sectionId === undefined || r.span?.sectionId === f.sectionId));
+  }
+
+  /** Forbidden-call guarded (§9): called only from the approve-ir path. */
+  setIrStatus(id: string, to: 'approved' | 'rejected' | 'superseded', decisionId: string): IrRecord {
+    const r = this.irRecord(id);
+    if (!r) throw new Error(`unknown IR record ${id}`);
+    if (!canTransition(IR_TRANSITIONS, r.status, to)) throw new IllegalTransition('IR record', id, r.status, to);
+    const d = this.decision(decisionId);
+    if (!d || d.projectId !== r.projectId) throw new Error(`decision ${decisionId} is not a decision of project ${r.projectId}`);
+    this.db.prepare('UPDATE ir_records SET status=?, decision_id=?, updated_at=? WHERE id=?').run(to, decisionId, this.now(), id);
+    return this.irRecord(id)!;
+  }
+
+  insertIrSpan(s: IrSpanRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO ir_spans (ir_id, revision_id, role, doc_key, section_id, start_byte, end_byte, quote_digest, carry)
+         VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+      )
+      .run(s.irId, s.revisionId, s.role, s.docKey, s.sectionId, s.start, s.end, s.quoteDigest, s.carry);
+  }
+
+  irSpans(irId: string): IrSpanRow[] {
+    return (this.db.prepare(
+      `SELECT s.* FROM ir_spans s JOIN corpus_revisions r ON r.id = s.revision_id WHERE s.ir_id=? ORDER BY r.seq, s.role`,
+    ).all(irId) as Array<Record<string, unknown>>).map(rowToIrSpan);
+  }
+
+  /** Spans at a revision overlapping `[start, end)` of one document. */
+  irSpansAt(revisionId: string, docKey: string, start: number, end: number): IrSpanRow[] {
+    return (this.db.prepare(
+      'SELECT * FROM ir_spans WHERE revision_id=? AND doc_key=? AND start_byte < ? AND end_byte > ? ORDER BY start_byte, ir_id, role',
+    ).all(revisionId, docKey, end, start) as Array<Record<string, unknown>>).map(rowToIrSpan);
+  }
+
+  insertIrObservation(o: IrObservation): void {
+    this.db
+      .prepare('INSERT INTO ir_observations (ir_id, attempt_id, runner_id, window_id, confidence, at) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING')
+      .run(o.irId, o.attemptId, o.runnerId, o.windowId, o.confidence, o.at);
+  }
+
+  irObservations(irId: string): IrObservation[] {
+    return (this.db.prepare('SELECT * FROM ir_observations WHERE ir_id=? ORDER BY at, attempt_id').all(irId) as Array<Record<string, unknown>>)
+      .map((r) => ({
+        irId: r.ir_id as string, attemptId: r.attempt_id as string, runnerId: r.runner_id as string, windowId: r.window_id as string,
+        confidence: r.confidence as number, at: r.at as number,
+      }));
+  }
+
+  insertIrLink(l: IrLinkRow): void {
+    this.db
+      .prepare('INSERT INTO ir_links (from_ir, to_ir, kind, basis, created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING')
+      .run(l.fromIr, l.toIr, l.kind, l.basis, l.createdAt);
+  }
+
+  /** Links from or to the record. */
+  irLinks(irId: string): IrLinkRow[] {
+    return (this.db.prepare('SELECT * FROM ir_links WHERE from_ir=? OR to_ir=? ORDER BY created_at, from_ir, to_ir, kind').all(irId, irId) as
+      Array<Record<string, unknown>>).map((r) => ({
+      fromIr: r.from_ir as string, toIr: r.to_ir as string, kind: r.kind as IrLinkRow['kind'], basis: r.basis as IrLinkRow['basis'],
+      createdAt: r.created_at as number,
+    }));
+  }
+
+  insertIrFinding(f: Omit<IrFinding, 'disposition' | 'decisionId'>): IrFinding {
+    const have = this.irFinding(f.id);
+    if (have) return have;
+    if (!isEntityId('irFinding', f.id)) throw new Error(`${f.id} is not an IR finding id`);
+    this.db
+      .prepare(
+        `INSERT INTO ir_findings (id, project_id, corpus_id, review_mission_id, attempt_id, kind, severity, ir_id, element_id, span, title, statement,
+           finding_artifact, corroborated_by, disposition, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)`,
+      )
+      .run(
+        f.id, f.projectId, f.corpusId, f.reviewMissionId, f.attemptId, f.kind, f.severity, f.irId, f.elementId, f.span ? JSON.stringify(f.span) : null,
+        f.title, f.statement, f.findingArtifact.id, JSON.stringify(f.corroboratedBy), f.createdAt,
+      );
+    return this.irFinding(f.id)!;
+  }
+
+  irFinding(id: string): IrFinding | null {
+    const r = this.db.prepare('SELECT * FROM ir_findings WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToIrFinding(r) : null;
+  }
+
+  irFindings(corpusId: string, f: { disposition?: IrFinding['disposition']; irId?: string } = {}): IrFinding[] {
+    return (this.db.prepare('SELECT * FROM ir_findings WHERE corpus_id=? ORDER BY created_at, id').all(corpusId) as Array<Record<string, unknown>>)
+      .map((r) => this.rowToIrFinding(r))
+      .filter((x) => (f.disposition === undefined || x.disposition === f.disposition) && (f.irId === undefined || x.irId === f.irId));
+  }
+
+  setIrFindingDisposition(id: string, d: 'accepted' | 'dismissed', decisionId: string): IrFinding {
+    const f = this.irFinding(id);
+    if (!f) throw new Error(`unknown IR finding ${id}`);
+    if (f.disposition !== 'open') throw new IllegalTransition('IR finding', id, f.disposition, d);
+    if (!this.decision(decisionId)) throw new Error(`unknown decision ${decisionId}`);
+    this.db.prepare('UPDATE ir_findings SET disposition=?, decision_id=? WHERE id=?').run(d, decisionId, id);
+    return this.irFinding(id)!;
+  }
+
+  insertBlueprint(b: Omit<Blueprint, 'status' | 'decisionId' | 'createdAt' | 'updatedAt'>): Blueprint {
+    const have = this.blueprint(b.id);
+    if (have) return have;
+    if (!isEntityId('blueprint', b.id)) throw new Error(`${b.id} is not a blueprint id`);
+    const at = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO blueprints (id, project_id, corpus_id, revision_id, ir_set_digest, body_artifact, blueprint_digest, status, proposed_by,
+           attempt_id, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,'proposed',?,?,?,?)`,
+      )
+      .run(b.id, b.projectId, b.corpusId, b.revisionId, b.body.irSetDigest, b.bodyArtifact.id, b.blueprintDigest, b.proposedBy, b.attemptId ?? null, at, at);
+    return this.blueprint(b.id)!;
+  }
+
+  blueprint(id: string): Blueprint | null {
+    const r = this.db.prepare('SELECT * FROM blueprints WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToBlueprint(r) : null;
+  }
+
+  blueprints(corpusId: string): Blueprint[] {
+    return (this.db.prepare('SELECT * FROM blueprints WHERE corpus_id=? ORDER BY created_at, id').all(corpusId) as Array<Record<string, unknown>>)
+      .map((r) => this.rowToBlueprint(r));
+  }
+
+  /** Forbidden-call guarded (§9): called only from the approve-blueprint path. */
+  setBlueprintStatus(id: string, to: 'approved' | 'rejected' | 'superseded', decisionId: string): Blueprint {
+    const b = this.blueprint(id);
+    if (!b) throw new Error(`unknown blueprint ${id}`);
+    if (!canTransition(IR_TRANSITIONS, b.status, to)) throw new IllegalTransition('blueprint', id, b.status, to);
+    if (!this.decision(decisionId)) throw new Error(`unknown decision ${decisionId}`);
+    this.db.prepare('UPDATE blueprints SET status=?, decision_id=?, updated_at=? WHERE id=?').run(to, decisionId, this.now(), id);
+    return this.blueprint(id)!;
+  }
+
+  insertDerivations(rows: BlueprintDerivation[]): void {
+    const own = !this.db.isTransaction;
+    if (own) this.db.exec('BEGIN');
+    try {
+      const ins = this.db.prepare('INSERT INTO blueprint_derivations (blueprint_id, element_id, ir_id, role) VALUES (?,?,?,?) ON CONFLICT DO NOTHING');
+      for (const d of rows) ins.run(d.blueprintId, d.elementId, d.irId, d.role);
+      if (own) this.db.exec('COMMIT');
+    } catch (err) {
+      if (own) this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  derivations(blueprintId: string): BlueprintDerivation[] {
+    return (this.db.prepare('SELECT * FROM blueprint_derivations WHERE blueprint_id=? ORDER BY element_id, ir_id, role').all(blueprintId) as
+      Array<Record<string, unknown>>).map(rowToDerivation);
+  }
+
+  derivationsOfIr(irId: string): BlueprintDerivation[] {
+    return (this.db.prepare('SELECT * FROM blueprint_derivations WHERE ir_id=? ORDER BY blueprint_id, element_id, role').all(irId) as
+      Array<Record<string, unknown>>).map(rowToDerivation);
+  }
+
+  insertPacket(p: Omit<PacketRow, 'createdAt' | 'updatedAt'>): PacketRow {
+    const have = this.packet(p.id);
+    if (have) return have;
+    if (!isEntityId('packet', p.id)) throw new Error(`${p.id} is not a packet id`);
+    const at = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO packets (id, project_id, blueprint_id, component_id, ticket_id, packet_digest, body_artifact, status, proposed_by, attempt_id,
+           created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(p.id, p.projectId, p.blueprintId, p.componentId, p.ticketId, p.packetDigest, p.bodyArtifact.id, p.status, p.proposedBy, p.attemptId ?? null, at, at);
+    return this.packet(p.id)!;
+  }
+
+  packet(id: string): PacketRow | null {
+    const r = this.db.prepare('SELECT * FROM packets WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToPacket(r) : null;
+  }
+
+  packets(blueprintId: string): PacketRow[] {
+    return (this.db.prepare('SELECT * FROM packets WHERE blueprint_id=? ORDER BY ticket_id, created_at, id').all(blueprintId) as
+      Array<Record<string, unknown>>).map((r) => this.rowToPacket(r));
+  }
+
+  setPacketStatus(id: string, to: 'emitted' | 'superseded'): PacketRow {
+    const p = this.packet(id);
+    if (!p) throw new Error(`unknown packet ${id}`);
+    const legal: Record<PacketRow['status'], readonly PacketRow['status'][]> = { proposed: ['emitted', 'superseded'], emitted: ['superseded'], superseded: [] };
+    if (p.status !== to && !legal[p.status].includes(to)) throw new IllegalTransition('packet', id, p.status, to);
+    this.db.prepare('UPDATE packets SET status=?, updated_at=? WHERE id=?').run(to, this.now(), id);
+    return this.packet(id)!;
+  }
+
+  insertTicketTrace(rows: TicketTraceRow[]): void {
+    const own = !this.db.isTransaction;
+    if (own) this.db.exec('BEGIN');
+    try {
+      const ins = this.db.prepare(
+        `INSERT INTO ticket_trace (campaign_id, ticket_id, ir_id, role, detail, packet_id, hand_edited) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+      );
+      for (const t of rows) ins.run(t.campaignId, t.ticketId, t.irId, t.role, t.detail, t.packetId, t.handEdited ? 1 : 0);
+      if (own) this.db.exec('COMMIT');
+    } catch (err) {
+      if (own) this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  ticketTrace(campaignId: string, ticketId?: string): TicketTraceRow[] {
+    const rows = (ticketId === undefined
+      ? this.db.prepare('SELECT * FROM ticket_trace WHERE campaign_id=? ORDER BY ticket_id, ir_id, role').all(campaignId)
+      : this.db.prepare('SELECT * FROM ticket_trace WHERE campaign_id=? AND ticket_id=? ORDER BY ir_id, role').all(campaignId, ticketId)) as
+      Array<Record<string, unknown>>;
+    return rows.map(rowToTicketTrace);
+  }
+
+  ticketsTracing(irId: string): TicketTraceRow[] {
+    return (this.db.prepare('SELECT * FROM ticket_trace WHERE ir_id=? ORDER BY campaign_id, ticket_id, role').all(irId) as
+      Array<Record<string, unknown>>).map(rowToTicketTrace);
+  }
+
+  /** The first assumption of any mission of the project for an owner decision id (`OIR.*` dedupe across missions, §6.3). */
+  assumptionByOwnerDecision(projectId: string, ownerDecisionId: string): Assumption | null {
+    const r = this.db.prepare('SELECT * FROM assumptions WHERE project_id=? AND owner_decision_id=? ORDER BY created_at, rowid LIMIT 1')
+      .get(projectId, ownerDecisionId) as Record<string, unknown> | undefined;
+    return r ? rowToAssumption(r) : null;
+  }
+
+  private rowToCorpusRevision(r: Record<string, unknown>): CorpusRevision {
+    const sectionIndex = this.artifact(r.section_index as string);
+    if (!sectionIndex) throw new Error(`corpus revision ${r.id as string}: section index artifact is not recorded`);
+    return {
+      id: r.id as string, corpusId: r.corpus_id as string, projectId: r.project_id as string, seq: r.seq as number,
+      manifestPath: r.manifest_path as string, manifestDigest: r.manifest_digest as string,
+      commits: parseJson<Record<string, string>>(r.commits as string, {}), corpusDigest: r.corpus_digest as string,
+      docs: parseJson<CorpusRevision['docs']>(r.docs as string, []), precedence: parseJson<CorpusRevision['precedence']>(r.precedence as string, []),
+      dependencies: parseJson<CorpusRevision['dependencies']>(r.dependencies as string, []),
+      unordered: parseJson<CorpusRevision['unordered']>(r.unordered as string, []),
+      sectionIndex, sectionSetDigest: r.section_set_digest as string, sectionerVersion: r.sectioner_version as string,
+      configDigest: r.config_digest as string, createdAt: r.created_at as number,
+    };
+  }
+
+  private rowToIrRecord(r: Record<string, unknown>, revisionId: string | null): IrRecord {
+    const id = r.id as string;
+    const spans = revisionId === null ? [] : (this.db.prepare('SELECT * FROM ir_spans WHERE ir_id=? AND revision_id=?').all(id, revisionId) as
+      Array<Record<string, unknown>>).map(rowToIrSpan);
+    const spanOf = (role: 'primary' | 'other', quote: string | null): IrSpanRef | null => {
+      const s = spans.find((x) => x.role === role);
+      return s && quote !== null
+        ? { revisionId: s.revisionId, docKey: s.docKey, sectionId: s.sectionId, start: s.start, end: s.end, quote, quoteDigest: s.quoteDigest }
+        : null;
+    };
+    const observedBy = [...new Set((this.db.prepare('SELECT runner_id FROM ir_observations WHERE ir_id=? ORDER BY at, attempt_id').all(id) as
+      Array<{ runner_id: string }>).map((o) => o.runner_id))];
+    return {
+      id, projectId: r.project_id as string, corpusId: r.corpus_id as string, kind: r.kind as IrKind, source: r.source as IrRecord['source'],
+      statement: r.statement as string, attrs: parseJson<IrAttrs>(r.attrs as string, {}),
+      span: spanOf('primary', r.quote as string), other: spanOf('other', (r.other_quote as string | null) ?? null),
+      basisSections: parseJson<string[]>(r.basis_sections as string, []), confidence: r.confidence as number,
+      contentDigest: r.content_digest as string, status: r.status as IrStatus, irVersion: r.ir_version as string, observedBy,
+      proposedBy: r.proposed_by as string, decisionId: (r.decision_id as string | null) ?? undefined,
+      assumptionId: (r.assumption_id as string | null) ?? undefined, overriddenBy: parseJson<string[]>(r.overridden_by as string, []),
+      createdAt: r.created_at as number, updatedAt: r.updated_at as number,
+    };
+  }
+
+  private rowToIrFinding(r: Record<string, unknown>): IrFinding {
+    const findingArtifact = this.artifact(r.finding_artifact as string);
+    if (!findingArtifact) throw new Error(`IR finding ${r.id as string}: its artifact is not recorded`);
+    return {
+      id: r.id as string, projectId: r.project_id as string, corpusId: r.corpus_id as string, reviewMissionId: r.review_mission_id as string,
+      attemptId: r.attempt_id as string, kind: r.kind as IrFindingKind, severity: r.severity as FindingSeverity,
+      irId: (r.ir_id as string | null) ?? null, elementId: (r.element_id as string | null) ?? null,
+      span: parseJson<IrSpanRef | null>(r.span as string | null, null), title: r.title as string, statement: r.statement as string,
+      findingArtifact, corroboratedBy: parseJson<string[]>(r.corroborated_by as string, []), disposition: r.disposition as IrFinding['disposition'],
+      decisionId: (r.decision_id as string | null) ?? undefined, createdAt: r.created_at as number,
+    };
+  }
+
+  private rowToBlueprint(r: Record<string, unknown>): Blueprint {
+    const bodyArtifact = this.artifact(r.body_artifact as string);
+    if (!bodyArtifact) throw new Error(`blueprint ${r.id as string}: its body artifact is not recorded`);
+    return {
+      id: r.id as string, projectId: r.project_id as string, corpusId: r.corpus_id as string, revisionId: r.revision_id as string,
+      body: JSON.parse(this.bodies.get(bodyArtifact).toString('utf8')) as BlueprintV1, bodyArtifact,
+      blueprintDigest: r.blueprint_digest as string, status: r.status as Blueprint['status'], proposedBy: r.proposed_by as string,
+      attemptId: (r.attempt_id as string | null) ?? undefined, decisionId: (r.decision_id as string | null) ?? undefined,
+      createdAt: r.created_at as number, updatedAt: r.updated_at as number,
+    };
+  }
+
+  private rowToPacket(r: Record<string, unknown>): PacketRow {
+    const bodyArtifact = this.artifact(r.body_artifact as string);
+    if (!bodyArtifact) throw new Error(`packet ${r.id as string}: its body artifact is not recorded`);
+    return {
+      id: r.id as string, projectId: r.project_id as string, blueprintId: r.blueprint_id as string, componentId: r.component_id as string,
+      ticketId: r.ticket_id as string, packetDigest: r.packet_digest as string, bodyArtifact, status: r.status as PacketRow['status'],
+      proposedBy: r.proposed_by as string, attemptId: (r.attempt_id as string | null) ?? undefined,
+      createdAt: r.created_at as number, updatedAt: r.updated_at as number,
+    };
+  }
+
   // ---- ingest sources ----------------------------------------------------------------
 
   /**
@@ -3148,8 +3558,28 @@ function rowToAssumption(r: Record<string, unknown>): Assumption {
     recordedBy: r.recorded_by as string,
     decisionId: (r.decision_id as string | null) ?? undefined,
     followUpWorkItemId: (r.follow_up_work_item_id as string | null) ?? undefined,
+    irId: (r.ir_id as string | null) ?? undefined,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
+  };
+}
+
+function rowToIrSpan(r: Record<string, unknown>): IrSpanRow {
+  return {
+    irId: r.ir_id as string, revisionId: r.revision_id as string, role: r.role as IrSpanRow['role'], docKey: r.doc_key as string,
+    sectionId: r.section_id as string, start: r.start_byte as number, end: r.end_byte as number, quoteDigest: r.quote_digest as string,
+    carry: r.carry as IrSpanRow['carry'],
+  };
+}
+
+function rowToDerivation(r: Record<string, unknown>): BlueprintDerivation {
+  return { blueprintId: r.blueprint_id as string, elementId: r.element_id as string, irId: r.ir_id as string, role: r.role as BlueprintDerivation['role'] };
+}
+
+function rowToTicketTrace(r: Record<string, unknown>): TicketTraceRow {
+  return {
+    campaignId: r.campaign_id as string, ticketId: r.ticket_id as string, irId: r.ir_id as string, role: r.role as TicketTraceRow['role'],
+    detail: (r.detail as string | null) ?? null, packetId: (r.packet_id as string | null) ?? null, handEdited: r.hand_edited === 1,
   };
 }
 
