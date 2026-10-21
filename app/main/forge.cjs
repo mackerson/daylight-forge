@@ -586,8 +586,15 @@ function handlersFor(deps) {
       if (!id || !halt || !rationale) return { error: 'adopting the tip needs a campaign, its halt decision and a rationale' };
       const { repo } = deps.state();
       if (!repo) return { error: 'no repo selected' };
+      // `--to`: restore a deleted or rewound ref to the commit the rows explain (WS-R12); the halt need names it.
+      let to = [];
+      if (p.to !== undefined && p.to !== null && p.to !== '') {
+        if (typeof p.to !== 'string' || !REV.test(p.to)) return { error: 'to is a full commit id' };
+        to = ['--to', p.to];
+      }
       return guarded({
-        operation: 'adopt-integration-tip', subject: id, verb: 'Adopt integration tip', confirmArgs: ['--halt', halt],
+        operation: 'adopt-integration-tip', subject: id, verb: to.length ? `Restore integration ref to ${p.to.slice(0, 12)}` : 'Adopt integration tip',
+        confirmArgs: ['--halt', halt, ...to],
         previewArgs: ['--repo', repo], act: [...ARGV.adoptTip(dir(), id, repo), kv('rationale', rationale)],
       });
     },

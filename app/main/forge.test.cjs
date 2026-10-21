@@ -440,6 +440,21 @@ const flag = (argv, name) => {
       !!(await hn['forge-campaign-adopt-tip']({ id: M, haltId: D, rationale: 'r' })).error && !!(await hn['forge-campaign-dry-run']({ id: M })).error);
   }
 
+  section('adopt-tip --to: a deleted or rewound ref restored to a named commit (WS-R12)');
+  {
+    const D = `d_${'7'.repeat(32)}`;
+    const TO = 'c'.repeat(40);
+    const { h, calls } = world();
+    await h['forge-campaign-adopt-tip']({ id: M, haltId: D, to: TO, rationale: 'r' });
+    const preview = calls.cli.find((a) => a[0] === 'confirm');
+    const act = mutations(calls)[0];
+    check('--to reaches both the preview and the act, so the digest covers it', flag(preview, '--to') === TO && flag(act, '--to') === TO && flag(preview, '--repo') === REPO);
+    check('the dialog says it restores the ref', /Restore integration ref to cccccccccccc/.test(calls.boxes[0].message));
+    const { h: hb, calls: cb } = world();
+    const bad = [await hb['forge-campaign-adopt-tip']({ id: M, haltId: D, to: 'HEAD', rationale: 'r' }), await hb['forge-campaign-adopt-tip']({ id: M, haltId: D, to: '--confirm', rationale: 'r' })];
+    check('a --to that is not a full commit id is refused before the engine', bad.every((r) => r.error) && cb.cli.length === 0);
+  }
+
   section('forgery review: acknowledge and reject are different confirmed operations');
   {
     const { h, calls } = world();
