@@ -66,11 +66,22 @@ export type {
   AttemptOrigin, CostSource, UsageSource, TokenUsage, ExperimentRole, DecisionOperation, SandboxReason,
   Candidate as ForgeCandidate,
 } from '../../../engine/mission/types.ts';
+/** The campaign screens' shapes (WS-R8's JSON forms), by the engine's names; type-only as above. */
+export type {
+  Assumption, AssumptionStatus, AssumptionSource, CampaignEnvelope, CampaignHaltReason, CampaignRunResult, CampaignSpend,
+  CampaignStatusReport, CampaignTicket, TicketStatus, TicketOrigin, FindingSeverity, StatusBucket, StatusTable, StatusTableRow,
+  DiffStat, SpendLine, RunClaim, ReportLanding, ReportAssumption, ReportFinding, ReportReview, ReportBlocked, WaveReport,
+  ForgeryClass, ReportForgeryShapes, ForgeCampaignRow, ForgeCampaignList, ForgeCampaignShow, ForgeAssumptionRow,
+  RefineMapRef, RefineDiff, RefineFamily, RefineDeadEnd, RefineCycle, RefineInvariant, RefineOverlay, RefineReport,
+  FocusKind, FactValue, FocusItem, FocusCond, FocusRule,
+} from '../../../engine/mission/types.ts';
 
 import type {
   Mission, Task, Attempt, Experiment, Decision, DaylightEvent, ArtifactRef, ProjectIdentity,
   MissionKind, Need, WorkItem, Candidate as ForgeCandidate, GateEvaluation, Application, IngestSource,
   Ledger, LedgerRow, DecisionOperation,
+  CampaignRunResult, CampaignStatusReport, ForgeAssumptionRow, ForgeCampaignList, ForgeCampaignShow, RefineReport, WaveReport,
+  CandidateForgeryShapes,
 } from '../../../engine/mission/types.ts';
 import type { Evidence } from '../../../engine/store/types.ts';
 
@@ -136,6 +147,12 @@ export interface ForgeCandidatePayload {
   candidate: ForgeCandidate;
   /** Paths whose diff matched a low-confidence secret shape (R16). Approve and override need them acknowledged. */
   possibleSecrets: string[];
+  /**
+   * Test-output forgery shapes (P2-R49) as `forge candidate` reports them: classes and paths,
+   * never the matched text. Approve and override need them acknowledged; in a campaign a person
+   * acknowledges or rejects them on their own.
+   */
+  forgeryShapes?: CandidateForgeryShapes;
   diff: { text: string; truncated: boolean };
   gateEvaluations: GateEvaluation[];
 }
@@ -180,15 +197,59 @@ export type LedgerGroup = 'runner' | 'model' | 'origin' | 'mission' | 'work-item
  * How a guarded act ended: refused by the guard (no dialog), cancelled at the dialog, failed
  * in the act, or done. Main sets the actor and the code; the renderer only reads this.
  */
+/**
+ * What `forge-refine-map` returns: one revision's map, read by main from
+ * `<out>/campaigns/<c>/maps/<rev>/` the way `daylight:load` reads the checkout's. It has no
+ * `dir`, so the Scene drawing it reads and writes no layout (P2-R45 D3).
+ */
+export interface ForgeRefineMap {
+  rev: string;
+  stack: FocusStack | null;
+  fileEdges: Array<{ from: string; to: string; weight: number }>;
+  findings: Findings;
+  structure: StructureReport | null;
+  invariants: { results: InvariantResult[] } | null;
+  graphStats: Record<string, number> | null;
+  /** The project root, a label only. */
+  repo: string;
+  /** Nothing is defended on a refine map. */
+  defended: [];
+}
+
+/** `forge-campaign`: the plan as recorded and the derived status, read together. */
+export interface ForgeCampaignPayload { show: ForgeCampaignShow; status: CampaignStatusReport }
+
+/** Where the wave report reads from: one closed wave, the landings since the last one, or the whole campaign. */
+export type ReportWave = number | 'open' | 'all';
+
+/** The envelope as the authorize form sends it; main turns it into flags and never adds an identity. */
+export interface CampaignAuthorizeForm {
+  id: string; rationale: string;
+  roster: string[]; reviewRoster: string[];
+  maxUsdTotal: number; maxUsdPerMission: number; maxTurns: number; timeoutSeconds: number;
+  maxAttempts: number; concurrency: number; waveSize?: number;
+  execute: boolean; autoApply: 'integration-ref' | 'none';
+  fixLane: { tickets: number; usd: number } | 'off';
+  tickets?: string[];
+  notAfterHours: number;
+}
+
+export type AssumptionAct = 'confirm' | 'decide' | 'overturn';
+export interface AssumptionDecideForm {
+  id: string; kind: AssumptionAct; rationale: string;
+  value?: string; followUp?: string; lane?: string; scope?: string[];
+}
+
 export interface GuardedResult {
   ok?: boolean;
   refused?: string;
   canceled?: boolean;
   error?: string;
-  operation?: DecisionOperation | 'apply';
+  operation?: DecisionOperation | 'apply' | 'acknowledge-forgery-shape';
   digest8?: string;
   lines?: string[];
   possibleSecrets?: string[];
+  forgeryShapes?: CandidateForgeryShapes['items'];
   /** Why a dialog OK still recorded nothing (an unticked acknowledgement). */
   note?: string;
   result?: unknown;
@@ -454,6 +515,31 @@ declare global {
       specRegister(): Promise<{ error?: string; canceled?: boolean } & Record<string, unknown>>;
       /** A job. No session means `--all`. */
       ingest(p?: { session?: string }): Promise<{ id?: string; error?: string }>;
+
+      // ---- Forge campaigns. Same rule: ids and form fields only; main supplies actor, code, paths, refs. ----
+      forgeCampaigns(): Promise<ForgeCampaignList & { error?: string }>;
+      forgeCampaign(p: { id: string }): Promise<ForgeCampaignPayload & { error?: string }>;
+      forgeCampaignReport(p: { id: string; wave?: ReportWave }): Promise<WaveReport & { error?: string }>;
+      /** Read-only: the schedule and reservations a run would take now. Never starts a run. */
+      forgeCampaignDryRun(p: { id: string }): Promise<CampaignRunResult & { error?: string }>;
+      forgeAssumptions(p: { id: string }): Promise<ForgeAssumptionRow[] | { error: string }>;
+      forgeRefine(p: { id: string }): Promise<RefineReport & { error?: string }>;
+      forgeRefineMap(p: { id: string; which: 'base' | 'rev' }): Promise<ForgeRefineMap & { error?: string }>;
+      forgeRefineTryInvariant(p: { id: string; which: 'base' | 'rev'; predicate: string }): Promise<InvariantResult & { error?: string }>;
+      /** A job; when it ends the view reads `forgeRefine` again and never parses its output. */
+      forgeRefineRun(p: { id: string }): Promise<{ id?: string; error?: string }>;
+      forgeCampaignWatch(p: { id: string | null }): Promise<{ watching: string | null; error?: string }>;
+      forgeCampaignApprovePlan(p: { id: string; rationale: string }): Promise<GuardedResult>;
+      forgeCampaignAuthorize(p: CampaignAuthorizeForm): Promise<GuardedResult>;
+      forgeCampaignRetry(p: { id: string; ticketId: string; rationale: string }): Promise<GuardedResult>;
+      forgeCampaignResume(p: { id: string; haltId: string; rationale: string }): Promise<GuardedResult>;
+      /** `to`: restore a deleted or rewound integration ref to this commit (WS-R12). */
+      forgeCampaignAdoptTip(p: { id: string; haltId: string; to?: string; rationale: string }): Promise<GuardedResult>;
+      /** A plain native dialog, then the halt; the one campaign write with no digest. */
+      forgeCampaignHalt(p: { id: string }): Promise<GuardedResult>;
+      forgeAssumptionDecide(p: AssumptionDecideForm): Promise<GuardedResult>;
+      /** `forge acknowledge-forgery`: acknowledge a candidate's forgery shapes, or reject them (`declined`). */
+      forgeCampaignForgeryReview(p: { id: string; declined: boolean; rationale: string }): Promise<GuardedResult>;
     };
   }
 }

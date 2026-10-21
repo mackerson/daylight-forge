@@ -4,6 +4,7 @@ import type { LoadPayload, NodeBelief } from '../types.ts';
 import { DEFAULT_SETTINGS, normaliseSettings } from '../../../../engine/render/settings.ts';
 import type { RenderSettings } from '../types.ts';
 import { SceneController, type SceneCounters, type SceneStats } from '../scene/controller.ts';
+import { layoutReadable, sceneIo } from '../scene/read-only.ts';
 import {
   agentColor, BELIEF, CHANNEL_HELP, COLD, COLORS, FLAGGED, HOT, SETTLED, type Channel,
 } from '../scene/palette.ts';
@@ -134,8 +135,14 @@ function Legend({ channel, agents, mode }: { channel: Channel; agents: string[];
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
-export function Scene({ data, channel, onChannel, flagged, onSelect }: {
-  data: LoadPayload | null;
+/**
+ * What the Scene draws from. `LoadPayload` is one; a refine map (`ForgeRefineMap`) is another,
+ * with no `dir`, because it is not the checkout's map and nothing of the checkout's is read for it.
+ */
+export type SceneData = Pick<LoadPayload, 'stack' | 'fileEdges' | 'repo' | 'defended'> & { dir?: string; initialMode?: 'graph' | 'tree' };
+
+export function Scene({ data, channel, onChannel, flagged, onSelect, readOnly }: {
+  data: SceneData | null;
   /**
    * Controlled, because the lens is a mode in the shell rather than a chip on the canvas.
    * The scene renders a colouring; it does not decide which question is being asked.
@@ -150,7 +157,15 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
    * re-select the same node across a layout switch.
    */
   onSelect: (node: SceneNode | null) => void;
+  /**
+   * Set, the reason this map is read-only (P2-R45 D3): no layout read or write, no symbols
+   * call, no node drag and no alt-click expand, and the keys line says why instead.
+   */
+  readOnly?: string;
 }) {
+  const io = sceneIo(readOnly, window.daylight);
+  const ioRef = useRef(io);
+  ioRef.current = io;
   const mountRef = useRef<HTMLDivElement>(null);
   /**
    * Props the controller calls back into, through refs: the controller is built once and
@@ -202,11 +217,11 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
   // Positions the user moved last time. Loaded once, keyed by node id, so a re-map keeps
   // every override whose node still exists and silently forgets the rest.
   useEffect(() => {
-    if (!data?.dir) return;
-    void window.daylight.layout().then((r) => {
+    if (!layoutReadable(data?.dir, readOnly)) return;
+    void ioRef.current.layout().then((r) => {
       if (r?.moved && Object.keys(r.moved).length) setMoved(r.moved);
     });
-  }, [data?.dir]);
+  }, [data?.dir, readOnly]);
   const [nodeCount, setNodeCount] = useState(0);
   const [agents, setAgents] = useState<string[]>([]);
   const [pulses, setPulses] = useState(true);
@@ -260,7 +275,7 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
     next.add(id);
     // Fetch before expanding, so the relayout happens once with the symbols in hand
     // rather than once empty and again when they arrive.
-    void window.daylight.symbols({ file: id }).then((r) => {
+    void ioRef.current.symbols({ file: id }).then((r) => {
       setSymbols((prev) => ({ ...prev, [id]: r.symbols ?? [] }));
       setExpanded(next);
     });
@@ -288,10 +303,10 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
       },
       onMoved: (key, at) => {
         setMoved((prev) => ({ ...prev, [key]: at }));
-        void window.daylight.layout({ repo: repoRef.current ?? '', moved: { ...movedRef.current, [key]: at } });
+        void ioRef.current.layout({ repo: repoRef.current ?? '', moved: { ...movedRef.current, [key]: at } });
       },
       onToggleExpand: toggleExpand,
-    }, { perf: !!perfFlags.perf, bench: Number(perfFlags.bench ?? 0), debugPick: !!perfFlags.debugPick });
+    }, { perf: !!perfFlags.perf, bench: Number(perfFlags.bench ?? 0), debugPick: !!perfFlags.debugPick, readOnly: !!readOnly });
     setCtrl(controller);
     window.__daylightScene = { counters: controller.counters, setChannel: (c) => channelRef.current(c) };
     return () => {
@@ -301,7 +316,7 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
     };
     // `data` is read for its one-shot flags only; it must not be a dependency here or
     // every reload would be a new WebGL context, which is the bug this file replaced.
-  }, [hasStack, repo, toggleExpand]);
+  }, [hasStack, repo, toggleExpand, !!readOnly]);
 
   // ---- relayout: anything that moves a node or changes which nodes exist -------------
   useEffect(() => {
@@ -457,16 +472,20 @@ export function Scene({ data, channel, onChannel, flagged, onSelect }: {
           <kbd>Q</kbd><kbd>E</kbd> up/down · <kbd>shift</kbd> faster ·
           <kbd>0</kbd> recentre · drag orbit · right-drag pan · scroll{' '}
           {mode === 'tree' ? 'depth' : 'altitude'}
-          {mode === 'tree' && <> · <kbd>alt</kbd>-click a file to open its symbols</>}
-          {' '}· drag a node to move it · <kbd>ctrl</kbd>-drag to orbit instead
-          {!!Object.keys(moved).length && (
+          {readOnly
+            ? <span data-forge="read-only-reason"> · {readOnly}</span>
+            : <>
+              {mode === 'tree' && <> · <kbd>alt</kbd>-click a file to open its symbols</>}
+              {' '}· drag a node to move it · <kbd>ctrl</kbd>-drag to orbit instead
+            </>}
+          {!readOnly && !!Object.keys(moved).length && (
             <>
               {' '}·{' '}
               <button
                 className="link"
                 onClick={() => {
                   setMoved({});
-                  void window.daylight.layout({ repo: data.repo ?? '', moved: {} });
+                  void ioRef.current.layout({ repo: data.repo ?? '', moved: {} });
                 }}
               >
                 put {Object.keys(moved).length} moved node

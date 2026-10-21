@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { dragAllowed, expandAllowed } from './read-only.ts';
 import { layout } from '../../../../engine/scene/layout.ts';
 import { layoutTree } from '../../../../engine/scene/tree.ts';
 import { applyMoved, type MovedNodes, type SceneLayout } from '../../../../engine/scene/types.ts';
@@ -93,6 +94,8 @@ export interface SceneOptions {
   bench?: number;
   /** Print screen positions of a few nodes, for driving synthetic input at them. */
   debugPick?: boolean;
+  /** A map that is not the checkout's (P2-R45 D3): no node moves, no symbol expansion. */
+  readOnly?: boolean;
 }
 
 interface Rope {
@@ -979,7 +982,7 @@ export class SceneController {
     this.panning = e.button === 1 || e.button === 2;
     const hovered = this.hovered;
 
-    if (!this.panning && !e.ctrlKey && hovered && !hovered.isRoot) {
+    if (dragAllowed(!!this.opts.readOnly, this.panning, e.ctrlKey, hovered) && hovered) {
       // The drag plane faces the camera and passes through the node, so the node tracks
       // the cursor exactly rather than sliding away along the view direction.
       const normal = this.camera.getWorldDirection(new THREE.Vector3()).negate();
@@ -1123,7 +1126,7 @@ export class SceneController {
     // Alt-click opens a file to its symbols, or shuts it again. On the modifier rather
     // than on a plain click because selecting a file is the common act and relaying out
     // the tree under the cursor every time you inspect something would be hostile.
-    if (!e.altKey || !hovered?.isFile) return;
+    if (!expandAllowed(!!this.opts.readOnly, e.altKey, hovered) || !hovered) return;
     this.host.onToggleExpand(hovered.id);
   };
 

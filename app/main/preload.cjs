@@ -98,6 +98,25 @@ contextBridge.exposeInMainWorld('daylight', {
   forgeRun: (p) => invoke('daylight:forge-run', p),
   specRegister: () => invoke('daylight:spec-register'),
   ingest: (p) => invoke('daylight:ingest', p),
+  // Forge campaigns. `campaign run` is not here: it is started from a terminal (P2-R9).
+  forgeCampaigns: () => invoke('daylight:forge-campaigns'),
+  forgeCampaign: (p) => invoke('daylight:forge-campaign', p),
+  forgeCampaignReport: (p) => invoke('daylight:forge-campaign-report', p),
+  forgeCampaignDryRun: (p) => invoke('daylight:forge-campaign-dry-run', p),
+  forgeAssumptions: (p) => invoke('daylight:forge-assumptions', p),
+  forgeRefine: (p) => invoke('daylight:forge-refine', p),
+  forgeRefineMap: (p) => invoke('daylight:forge-refine-map', p),
+  forgeRefineTryInvariant: (p) => invoke('daylight:forge-refine-try-invariant', p),
+  forgeRefineRun: (p) => invoke('daylight:forge-refine-run', p),
+  forgeCampaignWatch: (p) => invoke('daylight:forge-campaign-watch', p),
+  forgeCampaignApprovePlan: (p) => invoke('daylight:forge-campaign-approve-plan', p),
+  forgeCampaignAuthorize: (p) => invoke('daylight:forge-campaign-authorize', p),
+  forgeCampaignRetry: (p) => invoke('daylight:forge-campaign-retry', p),
+  forgeCampaignResume: (p) => invoke('daylight:forge-campaign-resume', p),
+  forgeCampaignAdoptTip: (p) => invoke('daylight:forge-campaign-adopt-tip', p),
+  forgeCampaignHalt: (p) => invoke('daylight:forge-campaign-halt', p),
+  forgeAssumptionDecide: (p) => invoke('daylight:forge-assumption-decide', p),
+  forgeCampaignForgeryReview: (p) => invoke('daylight:forge-campaign-forgery-review', p),
   onDlEvent: (fn) => {
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on('daylight:dl-event', h);
