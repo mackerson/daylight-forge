@@ -32,7 +32,7 @@ import { DecisionRefused } from './policy.ts';
  *   status <c> [<repo>] [--write]
  *   halt <c> --rationale '<why>'
  *   resume <c> --halt <d> --rationale '<why>' --confirm <c8>
- *   adopt-tip <c> <repo> --halt <d> --rationale '<why>' --confirm <c8>
+ *   adopt-tip <c> <repo> --halt <d> [--to <commit>] --rationale '<why>' --confirm <c8>
  */
 
 export const CAMPAIGN_RUN_SUBCOMMANDS = ['gate', 'baseline', 'lock', 'run', 'status', 'halt', 'resume', 'adopt-tip'] as const;
@@ -227,14 +227,14 @@ export async function runCampaignRunCommand(argv: string[], env: NodeJS.ProcessE
           const repo = repoOf(ctx, p.positionals[1]);
           const ictx = { store: ctx.store, events: ctx.events, artifacts: ctx.artifacts, repoRoot: repo };
           if (confirm === undefined) {
-            const s = adoptScopeOf(ictx, campaignId, haltDecisionId);
+            const s = adoptScopeOf(ictx, campaignId, haltDecisionId, last(p, 'to'));
             const preview = confirmDigest(ctx, 'adopt-integration-tip', campaignId, { adopt: { ref: s.ref, from: s.from, to: s.to, haltDecisionId } });
             if (asJson) json({ confirm: 'required', digest: preview.digest, lines: preview.lines });
             else for (const l of [...preview.lines, `digest ${preview.digest}`]) say(l);
             stderr('usage: re-run with --confirm <the first eight hex characters of the digest>\n');
             return 2;
           }
-          const d = adoptIntegrationTip(ictx, { campaignId, haltDecisionId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm, env });
+          const d = adoptIntegrationTip(ictx, { campaignId, haltDecisionId, actor: actorFor(last(p, 'actor')), rationale: need(p, 'rationale'), confirm, env, to: last(p, 'to') });
           if (asJson) json(d);
           else say(`adopted ${String(d.scope.ref)} at ${String(d.scope.to)} (${d.id})`);
           return 0;

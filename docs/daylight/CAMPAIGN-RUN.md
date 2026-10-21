@@ -189,13 +189,16 @@ The director holds no state of its own. A run that was killed is resumed by runn
 ```
 daylight campaign halt <c> --rationale '…'
 daylight campaign resume <c> --halt <d> --rationale '…' --confirm <digest8>
-daylight campaign adopt-tip <c> <repo> --halt <d> --rationale '…' --confirm <digest8>
+daylight campaign adopt-tip <c> <repo> --halt <d> [--to <commit>] --rationale '…' --confirm <digest8>
 ```
 
 `adopt-tip` is a guarded human act: it records the ref, the commit the rows explain, the commit
 the ref is at, and the halt it answers, so the commits a person pushed are explained again. It
 is refused when the move did not only add commits on top of what the rows explain: a ref
-rewritten under a landing would drop that landing, so it is never adopted.
+rewritten under a landing would drop that landing, so it is never adopted. A ref that was
+deleted (the next run recreates it at the base and halts) or rewound is restored with `--to
+<commit>`: the commit the rows explain, or one descending from it; the ref is moved there by
+compare-and-swap and the adoption recorded. The halt's need names that commit.
 
 ## Status
 

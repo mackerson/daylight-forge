@@ -338,6 +338,44 @@ section('a halt keeps accepted work: re-evaluated on the adopted tip, not re-aut
   w.ctx.close();
 }
 
+section('a deleted integration ref is recovered by adopt-tip naming a commit (wave2 L4, p13b)');
+{
+  const w = nodeWorld('deleted', [{ id: 'A', lane: 'LA', scope: ['src/a.js'], gate: `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));` }]);
+  await lockAndAuthorize(w, { concurrency: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const author = mockAuthor(path.join(w.dir, 'author.cjs'), { A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } } });
+  check('A landed', (await run(w, author, { concurrency: 1 })).statuses.A === 'landed');
+  const landedAt = integrationTip(w.repo, w.campaign.id)!;
+  git(w.repo, ['update-ref', '-d', integrationRefFor(w.campaign.id)]);
+  const r = await run(w, author, { concurrency: 1 });
+  check('with the ref deleted the next run recreates it at the base and halts integration-moved', r.halted === 'integration-moved' && integrationTip(w.repo, w.campaign.id) === w.base,
+    JSON.stringify({ halted: r.halted, refused: r.refused }));
+  const host = testHost(w.ctx, w.campaign, w.plan, w.tickets);
+  check('the need names the commit to restore it to', campaignRunNeeds(w.ctx, w.campaign, host).some((n) => n.kind === 'campaign-halted' && n.why.includes(`--to ${landedAt}`)),
+    JSON.stringify(campaignRunNeeds(w.ctx, w.campaign, host)));
+  const halt = w.ctx.store.decisions(w.campaign.id).filter((d) => d.scope.operation === 'halt-campaign').at(-1)!;
+  const ictx = { store: w.ctx.store, events: w.ctx.events, artifacts: w.ctx.artifacts, repoRoot: w.repo };
+  const confirmOf = (to?: string) => {
+    const sc = adoptScopeOf(ictx, w.campaign.id, halt.id, to);
+    return confirmDigest(w.ctx, 'adopt-integration-tip', w.campaign.id, { adopt: { ref: sc.ref, from: sc.from, to: sc.to, haltDecisionId: halt.id } }).digest8;
+  };
+  let plain = '';
+  try {
+    adoptIntegrationTip(ictx, { campaignId: w.campaign.id, haltDecisionId: halt.id, actor: ACTOR, rationale: 'r', env: humanEnv, confirm: confirmOf() });
+  } catch (err) {
+    plain = (err as Error).message;
+  }
+  check('adopting the base where it is is refused: a landing would be lost', /a landing would be lost/.test(plain), plain);
+  const d = adoptIntegrationTip(ictx, { campaignId: w.campaign.id, haltDecisionId: halt.id, actor: ACTOR, rationale: 'restore', env: humanEnv, to: landedAt, confirm: confirmOf(landedAt) });
+  check('adopt-tip --to the last landing records it and puts the ref back', d.scope.to === landedAt && integrationTip(w.repo, w.campaign.id) === landedAt);
+  const again = await run(w, author, { concurrency: 1 });
+  check('the next run neither halts nor re-authors: A is still landed', again.halted === null && again.statuses.A === 'landed'
+    && w.ctx.store.missions(w.campaign.projectId).filter((m) => m.parentId === w.campaign.id).flatMap((m) => w.ctx.store.tasks(m.id).flatMap((t) => w.ctx.store.attempts(t.id))).length === 1,
+    JSON.stringify({ halted: again.halted, statuses: again.statuses }));
+  check('the ref is explained again', integrationRefusals({ store: w.ctx.store, repoRoot: w.repo }, w.campaign.id).length === 0,
+    integrationRefusals({ store: w.ctx.store, repoRoot: w.repo }, w.campaign.id).join('; '));
+  w.ctx.close();
+}
+
 // ---- spend --------------------------------------------------------------------------------------
 
 section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');
