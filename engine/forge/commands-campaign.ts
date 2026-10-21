@@ -232,7 +232,7 @@ export type FlagBare = (flag: string) => boolean;
 export function envelopeFlagsFrom(get: FlagGet): EnvelopeFlags {
   const p: Parsed = { positionals: [], flags: new Map() };
   for (const k of ['auto-apply', 'roster', 'expected-gate-set', 'review-roster', 'max-usd-total', 'max-usd-per-mission', 'max-turns', 'timeout',
-    'max-attempts', 'concurrency', 'wave-size', 'execute', 'fix-lane', 'tickets', 'not-after', 'identity']) {
+    'max-attempts', 'concurrency', 'wave-size', 'execute', 'fix-lane', 'tickets', 'not-after', 'identity', 'unbound-obligations', 'accept-ir-drift']) {
     const v = get(k);
     if (v !== undefined) p.flags.set(k, v);
   }
