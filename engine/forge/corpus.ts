@@ -410,6 +410,7 @@ export function registerCorpus(ctx: DaylightContext, repo: string, manifest: str
     },
   });
   if (!existing) mission = ctx.store.transitionMission(mission.id, 'ready');
+  else mission = ctx.store.setCorpusScope(mission.id, docs.filter((d) => d.projectId === project.id).map((d) => d.path), commit);
   return revision;
 }
 

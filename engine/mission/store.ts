@@ -649,6 +649,19 @@ export class MissionStore {
     return this.requireMission(missionId);
   }
 
+  /**
+   * A corpus revision moves its corpus mission to the new documents: the paths authors may not
+   * touch and the commit they were read at (review F-2). Corpus missions only; nothing else moves.
+   */
+  setCorpusScope(missionId: string, paths: string[], baseRevision: string): Mission {
+    const m = this.requireMission(missionId);
+    if (m.kind !== 'corpus') throw new Error(`mission ${missionId} is ${m.kind}; only a corpus mission's scope follows its revisions`);
+    if (m.state === 'closed') throw new Error(`corpus ${missionId} is closed`);
+    const scope = normaliseScope({ ...m.scope, paths });
+    this.db.prepare('UPDATE missions SET scope=?, base_revision=?, updated_at=? WHERE id=?').run(JSON.stringify(scope), baseRevision, this.now(), missionId);
+    return this.requireMission(missionId);
+  }
+
   /** The only path to `closed`. An outcome without a reason is refused. */
   closeMission(missionId: string, outcome: MissionOutcome, reason: string): Mission {
     const m = this.requireMission(missionId);
