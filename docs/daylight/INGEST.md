@@ -6,9 +6,9 @@ decision records, related documents, and other products' specs it depends on. It
 **Spec IR** records a person approves, and from those a blueprint, work packets and a version-2
 plan.
 
-This page covers the WS-R14 half: the corpus, the sectioner, IR extraction and coverage. Review,
-`approve-ir`, blueprints, packets, plan v2 and the authority chain are WS-R15's; traceability and
-the benchmark are WS-R16's. Decisions: ADR-41 to ADR-44 in [FORGE_PLAN](FORGE_PLAN.md).
+This page covers all of ingestion: the corpus, the sectioner, IR extraction and coverage; review,
+`approve-ir`, blueprints, packets, plan v2 and the authority chain; traceability and the
+benchmark. Decisions: ADR-41 to ADR-44 in [FORGE_PLAN](FORGE_PLAN.md).
 
 ```
 manifest → corpus revision (corpusDigest) → section index (sectionSetDigest, configDigest)
@@ -236,8 +236,7 @@ corpus → section index → IR (proposed) → blind IR review → approve-ir [p
   → campaign lock (+ obligations) → campaign authorize [person]
 ```
 
-The corpus, sectioner, extraction and coverage sections are WS-R14's; traceability and the
-benchmark are WS-R16's. This page holds WS-R15's half: review, approval, blueprint, packets, the
+The sections below take the steps after coverage: review, approval, blueprint, packets, the
 version-2 plan, author context, obligations, and the authority chain.
 
 ## Independent IR review

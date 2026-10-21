@@ -270,6 +270,8 @@ export interface EnvelopeFlags {
   identity?: CampaignEnvelope['identity'];
   /** `<ticket>:ob<n>` acceptance obligations a person lets run with no locked gate bound (P2-R50 F3); recorded in the envelope. */
   unboundObligations?: string[];
+  /** P2-R55: which earlier-landed tickets' gates each wave re-runs; default scoped. */
+  regressionCheck?: CampaignEnvelope['regressionCheck'];
   /** The current approved IR set's digest, when a person proceeds although the specification moved under the plan (P2-R59); recorded in the envelope. */
   acceptIrDrift?: string;
 }
@@ -303,6 +305,7 @@ export function buildEnvelope(ctx: DaylightContext, campaignId: string, f: Envel
     fixLane: f.fixLane ?? { enabled: false, maxTicketsPerWave: 0, maxUsdPerTicket: 0 },
     identity: f.identity ?? { name: user, email: `${user}@daylight.invalid` },
     notAfter: Math.ceil((now + span) / HOUR_MS) * HOUR_MS,
+    regressionCheck: f.regressionCheck ?? 'scoped',
     // Only when named, so every envelope without one confirms and records as it always did.
     ...(f.unboundObligations?.length ? { unboundObligations: [...new Set(f.unboundObligations)].sort() } : {}),
     ...(f.acceptIrDrift ? { acceptIrDrift: f.acceptIrDrift } : {}),

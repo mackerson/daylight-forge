@@ -105,6 +105,20 @@ section('install and hook paths outside P2-R32\'s list (r4 I2): each protected, 
     ['packages/x/.lefthook-local.yaml', 'docs/.lefthook-local.yaml.md'],
     ['bunfig.toml', 'bunfig.toml.example'],
     ['.pnpmfile.mjs', 'src/pnpmfile.mjs'],
+    // P2-R38: lefthook's other formats and places (internal/config/loader.go: three names × five extensions).
+    ['lefthook.json', 'lefthook.json.bak'],
+    ['.lefthook.jsonc', 'docs/lefthook.jsonc.md'],
+    ['packages/x/lefthook.toml', 'lefthook.toml.example'],
+    ['lefthook-local.json', 'src/lefthook-local.ts'],
+    ['.lefthook-local.jsonc', '.lefthook-local.jsonc.orig'],
+    ['lefthook-local.toml', 'lefthook-local.tomlx'],
+    ['.lefthook.toml', '.lefthook.tom'],
+    ['.lefthook-local.toml', 'docs/.lefthook-local.toml.md'],
+    ['.config/lefthook.yml', '.config/lefthooks.yml'],
+    ['.config/lefthook.jsonc', '.config/other.jsonc'],
+    ['.config/lefthook-local.toml', '.config/lefthook-local.md'],
+    ['.lefthook-local/pre-commit/run.sh', 'lefthook-local/pre-commit/run.sh'],
+    ['sub/.lefthook-local/commit-msg/check', 'docs/.lefthook-localx/a.sh'],
   ];
   for (const [p, alike] of table) {
     check(`${p} is protected with no policy and under a rust-only one; ${alike} is not`, isProtected(p) && isProtected(p, rust) && !isProtected(alike));

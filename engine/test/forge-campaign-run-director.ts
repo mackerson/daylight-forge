@@ -403,6 +403,62 @@ section('a later landing that breaks an earlier ticket\'s gate marks it regresse
   w.ctx.close();
 }
 
+section('P2-R55: the regression re-check runs once a wave, scoped by default, full or off by the envelope');
+{
+  /** Integrated evaluations of `ticket`'s own gate, by the ticket whose landing they were run on. */
+  const recheckedOn = (w: World, ticket: string): string[] => {
+    const gate = w.ctx.store.experimentsFor(w.campaign.id).find((x) => x.role === 'gate' && x.subject === `ticket:${ticket}`)!;
+    const byIntegration = new Map(w.ctx.store.integrations(w.campaign.id, { state: 'integrated' }).map((i) => [i.id, i]));
+    return w.ctx.store.gateEvaluations({ missionId: w.campaign.id, target: 'integrated' }).filter((e) => e.experimentId === gate.id && e.integrationId)
+      .map((e) => w.tickets.find((t) => t.workItemId === w.ctx.store.mission(byIntegration.get(e.integrationId!)!.missionId)?.workItemId)!.ticketId);
+  };
+  const gateA = `test('a is A', () => assert.strictEqual(${load('src/a.js')}(), 'A'));`;
+  const chain = (name: string) => nodeWorld(name, [
+    { id: 'A', lane: 'LA', scope: ['src/a.js'], gate: gateA },
+    { id: 'B', lane: 'LB', scope: ['src/b.js', 'src/a.js'], dependsOn: ['A'], gate: `test('b is B', () => assert.strictEqual(${load('src/b.js')}(), 'B'));` },
+    { id: 'C', lane: 'LC', scope: ['src/c.js'], dependsOn: ['B'], gate: `test('c is C', () => assert.strictEqual(${load('src/c.js')}(), 'C'));` },
+  ]);
+  const writes = (bTouchesA: boolean) => ({
+    A: { first: { 'src/a.js': "module.exports = () => 'A';\n" } },
+    B: { first: { 'src/b.js': "module.exports = () => 'B';\n", ...(bTouchesA ? { 'src/a.js': "module.exports = () => 'broken by B';\n" } : {}) } },
+    C: { first: { 'src/c.js': "module.exports = () => 'C';\n" } },
+  });
+
+  const full = chain('recheck-full');
+  await lockAndAuthorize(full, { concurrency: 1, waveSize: 1, maxUsdTotal: 5, maxUsdPerMission: 1, regressionCheck: 'full' });
+  const rf = await run(full, mockAuthor(path.join(full.dir, 'author.cjs'), writes(false)), { concurrency: 1 });
+  check('full: all three landed, one wave each', rf.landed.join(',') === 'A,B,C' && rf.waves === 3, JSON.stringify(rf));
+  check('full: A\'s gate is re-run at each later wave, on B\'s landing and on C\'s, though neither touched its scope', recheckedOn(full, 'A').sort().join(',') === 'A,B,C',
+    recheckedOn(full, 'A').join(','));
+  full.ctx.close();
+
+  const scoped = chain('recheck-scoped');
+  await lockAndAuthorize(scoped, { concurrency: 1, waveSize: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const rs = await run(scoped, mockAuthor(path.join(scoped.dir, 'author.cjs'), writes(false)), { concurrency: 1 });
+  check('scoped (the default): all three landed', rs.landed.join(',') === 'A,B,C', JSON.stringify(rs));
+  check('scoped: A\'s gate is not re-run, since nothing landed after A touched src/a.js', recheckedOn(scoped, 'A').join(',') === 'A', recheckedOn(scoped, 'A').join(','));
+  check('scoped: B\'s gate is not re-run on C\'s landing either', !recheckedOn(scoped, 'B').includes('C'));
+  scoped.ctx.close();
+
+  const touched = chain('recheck-scoped-touched');
+  await lockAndAuthorize(touched, { concurrency: 1, waveSize: 1, maxUsdTotal: 5, maxUsdPerMission: 1 });
+  const rt = await run(touched, mockAuthor(path.join(touched.dir, 'author.cjs'), writes(true)), { concurrency: 1 });
+  check('scoped: B rewrote src/a.js, so A\'s gate is re-run at B\'s wave and at C\'s (still touched since A landed)', rt.landed.join(',') === 'A,B,C'
+    && recheckedOn(touched, 'A').sort().join(',') === 'A,B,C', `${rt.landed.join(',')} ${recheckedOn(touched, 'A').join(',')}`);
+  const host = testHost(touched.ctx, touched.campaign, touched.plan, touched.tickets);
+  check('scoped: and A is regressed', campaignStatus(touched.ctx, touched.campaign.id, touched.repo, host).tickets.find((t) => t.id === 'A')?.status === 'regressed');
+  touched.ctx.close();
+
+  const off = chain('recheck-off');
+  await lockAndAuthorize(off, { concurrency: 1, waveSize: 1, maxUsdTotal: 5, maxUsdPerMission: 1, regressionCheck: 'off' });
+  const ro = await run(off, mockAuthor(path.join(off.dir, 'author.cjs'), writes(true)), { concurrency: 1 });
+  const hostOff = testHost(off.ctx, off.campaign, off.plan, off.tickets);
+  check('off: B broke src/a.js, yet no earlier gate is re-run and nothing is marked regressed', ro.landed.join(',') === 'A,B,C'
+    && recheckedOn(off, 'A').join(',') === 'A' && !campaignStatus(off.ctx, off.campaign.id, off.repo, hostOff).tickets.some((t) => t.status === 'regressed'),
+    recheckedOn(off, 'A').join(','));
+  off.ctx.close();
+}
+
 // ---- spend --------------------------------------------------------------------------------------
 
 section('spend: an attempt whose cost is unknown halts the campaign (P2-R11)');

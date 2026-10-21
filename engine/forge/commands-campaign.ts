@@ -29,6 +29,7 @@ import { AGENT_SESSION_VARS, DecisionRefused } from './policy.ts';
  *            --max-turns 60 --timeout 600 --max-attempts 3 --concurrency 6 [--wave-size 12] [--execute]
  *            --auto-apply integration-ref|none [--review-roster a,b] [--fix-lane 5:1.5|off] [--tickets A,B]
  *            [--not-after 72h] [--identity 'Name <email>'] [--unbound-obligations T:ob1,…] [--accept-ir-drift <digest>]
+ *            [--regression-check full|scoped|off]
  *            --rationale '…' --confirm <digest8>
  *   campaign retry <campaign> <ticket> --rationale '…' --confirm <digest8>
  *   assumption list <campaign> [--status open|pending|confirmed|overturned]
@@ -232,7 +233,7 @@ export type FlagBare = (flag: string) => boolean;
 export function envelopeFlagsFrom(get: FlagGet): EnvelopeFlags {
   const p: Parsed = { positionals: [], flags: new Map() };
   for (const k of ['auto-apply', 'roster', 'expected-gate-set', 'review-roster', 'max-usd-total', 'max-usd-per-mission', 'max-turns', 'timeout',
-    'max-attempts', 'concurrency', 'wave-size', 'execute', 'fix-lane', 'tickets', 'not-after', 'identity', 'unbound-obligations', 'accept-ir-drift']) {
+    'max-attempts', 'concurrency', 'wave-size', 'execute', 'fix-lane', 'tickets', 'not-after', 'identity', 'unbound-obligations', 'accept-ir-drift', 'regression-check']) {
     const v = get(k);
     if (v !== undefined) p.flags.set(k, v);
   }
@@ -244,6 +245,10 @@ function envelopeFlags(p: Parsed): EnvelopeFlags {
   if (autoApply !== 'integration-ref' && autoApply !== 'none') throw new Usage('--auto-apply is integration-ref or none');
   const roster = list(need(p, 'roster'));
   if (!roster.length) throw new Usage('--roster names at least one author');
+  const regressionCheck = flag(p, 'regression-check');
+  if (regressionCheck !== undefined && regressionCheck !== 'full' && regressionCheck !== 'scoped' && regressionCheck !== 'off') {
+    throw new Usage('--regression-check is full, scoped or off');
+  }
   return {
     expectedGateSetDigest: need(p, 'expected-gate-set'), roster, reviewRoster: list(flag(p, 'review-roster')),
     maxUsdTotal: num(p, 'max-usd-total')!, maxUsdPerMission: num(p, 'max-usd-per-mission')!, maxTurns: num(p, 'max-turns')!,
@@ -252,6 +257,7 @@ function envelopeFlags(p: Parsed): EnvelopeFlags {
     fixLane: fixLaneOf(flag(p, 'fix-lane')), tickets: list(flag(p, 'tickets')), notAfter: flag(p, 'not-after'),
     identity: identityOf(flag(p, 'identity')),
     unboundObligations: list(flag(p, 'unbound-obligations')), acceptIrDrift: flag(p, 'accept-ir-drift'),
+    ...(regressionCheck !== undefined ? { regressionCheck } : {}),
   };
 }
 

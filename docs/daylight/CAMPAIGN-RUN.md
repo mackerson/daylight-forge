@@ -210,9 +210,11 @@ Derived from rows and the integration ref on every call: tickets by lane and sta
 how many landed, the authorization and any halt, assumptions pending the owner, needs, spend as
 `≥ $X (N unknown; $R charged at reservation for K unfinished attempt(s))` when anything is
 unknown or charged at a reservation, and each wave's findings. A landed ticket whose own gate
-fails on the tip is shown `regressed`, with a need: at the end of every run the director runs
-each earlier landing's public gates once on the tip and records them there (without a ratchet no
-landing looks; nothing lands or moves on the result). `--write` puts STATUS.md
+fails on the tip is shown `regressed`, with a need: when a wave closes the director runs earlier
+landings' public gates once on the tip and records them there (without a ratchet no landing
+looks; nothing lands or moves on the result). Which ones is the envelope's `regressionCheck`
+(`campaign authorize --regression-check`, P2-R55): `scoped`, the default, only tickets whose scope
+a file landed since their own landing lies under; `full` every one; `off` none. `--write` puts STATUS.md
 under `<out>/campaigns/<id>/`; nothing is ever written into the target repository (P2-R13).
 STATUS.md and `--format json` (`table`) carry kitkraft's STATUS table over the same states, and
 `run` is the run claim when one exists.

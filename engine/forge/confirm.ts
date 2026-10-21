@@ -213,7 +213,7 @@ export function confirmDigest(
         `authors ${e.roster.join(', ')}; ${e.maxTurns} turns, ${e.timeoutSeconds}s; concurrency ${e.concurrency}, wave ${e.waveSize}`,
         `execute ${e.execute ? 'yes' : 'no'}; auto-apply ${e.autoApply}; review ${e.reviewRoster.length ? e.reviewRoster.join(', ') : 'off'}`,
         `fix lane ${e.fixLane.enabled ? `${e.fixLane.maxTicketsPerWave} a wave at $${e.fixLane.maxUsdPerTicket}` : 'off'}; committer ${e.identity.name} <${e.identity.email}> (asserted)`,
-        `until ${new Date(e.notAfter).toISOString()}`,
+        `regression check ${e.regressionCheck ?? 'scoped'}; until ${new Date(e.notAfter).toISOString()}`,
       ]);
     }
     case 'retry-ticket': {

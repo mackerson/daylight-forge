@@ -19,7 +19,8 @@ import { campaignNeeds } from '../forge/campaign-needs.ts';
 import { needsOf } from '../mission/needs.ts';
 import { approveBlueprint, blueprintContext, importBlueprint, validateBlueprint } from '../forge/blueprint.ts';
 import { approvePlan, authorizeCampaign, buildEnvelope, campaignAuthorizationRefusal, importPlan, type EnvelopeFlags } from '../forge/campaign.ts';
-import { campaignLockConfirm, lockCampaign, registerPlanGates } from '../forge/campaign-gates.ts';
+import { campaignLockConfirm, registerPlanGates } from '../forge/campaign-gates.ts';
+import { campaignRunConfirm, runCampaignRunCommand } from '../forge/commands-campaign-run.ts';
 import { confirmIngest, corpusReviewReadOnly } from '../forge/commands-corpus-review.ts';
 import { confirmDigest } from '../forge/confirm.ts';
 import { currentIrSetDigest } from '../forge/ir-review.ts';
@@ -174,8 +175,24 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   ctx.store.recordGateEvaluation({ missionId: campaign.id, projectId: campaign.projectId, revision: campaign.baseRevision, experimentId: suite.id, target: 'base',
     diffDigest: null, harnessDigest: suite.harnessDigest, executions: [], conclusion: 'supported' });
   const obligations = { [suite.id]: ['W1.D1:ob1'] };
-  lockCampaign(g, { campaignId: campaign.id, actor: HUMAN, rationale: 'gates', ratchet: false, experimentIds: [suite.id], obligations, env: {},
-    confirm: campaignLockConfirm(g, campaign.id, [suite.id], false, obligations).digest8 });
+  const lockCli = async (...more: string[]) => {
+    let printed = '';
+    let errors = '';
+    const code = await runCampaignRunCommand(['lock', campaign.id, '--no-ratchet', '--format', 'json', '--out', w.out, ...more], {},
+      { stdout: (s) => { printed += s; }, stderr: (s) => { errors += s; } });
+    return { code, printed, errors };
+  };
+  const preview = await lockCli('--obligations', `${suite.id}=W1.D1:ob1`);
+  const want = campaignLockConfirm(g, campaign.id, [suite.id], false, obligations);
+  check('campaign lock --obligations: the preview digest is the library\'s digest with those obligations bound', preview.code === 2
+    && JSON.parse(preview.printed).digest === want.digest && want.digest !== campaignLockConfirm(g, campaign.id, [suite.id], false).digest, preview.printed);
+  check('daylight confirm lock-campaign-gates --obligations prints the same digest', campaignRunConfirm(ctx, 'lock-campaign-gates', campaign.id,
+    (k) => ({ 'no-ratchet': 'true', obligations: `${suite.id}=W1.D1:ob1` } as Record<string, string>)[k], null).digest === want.digest);
+  check('a bare <ticket>:ob<n> with no gate bound to that ticket is a usage error naming the explicit form', await lockCli('--obligations', 'W1.D1:ob1')
+    .then((r) => r.code === 2 && r.errors.includes(`<experiment>=W1.D1:ob1`)));
+  const locked = await lockCli('--obligations', `${suite.id}=W1.D1:ob1`, '--rationale', 'gates', '--confirm', want.digest8);
+  check('campaign lock --obligations --confirm locks with the obligation bound to the gate', locked.code === 0
+    && JSON.stringify(ctx.store.campaignLockDecision(campaign.id)?.scope.obligations) === JSON.stringify(obligations), locked.printed.slice(0, 300));
   check('before any revision nothing is stale', !staleTickets(ctx, campaign.id).size && !staleBlueprints(ctx, corpus.id).size && !ingestNeeds(ctx, campaign).length);
   const lockDecision = ctx.store.campaignLockDecision(campaign.id)!;
   const flags: EnvelopeFlags = { expectedGateSetDigest: lockDecision.scope.gateSetDigest as string, roster: ['mock'], maxUsdTotal: 10, maxUsdPerMission: 2,
@@ -240,6 +257,17 @@ section('what a stale record invalidates, read from rows; and the recovery a per
   check('the old blueprint stays stale until a person approves a new one', staleBlueprints(ctx, corpus.id).has(b.id));
   check('P2-R59: drift past the accepted digest stops the director again', /ir \(/.test(campaignAuthorizationRefusal(ctx, campaign.id) ?? ''));
   w.ctx.close();
+}
+
+section('the prose says what the code does (WS-R17)');
+{
+  const doc = (rel: string) => fs.readFileSync(path.join(import.meta.dirname, '..', '..', rel), 'utf8').replace(/\s+/g, ' ');
+  const ingest = doc('docs/daylight/INGEST.md');
+  check('INGEST.md covers all of ingestion, not one workstream\'s half', !/WS-R1[45]'?s? half/.test(ingest) && ingest.includes('## Traceability')
+    && ingest.includes('## The ingestion benchmark'));
+  const adr43 = doc('docs/daylight/FORGE_PLAN.md').split('### ADR-43')[1]?.split('### ADR-44')[0] ?? '';
+  check('ADR-43 does not say staleTickets is read by needs only: the director derives stale from it', !adr43.includes('read by needs only')
+    && /set\('stale'/.test(fs.readFileSync(path.join(import.meta.dirname, '..', 'forge', 'director.ts'), 'utf8')));
 }
 
 section('the CLI: what runs in an agent session');

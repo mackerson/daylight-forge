@@ -63,10 +63,14 @@ project nothing it uses.
 - package-manager configuration and install-time code at any depth: `.npmrc`, `.pnpmfile.cjs`,
   `.pnpmfile.mjs`, `pnpm-workspace.yaml`, `.yarnrc.yml`, `.yarnrc`, `bunfig.toml`, and anything
   under `.yarn/releases` or `.yarn/plugins` (the code `yarnPath` and yarn's plugins run);
-- hook code a person's next commit would run: anything under `.husky`, and
-  `.pre-commit-config.yaml`, `lefthook.yml`, `.lefthook.yml`, `lefthook.yaml`, `.lefthook.yaml`,
-  `lefthook-local.yml`, `lefthook-local.yaml`, `.lefthook-local.yml` and `.lefthook-local.yaml`
-  at any depth.
+- hook code a person's next commit would run: anything under `.husky` or `.lefthook-local`
+  (lefthook's local script directory), and `.pre-commit-config.yaml` and lefthook's configuration
+  at any depth, `.config/` included: `lefthook.yml`, `.lefthook.yml`, `lefthook.yaml`,
+  `.lefthook.yaml`, `lefthook.json`, `.lefthook.json`, `lefthook.jsonc`, `.lefthook.jsonc`,
+  `lefthook.toml`, `.lefthook.toml`, `lefthook-local.yml`, `.lefthook-local.yml`,
+  `lefthook-local.yaml`, `.lefthook-local.yaml`, `lefthook-local.json`, `.lefthook-local.json`,
+  `lefthook-local.jsonc`, `.lefthook-local.jsonc`, `lefthook-local.toml` and
+  `.lefthook-local.toml` (P2-R38).
 
 The last three groups were added by P2-R32 and widened at the P2 merge. They change behaviour for a repository without a
 policy, by tightening only: an author that edits one of them now produces an uncurable
