@@ -13,7 +13,7 @@ import type {
   Attempt, Candidate, CandidateVerdict, Decision, Mission, NetworkMode, Need, Task, WorkItem,
 } from '../mission/types.ts';
 import type { CampaignTicket, RepairBrief } from '../mission/types.ts';
-import { authorizeGrantRefusal } from './campaign.ts';
+import { authorizeGrantRefusal, planOf } from './campaign.ts';
 import { campaignAuthorBrief, campaignLockRefusal, holdoutPaths, type CampaignBrief } from './campaign-gates.ts';
 import { parseSpec, specKey } from '../swarm/adapters.ts';
 import { captureRun } from '../swarm/capture.ts';
@@ -23,6 +23,8 @@ import { isCargoTree, readSnapshot, snapshotRefusal, wipeAuthorCache } from './c
 import { REQUEST_DEPENDENCY_TOOL } from './dependency-requests.ts';
 import { captureCandidate } from './diff.ts';
 import { authorBrief, evaluate, resolveCommit, type GateContext } from './gate.ts';
+import { authorizationOf, envelopeOf } from './integrate.ts';
+import { policyAt } from './plan.ts';
 import { authorLimits, loadProjectPolicy, POLICY_SCHEMA, ProjectPolicyError, protectedLabels, type ProjectPolicy } from './project-policy.ts';
 import { MCP_CONFIG, newMcpToken, type ExecResult } from './sandbox.ts';
 import { createWorkspace, sweepWorkspaces, type Workspace } from './workspace.ts';
@@ -260,6 +262,25 @@ function preflight(
   return { why, authorize, exec: granted?.execute === true, lock, base };
 }
 
+/**
+ * The policy a mission's candidates are judged by. A campaign ticket's is the policy at the plan
+ * commit, the one the person confirmed in the envelope, never the operator's working tree (review
+ * L3); a digest that is not the envelope's is refused. Any other mission reads the working tree.
+ */
+function policyFor(ctx: DaylightContext, m: Mission, root: string): ProjectPolicy | null {
+  const campaign = campaignOf(ctx, m);
+  if (!campaign) return loadProjectPolicy(root);
+  // A campaign is created at its plan's commit; a re-import moves the plan record on.
+  const commit = ctx.store.currentPlan(campaign.id) ? planOf(ctx, campaign.id).commit : campaign.baseRevision;
+  const policy = policyAt(root, commit);
+  const auth = authorizationOf(ctx.store, campaign.id);
+  const recorded = auth ? envelopeOf(auth).policyDigest : undefined;
+  if (recorded !== undefined && (policy?.digest ?? null) !== recorded) {
+    throw new ProjectPolicyError(`the policy at the plan commit (${policy?.digest.slice(0, 19) ?? 'none'}) is not the one the campaign authorization confirmed (${recorded?.slice(0, 19) ?? 'none'})`);
+  }
+  return policy;
+}
+
 /** The campaign a ticket mission belongs to, or null for any other mission. */
 function campaignOf(ctx: DaylightContext, m: Mission): Mission | null {
   const parent = m.parentId ? ctx.store.mission(m.parentId) : null;
@@ -300,7 +321,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
   }
   let policy: ProjectPolicy | null;
   try {
-    policy = loadProjectPolicy(root);
+    policy = policyFor(ctx, mission, root);
   } catch (err) {
     if (!(err instanceof ProjectPolicyError)) throw err;
     emit(ctx, mission, 'process', 'forge.author.refused', { state: mission.state, why: [err.message] });
@@ -446,7 +467,7 @@ export async function runImplement(ctx: DaylightContext, o: ImplementOptions): P
           { taskId: task.id, attemptId: row.id });
       }
       // What an author that broke policy built is not left for the next author to link against.
-      if (candidate.policyViolations.length && wipeAuthorCache(ctx.out)) {
+      if (candidate.policyViolations.length && wipeAuthorCache(ctx.out, mission.id)) {
         emit(ctx, mission, 'process', 'forge.cargo.author-cache.wiped', { state: mission.state, candidateId: candidate.id },
           { taskId: task.id, attemptId: row.id });
       }

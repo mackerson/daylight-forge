@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SYSTEM_PATH, type SandboxBind } from '../experiment/sandbox.ts';
@@ -59,27 +59,45 @@ export const snapshotFile = (out: string): string => path.join(out, 'cargo', 'sn
 export const targetDir = (out: string, kind: CargoProfile): string => path.join(out, 'cargo', 'target', kind);
 
 /**
- * One gate build cache (P2-R28): `base`, written only by baseline runs, or one candidate's,
- * named by the first 16 hex characters of its diff digest and seeded from `base`.
+ * One gate build cache (P2-R28, P2-R42): `base`, written only by baseline runs, or one
+ * candidate's or integration's directory, named by the first 16 hex characters of its diff
+ * digest, which holds one throwaway cache per run, each seeded from `base`.
  */
 export const gateCacheDir = (out: string, key: string): string => path.join(targetDir(out, 'gate'), key);
 const GATE_CACHE_KEY = /^(base|[0-9a-f]{16})$/;
+
+/** One run's cache under a candidate's directory: `<out>/cargo/target/gate/<diffDigest16>/<run>/`. */
+export const gateRunDir = (out: string, key: string, run: string): string => path.join(gateCacheDir(out, key), run);
+const GATE_RUN_KEY = /^r[0-9]{1,4}-[0-9a-f]{16}$/;
+
+/** A fresh run key: the run index and 64 random bits, so no two runs ever name one directory. */
+export const gateRunKey = (index: number): string => `r${index}-${randomBytes(8).toString('hex')}`;
+
+/**
+ * One mission's author build cache (review L4): every author of that mission builds here, and no
+ * author of any other mission sees it. Cargo trusts the fingerprints and artifacts it finds in a
+ * target directory, so a cache shared across missions would run one author's code in another's.
+ */
+export const authorCacheDir = (out: string, missionId: string): string => path.join(targetDir(out, 'author'), missionId);
+const MISSION_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 
 /** The cache key of a candidate's gate runs: its diff digest, shortened. */
 export const gateCacheKey = (diffDigest: string): string => diffDigest.replace(/^sha256:/, '').slice(0, 16);
 
 /**
- * A candidate's gate cache, created as a copy of `base` (reflinked where the filesystem can, a
- * plain copy otherwise) so it starts from the base's dependency builds and nothing any other
- * candidate built. `base` itself is never handed to a candidate.
+ * One run's gate cache, created as a copy of `base` (reflinked where the filesystem can, a plain
+ * copy otherwise) so it starts from the base's dependency builds and nothing any other run built
+ * (P2-R42): a holdout's run can write what it read into its cache, and the next run, the
+ * author's own acceptance test included, must never find it there. `base` itself is never
+ * handed to a candidate. A run directory that already exists is refused, never reused.
  */
-function seedGateCache(out: string, key: string): void {
-  const dst = gateCacheDir(out, key);
-  if (fs.lstatSync(dst, { throwIfNoEntry: false })) return;
+function seedGateRun(out: string, key: string, run: string): void {
+  const dst = gateRunDir(out, key, run);
+  const parentBad = realDirUnder(out, gateCacheDir(out, key), true);
+  if (parentBad) throw new CargoRefused(`refusing the gate build cache: ${parentBad}`);
+  if (fs.lstatSync(dst, { throwIfNoEntry: false })) throw new CargoRefused(`the gate run cache ${run} already exists; a run's cache is never reused`);
   const base = gateCacheDir(out, 'base');
   const bst = fs.lstatSync(base, { throwIfNoEntry: false });
-  const parentBad = realDirUnder(out, targetDir(out, 'gate'), true);
-  if (parentBad) throw new CargoRefused(`refusing the gate build cache: ${parentBad}`);
   if (!bst?.isDirectory() || bst.isSymbolicLink()) return;
   try {
     execFileSync('/usr/bin/cp', ['-a', '--reflink=auto', '--', base, dst], { stdio: 'ignore', timeout: 600_000, env: { PATH: SYSTEM_PATH } });
@@ -89,11 +107,18 @@ function seedGateCache(out: string, key: string): void {
   }
 }
 
-/** Remove one candidate's gate cache; `base` is never removed this way. */
+/** Remove one candidate's gate cache directory, every run's included; `base` is never removed this way. */
 export function removeGateCache(outIn: string, key: string): void {
   const out = requireAbsoluteOut(outIn);
   if (key === 'base' || !GATE_CACHE_KEY.test(key)) return;
   fs.rmSync(gateCacheDir(out, key), { recursive: true, force: true });
+}
+
+/** Remove one run's gate cache, in that run's `finally`. */
+export function removeGateRun(outIn: string, key: string, run: string): void {
+  const out = requireAbsoluteOut(outIn);
+  if (key === 'base' || !GATE_CACHE_KEY.test(key) || !GATE_RUN_KEY.test(run)) return;
+  fs.rmSync(gateRunDir(out, key, run), { recursive: true, force: true });
 }
 
 const sha256 = (b: Buffer | string): string => `sha256:${createHash('sha256').update(b).digest('hex')}`;
@@ -219,6 +244,33 @@ function arrayDepth(line: string, depth: number): number | null {
 }
 
 /**
+ * The `key = value` pairs of one inline table's body, split on the commas outside strings and
+ * arrays (`features = ["a", "b"]` is one pair). Null when a string or an array does not close.
+ */
+function splitInline(body: string): string[] | null {
+  const pairs: string[] = [];
+  let q: string | null = null;
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (q) {
+      if (c === '\\' && q === '"') i++;
+      else if (c === q) q = null;
+    } else if (c === '"' || c === "'") q = c;
+    else if (c === '[') depth++;
+    else if (c === ']') depth--;
+    else if (c === ',' && depth === 0) {
+      pairs.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (q || depth !== 0) return null;
+  pairs.push(body.slice(start));
+  return pairs;
+}
+
+/**
  * Every key a cargo config file sets, as dotted paths, or why it cannot be read. A small reader,
  * not a TOML parser: tables, dotted keys and one level of inline table. Multi-line strings and
  * arrays are skipped over by bracket depth; anything it does not understand is a refusal.
@@ -246,7 +298,9 @@ export function cargoConfigKeys(text: string): { keys: string[][] } | { error: s
     keys.push(full);
     if (value.startsWith('{')) {
       if (!value.endsWith('}') || value.slice(1, -1).includes('{')) return { error: `line ${n + 1}: nested or multi-line inline tables are not read` };
-      for (const pair of value.slice(1, -1).split(',')) {
+      const pairs = splitInline(value.slice(1, -1));
+      if (!pairs) return { error: `line ${n + 1}: unreadable inline table` };
+      for (const pair of pairs) {
         if (!pair.trim()) continue;
         const e = pair.indexOf('=');
         const sub = e > 0 ? keyParts(pair.slice(0, e)) : null;
@@ -267,6 +321,22 @@ export function cargoConfigKeys(text: string): { keys: string[][] } | { error: s
     }
   }
   return { keys };
+}
+
+/**
+ * Why a `Cargo.toml` may not be snapshotted, or null: a `[patch]` or `[replace]` table, in any
+ * spelling cargo honours (`[patch.crates-io]`, `["patch".crates-io]`, `patch.crates-io.x = …`),
+ * or a manifest the key reader cannot read. A dependency that happens to be named `patch` is a
+ * key under `[dependencies]` and is not one of them.
+ */
+export function manifestRefusal(text: string): string | null {
+  const r = cargoConfigKeys(text);
+  if ('error' in r) return `${r.error}; a manifest that cannot be read is not snapshotted`;
+  const table = r.keys.find((k) => k[0] === 'patch' || k[0] === 'replace')?.[0];
+  if (table) return `has a [${table}]; patched crates are not snapshotted`;
+  // `<…dependencies>.<name>.registry[-index]`, in any dependency table, target-specific included.
+  const alt = r.keys.find((k) => k.length >= 3 && (k.at(-1) === 'registry' || k.at(-1) === 'registry-index') && /dependencies$/.test(k.at(-3)!));
+  return alt ? `names a registry for ${alt.at(-2)} (${alt.slice(-3).join('.')}); only crates.io is snapshotted` : null;
 }
 
 /**
@@ -345,10 +415,22 @@ function realDirUnder(out: string, p: string, create: boolean): string | null {
   return null;
 }
 
+/** The two spellings of crates.io a dependency's `source` takes; anything else is another registry. */
+const CRATES_IO_SOURCES = new Set(['registry+https://github.com/rust-lang/crates.io-index', 'sparse+https://index.crates.io/']);
+
+/** Why a dependency or lock `source` is refused, or null for crates.io. */
+function sourceRefusal(source: string): string | null {
+  if (CRATES_IO_SOURCES.has(source)) return null;
+  const shown = source.slice(0, 120);
+  return source.startsWith('git+') ? `from git (${shown}); git dependencies are not snapshotted` : `from ${shown}; only crates.io is snapshotted`;
+}
+
 /**
- * Refuse a workspace whose crates do not all come from inside it or from the registry: a member
- * or path dependency outside the repository, a git dependency anywhere in the lock, a `[patch]`.
- * None of those could build in `/work` anyway; this names them before anything is fetched.
+ * Refuse a workspace whose crates do not all come from inside it or from crates.io: a member or
+ * path dependency outside the repository, any other source (git, an alternate registry, a
+ * `registry-index` URL) in a manifest or anywhere in the lock, a `[patch]`. None of those could
+ * build in `/work` anyway, and `cargo fetch` would contact whatever a manifest names before
+ * `--locked` failed (review M3); this names them before anything is fetched.
  * `cargo metadata --no-deps` runs from `/`, offline, reading manifests only.
  */
 function workspaceRefusal(root: string, realRoot: string, cargo: string): void {
@@ -372,18 +454,29 @@ function workspaceRefusal(root: string, realRoot: string, cargo: string): void {
     }
     return within(real, realRoot);
   };
+  const manifest = (file: string) => {
+    const why = manifestRefusal(fs.readFileSync(file, 'utf8'));
+    if (why) throw new CargoRefused(`${path.relative(root, file)} ${why}`);
+  };
+  // The root may be a virtual manifest, which is no package but is where cargo reads [patch].
+  manifest(path.join(root, 'Cargo.toml'));
   for (const pkg of meta.packages) {
     if (!inside(pkg.manifest_path)) throw new CargoRefused(`workspace member ${pkg.name} is outside ${root} (${pkg.manifest_path}); a snapshot covers one repository`);
-    if (/^\s*\[\s*patch[\s.\]]|^\s*patch\s*[.=]/m.test(fs.readFileSync(pkg.manifest_path, 'utf8'))) {
-      throw new CargoRefused(`${path.relative(root, pkg.manifest_path)} has a [patch]; patched crates are not snapshotted`);
-    }
+    manifest(pkg.manifest_path);
     for (const d of pkg.dependencies) {
       if (d.path && !inside(d.path)) throw new CargoRefused(`${pkg.name} depends on ${d.name} at ${d.path}, outside ${root}; path dependencies must be inside the repository`);
-      if (d.source?.startsWith('git+')) throw new CargoRefused(`${pkg.name} depends on ${d.name} from git (${d.source}); git dependencies are not snapshotted`);
+      const why = d.source ? sourceRefusal(d.source) : null;
+      if (why) throw new CargoRefused(`${pkg.name} depends on ${d.name} ${why}`);
     }
   }
-  const git = /^source = "(git\+[^"]*)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8'));
-  if (git) throw new CargoRefused(`Cargo.lock has a git dependency (${git[1].slice(0, 120)}); git dependencies are not snapshotted`);
+  // Every URL in the lock, not only `source = "…"` lines as cargo writes them: a hand-edited lock
+  // may spell a source any way TOML allows. Escapes are refused because cargo never writes one.
+  const lock = fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8');
+  if (/\\[uU]/.test(lock)) throw new CargoRefused('Cargo.lock has a unicode escape, which cargo never writes; it is not snapshotted');
+  for (const m of lock.matchAll(/(["'])([^"'\n]*:\/\/[^"'\n]*)\1/g)) {
+    const why = sourceRefusal(m[2]);
+    if (why) throw new CargoRefused(`Cargo.lock has a dependency ${why}`);
+  }
 }
 
 /**
@@ -526,17 +619,11 @@ export function snapshotStatus(repo: string, out: string, o: { verify?: boolean 
 }
 
 /**
- * The binds and environment one profile's cargo runs with: the snapshot read-only at
- * `/cargo-home`, that profile's own build cache read-write at `/cargo-target` (created on
- * demand), offline. The gate profile also builds non-incrementally: what it compiles is judged,
- * and incremental state is one more thing carried from one candidate's build into the next.
+ * The snapshot directory, once it is verified in full (P2-R29): `<out>` a real directory, a
+ * recorded snapshot not inside the repository, no planted configuration, and the digest it was
+ * recorded with. Throws `CargoRefused` naming the command to run otherwise.
  */
-export function cargoMounts(
-  kind: CargoProfile, outIn: string, o: { gateCache?: string } = {},
-): { binds: SandboxBind[]; env: Record<string, string> } {
-  if (kind !== 'author' && kind !== 'gate') throw new CargoRefused(`unknown cargo profile ${String(kind)}`);
-  const key = o.gateCache ?? 'base';
-  if (kind === 'gate' && !GATE_CACHE_KEY.test(key)) throw new CargoRefused(`${key} is not a gate cache name`);
+export function verifySnapshot(outIn: string): string {
   const out = requireAbsoluteOut(outIn);
   if (!fs.lstatSync(out, { throwIfNoEntry: false })?.isDirectory()) throw new CargoRefused(`${out} is not a directory`);
   const home = snapshotDir(out);
@@ -560,8 +647,29 @@ export function cargoMounts(
   if (snapshotDigest(home).digest !== recorded.digest) {
     throw new CargoRefused(`the crate snapshot no longer hashes to its recorded digest: run \`${snapshotCommand(recorded.repo, out)}\``);
   }
-  if (kind === 'gate' && key !== 'base') seedGateCache(out, key);
-  const target = kind === 'gate' ? gateCacheDir(out, key) : targetDir(out, kind);
+  return home;
+}
+
+/**
+ * The binds and environment one profile's cargo runs with: the snapshot read-only at
+ * `/cargo-home`, that profile's own build cache read-write at `/cargo-target` (created on
+ * demand), offline. The gate profile also builds non-incrementally: what it compiles is judged,
+ * and incremental state is one more thing carried from one candidate's build into the next.
+ */
+export function cargoMounts(
+  kind: CargoProfile, outIn: string, o: { gateCache?: string; run?: string; mission?: string } = {},
+): { binds: SandboxBind[]; env: Record<string, string> } {
+  if (kind !== 'author' && kind !== 'gate') throw new CargoRefused(`unknown cargo profile ${String(kind)}`);
+  const key = o.gateCache ?? 'base';
+  if (kind === 'gate' && !GATE_CACHE_KEY.test(key)) throw new CargoRefused(`${key} is not a gate cache name`);
+  if (kind === 'gate' && key !== 'base' && !GATE_RUN_KEY.test(o.run ?? '')) {
+    throw new CargoRefused('a candidate\'s gate cache is per run (P2-R42); no run key was given');
+  }
+  if (kind === 'author' && !MISSION_KEY.test(o.mission ?? '')) throw new CargoRefused('the author build cache is per mission; no mission id was given');
+  const out = requireAbsoluteOut(outIn);
+  const home = verifySnapshot(out);
+  if (kind === 'gate' && key !== 'base') seedGateRun(out, key, o.run!);
+  const target = kind === 'author' ? authorCacheDir(out, o.mission!) : key === 'base' ? gateCacheDir(out, key) : gateRunDir(out, key, o.run!);
   const bad = realDirUnder(out, target, true);
   if (bad) throw new CargoRefused(`refusing the ${kind} build cache: ${bad}`);
   return {
@@ -577,16 +685,18 @@ export function cargoMounts(
 }
 
 /**
- * Remove the author build cache and nothing else. Called whenever a candidate has a policy
- * violation: whatever that attempt's builds left there is not carried into the next author's.
- * A link in its place is removed as a link, never followed.
+ * Remove one mission's author build cache and nothing else. Called whenever a candidate of that
+ * mission has a policy violation: whatever that attempt's builds left there is not carried into
+ * the mission's next author. A link in its place is removed as a link, never followed.
  */
-export function wipeAuthorCache(outIn: string): boolean {
+export function wipeAuthorCache(outIn: string, missionId: string): boolean {
   const out = requireAbsoluteOut(outIn);
-  const target = targetDir(out, 'author');
-  const parent = path.dirname(target);
-  const pst = fs.lstatSync(parent, { throwIfNoEntry: false });
-  if (!pst || pst.isSymbolicLink() || !pst.isDirectory()) return false;
+  if (!MISSION_KEY.test(missionId)) return false;
+  const target = authorCacheDir(out, missionId);
+  for (const dir of [path.dirname(path.dirname(target)), path.dirname(target)]) {
+    const st = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) return false;
+  }
   if (!fs.lstatSync(target, { throwIfNoEntry: false })) return false;
   fs.rmSync(target, { recursive: true, force: true });
   return true;

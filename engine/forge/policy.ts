@@ -18,6 +18,9 @@ export const GATE_DIR = '.daylight-gates';
 export { INVARIANTS_FILE } from './project-policy.ts';
 export const MAX_DIFF_BYTES = 1024 * 1024;
 export const MAX_DIFF_FILES = 200;
+/** A captured path longer than this is refused as `path-escape` (review M2). */
+export const MAX_PATH_COMPONENTS = 64;
+export const MAX_PATH_BYTES = 1024;
 
 export interface PolicyContext {
   /** The mission's scope; an empty or absent `paths` admits every path. */
@@ -56,7 +59,8 @@ export function pathViolations(file: CandidateFile, ctx: PolicyContext = {}): Po
   const p = file.path;
   const parts = p.split('/');
   const escapes = !p || p.includes('\0') || p.includes('\\') || path.posix.isAbsolute(p)
-    || parts.some((s) => s === '..' || s === '.' || s === '');
+    || parts.some((s) => s === '..' || s === '.' || s === '')
+    || parts.length > MAX_PATH_COMPONENTS || Buffer.byteLength(p) > MAX_PATH_BYTES;
   if (escapes) rules.push('path-escape');
 
   if (protectedBy(p, ctx.policy, ctx.crates).length) rules.push('protected-path');

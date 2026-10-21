@@ -15,7 +15,9 @@ import {
 } from '../experiment/runner.ts';
 import type { ExecutionRecord } from '../experiment/types.ts';
 import { DEFAULT_LIMITS, type SandboxLimits, type SandboxProfile } from '../experiment/sandbox.ts';
-import { cargoConfigRefusal, cargoMounts, CargoRefused, gateCacheKey, removeGateCache, snapshotRefusal } from './cargo.ts';
+import {
+  cargoConfigRefusal, cargoMounts, CargoRefused, gateCacheKey, gateRunKey, removeGateCache, removeGateRun, snapshotRefusal, verifySnapshot,
+} from './cargo.ts';
 import { confirmDigest } from './confirm.ts';
 import { assertHumanDecision, GATE_DIR } from './policy.ts';
 import { mountRefusal } from './sandbox.ts';
@@ -199,7 +201,7 @@ export const CARGO_GATE_TIMEOUT_MS = 600_000;
 /** What `runContext` reads of a gate context; a try supplies it without a mission store. */
 type RunContextSource = Omit<GateContext, 'store'> & { store: ExperimentStoreLike };
 
-/** `cache` is the gate build cache: `base` for a baseline, the candidate's key at evaluate. */
+/** `cache` is the gate build cache: `base` for a baseline, else the candidate's key, under which each run gets its own. */
 export function runContext(ctx: RunContextSource, x: Experiment, cache: string) {
   const cargo = x.harness === 'cargo';
   return {
@@ -212,26 +214,51 @@ export function runContext(ctx: RunContextSource, x: Experiment, cache: string) 
 }
 
 /**
- * A cargo gate's binds and lock check, or why it has none. Every bind passes `mountRefusal`
- * with only itself allowed under `<out>`; the tree under test must carry the `Cargo.lock` the
- * snapshot was fetched for.
+ * A cargo gate's per-run binds and lock check, or why it has none. The snapshot is verified once
+ * before the tree is built and again at every run. A baseline run binds `gate/base/`; any other
+ * run gets its own cache under `<cache>/`, seeded from `base` and removed when the run ends
+ * (P2-R42), so nothing one run writes there, a holdout's run included, reaches another. Every
+ * bind passes `mountRefusal` with only itself allowed under `<out>`; the tree under test must
+ * carry the `Cargo.lock` the snapshot was fetched for.
  */
 function gateCargo(ctx: Pick<GateContext, 'out' | 'repoRoot'>, cache: string): NonNullable<GateRunContext['cargo']> {
   const out = ctx.out;
   if (!out) return { refused: 'a cargo gate needs the mission\'s <out>, where its crate snapshot and build cache are' };
-  let m: ReturnType<typeof cargoMounts>;
-  try {
-    m = cargoMounts('gate', out, { gateCache: cache });
-  } catch (err) {
-    if (err instanceof CargoRefused) return { refused: err.message.replace('<repo>', ctx.repoRoot) };
+  const said = (err: unknown): string => {
+    if (err instanceof CargoRefused) return err.message.replace('<repo>', ctx.repoRoot);
     throw err;
+  };
+  try {
+    verifySnapshot(out);
+  } catch (err) {
+    return { refused: said(err) };
   }
-  for (const b of m.binds) {
-    const why = mountRefusal(b.src, { home: os.homedir(), out, allow: [b.src], outAllow: [b.src] });
-    if (why) return { refused: `refusing to mount the cargo ${b.dest}: ${why}` };
-  }
+  const mounts = (run?: string) => {
+    const m = cargoMounts('gate', out, { gateCache: cache, ...(run ? { run } : {}) });
+    for (const b of m.binds) {
+      const why = mountRefusal(b.src, { home: os.homedir(), out, allow: [b.src], outAllow: [b.src] });
+      if (why) throw new CargoRefused(`refusing to mount the cargo ${b.dest}: ${why}`);
+    }
+    return m;
+  };
   return {
-    ...m,
+    forRun: (index) => {
+      if (cache === 'base') {
+        try {
+          return { ...mounts(), dispose: () => {} };
+        } catch (err) {
+          throw new Error(said(err));
+        }
+      }
+      const run = gateRunKey(index);
+      const dispose = () => removeGateRun(out, cache, run);
+      try {
+        return { ...mounts(run), dispose };
+      } catch (err) {
+        dispose();
+        throw new Error(said(err));
+      }
+    },
     preflight: (tree) => {
       const config = cargoConfigRefusal(tree);
       return config ? `the tree under test's ${config}` : snapshotRefusal(tree, out, ctx.repoRoot);
@@ -588,8 +615,8 @@ export async function evaluate(ctx: GateContext, candidateId: string): Promise<C
     } catch (err) {
       unreadable = `the diff artifact cannot be read: ${(err as Error).message}`;
     }
-    // This candidate's own gate cache, seeded from the base's: nothing another candidate built
-    // is visible to it, and it is gone once its gates have run (P2-R28).
+    // This candidate's gate cache directory: every run under it gets its own cache seeded from
+    // the base's and removed when the run ends (P2-R28, P2-R42); the directory goes after.
     const cache = gateCacheKey(digest);
     if (ctx.out) removeGateCache(ctx.out, cache);
     try {

@@ -145,6 +145,18 @@ function saveCache(dir: string | undefined, cache: ParseCache, live: Set<string>
   }
 }
 
+/**
+ * Per file, for every provider (review L5): a generated or vendored file this size is ordinary,
+ * and parsing one costs seconds and gigabytes for nothing a map can show.
+ */
+export const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+
+/** Why `rel` is skipped for its size, or null. Checked before the file is read. */
+function oversize(root: string, rel: string): string | null {
+  const size = fs.statSync(path.join(root, rel), { throwIfNoEntry: false })?.size ?? 0;
+  return size > MAX_SOURCE_BYTES ? `skipped: ${size} bytes, over the ${MAX_SOURCE_BYTES / 1024 / 1024} MB per-file cap` : null;
+}
+
 export function extract(options: ExtractOptions): Graph {
   const { root, includeDeclarations = false, includeTests = false, includeVendored = false } = options;
   // Several providers may be in play; each file goes to whichever claims its extension.
@@ -188,6 +200,11 @@ export function extract(options: ExtractOptions): Graph {
   const perFileBindings = new Map<string, ImportBinding[]>();
 
   for (const rel of sourceFiles) {
+    const over = oversize(root, rel);
+    if (over) {
+      graph.diagnostics.push({ file: rel, message: over });
+      continue;
+    }
     let source: string;
     try {
       source = fs.readFileSync(path.join(root, rel), 'utf8');
@@ -324,6 +341,11 @@ export function extract(options: ExtractOptions): Graph {
   // in files the tool had refused to open. Parsing them costs one pass and buys the difference
   // between "nothing uses this" and "only the tests use this", which are different findings.
   for (const rel of testFiles) {
+    const over = oversize(root, rel);
+    if (over) {
+      graph.diagnostics.push({ file: rel, message: over });
+      continue;
+    }
     let source: string;
     try {
       source = fs.readFileSync(path.join(root, rel), 'utf8');

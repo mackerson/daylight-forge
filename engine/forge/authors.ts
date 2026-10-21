@@ -126,7 +126,7 @@ export function reviewLauncher(input: {
  * and `run` only when the attempt row holds exec.
  */
 export function authorServer(ctx: {
-  attempt: Pick<Attempt, 'id' | 'sandbox' | 'projectId'>; tree: string; out: string; profile?: SandboxProfile;
+  attempt: Pick<Attempt, 'id' | 'missionId' | 'sandbox' | 'projectId'>; tree: string; out: string; profile?: SandboxProfile;
   artifacts?: ArtifactStore; onRun?: (r: ExecResult, command: string[]) => void;
 }): McpServer {
   const server = new McpServer({ name: MCP_SERVER_KEY, version: '0.1.0' });

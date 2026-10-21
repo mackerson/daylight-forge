@@ -36,11 +36,17 @@ const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const LINE_BREAK = /[\n\r\u2028\u2029]/;
 const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 
+/** Removed before validation (review I6): invisible, or a tab where one plain line is meant. */
+const INVISIBLE = /[\r\u200b-\u200d\ufeff]/g;
+const plain = (v: unknown): unknown => (typeof v === 'string' ? v.replace(/\t/g, ' ').replace(INVISIBLE, '') : v);
+
 /** `paths`: the files the wave changed. A finding is about one of them or about nothing. */
 export function validateFinding(raw: unknown, ctx: { paths: ReadonlySet<string> }): ReportedFinding | FindingRefusal {
   const no = (field: FindingField, refused: string): FindingRefusal => ({ field, refused });
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return no('payload', 'not an object');
-  const r = raw as Record<string, unknown>;
+  const r = { ...(raw as Record<string, unknown>) };
+  r.title = plain(r.title);
+  r.statement = plain(r.statement);
   const extra = Object.keys(r).find((k) => !['path', 'severity', 'title', 'statement'].includes(k));
   if (extra !== undefined) return no('payload', 'unknown field');
   if (typeof r.path !== 'string') return no('path', 'not a string');

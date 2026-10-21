@@ -19,7 +19,7 @@ import {
 } from '../forge/dependency-requests.ts';
 import { buildAuthorPrompt } from '../forge/orchestrate.ts';
 import { captureCandidate } from '../forge/diff.ts';
-import { checkPolicy, DecisionRefused, pathViolations } from '../forge/policy.ts';
+import { checkPolicy, DecisionRefused, MAX_PATH_BYTES, MAX_PATH_COMPONENTS, pathViolations } from '../forge/policy.ts';
 import { createWorkspace } from '../forge/workspace.ts';
 import { createDecomposeServer } from '../mcp/server.ts';
 import { openDaylight } from '../mission/context.ts';
@@ -202,6 +202,41 @@ section('project globs add, never remove');
     ['a/?.ts', '?'], ['a\\b', 'a backslash'], ['', 'an empty glob']] as const) {
     check(`a glob with ${label} is refused`, refusal(JSON.stringify({ schema: 'daylight.policy/v1', protectedPaths: [bad] })) !== null);
   }
+}
+
+section('the glob matcher is polynomial (review M2, probe B2)');
+{
+  // The recursive matcher this replaced, kept as the oracle for the reviewer's corpus.
+  const seg = (g: string) => new RegExp(`^${g.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
+  const oracle = (pattern: readonly string[], parts: readonly string[]): boolean => {
+    if (!pattern.length) return !parts.length;
+    if (pattern[0] === '**') return oracle(pattern.slice(1), parts) || (parts.length > 0 && oracle(pattern, parts.slice(1)));
+    return parts.length > 0 && seg(pattern[0]).test(parts[0]) && oracle(pattern.slice(1), parts.slice(1));
+  };
+  const globs = ['**/**/**/**/secret.txt', 'a/**/b/*.rs', '**', '*', 'src/**', '**/x', 'a/*/**/b'];
+  const paths = ['secret.txt', 'a/secret.txt', 'a/b/c/d/e/secret.txt', 'a/b/x.rs', 'a/q/r/b/x.rs', 'a/b/x.ts', 'x', 'y/x', 'src/m.ts', 'a/z/b', 'a/z/q/b', 'a/b', 'q', ''];
+  const diffs: string[] = [];
+  for (const g of globs) {
+    const pol = policy({ protectedPaths: [g] });
+    for (const p of paths) if (protectedBy(p, pol).includes('project') !== oracle(g.split('/'), p.split('/'))) diffs.push(`${g} ${p}`);
+  }
+  check(`the matcher agrees with the recursive oracle on the reviewer's corpus (${globs.length} globs x ${paths.length} paths)`, !diffs.length, diffs.join('; '));
+  const four = policy({ protectedPaths: ['**/**/**/**/secret.txt'] });
+  const deepPath = (n: number) => Array(n).fill('a').join('/') + '/b.rs';
+  const time = (n: number) => { const t0 = performance.now(); const r = protectedBy(deepPath(n), four); return { ms: performance.now() - t0, r }; };
+  const d60 = time(60);
+  check('a four-globstar glob against a 60-component path is under 10 ms', d60.ms < 10 && !d60.r.includes('project'), `${d60.ms.toFixed(1)} ms`);
+  // The old matcher takes minutes here; only run it once depth 60 shows the DP is in place.
+  const d2000 = d60.ms < 100 ? time(2000) : { ms: Infinity, r: [] };
+  check('and against a 2000-component path, still under 10 ms', d2000.ms < 10 && !d2000.r.includes('project'), `${d2000.ms.toFixed(1)} ms`);
+  check('a deep path that does match still matches', protectedBy(Array(2000).fill('a').join('/') + '/secret.txt', four).includes('project'));
+  const at = (n: number) => pathViolations(file(Array(n).fill('a').join('/')));
+  check(`a captured path of ${MAX_PATH_COMPONENTS} components passes, one more is path-escape`,
+    !at(MAX_PATH_COMPONENTS).includes('path-escape') && at(MAX_PATH_COMPONENTS + 1).includes('path-escape'));
+  const bytes = (n: number) => pathViolations(file('d/' + 'x'.repeat(n - 2)));
+  check(`a captured path of ${MAX_PATH_BYTES} bytes passes, one byte more is path-escape`,
+    !bytes(MAX_PATH_BYTES).includes('path-escape') && bytes(MAX_PATH_BYTES + 1).includes('path-escape'));
+  check('the byte cap counts UTF-8 bytes, not characters', pathViolations(file('d/' + '\u00e9'.repeat(600))).includes('path-escape'));
 }
 
 section('docs/daylight/POLICY.md names every protected value');

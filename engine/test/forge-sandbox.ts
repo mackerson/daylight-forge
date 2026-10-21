@@ -15,7 +15,7 @@ import { detectSandbox, nodeBinary, sandboxArgv, type SandboxProfile } from '../
 import { authorFor, authorLauncher, authorServer, authorTools, AUTHOR_FILE_TOOLS, REQUEST_DEPENDENCY, reviewLauncher, RUN_TOOL } from '../forge/authors.ts';
 import { captureCandidate } from '../forge/diff.ts';
 import {
-  execLaunch, execRefusal, MCP_CONFIG, MCP_HANDSHAKE, NET_FILES, MCP_SHIM, MCP_SOCKET, mcpRuntimeDir, newMcpToken, profileLaunch,
+  checkExecCommand, execLaunch, execRefusal, MCP_CONFIG, MCP_HANDSHAKE, NET_FILES, MCP_SHIM, MCP_SOCKET, mcpRuntimeDir, newMcpToken, profileLaunch,
   registerRunTool, runExec, SandboxRefused, type Mount, type ProfileOptions,
 } from '../forge/sandbox.ts';
 import { createWorkspace, WORKSPACE_PREFIX } from '../forge/workspace.ts';
@@ -265,6 +265,37 @@ section('exec is off by default and reachable only from the row');
   notMounted('exec', e.mounts, [repo]);
   check('a shell string is not a command', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: ['sh -c id'] })));
   check('a binary outside /usr/bin is refused', !!throws(() => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: path.join(tmp, 'tree'), out, command: [mock] })));
+}
+
+section('exec refusals name no host path (review L1, probe F)');
+{
+  const planted = path.join(tmp, 'tree-planted-git');
+  fs.mkdirSync(path.join(planted, '.git'), { recursive: true });
+  const launch = () => execLaunch(AVAILABLE, attemptOf({ exec: true }), { tree: planted, out, home, command: ['/usr/bin/true'] });
+  const dirWhy = throws(launch) ?? '';
+  check('a planted /work/.git directory is refused as /work, naming no host path',
+    /^\/work has a \.git/.test(dirWhy) && !dirWhy.includes(tmp) && !dirWhy.includes(planted), dirWhy);
+  fs.rmSync(path.join(planted, '.git'), { recursive: true });
+  fs.symlinkSync('/nonexistent-target', path.join(planted, '.git'));
+  const linkWhy = throws(launch) ?? '';
+  check('so is a dangling symlink named .git (lstat, not exists)', /^\/work has a \.git/.test(linkWhy), linkWhy);
+  fs.rmSync(path.join(planted, '.git'));
+  const server = new McpServer({ name: 't', version: '0' });
+  registerRunTool(server, { attempt: attemptOf({ exec: true }), tree: planted, out, profile: AVAILABLE });
+  fs.mkdirSync(path.join(planted, '.git'));
+  const handler = (server as unknown as { _registeredTools: Record<string, { handler?: (a: unknown) => Promise<{ content: Array<{ text: string }> }>; callback?: (a: unknown) => Promise<{ content: Array<{ text: string }> }> }> })._registeredTools.run;
+  const reply = await (handler.handler ?? handler.callback)!({ argv: ['/usr/bin/true'] });
+  const text = reply.content[0].text;
+  check('the run tool\'s error reply names no host path either', /\/work has a \.git/.test(text) && !text.includes(tmp), text);
+}
+
+section('privilege and namespace binaries are refused by name (review I3)');
+{
+  for (const b of ['sudo', 'su', 'doas', 'pkexec', 'mount', 'chroot', 'nsenter', 'unshare', 'setpriv']) {
+    const r = checkExecCommand([`/usr/bin/${b}`, 'id']);
+    check(`/usr/bin/${b} is refused`, !r.ok && r.why.includes(b), JSON.stringify(r));
+  }
+  check('a look-alike is not: /usr/bin/sudoku, /usr/bin/true', checkExecCommand(['/usr/bin/sudoku']).ok && checkExecCommand(['/usr/bin/true']).ok);
 }
 
 section('fail closed');

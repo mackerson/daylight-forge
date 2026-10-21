@@ -232,11 +232,26 @@ function ruleMatches(rule: ProtectedRule, parts: readonly string[], crates?: Cra
 
 const segmentRegex = (seg: string) => new RegExp(`^${seg.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
 
-/** `**` is zero or more whole components; `*` is any run within one component. */
+/**
+ * `**` is zero or more whole components; `*` is any run within one component. A two-row DP
+ * over (pattern index, parts index), O(|pattern|·|parts|): the recursive form branched on every
+ * `**` and a hostile path of a few hundred components hung the host at capture (review M2).
+ */
 function globMatches(pattern: readonly string[], parts: readonly string[]): boolean {
-  if (!pattern.length) return !parts.length;
-  if (pattern[0] === '**') return globMatches(pattern.slice(1), parts) || (parts.length > 0 && globMatches(pattern, parts.slice(1)));
-  return parts.length > 0 && segmentRegex(pattern[0]).test(parts[0]) && globMatches(pattern.slice(1), parts.slice(1));
+  let prev = new Array<boolean>(parts.length + 1).fill(false);
+  prev[0] = true;
+  for (const seg of pattern) {
+    const next = new Array<boolean>(parts.length + 1).fill(false);
+    if (seg === '**') {
+      let any = false;
+      for (let j = 0; j <= parts.length; j++) { any = any || prev[j]; next[j] = any; }
+    } else {
+      const re = segmentRegex(seg);
+      for (let j = 0; j < parts.length; j++) if (prev[j] && re.test(parts[j])) next[j + 1] = true;
+    }
+    prev = next;
+  }
+  return prev[parts.length];
 }
 
 export const languagesOf = (policy: ProjectPolicy | null | undefined): Language[] => policy?.languages ?? ['node'];
